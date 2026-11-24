@@ -9,7 +9,7 @@
  * state in one go. The bell badge stays in sync via `notificationEvents`.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, Pressable, ScrollView, RefreshControl, ActivityIndicator, Platform } from 'react-native'
+import { View, Text, Pressable, ScrollView, RefreshControl, Platform, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -32,6 +32,10 @@ import { useNotificationCollection, useDomainActions } from '../../contexts/doma
 import { notificationEvents } from '../../lib/notification-events'
 import { filterNotificationsForPlatform } from '../../lib/notification-policy'
 import { lifecycleNotificationRoute } from '../../lib/notifications/lifecycle-notification-link'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { GlassButton } from '../../components/team-chat/FloatingChrome'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../../components/layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 /** Type → icon + accent color (Tailwind text class) for the row glyph. */
 function visualForType(type: string): { Icon: React.ElementType; color: string } {
@@ -164,10 +168,29 @@ export default observer(function NotificationsScreen() {
   }, [items, actions, markingAllRead, notifications])
 
   const isNative = Platform.OS !== 'web'
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <SafeAreaView className="flex-1 bg-background" edges={phone ? ['bottom', 'left', 'right'] : undefined}>
+      {phone ? (
+        <PhoneScreenHeader
+          title="Notifications"
+          subtitle="Inbox"
+          onBack={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+          onLayout={header.onLayout}
+          actions={
+            unread.length > 0 ? (
+              <GlassButton label="Mark all as read" onPress={() => void markAllRead()}>
+                {markingAllRead ? <Spinner size="small" /> : <CheckCheck size={20} className="text-primary" />}
+              </GlassButton>
+            ) : null
+          }
+        />
+      ) : null}
       {/* Header */}
+      {phone ? null : (
       <View className="border-b border-border/70 px-4">
         <View className={cn('w-full max-w-3xl self-center flex-row items-center gap-3', isNative ? 'py-4' : 'py-3')}>
           <Pressable
@@ -189,7 +212,7 @@ export default observer(function NotificationsScreen() {
               className="min-h-11 flex-row items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 active:bg-muted disabled:opacity-50"
             >
               {markingAllRead ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <CheckCheck size={isNative ? 18 : 16} className="text-primary" />
               )}
@@ -198,7 +221,9 @@ export default observer(function NotificationsScreen() {
           )}
         </View>
       </View>
+      )}
 
+      <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
       {markAllError ? (
         <Text className="px-4 pt-2 text-xs text-destructive">
           Some notifications could not be marked read. Pull to refresh and try again.
@@ -207,7 +232,7 @@ export default observer(function NotificationsScreen() {
 
       {notifications.isLoading && items.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : items.length === 0 ? (
         <View className={cn('flex-1 items-center justify-center px-8', isNative ? 'gap-3' : 'gap-2')}>
@@ -269,6 +294,7 @@ export default observer(function NotificationsScreen() {
           })}
         </ScrollView>
       )}
+      </View>
     </SafeAreaView>
   )
 })

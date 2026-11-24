@@ -23,6 +23,7 @@ export {
   HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
+  MODEL_FAMILIES,
   type ModelEntry,
   type ImageModelEntry,
   type ImageModelCapabilities,

@@ -427,6 +427,46 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(existsSync(join(dir, 'src', 'real.ts'))).toBe(true)
   })
 
+  test('seeded pin for an unmaterialized (workspace:*) template keeps the checkout line, never the bare placeholder or latest', () => {
+    // Regression (SHO-522): making every pin writer exact wrote the checkout's
+    // `packages/sdk` version bare. That version is a development placeholder the
+    // release never publishes (v2.6.1's tree still says 1.7.0), so `bun install`
+    // failed with ETARGET. Pinning `latest` is no better: it jumps a major to a
+    // release this checkout was never tested against — 2.6.1's published tarball
+    // omits `bin/bucket-cli.mjs`, so its `shogo` CLI dies on import. Keep the
+    // checkout's own line as a range.
+    const root = makeTmp()
+    const tplDir = join(root, 'templates', 'runtime-template')
+    mkdirSync(tplDir, { recursive: true })
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': 'workspace:*' },
+    }))
+    mkdirSync(join(root, 'packages', 'sdk'), { recursive: true })
+    writeFileSync(join(root, 'packages', 'sdk', 'package.json'), JSON.stringify({ name: '@shogo-ai/sdk', version: '1.7.0' }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    expect(wd.seedRuntimeTemplate(dir)).toBe(true)
+    const pin = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']
+    expect(pin).toBe('^1.7.0')
+    expect(pin).not.toBe('latest')
+  })
+
+  test('seeded pin for a materialized template is the template version, exactly', () => {
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': '2.6.1' },
+    }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    expect(wd.seedRuntimeTemplate(dir)).toBe(true)
+    const pin = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']
+    expect(pin).toBe('2.6.1')
+  })
+
   test('restores the prisma scaffold even when package.json already exists', () => {
     // Regression: a pre-existing workspace (has package.json, so the full seed
     // is skipped) that lacks its Prisma scaffold previously got nothing back —
@@ -515,7 +555,8 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(existsSync(join(dir, 'scripts', 'generate.ts'))).toBe(true)
 
     const pkgAfter = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'))
-    expect(pkgAfter.dependencies['@shogo-ai/sdk']).toBe('^2.5.0')
+    // Exact, not `^2.5.0` (SHO-522).
+    expect(pkgAfter.dependencies['@shogo-ai/sdk']).toBe('2.5.0')
     // Unrelated deps are preserved.
     expect(pkgAfter.dependencies.hono).toBe('^4.0.0')
   })
@@ -1035,10 +1076,10 @@ describe('migrateLegacyShogoSdkPin', () => {
     const result = wd.migrateLegacyShogoSdkPin(dir)
     expect(result.upgraded).toBe(true)
     expect(result.before).toBe('^0.4.0')
-    expect(result.after).toBe('^1.2.3')
+    expect(result.after).toBe('1.2.3')
     expect(result.scriptRewritten).toBe(true)
     const updated = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'))
-    expect(updated.dependencies['@shogo-ai/sdk']).toBe('^1.2.3')
+    expect(updated.dependencies['@shogo-ai/sdk']).toBe('1.2.3')
     expect(updated.scripts.generate).toBe('bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate')
     // Stale SDK wiped + install-marker cleared
     expect(existsSync(join(dir, 'node_modules', '@shogo-ai', 'sdk'))).toBe(false)
@@ -1068,7 +1109,7 @@ describe('migrateLegacyShogoSdkPin', () => {
     }))
     const result = wd.migrateLegacyShogoSdkPin(dir)
     expect(result.upgraded).toBe(true)
-    expect(result.after).toBe('^2.0.0')
+    expect(result.after).toBe('2.0.0')
     expect(result.scriptRewritten).toBe(false)
   })
 
@@ -1102,8 +1143,12 @@ describe('migrateLegacyShogoSdkPin', () => {
     expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
   })
 
-  test('workspace:* template (unmaterialized) falls back to co-located packages/sdk version', () => {
-    // Lay out a fake monorepo: <root>/templates/runtime-template + <root>/packages/sdk.
+  test('workspace:* template (unmaterialized) heals onto the checkout line as a range, never bare', () => {
+    // A dev checkout's template carries the `workspace:*` sentinel, and the
+    // only local version is `packages/sdk`'s development placeholder, which is
+    // never published (the release stamps the tag's version into the tarball).
+    // Writing it bare fails `bun install` with ETARGET, so the heal keeps the
+    // checkout's line as a range — which does resolve on install.
     const root = makeTmp()
     const tplDir = join(root, 'templates', 'runtime-template')
     mkdirSync(tplDir, { recursive: true })
@@ -1119,9 +1164,8 @@ describe('migrateLegacyShogoSdkPin', () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       dependencies: { '@shogo-ai/sdk': '^0.4.0' },
     }))
-    const result = wd.migrateLegacyShogoSdkPin(dir)
-    expect(result.upgraded).toBe(true)
-    expect(result.after).toBe('^1.9.0')
+    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: true, before: '^0.4.0', after: '^1.9.0', scriptRewritten: false })
+    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']).toBe('^1.9.0')
   })
 
   test('workspace:* template with no co-located packages/sdk → clean no-op', () => {
@@ -1136,6 +1180,42 @@ describe('migrateLegacyShogoSdkPin', () => {
       dependencies: { '@shogo-ai/sdk': '^0.4.0' },
     }))
     expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
+  })
+
+  // SHO-522: pins are exact now, so a bare `X.Y.Z` must read the same as
+  // `^X.Y.Z` — writing an exact pin must never look like a downgrade.
+  test('a bare exact pin at the template version is left untouched', () => {
+    withTemplate('1.2.3')
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { '@shogo-ai/sdk': '1.2.3' },
+      scripts: { generate: 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate' },
+    }))
+    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
+    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']).toBe('1.2.3')
+  })
+
+  test('a bare exact pin below the template version upgrades to the exact template version', () => {
+    withTemplate('2.0.0')
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@shogo-ai/sdk': '1.9.9' } }))
+    const result = wd.migrateLegacyShogoSdkPin(dir)
+    expect(result.upgraded).toBe(true)
+    expect(result.after).toBe('2.0.0')
+  })
+
+  test('an exact template pin (no caret) upgrades a legacy caret pin to exact', () => {
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': '2.6.1' },
+    }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { '@shogo-ai/sdk': '^2.6.0' } }))
+    const result = wd.migrateLegacyShogoSdkPin(dir)
+    expect(result.upgraded).toBe(true)
+    expect(result.after).toBe('2.6.1')
   })
 })
 

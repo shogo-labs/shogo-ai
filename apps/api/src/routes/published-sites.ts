@@ -97,17 +97,25 @@ export function publishedSitesRoutes() {
       upload: body,
     })
     if (!result.ok) {
-      return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
+      return c.json({ error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } }, result.status as any)
     }
-    return c.json({
-      ok: true,
-      url: result.url,
-      subdomain: result.subdomain,
-      publishedAt: result.publishedAt,
-      accessLevel: result.accessLevel,
-      hasPassword: result.hasPassword,
-      hostProjectId: result.hostProjectId,
-    })
+    // 202: the upload is accepted and the cloud finishes hosting it in the
+    // background — the desktop polls `GET /published-sites/:id` until the
+    // publish settles (SHO-542). The bundle itself arrives in this request, so
+    // a big one still takes a while; what no longer happens here is the
+    // configure step, which is where the minutes go.
+    return c.json(
+      {
+        ok: true,
+        accepted: true,
+        status: result.publishStatus ?? 'building',
+        url: result.url,
+        subdomain: result.subdomain,
+        environment: result.environment,
+        hostProjectId: result.hostProjectId,
+      },
+      202,
+    )
   })
 
   router.patch('/published-sites/:sourceProjectId', async (c) => {

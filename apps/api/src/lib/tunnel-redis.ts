@@ -15,6 +15,7 @@
 import type Redis from 'ioredis'
 import { TRANSFER_MAX_ARCHIVE_BASE64_CHARS } from '@shogo/shared-runtime/project-transfer-limits'
 import { RELAY_TIMEOUT_MS } from './tunnel-timeouts'
+import { isAgentStreamTunnelPath } from './agent-stream-paths'
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-master:6379'
@@ -24,6 +25,21 @@ const TUNNEL_OWNERSHIP_TTL = 600 // 10 min, refreshed by heartbeat
 const VIEWER_TTL = 120 // 2 min
 const CONTROLLER_TTL = 60 // 1 min
 const STREAM_RELAY_TIMEOUT_MS = 600_000 // 10 min max for streaming
+/**
+ * How long an *agent turn* relay may go without a chunk before it is killed
+ * (SHO-546). A turn is not bounded by a wall clock — the runtime streams a
+ * `data-turn-seq` heartbeat every 250 ms while it works — so the relay's job is
+ * only to notice a silent peer. This resets on every chunk.
+ */
+const STREAM_RELAY_IDLE_TIMEOUT_MS = 600_000
+
+/** Relay windows, read per relay so a test can shrink them (SHO-546). */
+function relayTimeoutMs(kind: 'max' | 'idle'): number {
+  const name = kind === 'idle' ? 'SHOGO_TUNNEL_STREAM_RELAY_IDLE_TIMEOUT_MS' : 'SHOGO_TUNNEL_STREAM_RELAY_TIMEOUT_MS'
+  const value = Number(process.env[name])
+  if (Number.isFinite(value) && value > 0) return value
+  return kind === 'idle' ? STREAM_RELAY_IDLE_TIMEOUT_MS : STREAM_RELAY_TIMEOUT_MS
+}
 // One bounded re-read in getTunnelOwner to absorb the cold-start gap on
 // sibling pods. Keep it small — this delays 503s, not real traffic.
 const GET_TUNNEL_OWNER_RETRY_MS = 100
@@ -352,14 +368,26 @@ export async function registerTunnelOwnership(instanceId: string): Promise<void>
   await r.set(`tunnel:${instanceId}:pod`, POD_ID, 'EX', TUNNEL_OWNERSHIP_TTL)
 }
 
-export async function unregisterTunnelOwnership(instanceId: string): Promise<void> {
+/**
+ * Drop this pod's ownership of a tunnel, if it still holds it.
+ *
+ * Returns whether this pod was the owner. That answer is what tells a closing
+ * socket apart from a *rotated* one (SHO-565): when a desktop opens a
+ * replacement on another pod and then closes this socket, the key already names
+ * that pod, so this returns false and the caller must not mark the machine
+ * offline — the tunnel is alive, just not here.
+ *
+ * No Redis at all (local mode, a single-process API) counts as ownership: there
+ * is no other pod that could own the machine, so the caller's cleanup is right.
+ */
+export async function unregisterTunnelOwnership(instanceId: string): Promise<boolean> {
   await whenReady()
   const r = getPublisher()
-  if (!r) return
+  if (!r) return true
   const owner = await r.get(`tunnel:${instanceId}:pod`)
-  if (owner === POD_ID) {
-    await r.del(`tunnel:${instanceId}:pod`)
-  }
+  if (owner && owner !== POD_ID) return false
+  await r.del(`tunnel:${instanceId}:pod`)
+  return true
 }
 
 /**
@@ -481,6 +509,10 @@ interface RelayRequest {
     path: string
     headers?: Record<string, string>
     body?: string
+    /** Workspace target, for a chat with no project of its own (SHO-526). */
+    workspaceId?: string
+    /** Body encodings the receiving pod's cloud can decode. */
+    acceptBodyEncoding?: string[]
   }
 }
 
@@ -492,6 +524,8 @@ interface RelayResponse {
     status: number
     headers?: Record<string, string>
     body?: string
+    /** Set when `body` is base64-encoded bytes rather than text. */
+    bodyEncoding?: 'base64'
   }
   error?: string
 }
@@ -507,6 +541,10 @@ interface StreamRelayRequest {
     path: string
     headers?: Record<string, string>
     body?: string
+    /** Workspace target, for a chat with no project of its own (SHO-526). */
+    workspaceId?: string
+    /** Body encodings the receiving pod's cloud can decode. */
+    acceptBodyEncoding?: string[]
   }
 }
 
@@ -805,6 +843,22 @@ export function relayTunnelStreamRequest(
   let cancelled = false
   let activeTimeout: ReturnType<typeof setTimeout> | null = null
   let activeRelayId: string | null = null
+  // An agent turn is bounded by silence, not by the clock: the runtime
+  // heartbeats every 250 ms for as long as it works, and any chunk proves the
+  // peer is alive (SHO-546). Everything else keeps the 10-minute wall clock.
+  const agentStream = isAgentStreamTunnelPath(request.method, request.path)
+  const armTimeout = () => {
+    if (activeTimeout) clearTimeout(activeTimeout)
+    const timer = setTimeout(() => {
+      if (activeRelayId) pendingStreamRelays.delete(activeRelayId)
+      onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Cross-pod stream relay timed out' })
+    }, agentStream ? relayTimeoutMs('idle') : relayTimeoutMs('max'))
+    activeTimeout = timer
+    if (activeRelayId) {
+      const entry = pendingStreamRelays.get(activeRelayId)
+      if (entry) entry.timeout = timer
+    }
+  }
   whenReady().then(() => {
     if (cancelled) return
     const r = getPublisher()
@@ -813,11 +867,11 @@ export function relayTunnelStreamRequest(
       return
     }
     activeRelayId = `relay_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
-    activeTimeout = setTimeout(() => {
-      pendingStreamRelays.delete(activeRelayId!)
-      onChunk({ type: 'stream-error', requestId: request.requestId, error: 'Cross-pod stream relay timed out' })
-    }, STREAM_RELAY_TIMEOUT_MS)
-    pendingStreamRelays.set(activeRelayId, { onChunk, timeout: activeTimeout })
+    armTimeout()
+    pendingStreamRelays.set(activeRelayId, {
+      onChunk: agentStream ? (chunk) => { if (chunk.type === 'stream-chunk') armTimeout(); onChunk(chunk) } : onChunk,
+      timeout: activeTimeout!,
+    })
     const msg: StreamRelayRequest = { relayId: activeRelayId, instanceId, replyPod: POD_ID, request }
     publishFrame(`tunnel:pod:${ownerPod}:stream-request`, msg).catch(() => {
       if (activeTimeout) clearTimeout(activeTimeout)

@@ -19,6 +19,7 @@
  * Everything is cleared on sign-out and on an env switch.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from './storage'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { api } from './api'
 import type { SideChatItem } from './side-chats'
@@ -122,7 +123,7 @@ function writeLater(key: string, value: unknown): void {
     key,
     setTimeout(() => {
       pendingWrites.delete(key)
-      AsyncStorage.setItem(key, JSON.stringify(value)).catch(() => {})
+      setStorageJson(key, value).catch(() => {})
     }, WRITE_DELAY_MS),
   )
 }
@@ -151,7 +152,7 @@ function touchIndex(key: string): void {
     if (evicted.length) {
       await AsyncStorage.multiRemove(evicted.map(storageKey)).catch(() => {})
     }
-    await AsyncStorage.setItem(INDEX_KEY, JSON.stringify(index)).catch(() => {})
+    await setStorageJson(INDEX_KEY, index).catch(() => {})
   })
 }
 

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { Platform } from "react-native"
+import * as Device from "expo-device"
+
 /**
  * production_web Sentry noise filter.
  *
@@ -14,6 +17,49 @@
  * structurally (a subset of `@sentry/*` `ErrorEvent`) so the filter has no
  * runtime dependency on the SDK.
  */
+
+/**
+ * The device facts the virtual-device rule needs. Passed in rather than read
+ * from `expo-device` so the rule is unit-testable without a native module.
+ */
+export interface DeviceProfile {
+  platform: string
+  /** Primary ABI first, as `Device.supportedCpuArchitectures` reports it. */
+  architectures: readonly string[] | null | undefined
+  /** `expo-device`'s `DeviceType`: 1 PHONE, 2 TABLET, 3 DESKTOP, 4 TV. */
+  deviceType: number | null | undefined
+}
+
+/** `expo-device`'s `DeviceType.DESKTOP`. */
+const DEVICE_TYPE_DESKTOP = 3
+
+/**
+ * A virtual Android device: Google Play's pre-launch report robot, or a local
+ * x86_64 emulator. Play's robot is an `OnePlus8Pro` Firebase Test Lab VM whose
+ * primary ABI is `x86_64`; a real OnePlus 8 Pro is arm64-only. It backs out of
+ * the OAuth sheet within seconds of opening it, so every event it files is about
+ * the robot, not a person (SHO-527).
+ *
+ * x86 devices that are genuinely in use are ChromeOS/ARC, and `expo-device`
+ * reports those as DESKTOP — hence the third condition. This uses `expo-device`,
+ * already in the binary, so the filter ships over the air; a native module would
+ * change the runtime fingerprint and stop OTAs.
+ */
+export function isVirtualAndroidDevice(profile: DeviceProfile): boolean {
+  if (profile.platform !== "android") return false
+  const [primaryAbi] = profile.architectures ?? []
+  if (primaryAbi !== "x86" && primaryAbi !== "x86_64") return false
+  return profile.deviceType !== DEVICE_TYPE_DESKTOP
+}
+
+/** This device, as `expo-device` describes it. */
+export function currentDeviceProfile(): DeviceProfile {
+  return {
+    platform: Platform.OS,
+    architectures: Device.supportedCpuArchitectures,
+    deviceType: Device.deviceType,
+  }
+}
 
 export interface NoiseFilterFrame {
   filename?: string
@@ -66,6 +112,39 @@ export function isExpectedClientError(error: unknown): boolean {
   return typeof e.status === 'number' && e.status >= 400 && e.status < 500
 }
 
+/**
+ * Transport-level messages for a connection that dropped, not a request the
+ * server answered. These are the biggest issues by volume on both mobile
+ * platforms (`SHOGO-ANDROID-5` "Software caused connection abort",
+ * `SHOGO-IOS-4` "The network connection was lost.", `SHOGO-ANDROID-7` /
+ * `-1F` "Unable to resolve host studio.shogo.ai"): the phone changed networks,
+ * a relay recycled, DNS did not answer — the retry path recovers and the person
+ * sees a reconnect. Filed as errors they bury real defects, so they become a
+ * breadcrumb on the next real failure instead (SHO-566).
+ *
+ * Matched on the exception's value, and only on these whole messages: a
+ * `TypeError` that merely mentions "network" is a bug and must still report.
+ */
+const TRANSIENT_TRANSPORT_PATTERNS: readonly RegExp[] = [
+  /Software caused connection abort/i,
+  /The network connection was lost\.?$/i,
+  /Unable to resolve host\b/i,
+  /Network request failed$/i,
+  /The Internet connection appears to be offline\.?$/i,
+  /Connection reset by peer/i,
+]
+
+/** The exception value when it is one of the transport drops above. */
+export function transientTransportMessage(event: NoiseFilterEvent): string | null {
+  const values = event.exception?.values ?? []
+  for (const v of values) {
+    const value = typeof v.value === 'string' ? v.value.trim() : ''
+    if (!value) continue
+    if (TRANSIENT_TRANSPORT_PATTERNS.some((re) => re.test(value))) return value
+  }
+  return null
+}
+
 export function isNoiseEvent(event: NoiseFilterEvent): boolean {
   // Never drop an intentional Shogo capture. These carry a marker tag and rich
   // context precisely BECAUSE the raw message (e.g. "Failed to fetch",
@@ -107,6 +186,10 @@ export function isNoiseEvent(event: NoiseFilterEvent): boolean {
       /NetworkError when attempting to fetch/i.test(m),
   )
   if (isTransientBackend) return true
+
+  // 2b. A connection that dropped (see TRANSIENT_TRANSPORT_PATTERNS). Same
+  //     reasoning as 2: the transport failed, the server never answered.
+  if (transientTransportMessage(event)) return true
 
   // 3. Browser-extension DOM races (e.g. Google Translate mutates the
   //    React-owned DOM, then React's insertBefore/removeChild can't find the

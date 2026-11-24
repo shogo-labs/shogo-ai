@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ComponentType, ReactNode } from 'react'
-import { ActivityIndicator, Text, View } from 'react-native'
+import { Text, View } from 'react-native'
 import { Check } from 'lucide-react-native'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import type { PermissionState } from '../../../lib/desktop-bridge'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface PermissionRowProps {
   id: string
@@ -68,7 +69,7 @@ export function PermissionRow({
           onPress={onAllow}
           accessibilityLabel={`Allow ${title}`}
         >
-          {busy ? <ActivityIndicator size="small" className="text-primary-foreground" /> : actionLabel}
+          {busy ? <Spinner tone="onPrimary" size="small" /> : actionLabel}
         </Button>
       )}
     </View>

@@ -12,7 +12,6 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   BackHandler,
   useWindowDimensions,
   Platform,
@@ -88,7 +87,6 @@ import {
   setActiveWorkspaceId,
   resolveActiveWorkspaceId,
   subscribeActiveWorkspaceId,
-  adoptableWorkspaceParam,
 } from "../../../lib/workspace-store";
 import {
   reloadAfterWorkspaceSwitch,
@@ -129,6 +127,7 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
+import { SidebarScrollView } from "./SidebarScrollContext";
 import { HomePanel, MorePanel } from "./TabPanels";
 import {
   MENU_ITEM_RADIO_ROLE,
@@ -334,38 +333,9 @@ export const AppSidebar = observer(function AppSidebar({
         window.location.href = `/?workspace=${wsId}`;
       };
       provision();
-    } else if (params.get("workspace") && !params.get("checkout")) {
-      const targetWs = params.get("workspace")!;
-      workspaces.loadAll().then(() => {
-        // Only trust `?workspace=` when it names one of *this* user's own
-        // workspaces — an invite/share link pointing at a workspace this
-        // session isn't a member of would otherwise get persisted as
-        // "active" and 403/400 every request from then on.
-        //
-        // A link that names a workspace this account is not in must change
-        // *nothing*: resolving it through `resolveActiveWorkspaceId` answered
-        // the first own workspace and persisted that, which moved the person
-        // out of the workspace they were reading and switched the screen
-        // behind the "you don't have access to this workspace" message
-        // (SHO-284 AC 5).
-        const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const adoptedWs = adoptableWorkspaceParam(ownIds, targetWs);
-        if (!adoptedWs) return;
-        setSelectedWorkspaceId(adoptedWs);
-        setActiveWorkspaceId(adoptedWs);
-        projects
-          .loadAll({ workspaceId: adoptedWs })
-          .catch((e) =>
-            console.error(
-              "[AppSidebar] Failed to load projects for workspace:",
-              e,
-            ),
-          );
-      });
-      const url = new URL(window.location.href);
-      url.searchParams.delete("workspace");
-      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
+    // `?workspace=` itself is the shell's (`hooks/useWorkspaceParamAdoption`),
+    // which a phone has too; adopting it here as well would switch twice.
   }, []);
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
@@ -1487,7 +1457,7 @@ export const AppSidebar = observer(function AppSidebar({
           <ActivityFeed compact />
         </View>
       ) : (
-      <ScrollView
+      <SidebarScrollView
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
@@ -1564,7 +1534,7 @@ export const AppSidebar = observer(function AppSidebar({
         {experience.showProjectsTree && projectsBlock}
         </>
         )}
-      </ScrollView>
+      </SidebarScrollView>
       )}
 
       {/* ── Bottom Section ── */}
@@ -1592,19 +1562,11 @@ export const AppSidebar = observer(function AppSidebar({
                 onNavPress();
               }}
               className={cn(
-                "flex-row items-center rounded-md",
+                "flex-row items-center rounded-md bg-primary/10",
                 isNativeDrawer
                   ? "min-h-[72px] gap-3 px-4 py-3"
                   : "gap-2 px-3 py-2",
               )}
-              style={
-                Platform.OS === "web"
-                  ? ({
-                      backgroundImage:
-                        "linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))",
-                    } as any)
-                  : { backgroundColor: "rgba(59,130,246,0.1)" }
-              }
             >
               <View className="flex-1">
                 <Text

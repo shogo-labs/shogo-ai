@@ -128,6 +128,15 @@ spec:
         # EU absorbs the load from the decommissioned production-india region.
         # See docs/runbooks/india-to-eu-migration.md §1.
         autoscaling.knative.dev/max-scale: "20"
+        # Keep the activator off the request path once a replica is Ready (SHO-506,
+        # same fix staging has carried since the 5-minute chat-stream cut): the
+        # activator imposes a hardcoded ~5-minute `defaultRequestTimeout` on
+        # in-flight requests that ignores the revision's `timeoutSeconds`, so every
+        # long-lived stream through this DomainMapping — a desktop tunnel, a chat
+        # turn, an SSE read — died at exactly 5:00 with `1006`/`UC`.
+        autoscaling.knative.dev/target-burst-capacity: "0"
+        autoscaling.knative.dev/scale-down-delay: "5m"
+        autoscaling.knative.dev/window: "60s"
     spec:
       serviceAccountName: api-service-account
       containers:
@@ -150,23 +159,31 @@ spec:
             - name: SYSTEM_NAMESPACE
               value: "shogo-production-system"
             # ---- Published apps' Postgres (SHO-308 §1) ----------------------
-            # Read from the projects-pg cluster's CNPG superuser secret, which
-            # only exists once `k8s/cnpg/production-us-oci/projects-cluster.yaml`
-            # is deployed. `optional: true` keeps the API booting before that:
-            # a publish then refuses with `database_unavailable`.
+            # Published server apps get their own database on projects-pg (the
+            # PUBLISHED-app cluster, not platform-pg) and connect through its
+            # PgBouncer. PROJECTS_DB_HOST/PORT are required for the schema push
+            # (DDL goes to the primary, never the pooler) and
+            # PROJECTS_DB_POOLER_HOST is required for a publish to move an app
+            # onto Postgres at all: with it unset, publish refuses with
+            # `database_unavailable` instead of handing the pod a hostname
+            # nothing resolves.
             #
-            # PROJECTS_DB_POOLER_HOST is deliberately NOT set here yet. The
-            # Pooler CR (projects-pooler.yaml) fronts a cluster this region does
-            # not have, and setting the host first would turn a clean refusal
-            # into pods pointing at a Service with no endpoints. Set it in the
-            # same change that deploys the cluster — see
-            # docs/runbooks/published-postgres.md.
+            # deploy-eu applies the cluster and its pooler before this manifest
+            # (see .github/workflows/deploy.yml). `optional: true` on the
+            # superuser Secret keeps the API booting on the very first deploy,
+            # before CNPG has written it.
             - name: PROJECTS_DB_ADMIN_URL
               valueFrom:
                 secretKeyRef:
                   name: projects-pg-superuser
                   key: uri
                   optional: true
+            - name: PROJECTS_DB_HOST
+              value: "projects-pg-rw.shogo-production-system.svc.cluster.local"
+            - name: PROJECTS_DB_PORT
+              value: "5432"
+            - name: PROJECTS_DB_POOLER_HOST
+              value: "projects-pg-pooler-rw.shogo-production-system.svc.cluster.local"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE
@@ -275,6 +292,14 @@ spec:
             # docs/runbooks/published-images.md — the Secret and the egress rule
             # are manual per region, and PUBLISH_BUILD_IMAGES=off rolls back
             # without unsetting these.
+            # Pinned off until SHO-551 lands (KIF CRM, 2026-11-24): the SQLite→Postgres
+            # seed refuses orphaned rows, published pods never swap db.ts/provider to
+            # Postgres, and metal-hosted editors can't upload the image artifact.
+            # Turn each on only after it is verified end to end on staging.
+            - name: PUBLISH_POSTGRES
+              value: "off"
+            - name: PUBLISH_BUILD_IMAGES
+              value: "off"
             - name: PUBLISH_BUILD_REGISTRY
               value: "eu-frankfurt-1.ocir.io"
             - name: PUBLISH_BUILD_NAMESPACE
@@ -291,6 +316,21 @@ spec:
             # Writable-state bucket for SERVER-BACKED published apps.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-production"
+            # Project bucket (SHO-491) — where the agent and the apps it builds
+            # keep big media instead of committing it. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. EU reuses the production bucket
+            # exactly like PUBLISH_BUCKET/PUBLISH_DATA_BUCKET above: there is no
+            # EU bucket or PAR yet, so these bytes land in Ashburn — revisit that
+            # if project media ever has to stay in the EU (the LLM-capture
+            # buckets above exist for that reason). Without this var the bucket
+            # API answers 503 bucket_not_configured and the storage pass reports
+            # `bucket` as unmeasured for EU-homed workspaces. Public URLs fall
+            # back to the API's redirect route here: the `cdn.` host is a route
+            # on the US publish Worker, which an `enable_publish_hosting = false`
+            # overlay does not get.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------

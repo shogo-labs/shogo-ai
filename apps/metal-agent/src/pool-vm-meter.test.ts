@@ -20,10 +20,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
+import { LiveRegistry } from './live-registry'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -49,6 +50,9 @@ class TestPool extends MetalWarmPool {
       lastRealActivityAt: now,
       alwaysOn: false,
       cause: 'user_open',
+      // `assign()` and `resume()` always seed the meter; only an adopted VM used
+      // to arrive without one.
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       ...fields,
     }
     ;(this as any).assigned.set(projectId, a)
@@ -62,7 +66,13 @@ class TestPool extends MetalWarmPool {
   }
   klass(projectId: string, now: number): string {
     const a = (this as any).assigned.get(projectId)
-    return (this as any).vmMeterClass(a, now)
+    return (this as any).vmLiveness(a, now)
+  }
+  suspendedIds: string[] = []
+  override async suspend(projectId: string): Promise<any> {
+    this.suspendedIds.push(projectId)
+    ;(this as any).assigned.delete(projectId)
+    return { projectId }
   }
   closedLen(): number {
     return (this as any).closedMeters.length
@@ -250,5 +260,192 @@ describe('closed meters', () => {
       pool.close(`vm${i}`, t0 + 1_000)
     }
     expect(pool.closedLen()).toBe(MAX_CLOSED)
+  })
+})
+
+/**
+ * SHO-533 — the meter and the reaper must never disagree about "idle".
+ *
+ * They did: `vmMeterClass` charged a VM `idle` unless a stream was open or an app
+ * request had arrived within 120s, while the reaper counted a heartbeat run or a
+ * background task as activity (it bumped `lastRealActivityAt` on every busy
+ * poll). So a VM could be billed as idle for hours and simultaneously be
+ * considered too active to suspend. Both now read `vmLiveness`.
+ */
+describe('SHO-533 — one classifier for bill and reaper', () => {
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-meter-shared-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const guest = (extra: Record<string, unknown>) => (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          lastRequestAt: 1,
+          activeStreams: 0,
+          busy: false,
+          activeTurns: 0,
+          liveStreams: 0,
+          lastAppRequestAt: null,
+          lastAgentRequestAt: null,
+          ...extra,
+        }),
+        { status: 200 },
+      ),
+    )) as any
+
+  test('an orphan activeStreams with liveStreams: 0 meters idle', () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    const a = pool.seed('orphan', {
+      now: now - 60_000,
+      activeStreams: 3,
+      liveStreams: 0,
+      busy: false,
+      perClassActivity: true,
+    })
+    expect(pool.klass('orphan', now)).toBe('idle')
+
+    // The same interval the reaper counts as idle is the interval the bill does.
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now - 5_000 }
+    pool.advanceMeters(now)
+    expect(a.meter.idleMs).toBe(5_000)
+    expect(a.lastRealActivityAt).toBe(now - 60_000)
+  })
+
+  test('a busy heartbeat poll bills idle and leaves the reaper clock alone', async () => {
+    const pool = makePool(dir)
+    ;(pool as any).cfg.activityPoll = true
+    const now = Date.now()
+    const a = pool.seed('heartbeat', { now: now - 60_000, perClassActivity: true })
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now - 5_000 }
+    const before = a.lastRealActivityAt!
+
+    globalThis.fetch = guest({ busy: true, activeTurns: 1 })
+    await pool.pollActivity()
+    pool.advanceMeters(Date.now())
+
+    expect(pool.klass('heartbeat', Date.now())).toBe('idle')
+    expect(a.meter.idleMs).toBeGreaterThan(0)
+    expect(a.meter.agentMs).toBe(0)
+    // Not "active" for the reaper either: the window keeps running.
+    expect(a.lastRealActivityAt).toBe(before)
+  })
+
+  test('a live stream is agent on both sides', async () => {
+    const pool = makePool(dir)
+    ;(pool as any).cfg.activityPoll = true
+    const now = Date.now()
+    const a = pool.seed('streaming', { now: now - 60_000, perClassActivity: true })
+    const before = a.lastRealActivityAt!
+
+    globalThis.fetch = guest({ busy: true, activeTurns: 1, activeStreams: 1, liveStreams: 1 })
+    await pool.pollActivity()
+
+    expect(pool.klass('streaming', Date.now())).toBe('agent')
+    expect(a.lastRealActivityAt!).toBeGreaterThan(before)
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now }
+    pool.advanceMeters(now + 2_000)
+    expect(a.meter.agentMs).toBe(2_000)
+    expect(a.meter.idleMs).toBe(0)
+  })
+})
+
+/**
+ * SHO-532. The meter used to live ONLY in memory, and `adopt()` restored a VM
+ * with the registry's original `assignedAt` and no meter — so the first tick
+ * after every metal-agent restart charged the VM's whole life to its current
+ * class. Prod rows reached 4.4M agent-seconds in one hour.
+ */
+describe('VM meter across a metal-agent restart', () => {
+  const DAY = 86_400_000
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-meter-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('an assigned VM with no meter yet counts from its first tick, not from assignedAt', () => {
+    const pool = makePool(dir)
+    const t0 = 9_000_000
+    // The state `adopt()` puts a VM in before the fix: a live assignment whose
+    // assignedAt is a month old and whose meter has not been created.
+    pool.seed('adopted', { now: t0, assignedAt: t0 - 30 * DAY, activeStreams: 1, meter: undefined })
+    pool.advanceMeters(t0)
+    pool.advanceMeters(t0 + 30_000)
+
+    const m = pool.meter('adopted')
+    expect(m.agentMs + m.appMs + m.idleMs).toBe(30_000)
+  })
+
+  test('a re-adopted live VM bills only the time since the restart, in each class', async () => {
+    const cfg = {
+      ...config,
+      work: dir,
+      snapDir: join(dir, 'snap'),
+      runDir: join(dir, 'run'),
+      snapStore: 'none' as const,
+      poolSize: 0,
+    }
+    mkdirSync(cfg.snapDir, { recursive: true })
+    mkdirSync(cfg.runDir, { recursive: true })
+
+    // A "guest" that answers /health, and a live pid = a VM that survived the
+    // agent's restart (systemd KillMode=process).
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    const child = Bun.spawn(['sleep', '30'])
+    try {
+      const sock = join(cfg.runDir, 'proj.sock')
+      writeFileSync(sock, '')
+      const assignedAt = Date.now() - 30 * DAY
+      new LiveRegistry(cfg.runDir).put({
+        projectId: 'proj',
+        vmId: 'fcvm-proj',
+        pid: child.pid,
+        guestIp: '127.0.0.1',
+        agentUrl: `http://localhost:${guest.port}`,
+        socketPath: sock,
+        serialLog: join(cfg.runDir, 'proj.serial'),
+        net: { tap: 'fctap0', guestIp: '127.0.0.1' } as any,
+        rootfs: join(cfg.runDir, 'proj.rootfs'),
+        vcpus: 4,
+        memoryMB: 8192,
+        assignedAt,
+        lastTouchedAt: assignedAt,
+        v: 1,
+      })
+      const fakeMgr = { adoptVM: () => {}, reapHostOrphans: () => 0, procCount: () => 0 }
+      const pool = new TestPool(fakeMgr as any, cfg as any, { kind: 'none' } as unknown as SnapshotStore)
+
+      const res = await pool.adopt()
+      expect(res.adopted).toEqual(['proj'])
+      const vm = pool.getAssigned('proj')!
+      // Fresh assignment record: the counters start now, not a month ago.
+      expect(vm.meter).toMatchObject({ agentMs: 0, appMs: 0, idleMs: 0 })
+
+      const t0 = vm.meter!.advancedAt
+      pool.advanceMeters(t0 + 30_000) // idle
+      vm.activeStreams = 2 // an agent turn begins: a different class
+      pool.advanceMeters(t0 + 60_000)
+
+      const m = pool.meter('proj')!
+      expect(m.idleMs).toBe(30_000)
+      expect(m.agentMs).toBe(30_000)
+      // On main the first tick charges the 30 days since assignedAt — to whichever
+      // class the VM happened to be in.
+      expect(m.agentMs + m.appMs + m.idleMs).toBe(60_000)
+    } finally {
+      child.kill('SIGKILL')
+      await child.exited.catch(() => {})
+      guest.stop(true)
+    }
   })
 })

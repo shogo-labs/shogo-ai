@@ -6,7 +6,7 @@
  * Run: bun test packages/agent/src/model-catalog/__tests__/gemini-4.test.ts
  */
 import { describe, it, expect } from 'bun:test'
-import { getModelEntry, getMaxOutputTokens } from '../helpers'
+import { getModelEntry, getMaxOutputTokens, modelSupportsVideoInput } from '../helpers'
 import { MODEL_ALIASES } from '../aliases'
 import { getModelDollarCosts, MODEL_PRICE_STEPS } from '../helpers'
 import { calculateDollarCost } from '../helpers'
@@ -32,6 +32,37 @@ describe('Gemini 4 catalog entries', () => {
 
   it('Argon maxOutputTokens is 65536 (not the old 1M)', () => {
     expect(getMaxOutputTokens('gemini-4-argon')).toBe(65_536)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Video input — models the SHO-495 probe cleared against Google's
+// OpenAI-compatible endpoint (2026-11-21): pi-ai's image_url + data:video/mp4
+// block is decoded as video and the motion is described.
+// ---------------------------------------------------------------------------
+
+describe('Gemini 4 video input', () => {
+  const videoNative = [
+    'gemini-4-carbon',
+    'gemini-4-argon',
+    'gemini-4-neon',
+    'gemini-4-hydrogen',
+    'gemini-3.8-flash',
+  ] as const
+
+  it.each(videoNative)('%s is video-native', (id) => {
+    expect(getModelEntry(id)!.capabilities?.supportsVideoInput).toBe(true)
+    expect(modelSupportsVideoInput(id)).toBe(true)
+  })
+
+  it('bare aliases resolve to a video-native model', () => {
+    expect(modelSupportsVideoInput('carbon')).toBe(true)
+    expect(modelSupportsVideoInput('argon')).toBe(true)
+  })
+
+  it('a Google model the probe did not clear stays text-only', () => {
+    expect(modelSupportsVideoInput('gemini-3.5-flash-lite')).toBe(false)
+    expect(modelSupportsVideoInput('gemini-3.1-pro-preview')).toBe(false)
   })
 })
 

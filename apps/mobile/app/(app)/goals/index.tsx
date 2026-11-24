@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { Redirect, useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { CheckCircle2, ChevronRight, CircleDot, PauseCircle, Target } from 'lucide-react-native'
@@ -12,6 +12,7 @@ import { useDomainHttp } from '../../../contexts/domain'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { api, type PersonalGoal, type PersonalWorkspaceActivity } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 function GoalStatusIcon({ status }: { status: PersonalGoal['status'] }) {
   if (status === 'done') return <CheckCircle2 size={18} className="text-emerald-500" />
@@ -113,7 +114,7 @@ const GoalsPage = observer(function GoalsPage() {
           style={{ maxWidth: contentWidth, paddingHorizontal: isWide ? 32 : 16 }}
         >
           {loading ? (
-            <View className="items-center py-16"><ActivityIndicator /></View>
+            <View className="items-center py-16"><Spinner /></View>
           ) : error ? (
             <View className="mt-2 rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-4">
               <Text className="text-center text-sm leading-5 text-destructive">{error}</Text>

@@ -22,7 +22,10 @@
 # `packages/sdk/scripts/smoke-voice-proxy.mjs` asserts the hosted voice
 # endpoints (signed-url, tts, music) forward in runtime-token proxy mode
 # instead of answering 501. It gates the publish, then runs again against
-# the registry copy once npm serves it.
+# the registry copy once npm serves it. Between the two it polls the registry
+# for the exact version (`scripts/materialize-runtime-template.ts
+# --wait-for`) — `npm publish` returning does not mean npm serves the version,
+# and that gap is what made v2.6.0/v2.6.1's runs red on ETARGET (SHO-522).
 #
 # Why lockstep on the SDK tag?
 #   The packages were just split out and the surfaces are still
@@ -86,7 +89,9 @@ jobs:
   publish:
     name: Publish all @shogo-ai/* packages
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30, not 20: the post-publish wait for the registry to serve every
+    # version (SHO-522) can take up to 10 min before the smoke install runs.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -154,50 +159,26 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Apply three mutations to every package's package.json:
+          # One implementation, shared with the packed-tarball gate below:
+          # `scripts/verify-packed-packages.ts --rewrite-for-publish` applies
+          # three mutations to every lockstep package's package.json:
           #   1. Set version to the tag version (lockstep release).
-          #   2. Workspace deps within `@shogo-ai/*` -> tag version.
+          #   2. Deps on a published `@shogo-ai/*` package -> tag version,
+          #      whatever their spec was.
           #      Other `workspace:*` deps -> stripped (not published).
           #   3. Remove `"development"` keys from `exports` (dev-only
           #      conditions that would ENOENT in a published consumer
           #      since the tarball ships only `dist/`).
+          #
+          # Do NOT re-inline this as a `node -e` here (SHO-524): when this step
+          # and the gate's rewrite were two copies, the gate repacked at
+          # `0.0.0-gate` while leaving this step's tag-version deps in place, so
+          # `npm install` went to the registry for unpublished siblings and
+          # every tag release died at the gate.
+          bun scripts/verify-packed-packages.ts --rewrite-for-publish "$VERSION"
           for pkg in $PACKAGES; do
-            dir="packages/$pkg"
-            echo "::group::Rewriting $dir/package.json"
-            (cd "$dir" && node -e '
-              const fs = require("fs");
-              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-              pkg.version = process.env.VERSION;
-
-              for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
-                if (!pkg[key]) continue;
-                for (const [name, spec] of Object.entries(pkg[key])) {
-                  if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
-                  if (name.startsWith("@shogo-ai/")) {
-                    pkg[key][name] = process.env.VERSION;
-                    console.log(`Rewrote ${key}.${name}: ${spec} -> ${process.env.VERSION}`);
-                  } else {
-                    delete pkg[key][name];
-                    console.log(`Stripped ${key}.${name} (${spec})`);
-                  }
-                }
-              }
-
-              let strippedDev = 0;
-              const stripDev = (obj) => {
-                if (obj === null || typeof obj !== "object") return;
-                if (Array.isArray(obj)) { for (const el of obj) stripDev(el); return; }
-                if ("development" in obj) { delete obj.development; strippedDev++; }
-                for (const v of Object.values(obj)) stripDev(v);
-              };
-              if (pkg.exports) stripDev(pkg.exports);
-              if (strippedDev > 0) console.log(`Stripped ${strippedDev} development export condition(s)`);
-
-              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-            ')
-            echo "--- Final $dir/package.json ---"
-            cat "$dir/package.json"
-            echo "::endgroup::"
+            echo "--- Final packages/$pkg/package.json ---"
+            cat "packages/$pkg/package.json"
           done
 
       - name: Verify tarball license isolation (every package)
@@ -231,6 +212,14 @@ jobs:
             echo "@shogo-ai/$pkg tarball: clean"
             echo "::endgroup::"
           done
+
+      - name: Packed tarball gate (gates publish)
+        # Packs every published package the way this workflow does, installs
+        # the tarballs into a scratch consumer, and imports every exports
+        # subpath / runs every bin. The build above already produced dist/, so
+        # skip the rebuild. A failure here aborts the release before anything
+        # reaches npm.
+        run: bun run scripts/verify-packed-packages.ts --skip-build
 
       - name: Smoke check packed tarballs (gates publish)
         env:
@@ -295,6 +284,25 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Wait until npm serves every published version
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # SHO-522: `npm publish` returning does not mean the registry serves
+          # the version. On v2.6.0 and v2.6.1 the smoke install below started
+          # seconds after a successful publish, hit ETARGET on every one of its
+          # 10 tries (the packument's CDN copy lags even for
+          # `--prefer-online`), and turned a good release red. Poll the
+          # immutable per-version document the install actually needs, once per
+          # package, then install a single time.
+          set -euo pipefail
+          WAIT_ARGS=()
+          for pkg in $PACKAGES; do
+            WAIT_ARGS+=(--wait-for "@shogo-ai/$pkg@$VERSION")
+          done
+          bun run scripts/materialize-runtime-template.ts "${WAIT_ARGS[@]}" --timeout-ms 600000
+
       - name: Smoke check published packages
         if: github.event.inputs.dry_run != 'true'
         env:
@@ -306,16 +314,21 @@ jobs:
           DIR=/tmp/sdk-smoke/registry
           rm -rf "$DIR" && mkdir -p "$DIR" && cd "$DIR"
           echo '{"name":"sdk-smoke-registry","private":true}' > package.json
-          for attempt in $(seq 1 10); do
+          for attempt in $(seq 1 5); do
+            # `--cache` in the scratch dir: a stale packument cached by an
+            # earlier step is what kept answering ETARGET after the version
+            # was live (SHO-522). The wait step above is the readiness gate;
+            # these retries only absorb registry read-after-write skew.
             if npm install --no-audit --no-fund --legacy-peer-deps --prefer-online \
+                --cache "$DIR/.npm-cache" \
                 "@shogo-ai/sdk@$VERSION" "@shogo-ai/voice@$VERSION"; then
               break
             fi
-            if [ "$attempt" = 10 ]; then
+            if [ "$attempt" = 5 ]; then
               echo "::error::@shogo-ai/sdk@$VERSION / @shogo-ai/voice@$VERSION not installable from npm after publish"
               exit 1
             fi
-            echo "npm does not serve $VERSION yet (attempt $attempt) — retrying in 30s"
+            echo "npm could not install $VERSION yet (attempt $attempt) — retrying in 30s"
             sleep 30
           done
           node "$GITHUB_WORKSPACE/packages/sdk/scripts/smoke-voice-proxy.mjs" . "$VERSION"

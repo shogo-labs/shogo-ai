@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { Platform, Pressable, Text, View } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '@/lib/storage'
 
 import { useNotificationPermission } from '../../lib/notifications/useNotificationPermission'
 
@@ -27,7 +28,7 @@ export function NotificationPermissionBanner() {
 
   const dismiss = () => {
     setDismissed(true)
-    void AsyncStorage.setItem(DISMISSED_KEY, 'true').catch(() => {})
+    void setStorageItem(DISMISSED_KEY, 'true').catch(() => {})
   }
 
   return (

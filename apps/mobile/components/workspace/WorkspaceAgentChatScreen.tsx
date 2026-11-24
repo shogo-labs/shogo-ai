@@ -7,7 +7,7 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
+import { AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -75,6 +75,11 @@ import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
+import {
+  SidePaneResizeHandle,
+  SIDE_PANE_CHAT_MIN_WIDTH,
+  useSidePaneWidth,
+} from "../layout/SidePaneResizer"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -89,9 +94,16 @@ import {
   publishWorkspaceSessionScopeChanged,
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
+import { Spinner } from '@/components/ui/spinner'
 
 /** Wide enough to show a project beside the chat (same as team chat's side pane). */
 const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
+/** Share of the row a right-hand pane takes until the user drags it. */
+const SIDE_PANE_DEFAULT_RATIO = 0.45
+/** Narrowest a plan or project pane may be dragged (team chat's project pane floor). */
+const SIDE_PANE_MIN_WIDTH = 420
+/** The file pane opens on a wider canvas, so it tolerates a narrower column. */
+const FILE_SIDE_PANE_MIN_WIDTH = 320
 
 /**
  * How far below the top inset `MobileWorkspaceShell`'s floating chrome reaches:
@@ -216,6 +228,10 @@ export const WorkspaceAgentChatScreen = observer(
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
     const { width, height } = useWindowDimensions()
+    // Measured width of the row the right-hand panes open into — the window
+    // without the app's sidebar — so dragging a pane can never starve the chat.
+    const [rowWidth, setRowWidth] = useState(0)
+    const [taskThreadPaneWidth, setTaskThreadPaneWidth] = useState<number | null>(null)
     const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
     const [filePane, setFilePane] = useState<FilePaneState | null>(null)
@@ -544,6 +560,33 @@ export const WorkspaceAgentChatScreen = observer(
     }, [sessionId])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    // Plan, file and project panes each remember their own width (SHO-569).
+    // They share the one right-hand slot, so each may be as wide as the row
+    // minus the chat column and minus the task-thread pane when that is open.
+    const measuredWidth = rowWidth || width
+    const paneDefaultWidth = Math.max(
+      SIDE_PANE_MIN_WIDTH,
+      Math.round(measuredWidth * SIDE_PANE_DEFAULT_RATIO),
+    )
+    const paneMaxWidth = measuredWidth - SIDE_PANE_CHAT_MIN_WIDTH - (taskThreadPaneWidth ?? 0)
+    const planPaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.planPaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
+    const filePaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.filePaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: FILE_SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
+    const projectPaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.projectPaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
     // The dock re-renders a panel's body only when its `revision` changes (it
     // ignores `render`, see `panelsObservablyEqual`), so the Working set's
     // revision has to follow what its chips show — above all which project the
@@ -816,7 +859,7 @@ export const WorkspaceAgentChatScreen = observer(
             </>
           ) : loadingView === "spinner" ? (
             <>
-              <ActivityIndicator />
+              <Spinner />
               <Text className="mt-3 text-sm text-muted-foreground">
                 Preparing Workspace Agent Chat…
               </Text>
@@ -1041,6 +1084,18 @@ export const WorkspaceAgentChatScreen = observer(
       )
     ) : null
 
+    // Width the task-thread pane has to leave free: whichever right-hand pane
+    // is open beside the chat. They share one slot, so at most one is open.
+    const openRightPaneWidth = !hasSidePane
+      ? 0
+      : plansPanel
+        ? planPaneWidth.width
+        : filePaneContent
+          ? filePaneWidth.width
+          : activePane
+            ? projectPaneWidth.width
+            : 0
+
     // The Working set is a chat-dock panel now, on desktop and phone alike
     // (SHO-484) — one "Working set" card above the composer instead of a row
     // between the header and the transcript. Its chips keep SHO-427's split:
@@ -1066,7 +1121,10 @@ export const WorkspaceAgentChatScreen = observer(
     return (
       <PlanStreamProvider>
       <ShareFileProvider open={openShareFile}>
-      <View className="flex-1 flex-row bg-background">
+      <View
+        className="flex-1 flex-row bg-background"
+        onLayout={(e) => setRowWidth(Math.round(e.nativeEvent.layout.width))}
+      >
       <View className="min-w-0 flex-1 bg-background">
         {header ? (
           // Opened from a team chat message: the way back up (`#shogo-dev ›
@@ -1357,20 +1415,53 @@ export const WorkspaceAgentChatScreen = observer(
         ) : null}
       </View>
       {hasSidePane && plansPanel ? (
-        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-plan-pane">
+        <View
+          className="relative shrink-0 border-l border-border"
+          style={{ width: planPaneWidth.width }}
+          testID="workspace-plan-pane"
+        >
+          <SidePaneResizeHandle
+            width={planPaneWidth.width}
+            minWidth={SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={planPaneWidth.setWidth}
+            onResizeEnd={planPaneWidth.commit}
+            onReset={planPaneWidth.reset}
+          />
           {plansPanel}
         </View>
       ) : null}
       {hasSidePane && filePane ? (
         <View
-          className="w-[45%] min-w-[420px] border-l border-border"
+          className="relative shrink-0 border-l border-border"
+          style={{ width: filePaneWidth.width }}
           testID={filePane.kind === "share" ? "workspace-share-file-pane" : "workspace-file-pane"}
         >
+          <SidePaneResizeHandle
+            width={filePaneWidth.width}
+            minWidth={FILE_SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={filePaneWidth.setWidth}
+            onResizeEnd={filePaneWidth.commit}
+            onReset={filePaneWidth.reset}
+          />
           {filePaneContent}
         </View>
       ) : null}
       {activePane ? (
-        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-project-pane">
+        <View
+          className="relative shrink-0 border-l border-border"
+          style={{ width: projectPaneWidth.width }}
+          testID="workspace-project-pane"
+        >
+          <SidePaneResizeHandle
+            width={projectPaneWidth.width}
+            minWidth={SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={projectPaneWidth.setWidth}
+            onResizeEnd={projectPaneWidth.commit}
+            onReset={projectPaneWidth.reset}
+          />
           <ProjectSidePane
             key={`${activePane.projectId}:${activePane.chatSessionId ?? ""}:${activePane.nonce}`}
             projectId={activePane.projectId}
@@ -1384,7 +1475,11 @@ export const WorkspaceAgentChatScreen = observer(
       ) : null}
       {/* The thread a pressed background task runs in — beside the chat on
           desktop, in a sheet on phones. Never replaces this chat. */}
-      <TaskThreadPaneHost />
+      <TaskThreadPaneHost
+        containerWidth={measuredWidth}
+        reservedWidth={openRightPaneWidth}
+        onWidthChange={setTaskThreadPaneWidth}
+      />
       </View>
       </ShareFileProvider>
       </PlanStreamProvider>

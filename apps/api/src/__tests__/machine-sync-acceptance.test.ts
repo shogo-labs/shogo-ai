@@ -445,3 +445,217 @@ describeIfPg('AC5 — a completed snapshot keeps what the cloud wrote (SHO-285)'
     expect(await db.conversation.findUnique({ where: { id: conversation.id } })).not.toBeNull()
   }, 180_000)
 })
+
+/**
+ * SHO-562: a NUL byte is legal in the desktop's SQLite and illegal in Postgres
+ * (`22021` in `text`, `22P05` in a `jsonb` escape), and one such row failed the
+ * whole page — so a machine's cursor never moved and it re-sent the same page
+ * forever (prod, machine `cmvrve2as000u01fbcvol5iw6`). The page below is that
+ * page: a text column, a nested Json value and key, and a String[] element each
+ * carry a NUL. On `main` the route answers 500 and the cursor stays put; here it
+ * applies, the rows are stored clean, and the sync moves on.
+ */
+describeIfPg('AC6 — a NUL byte in a page does not stop the sync (SHO-562)', () => {
+  test('the page applies, the NULs are gone and the cursor advances', async () => {
+    const tag = crypto.randomUUID().slice(0, 8)
+    const user = await db.user.create({ data: { name: tag, email: `nul-${tag}@example.com` } })
+    const ws = await db.workspace.create({
+      data: { name: `${tag} team`, slug: `nul-${tag}`, kind: 'team', hostInstanceId: INSTANCE },
+    })
+
+    const epoch = `e-nul-${tag}`
+    const startedAt = new Date()
+    await db.machineSyncState.upsert({
+      where: { instanceId: INSTANCE },
+      create: { instanceId: INSTANCE, epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+      update: { epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+    })
+
+    const NUL = '\u0000'
+    const now = new Date().toISOString()
+    const sessionId = crypto.randomUUID()
+    const messageId = crypto.randomUUID()
+    const goalId = crypto.randomUUID()
+    const projectId = crypto.randomUUID()
+
+    const seen: Seen = { sizes: [], batches: [], statuses: [] }
+    const res = await cloud(seen)(`http://cloud.test/api/machines/${INSTANCE}/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        epoch,
+        mode: 'changes',
+        cursor: 1387900,
+        models: [
+          {
+            model: 'ChatSession',
+            rows: [
+              {
+                id: sessionId,
+                inferredName: `${tag} chat`,
+                contextType: 'workspace',
+                workspaceId: ws.id,
+                createdByUserId: user.id,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          // The prod shape: text in `chat_messages.content`.
+          {
+            model: 'ChatMessage',
+            rows: [{ id: messageId, sessionId, role: 'user', content: `before${NUL}after`, createdAt: now, updatedAt: now }],
+          },
+          // A Json column, with the NUL in a value and in a key (`jsonb` 22P05).
+          {
+            model: 'Goal',
+            rows: [
+              {
+                id: goalId,
+                workspaceId: ws.id,
+                title: `goal${NUL}title`,
+                plan: [{ step: `a${NUL}b`, [`k${NUL}ey`]: 'v' }],
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          // A String[] column, and the same page's text column.
+          {
+            model: 'Project',
+            rows: [
+              { id: projectId, name: `project${NUL}name`, workspaceId: ws.id, schemas: [`s${NUL}chema`], createdAt: now, updatedAt: now },
+            ],
+          },
+        ],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.error).toBeUndefined()
+    expect(body.ok).toBe(true)
+
+    expect((await db.chatMessage.findUnique({ where: { id: messageId } }))?.content).toBe('beforeafter')
+    const goal = await db.goal.findUnique({ where: { id: goalId } })
+    expect(goal?.title).toBe('goaltitle')
+    expect(goal?.plan).toEqual([{ step: 'ab', key: 'v' }])
+    const project = await db.project.findUnique({ where: { id: projectId } })
+    expect(project?.name).toBe('projectname')
+    expect(project?.schemas).toEqual(['schema'])
+
+    // The whole point of the fix: the machine's cursor moves, so the same page
+    // is never sent again.
+    const state = await db.machineSyncState.findFirst({ where: { instanceId: INSTANCE } })
+    expect(Number(state?.cursor)).toBe(1387900)
+    expect(state!.lastIngestAt!.getTime()).toBeGreaterThanOrEqual(startedAt.getTime())
+  }, 60_000)
+})
+
+/**
+ * SHO-562 AC3, end to end.
+ *
+ * Stripping NULs is the fix for this incident, but the *safety net* is what has
+ * to hold for the next value SQLite allows and Postgres refuses — and that net
+ * only exists if `dataException()` reads the shape the pg adapter actually
+ * throws. A fake transaction cannot prove that. Here Postgres itself refuses one
+ * row: a `varchar(5)` is put on `ChatMessage.imageData` in this throwaway
+ * database, so a longer value is `22001 value too long for type character
+ * varying(5)` — a real SQLSTATE-class-22 error through the real route, the same
+ * class as the incident's `22021`. The page must still answer 200, store the
+ * clean row beside it and move the cursor, and the warn must name the model, the
+ * id and the SQLSTATE without any of the row's contents.
+ */
+describeIfPg('AC7 — a row Postgres refuses as bad data is skipped, not fatal (SHO-562 AC3)', () => {
+  test('the rest of the page applies, the row is logged and the cursor advances', async () => {
+    const tag = crypto.randomUUID().slice(0, 8)
+    const user = await db.user.create({ data: { name: tag, email: `skip-${tag}@example.com` } })
+    const ws = await db.workspace.create({
+      data: { name: `${tag} team`, slug: `skip-${tag}`, kind: 'team', hostInstanceId: INSTANCE },
+    })
+
+    const epoch = `e-skip-${tag}`
+    const startedAt = new Date()
+    await db.machineSyncState.upsert({
+      where: { instanceId: INSTANCE },
+      create: { instanceId: INSTANCE, epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+      update: { epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+    })
+
+    const now = new Date().toISOString()
+    const sessionId = crypto.randomUUID()
+    const refusedId = crypto.randomUUID()
+    const cleanId = crypto.randomUUID()
+    const SECRET = 'data:image/png;base64,QQQQQQQQQQQQQQQQQQQQ'
+
+    const warns: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map((arg) => String(arg)).join(' '))
+    }
+
+    let res: Response
+    try {
+      await db.$executeRawUnsafe('ALTER TABLE "chat_messages" ALTER COLUMN "imageData" TYPE varchar(5)')
+      const seen: Seen = { sizes: [], batches: [], statuses: [] }
+      res = await cloud(seen)(`http://cloud.test/api/machines/${INSTANCE}/sync`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          epoch,
+          mode: 'changes',
+          cursor: 1387900,
+          models: [
+            {
+              model: 'ChatSession',
+              rows: [
+                {
+                  id: sessionId,
+                  inferredName: `${tag} chat`,
+                  contextType: 'workspace',
+                  workspaceId: ws.id,
+                  createdByUserId: user.id,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            },
+            {
+              model: 'ChatMessage',
+              rows: [
+                // Postgres refuses this one (22001); it must not take the page with it.
+                { id: refusedId, sessionId, role: 'user', content: 'bad', imageData: SECRET, createdAt: now, updatedAt: now },
+                { id: cleanId, sessionId, role: 'assistant', content: 'clean', createdAt: now, updatedAt: now },
+              ],
+            },
+          ],
+        }),
+      })
+    } finally {
+      await db.$executeRawUnsafe('ALTER TABLE "chat_messages" ALTER COLUMN "imageData" TYPE text')
+      console.warn = realWarn
+    }
+
+    expect(res!.status).toBe(200)
+    const body = (await res!.json()) as any
+    expect(body.error).toBeUndefined()
+    expect(body.ok).toBe(true)
+    expect(body.applied).toBeGreaterThanOrEqual(2)
+    expect(body.skipped).toBe(1)
+
+    expect(await db.chatMessage.findUnique({ where: { id: refusedId } })).toBeNull()
+    expect((await db.chatMessage.findUnique({ where: { id: cleanId } }))?.content).toBe('clean')
+
+    const state = await db.machineSyncState.findFirst({ where: { instanceId: INSTANCE } })
+    expect(Number(state?.cursor)).toBe(1387900)
+    expect(state!.lastIngestAt!.getTime()).toBeGreaterThanOrEqual(startedAt.getTime())
+
+    const skipLine = warns.find((line) => line.includes('SQLSTATE'))
+    expect(skipLine).toBeDefined()
+    expect(skipLine).toContain('ChatMessage')
+    expect(skipLine).toContain(refusedId)
+    expect(skipLine).toContain('22001')
+    // The row can hold a person's text, so the log names it and never quotes it.
+    expect(warns.join('\n')).not.toContain(SECRET)
+  }, 60_000)
+})

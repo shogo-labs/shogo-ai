@@ -26,8 +26,29 @@ delete process.env.SHOGO_LOCAL_MODE
 let tunnelUp = true
 const tunneled: Array<{ url: string; headers: Headers; body: any }> = []
 
+// The only tunnel dependency the route has: `wakeHostTunnel` answers with the
+// wake state, so `tunnelUp` decides whether the desktop is reachable and
+// `wakeOverride` pins the "up but still opening" case.
+let wakeOverride: 'connecting' | null = null
 mock.module('../routes/instances', () => ({
-  ensureTunnelConnected: async () => tunnelUp,
+  wakeHostTunnel: async (instanceId: string) =>
+    wakeOverride === 'connecting'
+      ? {
+          state: 'connecting',
+          instanceId,
+          name: 'Samsara',
+          lastSeenAt: new Date(Date.now() - 40_000),
+          retryAfterSeconds: 15,
+        }
+      : tunnelUp
+        ? { state: 'connected', instanceId, name: 'Samsara', lastSeenAt: new Date(), retryAfterSeconds: 0 }
+        : {
+            state: 'offline',
+            instanceId,
+            name: 'Samsara',
+            lastSeenAt: new Date('2026-11-03T20:00:00.000Z'),
+            retryAfterSeconds: 0,
+          },
 }))
 
 const { seedRbacWorld, db, _setRbacModeForTests } = await import('./helpers/rbac-world')
@@ -132,6 +153,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   tunnelUp = true
+  wakeOverride = null
   tunneled.length = 0
   globalThis.fetch = (async (url: string, init: any) => {
     tunneled.push({ url: String(url), headers: new Headers(init?.headers), body: init?.body ? JSON.parse(init.body) : null })
@@ -238,6 +260,22 @@ describe('POST /devices/:instanceId/remote-tool', () => {
     expect(res.status).toBe(503)
     expect(res.body.error.code).toBe('device_offline')
     expect(res.body.error.lastSeenAt).toBeTruthy()
+    expect(tunneled).toEqual([])
+  })
+
+  test('answers a retryable device_connecting while the desktop opens its connection', async () => {
+    wakeOverride = 'connecting'
+    const res = await remoteTool(
+      personal,
+      ownerDevice,
+      { tool: 'read_file', args: { path: 'notes.md' } },
+      ticketFor(w.users.owner, personal),
+    )
+    expect(res.status).toBe(503)
+    expect(res.body.error.code).toBe('device_connecting')
+    expect(res.body.error.retryable).toBe(true)
+    expect(res.body.error.retryAfterSeconds).toBe(15)
+    expect(res.body.error.message).toContain('try again in ~15s')
     expect(tunneled).toEqual([])
   })
 

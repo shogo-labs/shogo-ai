@@ -157,6 +157,12 @@ export interface RuntimeInternalRoutesOptions {
   resolveSharedFileTarget?: (
     scope: { projectId?: string; workspaceId: string; path: string },
   ) => Promise<{ target: string; normalizedPath: string } | null>
+  /**
+   * Test seam (SHO-493): the instance-tunnel transport a cross-workspace call
+   * to a desktop-hosted workspace is forwarded over. Production leaves it out
+   * and the real `routes/instances` tunnel is used.
+   */
+  _hostTunnel?: import('../lib/host-tunnel').TunnelTransport
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -327,6 +333,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadAgentCall,
     loadGitHub,
     resolveSharedFileTarget,
+    _hostTunnel,
   } = opts
   const {
     validateAuth,
@@ -743,9 +750,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * answered or forwarded by whichever instance owns that workspace's data: a
    * cloud workspace from a signed-in desktop goes out through `relayToCloud`
    * with that workspace's device key; a workspace whose compute is a paired
-   * desktop cannot be served from here, so it says `desktop_offline` instead of
-   * returning an empty 200. Every other request — and every call in the
-   * runtime's own workspace — falls straight through to the route, unchanged.
+   * desktop is forwarded over that host's tunnel, to the same path on the
+   * desktop's local API, which holds its boards, cards and chat in SQLite
+   * (SHO-493). Every other request — and every call in the runtime's own
+   * workspace — falls straight through to the route, unchanged.
    *
    * The check runs here, before anything leaves the machine, because this is
    * the only side holding the person's requester ticket and approval record.
@@ -790,18 +798,47 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
     }
     if (home.kind === 'desktop') {
-      const name = await (await import('../lib/prisma')).prisma.workspace
-        .findUnique({ where: { id: target }, select: { name: true } })
-        .then((w) => w?.name ?? null)
-        .catch(() => null)
-      return c.json(
-        {
-          error: {
-            code: 'desktop_offline',
-            message: `${name ?? 'That workspace'} runs on a paired desktop, which is not connected right now.`,
+      const { CROSS_WORKSPACE_TOOL_HEADER, forwardToHost } = await import('../lib/cross-workspace')
+      // A desktop's own API cannot reach another desktop, and its SQLite does
+      // not hold that workspace's rows: only the cloud can forward. Say so
+      // instead of answering from the wrong database (SHO-493).
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        const name = await prisma.workspace
+          .findUnique({ where: { id: target }, select: { name: true } })
+          .then((w) => w?.name ?? null)
+          .catch(() => null)
+        return c.json(
+          {
+            error: {
+              code: 'desktop_hosted',
+              message: `${name ?? 'That workspace'} runs on a paired desktop, and a call from this machine can only reach it through Shogo Cloud.`,
+            },
           },
+          503,
+        )
+      }
+      // A forwarded call acts for the person on the verified ticket; with no
+      // person there is nobody to attribute the desktop's write to.
+      if (!allowed.userId) {
+        return c.json(
+          {
+            error: {
+              code: 'requester_ticket_required',
+              message: "A cross-workspace call needs the person it is made for. Start the turn from that person's chat.",
+            },
+          },
+          403,
+        )
+      }
+      return forwardToHost(
+        c,
+        {
+          hostInstanceId: home.hostInstanceId,
+          requesterUserId: allowed.userId,
+          callerWorkspaceId: identity.workspaceId,
+          tool: c.req.header(CROSS_WORKSPACE_TOOL_HEADER) ?? null,
         },
-        503,
+        { _tunnel: _hostTunnel },
       )
     }
     return c.json(
@@ -931,9 +968,14 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
         // itself); with no claim it speaks as the workspace agent.
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
-        // A cross-workspace call is made for a person; attribute the post to them.
+        // A cross-workspace call is made for a person; attribute the post to them,
+        // and remember that the authorizer verified them (SHO-493).
         const requesterId = scopeRequesterUserId(c)
-        return { workspaceId, projectId, ...(requesterId ? { userId: requesterId } : {}) }
+        return {
+          workspaceId,
+          projectId,
+          ...(requesterId ? { userId: requesterId, crossWorkspaceRequesterId: requesterId } : {}),
+        }
       },
     }),
   )
@@ -3652,21 +3694,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         503,
       )
     } else {
-      const { ensureTunnelConnected } = await import('../routes/instances')
+      const { wakeHostTunnel } = await import('../routes/instances')
       const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+      const { wakeRefusal } = await import('../lib/host-wake')
       const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
-      if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-        return c.json(
-          {
-            error: {
-              code: 'device_offline',
-              message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
-              instanceId,
-              lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
-            },
-          },
-          503,
-        )
+      const wake = await wakeHostTunnel(instanceId, { staleProbeMs: WAKE_DEADLINE_MS })
+      if (wake.state !== 'connected') {
+        // `device_connecting` (retryable) when the machine's heartbeat is fresh but
+        // its tunnel missed the wake window; `device_offline` only when it is away.
+        return c.json({ error: wakeRefusal(wake, 'device', { subject: instance.name }) }, 503)
       }
 
       // The desktop's workspace agent proxy, reached through the same host tunnel

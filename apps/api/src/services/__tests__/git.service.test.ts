@@ -15,6 +15,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { stampMtime } from '../../__tests__/helpers/stamp-mtime'
 
 // Uses REAL git on the host. No child_process mocking, no fs mocking.
 // Each test runs in its own mkdtempSync workspace.
@@ -309,6 +310,10 @@ describe('initRepo — evicts a stale .git/index.lock', () => {
     await svc.initRepo(ws)
     const lockPath = join(ws, '.git', 'index.lock')
     writeFileSync(lockPath, '')
+    // Stamp the lock on the clock the eviction logic reads. Leaving the mtime
+    // to the OS stamps the real clock, which looks N days old under the
+    // future-clock nightly, so the sweeper would wrongly evict a "fresh" lock.
+    stampMtime(lockPath)
     // Fresh lock — should be preserved
     await svc.initRepo(ws)
     expect(existsSync(lockPath)).toBe(true)
@@ -1055,7 +1060,9 @@ describe('__evictStaleIndexLockForTests — non-ENOENT unlink error', () => {
     await svc.initRepo(ws)
     const lockPath = join(ws, '.git', 'index.lock')
     writeFileSync(lockPath, '')
-    // Don't backdate — age is ~0ms, under STALE_INDEX_LOCK_MS.
+    // Don't backdate — age is ~0ms, under STALE_INDEX_LOCK_MS. Stamp from
+    // `Date.now()` so "fresh" means fresh on the clock the eviction reads.
+    stampMtime(lockPath)
     svc.__evictStaleIndexLockForTests(ws)
     expect(existsSync(lockPath)).toBe(true)
     rmSync(lockPath, { force: true })

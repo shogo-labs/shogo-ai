@@ -76,6 +76,13 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   reasoningEffort?: string
   /**
+   * Whether the model accepts video input natively. Carried so a desktop
+   * mirroring this catalog (cloud-proxy mode) can tell its own runtime which
+   * ids are video-native — cloud rows are the ids the runtime receives, and it
+   * cannot classify a UUID on its own (SHO-495).
+   */
+  supportsVideoInput?: boolean
+  /**
    * Per-token USD rates for DB-defined models, per 1M tokens. Clients that
    * don't have the model in their own DB (a desktop mirroring this catalog)
    * need them to bill usage correctly. Absent for static-catalog models.
@@ -86,6 +93,13 @@ export interface VisibleCatalogModel {
     cacheWritePerMillion: number
     outputPerMillion: number
   }
+  /**
+   * Slugs this model used to be known by (a DB `ModelDefinition.aliases`
+   * entry). A picker that finds one of these saved as its selection re-points
+   * it at `id` instead of resetting it, which is how a selection saved before
+   * the slug→UUID migration survives (SHO-497).
+   */
+  aliases?: string[]
 }
 
 /** The full platform-visible model payload: the catalog allowlist resolved
@@ -228,10 +242,11 @@ export async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
   options: { includeLive?: boolean } = {},
 ): Promise<VisibleCatalogModel[]> {
-  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync, getDbModelPricingSync } =
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync, getDbModelPricingSync, getModelAliasesSync } =
     await import('./model-registry.service')
   const toVisible = (entry: any): VisibleCatalogModel => {
     const pricing = getDbModelPricingSync(entry.id)
+    const aliases = getModelAliasesSync(entry.id)
     return {
       id: entry.id,
       provider: entry.provider,
@@ -246,7 +261,9 @@ export async function resolveVisibleCatalogModels(
       ...(entry.description ? { description: entry.description } : {}),
       ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+      ...(entry.capabilities?.supportsVideoInput === true ? { supportsVideoInput: true } : {}),
       ...(pricing ? { pricing } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
     }
   }
   if (catalogIds === null) {

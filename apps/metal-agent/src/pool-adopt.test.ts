@@ -143,6 +143,69 @@ describe('MetalWarmPool.adopt', () => {
     expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
   })
 
+  test('the host-scan keep-set is every id the pool owns, not just the adopted ones (SHO-563)', async () => {
+    const cfg = makeCfg()
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+    const child = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => child.kill('SIGKILL'))
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'adopted-proj', child.pid, agentUrl))
+
+    let reapKeep: Set<string> | null = null
+    const fakeMgr = {
+      adoptVM: () => {},
+      reapHostOrphans: (keep: Set<string>) => {
+        reapKeep = keep
+        return 0
+      },
+      procCount: () => 0,
+    }
+
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    // A fill that started while adopt()'s health probes were still running, and a
+    // warm VM the pool already holds: neither is in the live registry, and the old
+    // keep-set (adopted ids only) left both to be SIGKILLed on staging — 8/8 cold
+    // boots died inside 12s of an activation restart (SHO-563).
+    ;(pool as any).inFlight.add('fcvm-booting')
+    ;(pool as any).available.push({ handle: { id: 'fcvm-warm' }, ready: true, createdAt: Date.now() })
+
+    await pool.adopt()
+
+    expect(reapKeep && [...reapKeep].sort()).toEqual(['fcvm-adopted-proj', 'fcvm-booting', 'fcvm-warm'])
+  })
+
+  test('re-adopts a reclaimed VM’s balloon target when idle reclaim is on (SHO-534)', async () => {
+    // The balloon target lives in the guest/vmstate, not in the agent's memory: a
+    // restart mid-idle must not forget that a VM is running with RAM taken out, or
+    // nothing would ever deflate it and the guest stays short until it OOMs.
+    const cfg = { ...makeCfg(), idleReclaim: true }
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+    const child = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => child.kill('SIGKILL'))
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'reclaimed-proj', child.pid, agentUrl))
+    reg.put(entry(cfg, 'plain-proj', child.pid, agentUrl))
+
+    const fakeMgr = {
+      adoptVM: () => {},
+      reapHostOrphans: () => 0,
+      procCount: () => 0,
+      balloonTargetMiB: async (h: any) => (h.id === 'fcvm-reclaimed-proj' ? 2048 : 0),
+    }
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    await pool.adopt()
+
+    expect(pool.getAssigned('reclaimed-proj')?.balloonedMiB).toBe(2048)
+    // A target of 0 is "nothing reclaimed", not "reclaimed 0 MiB".
+    expect(pool.getAssigned('plain-proj')?.balloonedMiB).toBeUndefined()
+  })
+
   test('carries publishedDataLoaded across a restart, and its absence too', async () => {
     const cfg = makeCfg()
     const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
@@ -238,7 +301,7 @@ describe('MetalWarmPool.adopt', () => {
     // restart, pool startup seeds the manager past the survivor + suspended taps,
     // so the next warm VM the manager would spawn can NEVER reuse either device.
     // This test fails under the old module-global behavior (next tap = fctap0).
-    test('a restarted agent seeds a real FC manager past survivor + suspended taps', () => {
+    test('a restarted agent seeds a real FC manager past survivor + suspended taps', async () => {
       const cfg = makeCfg()
 
       // Survivors persisted by the previous agent: a live (adopted) VM on fctap7
@@ -256,7 +319,7 @@ describe('MetalWarmPool.adopt', () => {
 
       const pool = new MetalWarmPool(mgr as any, cfg as any)
       // The startup seeding step (start() also runs adopt/reconcile around it).
-      ;(pool as any).seedVmIndexAllocator()
+      await (pool as any).seedVmIndexAllocator()
 
       // max(7, 9) + 1 → the next warm VM lands on fctap10, clear of BOTH.
       const next = mgr.peekNextTap()
@@ -271,7 +334,7 @@ describe('MetalWarmPool.adopt', () => {
     })
 
     // A live-only fleet (no suspended snapshots) still seeds past the survivors.
-    test('seeds past adopted-only survivors', () => {
+    test('seeds past adopted-only survivors', async () => {
       const cfg = makeCfg()
       const reg = new LiveRegistry(cfg.runDir)
       reg.put({ ...entry(cfg, 'a', 1, 'http://127.0.0.1:1'), net: { tap: 'fctap4', guestIp: '127.0.0.1' } as any })
@@ -279,13 +342,13 @@ describe('MetalWarmPool.adopt', () => {
 
       const mgr = new FirecrackerVMManager(cfg as any)
       const pool = new MetalWarmPool(mgr as any, cfg as any)
-      ;(pool as any).seedVmIndexAllocator()
+      await (pool as any).seedVmIndexAllocator()
 
       expect(mgr.peekNextTap().index).toBe(5) // max(4, 2) + 1
     })
 
     // An empty fleet (fresh box, first boot) must NOT force the index forward.
-    test('no-ops on an empty fleet and ignores unparseable tap names', () => {
+    test('no-ops on an empty fleet and ignores unparseable tap names', async () => {
       const cfg = makeCfg()
       const reg = new LiveRegistry(cfg.runDir)
       // A malformed / legacy tap name must be ignored, not crash the seed.
@@ -294,8 +357,8 @@ describe('MetalWarmPool.adopt', () => {
       const mgr = new FirecrackerVMManager(cfg as any)
       const pool = new MetalWarmPool(mgr as any, cfg as any)
       // No host taps either (dev/CI has none, but pin it so the test is hermetic).
-      ;(pool as any).hostTapIndices = () => new Set<number>()
-      ;(pool as any).seedVmIndexAllocator()
+      ;(pool as any).hostTapIndices = async () => new Set<number>()
+      await (pool as any).seedVmIndexAllocator()
 
       // Nothing parseable → counter stays at 0 (fresh allocation from fctap0).
       expect(mgr.peekNextTap().index).toBe(0)
@@ -313,15 +376,15 @@ describe('MetalWarmPool.adopt', () => {
     // The fix seeds/allocates past the tap devices that PHYSICALLY exist on the
     // host (`ip link`), which survive the registry wipe.
     // -------------------------------------------------------------------------
-    test('seeds past live host tap devices even when the registry was wiped', () => {
+    test('seeds past live host tap devices even when the registry was wiped', async () => {
       const cfg = makeCfg()
       // Registries are EMPTY — a runtime.ext4 rebuild cleared them.
       const mgr = new FirecrackerVMManager(cfg as any)
       const pool = new MetalWarmPool(mgr as any, cfg as any)
 
       // ...but three microVMs survived on the host with fctap2 / fctap4 / fctap6.
-      ;(pool as any).hostTapIndices = () => new Set<number>([2, 4, 6])
-      ;(pool as any).seedVmIndexAllocator()
+      ;(pool as any).hostTapIndices = async () => new Set<number>([2, 4, 6])
+      await (pool as any).seedVmIndexAllocator()
 
       // Next warm VM lands on fctap7 — clear of every survivor. Under the old
       // registry-only seed this would have been fctap0 (the collision).
@@ -331,22 +394,22 @@ describe('MetalWarmPool.adopt', () => {
     // The manager's allocator is a second line of defense: even if the counter
     // is somehow mis-seeded (or a resumed VM re-took its persisted index mid-run),
     // a fresh spawn must skip any fctap<n> that physically exists right now.
-    test('nextVmIndex skips live host tap devices and stays monotonic', () => {
+    test('nextVmIndex skips live host tap devices and stays monotonic', async () => {
       const cfg = makeCfg()
       const mgr = new FirecrackerVMManager(cfg as any)
 
       // Counter is at 0 but fctap0 and fctap1 are live on the host → skip to 2.
-      ;(mgr as any).hostTapIndices = () => new Set<number>([0, 1])
-      expect((mgr as any).nextVmIndex()).toBe(2)
+      ;(mgr as any).hostTapIndices = async () => new Set<number>([0, 1])
+      expect(await (mgr as any).nextVmIndex()).toBe(2)
 
       // Host devices vanish, but the counter never goes backwards (no reuse of
       // an index already handed out this lifetime).
-      ;(mgr as any).hostTapIndices = () => new Set<number>()
-      expect((mgr as any).nextVmIndex()).toBe(3)
+      ;(mgr as any).hostTapIndices = async () => new Set<number>()
+      expect(await (mgr as any).nextVmIndex()).toBe(3)
 
       // A survivor appears exactly at the counter value → jump past it.
-      ;(mgr as any).hostTapIndices = () => new Set<number>([4])
-      expect((mgr as any).nextVmIndex()).toBe(5)
+      ;(mgr as any).hostTapIndices = async () => new Set<number>([4])
+      expect(await (mgr as any).nextVmIndex()).toBe(5)
     })
   })
 
@@ -363,23 +426,23 @@ describe('MetalWarmPool.adopt', () => {
   // index and recovers as soon as any low slot is free.
   // ---------------------------------------------------------------------------
   describe('tap-index overflow / wrap safety', () => {
-    test('a counter seeded past capacity wraps to a free in-range slot', () => {
+    test('a counter seeded past capacity wraps to a free in-range slot', async () => {
       const cfg = makeCfg()
       const mgr = new FirecrackerVMManager(cfg as any)
       const cap = tapCapacity(cfg.tapCidrBase)
 
       // Simulate the wedged state: the counter climbed past the /16 ceiling.
       mgr.seedVmSeq(cap + 250_000)
-      ;(mgr as any).hostTapIndices = () => new Set<number>()
+      ;(mgr as any).hostTapIndices = async () => new Set<number>()
 
-      const n = (mgr as any).nextVmIndex()
+      const n = await (mgr as any).nextVmIndex()
       expect(n).toBeGreaterThanOrEqual(0)
       expect(n).toBeLessThan(cap)
       // And the derived IP is a real address (would have thrown pre-fix).
       expect(() => deriveNet(n, cfg.tapCidrBase)).not.toThrow()
     })
 
-    test('reclaims a freed low index instead of climbing forever', () => {
+    test('reclaims a freed low index instead of climbing forever', async () => {
       const cfg = makeCfg()
       const mgr = new FirecrackerVMManager(cfg as any)
       const cap = tapCapacity(cfg.tapCidrBase)
@@ -387,22 +450,22 @@ describe('MetalWarmPool.adopt', () => {
       // Whole space occupied EXCEPT slot 42; counter parked near the ceiling.
       const taken = new Set<number>()
       for (let i = 0; i < cap; i++) if (i !== 42) taken.add(i)
-      ;(mgr as any).hostTapIndices = () => taken
+      ;(mgr as any).hostTapIndices = async () => taken
       mgr.seedVmSeq(cap - 1)
 
-      expect((mgr as any).nextVmIndex()).toBe(42)
+      expect(await (mgr as any).nextVmIndex()).toBe(42)
     })
 
-    test('throws a clear error only when the entire space is occupied', () => {
+    test('throws a clear error only when the entire space is occupied', async () => {
       const cfg = makeCfg()
       const mgr = new FirecrackerVMManager(cfg as any)
       const cap = tapCapacity(cfg.tapCidrBase)
 
       const full = new Set<number>()
       for (let i = 0; i < cap; i++) full.add(i)
-      ;(mgr as any).hostTapIndices = () => full
+      ;(mgr as any).hostTapIndices = async () => full
 
-      expect(() => (mgr as any).nextVmIndex()).toThrow(/exhausted/i)
+      await expect((mgr as any).nextVmIndex()).rejects.toThrow(/exhausted/i)
     })
 
     test('peekNextTap never derives an out-of-range IP even if mis-seeded high', () => {

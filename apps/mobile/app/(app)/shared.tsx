@@ -9,7 +9,6 @@ import {
   FlatList,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
@@ -37,6 +36,7 @@ import {
   useMemberCollection,
   useStarredProjectCollection,
 } from '../../contexts/domain'
+import { Spinner } from '@/components/ui/spinner'
 
 type SortBy = 'lastEdited' | 'dateCreated' | 'alphabetical'
 type ViewMode = 'grid' | 'list'
@@ -492,7 +492,7 @@ export default observer(function SharedWithMePage() {
       {/* Content */}
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
         </View>
       ) : filteredProjects.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">

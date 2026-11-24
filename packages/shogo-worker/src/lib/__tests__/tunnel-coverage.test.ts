@@ -137,7 +137,7 @@ describe('TunnelWebSocketHeaderSupportError (L117-122)', () => {
     const err = new TunnelWebSocketHeaderSupportError();
     expect(err.code).toBe('TUNNEL_WS_HEADERS_UNSUPPORTED');
     expect(err.name).toBe('TunnelWebSocketHeaderSupportError');
-    expect(err.message).toContain('Bun WebSocket');
+    expect(err.message).toContain('WebSocket header support');
     expect(err).toBeInstanceOf(Error);
   });
 });
@@ -1007,9 +1007,63 @@ describe('connectWs() socket.onclose (L612-627)', () => {
     const t = makeTunnel({ logger });
     t._testing().connectWs();
     const ws = factory.last()!;
+    // An abnormal close only ever follows a socket that opened.
+    ws.triggerOpen();
     ws.triggerClose(1006, 'abnormal closure');
     expect(t._testing().wsReconnectAttempt).toBe(1);
     expect(logs.some(l => l.includes('Reconnecting'))).toBe(true);
+    t.stop();
+  });
+
+  it('1006 after an opened socket reconnects the WS itself, with no heartbeat wake (SHO-506)', async () => {
+    const factory = installFakeWsFactory();
+    let heartbeats = 0;
+    global.fetch = (() => { heartbeats++; return fakeHeartbeatResp() as any; }) as any;
+    const t = makeTunnel();
+    t._testing().connectWs();
+    const first = factory.last()!;
+    first.triggerOpen();
+    first.triggerClose(1006, 'abnormal closure');
+
+    // The cloud cleared `wsRequestedAt` when this tunnel connected, so a
+    // heartbeat-then-poll would never bring it back: reconnect the socket.
+    t._testing().scheduleWsReconnect(5);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(factory.last()).not.toBe(first);
+    expect(heartbeats).toBe(0);
+    t.stop();
+  });
+
+  it('1000 goes back to polling — no direct reconnect', async () => {
+    const factory = installFakeWsFactory();
+    let heartbeats = 0;
+    global.fetch = (() => { heartbeats++; return fakeHeartbeatResp() as any; }) as any;
+    const t = makeTunnel();
+    t._testing().connectWs();
+    const first = factory.last()!;
+    first.triggerOpen();
+    first.triggerClose(1000, 'Idle timeout');
+    await new Promise((r) => setTimeout(r, 40));
+    expect(factory.last()).toBe(first);
+    expect(t._testing().wsReconnectAttempt).toBe(0);
+    t.stop();
+  });
+
+  it('stops reconnecting once the attempt cap is spent', () => {
+    const t = makeTunnel();
+    t._testing().wsLastActiveAt = Date.now();
+    t._testing().wsReconnectAttempt = t._testing().WS_RECONNECT_MAX_ATTEMPTS;
+    expect(t._testing().shouldReconnectWs()).toBe(true);
+    t._testing().wsReconnectAttempt = t._testing().WS_RECONNECT_MAX_ATTEMPTS + 1;
+    expect(t._testing().shouldReconnectWs()).toBe(false);
+    t.stop();
+  });
+
+  it('stops reconnecting outside the WS idle window', () => {
+    const t = makeTunnel();
+    t._testing().wsLastActiveAt = Date.now() - 31 * 60_000;
+    expect(t._testing().shouldReconnectWs()).toBe(false);
     t.stop();
   });
 

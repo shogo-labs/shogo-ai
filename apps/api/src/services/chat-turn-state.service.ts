@@ -12,7 +12,26 @@ import { loadNamesForTexts, renderMentionsAsText } from './conversation-mentions
  * Must stay comfortably above ACTIVE_TURN_HEARTBEAT_INTERVAL_MS.
  */
 export const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000
-export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000
+/**
+ * How long a turn is reported as *running* to a screen (`active-chats`).
+ *
+ * Deliberately much shorter than `DEFAULT_STALE_AFTER_MS`: that one answers
+ * "is the process gone?" and gates recovery, this one answers "is a turn
+ * happening right now?" and gates a spinner. A turn that stopped beating is
+ * not running whatever its `activeTurnId` still says — and a turn id does leak:
+ * a queue-dispatched turn on a paired computer can settle its stream yet leave
+ * the row marked on both sides, which used to keep "Running now" on screen for
+ * five minutes after a reply had landed (SHO-494). Well above the heartbeat
+ * interval, so a live turn never drops out.
+ */
+export const RUNNING_NOW_WINDOW_MS = 90 * 1000
+/**
+ * How often a streaming turn refreshes `activeTurnHeartbeatAt`.
+ *
+ * Short on purpose: `RUNNING_NOW_WINDOW_MS` is only meaningful if the beat is
+ * far more frequent than it. One indexed UPDATE per running turn per interval.
+ */
+export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 20 * 1000
 /**
  * The turn reattach job takes over a turn whose heartbeat is older than this.
  * Above the heartbeat interval, below DEFAULT_STALE_AFTER_MS.
@@ -24,6 +43,32 @@ const CLEARED_TURN = {
   activeTurnStartedAt: null,
   activeTurnHeartbeatAt: null,
 } as const
+
+/**
+ * "A turn is running right now" as a `ChatSession` where-clause.
+ *
+ * The one predicate every surface that paints a live spinner asks through, so
+ * `active-chats` and the recent-chat list (the desktop tray) can never disagree
+ * about which chat is running. `staleAfterMs` defaults to
+ * `RUNNING_NOW_WINDOW_MS`; only a caller with its own liveness window passes it.
+ */
+export function runningNowWhere(staleAfterMs: number = RUNNING_NOW_WINDOW_MS) {
+  return {
+    activeTurnId: { not: null },
+    activeTurnHeartbeatAt: { gt: new Date(Date.now() - staleAfterMs) },
+  } as const
+}
+
+/** The row-level twin of `runningNowWhere`, for a query that already selected
+ * `activeTurnId`/`activeTurnHeartbeatAt` and cannot carry the where-clause. */
+export function isRunningNow(
+  activeTurnId: string | null,
+  activeTurnHeartbeatAt: Date | null,
+  staleAfterMs: number = RUNNING_NOW_WINDOW_MS,
+): boolean {
+  if (!activeTurnId || !activeTurnHeartbeatAt) return false
+  return activeTurnHeartbeatAt.getTime() > Date.now() - staleAfterMs
+}
 
 export type ActiveChatTurn = {
   chatSessionId: string
@@ -361,6 +406,10 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
     })
     if (cleared.count === 0) continue
     swept++
+    if (recovered) {
+      const { deleteTurnFrames } = await import('./chat-turn-journal')
+      void deleteTurnFrames(turnId).catch(() => 0)
+    }
     // A recovered row already says the turn ended; only a turn with no frames
     // at all needs the stamp that stops it reading as unfinished.
     if (!recovered) {
@@ -379,17 +428,20 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
  * Return fresh active turns for a workspace. Project-scoped sessions derive
  * their workspace through the project relation; workspace-scoped sessions
  * use ChatSession.workspaceId directly.
+ *
+ * "Active" here means *running now*, so the default window is
+ * `RUNNING_NOW_WINDOW_MS` — a caller asking what a screen should show wants
+ * liveness, not the longer "this process is gone" threshold recovery uses.
  */
 export async function listActiveChatTurns(
   workspaceId: string,
   opts: { staleAfterMs?: number; viewerUserId?: string } = {},
 ): Promise<ActiveChatTurn[]> {
-  const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
-  const heartbeatAfter = new Date(Date.now() - staleAfterMs)
+  const staleAfterMs = opts.staleAfterMs ?? RUNNING_NOW_WINDOW_MS
   const sessions = await prisma.chatSession.findMany({
     where: {
       isArchived: false,
-      activeTurnHeartbeatAt: { gt: heartbeatAfter },
+      ...runningNowWhere(staleAfterMs),
       OR: [
         { workspaceId },
         { project: { workspaceId } },

@@ -26,11 +26,13 @@
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
 import { buildWorkspaceEnv } from './runtime/build-workspace-env'
+import { workspaceRuntimeMembers } from './runtime/workspace-runtime-members'
 import {
   getMetalPlacementRegistry,
   type HostScalars,
   type MetalPlacementRegistry,
   type RootDiskScalars,
+  type RootfsRejectedReport,
   type StagedRootfsReport,
 } from './metal-placement-registry'
 import type { ResizeOutcome } from './substrate/types'
@@ -483,6 +485,8 @@ export interface MetalHostRegistration {
   idle?: { tier: IdleTier; idleMs: number; reason: string; directiveTier?: IdleTier }
   /** See HostScalars.stagedRootfs. */
   stagedRootfs?: StagedRootfsReport
+  /** See HostScalars.rootfsRejected. */
+  rootfsRejected?: RootfsRejectedReport
   /** See HostScalars.restarting. */
   restarting?: boolean
 }
@@ -879,6 +883,7 @@ export class MetalWarmPoolController {
       disk: reg.disk,
       rootDisk: reg.rootDisk,
       stagedRootfs: reg.stagedRootfs,
+      rootfsRejected: reg.rootfsRejected,
       restarting: reg.restarting,
       lastSeenAt: entry.lastSeenAt,
     }
@@ -1038,8 +1043,12 @@ export class MetalWarmPoolController {
     // share the workspace-session VM/cache/placement key.
     const key = workspaceRuntimeKey(workspaceId, opts.anchorProjectId)
     // A project is online only in its own runtime: the member set is the
-    // anchor alone (or nothing for a workspace-session runtime).
-    const members = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    // anchor alone (or nothing for a workspace-session runtime). Shared with the
+    // `/pod-config` token refresh so both agree (SHO-560).
+    const members = workspaceRuntimeMembers({
+      anchorProjectId: opts.anchorProjectId,
+      forMetal: true,
+    })
     if (attachedProjectIds.some((id) => !members.includes(id))) {
       console.warn(`[MetalPool] ${key}: ignoring foreign members ${attachedProjectIds.filter((id) => !members.includes(id)).join(',')}`)
     }
@@ -2225,6 +2234,9 @@ export class MetalWarmPoolController {
           load: h.load,
           disk: h.disk,
           rootDisk: h.rootDisk,
+          stagedRootfs: h.stagedRootfs,
+          rootfsRejected: h.rootfsRejected,
+          restarting: h.restarting,
           live: h.lastSeenAt >= this.now() - HOST_TTL_MS,
           overWatermark: overWatermark(h),
           cordoned: this.cordoned.has(h.hostId),
@@ -2272,6 +2284,7 @@ export class MetalWarmPoolController {
           disk: h.disk,
           rootDisk: h.rootDisk,
           stagedRootfs: h.stagedRootfs,
+          rootfsRejected: h.rootfsRejected,
           restarting: h.restarting,
           live: true,
           overWatermark: overWatermark(h),

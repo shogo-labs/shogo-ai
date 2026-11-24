@@ -32,7 +32,10 @@ async function mkSession(
     contextId?: string
     createdByUserId?: string
     isArchived?: boolean
+    isPinned?: boolean
     lastActiveAt?: Date
+    activeTurnStartedAt?: Date
+    activeTurnHeartbeatAt?: Date
   },
 ) {
   return db.chatSession.create({
@@ -43,7 +46,12 @@ async function mkSession(
       ...(overrides.createdByUserId ? { createdByUserId: overrides.createdByUserId } : {}),
       inferredName: "test session",
       isArchived: overrides.isArchived ?? false,
+      isPinned: overrides.isPinned ?? false,
       lastActiveAt: overrides.lastActiveAt ?? new Date(),
+      ...(overrides.activeTurnStartedAt
+        ? { activeTurnId: `turn-${Math.random().toString(36).slice(2)}`, activeTurnStartedAt: overrides.activeTurnStartedAt }
+        : {}),
+      ...(overrides.activeTurnHeartbeatAt ? { activeTurnHeartbeatAt: overrides.activeTurnHeartbeatAt } : {}),
     },
   })
 }
@@ -246,5 +254,91 @@ describe('listRecentAgentChats — real DB (AC §1)', () => {
 
     const result = await listRecentAgentChats(outsiderWs.id, outsiderUser.id, { limit: 2 })
     expect(result).toHaveLength(2)
+  })
+
+  test('isPinned and running describe the row', async () => {
+    const ws = await prisma.workspace.create({
+      data: { name: 'Tray', slug: `tray-${Date.now()}`, kind: 'team' },
+    })
+    const user = await prisma.user.create({
+      data: { name: 'trayuser', email: `trayuser-${Date.now()}@example.com` },
+    })
+    await prisma.member.create({ data: { userId: user.id, workspaceId: ws.id, role: 'owner' } })
+
+    const pinned = await mkSession(prisma, {
+      contextType: 'workspace',
+      workspaceId: ws.id,
+      createdByUserId: user.id,
+      isPinned: true,
+    })
+    await addUserMsg(prisma, pinned.id, user.id)
+
+    const running = await mkSession(prisma, {
+      contextType: 'workspace',
+      workspaceId: ws.id,
+      createdByUserId: user.id,
+      lastActiveAt: new Date(Date.now() - 5_000),
+      activeTurnStartedAt: new Date(),
+      activeTurnHeartbeatAt: new Date(),
+    })
+    await addUserMsg(prisma, running.id, user.id)
+
+    // A turn whose heartbeat is older than the running window is not running,
+    // even though activeTurnId is still set (SHO-494's leak).
+    const stale = await mkSession(prisma, {
+      contextType: 'workspace',
+      workspaceId: ws.id,
+      createdByUserId: user.id,
+      lastActiveAt: new Date(Date.now() - 10_000),
+      activeTurnStartedAt: new Date(Date.now() - 10 * 60 * 1000),
+      activeTurnHeartbeatAt: new Date(Date.now() - 10 * 60 * 1000),
+    })
+    await addUserMsg(prisma, stale.id, user.id)
+
+    const result = await listRecentAgentChats(ws.id, user.id, { limit: 10 })
+    const byId = new Map(result.map((r) => [r.chatSessionId, r]))
+    expect(byId.get(pinned.id)!.isPinned).toBe(true)
+    expect(byId.get(pinned.id)!.running).toBe(false)
+    expect(byId.get(running.id)!.isPinned).toBe(false)
+    expect(byId.get(running.id)!.running).toBe(true)
+    expect(byId.get(stale.id)!.running).toBe(false)
+  })
+
+  test('includePinned returns a pinned chat older than the limit', async () => {
+    const ws = await prisma.workspace.create({
+      data: { name: 'Pinned Order', slug: `pinned-order-${Date.now()}`, kind: 'team' },
+    })
+    const user = await prisma.user.create({
+      data: { name: 'pinuser', email: `pinuser-${Date.now()}@example.com` },
+    })
+    await prisma.member.create({ data: { userId: user.id, workspaceId: ws.id, role: 'owner' } })
+
+    const old = new Date(Date.now() - 60_000)
+    const pinnedOld = await mkSession(prisma, {
+      contextType: 'workspace',
+      workspaceId: ws.id,
+      createdByUserId: user.id,
+      isPinned: true,
+      lastActiveAt: old,
+    })
+    await addUserMsg(prisma, pinnedOld.id, user.id)
+    for (let i = 0; i < 2; i++) {
+      const newer = await mkSession(prisma, {
+        contextType: 'workspace',
+        workspaceId: ws.id,
+        createdByUserId: user.id,
+        lastActiveAt: new Date(Date.now() - i * 1000),
+      })
+      await addUserMsg(prisma, newer.id, user.id)
+    }
+
+    // limit 2 is filled by the two newer chats, so the pinned one only shows up
+    // when the caller asks for pinned chats.
+    const without = await listRecentAgentChats(ws.id, user.id, { limit: 2 })
+    expect(without.map((r) => r.chatSessionId)).not.toContain(pinnedOld.id)
+
+    const withPinned = await listRecentAgentChats(ws.id, user.id, { limit: 2, includePinned: true })
+    expect(withPinned.map((r) => r.chatSessionId)).toContain(pinnedOld.id)
+    expect(withPinned[0].chatSessionId).toBe(pinnedOld.id)
   })
 })

@@ -7,7 +7,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Image,
   FlatList,
   Platform,
@@ -32,6 +31,7 @@ import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellCl
 import { openExternalLink } from '../../../../lib/open-external-link';
 import { LearnProfileSection } from '../../../../components/learn/LearnProfileSection'
 import type { LearnProfileSummary } from '../../../../lib/learn-badge-art'
+import { Spinner } from '@/components/ui/spinner'
 
 interface CreatorPublicProfile {
   id: string
@@ -185,7 +185,7 @@ export default observer(function CreatorProfileScreen() {
       <View className="flex-1 bg-background">
         <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
           <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-            <ArrowLeft size={20} color="#71717a" />
+            <ArrowLeft className="text-muted-foreground" size={20} />
           </Pressable>
         </View>
         <View className="flex-1 items-center justify-center">
@@ -200,7 +200,7 @@ export default observer(function CreatorProfileScreen() {
               </Pressable>
             </View>
           ) : (
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           )}
         </View>
       </View>
@@ -226,7 +226,7 @@ export default observer(function CreatorProfileScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back to creators"
         >
-          <ArrowLeft size={20} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={20} />
         </Pressable>
         <View className="flex-1 min-w-0">
           {isWide && (
@@ -247,7 +247,7 @@ export default observer(function CreatorProfileScreen() {
           accessibilityRole="button"
           accessibilityLabel={`Share ${profile.displayName}'s profile`}
         >
-          <Share2 size={18} color="#71717a" />
+          <Share2 className="text-muted-foreground" size={18} />
         </Pressable>
       </View>
 
@@ -293,7 +293,7 @@ export default observer(function CreatorProfileScreen() {
                 <View className="flex-row items-center gap-2 flex-wrap">
                   {profile.verified && (
                     <View className="flex-row items-center gap-1 rounded-full bg-blue-500/15 px-2 py-1">
-                      <ShieldCheck size={12} color="#3b82f6" />
+                      <ShieldCheck className="text-primary" size={12} />
                       <Text className="text-[11px] font-semibold text-blue-600 dark:text-blue-400">
                         Verified
                       </Text>
@@ -338,7 +338,7 @@ export default observer(function CreatorProfileScreen() {
                         void openExternalLink(profile.websiteUrl!)
                       }}
                     >
-                      <ExternalLink size={14} color="#71717a" />
+                      <ExternalLink className="text-muted-foreground" size={14} />
                       <Text className="text-xs font-medium text-foreground">Website</Text>
                     </Pressable>
                   )}
@@ -467,7 +467,7 @@ export default observer(function CreatorProfileScreen() {
         ListEmptyComponent={
           listings.length === 0 ? (
             <View className="items-center py-12 px-6">
-              <Award size={32} color="#a1a1aa" />
+              <Award className="text-muted-foreground" size={32} />
               <Text className="text-foreground font-medium mt-3 mb-1">
                 No agents yet
               </Text>

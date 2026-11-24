@@ -147,6 +147,12 @@ resource "oci_objectstorage_bucket" "workspaces" {
   freeform_tags = merge(var.tags, {
     Purpose = "workspace-file-sync"
   })
+
+  lifecycle {
+    # Project files live here (incl. Git LFS objects and repo.git.tar.gz).
+    # A replace would orphan every workspace archive. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
@@ -237,6 +243,12 @@ resource "oci_objectstorage_bucket" "pg_backups" {
   freeform_tags = merge(var.tags, {
     Purpose = "postgresql-backups"
   })
+
+  lifecycle {
+    # Last line of defence for the database: a replaced bucket silently drops
+    # every backup. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -305,6 +317,12 @@ resource "oci_objectstorage_bucket" "published_apps" {
   freeform_tags = merge(var.tags, {
     Purpose = "published-static-sites"
   })
+
+  lifecycle {
+    # Every published static site's objects live here. A replace takes all of
+    # them offline. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "published_apps_lifecycle" {
@@ -343,6 +361,11 @@ resource "oci_objectstorage_bucket" "published_data" {
   freeform_tags = merge(var.tags, {
     Purpose = "published-app-writable-state"
   })
+
+  lifecycle {
+    # Server-backed published apps keep their SQLite DB + uploads here.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "published_data_lifecycle" {
@@ -392,6 +415,80 @@ resource "oci_objectstorage_object_lifecycle_policy" "llm_captures_lifecycle" {
 }
 
 # -----------------------------------------------------------------------------
+# Project Buckets (per-project object storage + CDN — SHO-491)
+# -----------------------------------------------------------------------------
+# Every project owns a prefix of this bucket: `p/<projectId>/<visibility>/<key>`.
+# The agent puts big media in it from its shell (`shogo bucket put|offload`) and
+# the app it builds puts it in through the SDK (`shogo.bucket`), so a project
+# stops committing gigabytes to git or `public/`.
+#
+# Access is presigned (S3 API, same `s3-credentials` as every other bucket), and
+# PUBLIC objects are served by the subdomain-router Worker at
+# `cdn.<publish_domain>/<projectId>/<key>` through the read-only PAR below. The
+# PAR is bucket-wide because OCI pre-authenticated requests cannot be scoped to
+# a prefix — the Worker's guard (only `p/<id>/public/<key>`) is what keeps
+# private objects off the CDN, and it is covered by a unit test in
+# apps/api/src/__tests__/project-bucket-cdn.test.ts.
+resource "oci_objectstorage_bucket" "project_buckets" {
+  compartment_id = var.compartment_id
+  namespace      = local.namespace
+  name           = "shogo-project-buckets-${var.environment}"
+  access_type    = "NoPublicAccess"
+  # Versioning off: these are user-managed media objects with their own
+  # `overwrite` semantics, and a per-version copy of a 500 MB video is a bill
+  # nobody asked for. The index row (`ProjectBucketObject`) is the source of
+  # truth for what exists.
+  versioning = "Disabled"
+
+  freeform_tags = merge(var.tags, {
+    Purpose = "project-object-storage"
+  })
+
+  lifecycle {
+    # User-uploaded project media (SHO-491). A replace loses user data with no
+    # second copy anywhere. Fail the plan instead.
+    prevent_destroy = true
+  }
+}
+
+resource "oci_objectstorage_object_lifecycle_policy" "project_buckets_lifecycle" {
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.project_buckets.name
+
+  # An agent that dies mid-upload leaves a multipart upload holding parts. Reap
+  # them after 3 days so an abandoned 5 GB upload does not sit in the bucket
+  # (and in the workspace's storage bill) forever.
+  rules {
+    name        = "abort-incomplete-multipart-uploads"
+    action      = "ABORT"
+    time_amount = 3
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "multipart-uploads"
+  }
+}
+
+resource "oci_objectstorage_preauthrequest" "project_buckets" {
+  namespace             = local.namespace
+  bucket                = oci_objectstorage_bucket.project_buckets.name
+  name                  = "cloudflare-cdn-access"
+  access_type           = "AnyObjectRead"
+  bucket_listing_action = "Deny"
+  time_expires          = timeadd(timestamp(), "8760h") # 1 year
+
+  lifecycle {
+    # Same reasoning as the published-apps PAR: the Worker embeds this PAR's
+    # `access_uri`, so the replacement must exist before the old one is
+    # destroyed, or the CDN 404s every project object until the Worker update
+    # propagates.
+    create_before_destroy = true
+    ignore_changes        = [time_expires, bucket_listing_action]
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "namespace" {
@@ -432,4 +529,19 @@ output "published_data_bucket" {
 output "llm_captures_bucket" {
   description = "Raw LLM proxy capture archive bucket name"
   value       = oci_objectstorage_bucket.llm_captures.name
+}
+
+output "project_buckets_bucket" {
+  description = "Per-project object storage bucket name (SHO-491). Wire into the API as S3_PROJECT_BUCKET."
+  value       = oci_objectstorage_bucket.project_buckets.name
+}
+
+output "project_buckets_par_base_url" {
+  description = "Read-only PAR base URL the subdomain-router Worker uses as the CDN origin for public project objects. Wire into module.publish_hosting.project_bucket_origin."
+  value       = "https://objectstorage.${var.region}.oraclecloud.com${oci_objectstorage_preauthrequest.project_buckets.access_uri}"
+}
+
+output "lifecycle_service_policy_id" {
+  description = "OCID of the tenancy-scoped `objectstorage-<region>` service-principal IAM policy, or null when this region does not own it. Pass to any module whose lifecycle policies must be created after it (e.g. module.studio_web_assets.lifecycle_service_policy_id) so the ordering is a value dependency instead of a module-level depends_on."
+  value       = one(oci_identity_policy.lifecycle_service_principal[*].id)
 }

@@ -17,7 +17,6 @@ import {
   FlatList,
   Pressable,
   TextInput,
-  ActivityIndicator,
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
@@ -35,6 +34,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
 import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -213,7 +213,7 @@ function LicenseKeyRow({
               )}
             >
               {revoking ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <>
                   <Ban size={12} className="text-red-600 dark:text-red-400" />
@@ -422,7 +422,7 @@ export default function AdminLicenseKeysPage() {
         />
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         )}
       </View>

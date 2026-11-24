@@ -11,7 +11,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   Text,
@@ -20,12 +19,17 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
-import { ArrowLeft, ChevronRight, Folder, MessageSquare, Plus } from 'lucide-react-native'
+import { ChevronRight, Folder, MessageSquare, Plus } from 'lucide-react-native'
 import { useProjectCollection, useDomainHttp } from '../../contexts/domain'
 import {
   PhoneListEmpty,
   PhoneListRow } from "../../components/phone/PhoneListRow"
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route";
+import { GlassButton } from "../../components/team-chat/FloatingChrome";
+import {
+  PhoneScreenHeader,
+  usePhoneScreenHeaderInset,
+} from "../../components/layout/PhoneScreenHeader";
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -33,6 +37,9 @@ import {
   visibleProjectChatItems,
   type ProjectChatListItem,
 } from '../../lib/project-chat-sessions'
+import { projectSurfaceRoute, type ProjectSurface } from '../../lib/project-surface-route'
+import { ProjectSurfaceQuickButtons } from '../../components/project/ProjectSurfaceQuickButtons'
+import { Spinner } from '@/components/ui/spinner'
 
 export default observer(function ProjectChatsPage() {
   const router = useRouter()
@@ -41,6 +48,7 @@ export default observer(function ProjectChatsPage() {
   const projects = useProjectCollection()
   const http = useDomainHttp()
   const isSupportedPlatform = usePhoneOnlyRoute()
+  const header = usePhoneScreenHeaderInset()
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [hasMore, setHasMore] = useState(false)
@@ -112,6 +120,15 @@ export default observer(function ProjectChatsPage() {
     } as any)
   }, [projectId, router])
 
+  // Push, not replace: Back from the surface comes back to this chat list.
+  const openSurface = useCallback(
+    (surface: ProjectSurface) => {
+      if (!projectId) return
+      router.push(projectSurfaceRoute(projectId, surface) as any)
+    },
+    [projectId, router],
+  )
+
   const loadMore = useCallback(() => {
     if (hasMore && !loadingMore) void load(sessions.length + PROJECT_CHAT_PAGE_SIZE)
   }, [hasMore, load, loadingMore, sessions.length])
@@ -146,38 +163,28 @@ export default observer(function ProjectChatsPage() {
   const title = project?.name || 'Project'
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
-      <View className="flex-row items-center gap-2 border-b border-border/70 bg-card/70 px-4 pb-4 pt-3">
-        <Pressable
-          onPress={goBack}
-          accessibilityLabel="Back"
-          className="-ml-2 rounded-xl p-2 active:bg-muted"
-        >
-          <ArrowLeft size={24} className="text-foreground" />
-        </Pressable>
-        <View className="min-w-0 flex-1">
-          <View className="flex-row items-center gap-2">
-            <Folder size={16} className="shrink-0 text-orange-600 dark:text-orange-300" />
-            <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
-              Project chats
-            </Text>
-          </View>
-          <Text className="mt-1 text-xl font-semibold tracking-[-0.25px] text-foreground" numberOfLines={1}>
-            {title}
-          </Text>
-        </View>
-        <Pressable
-          onPress={openNewChat}
-          accessibilityLabel={`New chat in ${title}`}
-          className="h-10 w-10 items-center justify-center rounded-xl bg-orange-500 active:bg-orange-600"
-        >
-          <Plus size={20} color="white" />
-        </Pressable>
-      </View>
+    <SafeAreaView className="flex-1 bg-background" edges={['left', 'right']}>
+      <PhoneScreenHeader
+        title={title}
+        subtitle="Project chats"
+        titleIcon={<Folder size={14} className="text-orange-600 dark:text-orange-300" />}
+        onBack={goBack}
+        onLayout={header.onLayout}
+        actions={
+          <GlassButton label={`New chat in ${title}`} onPress={openNewChat}>
+            <Plus size={20} className="text-foreground" />
+          </GlassButton>
+        }
+      >
+        {projectId ? (
+          <ProjectSurfaceQuickButtons projectName={title} onOpen={openSurface} />
+        ) : null}
+      </PhoneScreenHeader>
 
+      <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
       {loading && sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#f97316" />
+          <Spinner />
         </View>
       ) : activeSessions.length === 0 ? (
         <PhoneListEmpty
@@ -205,13 +212,14 @@ export default observer(function ProjectChatsPage() {
           ListFooterComponent={
             loadingMore ? (
               <View className="items-center py-4">
-                <ActivityIndicator color="#f97316" />
+                <Spinner />
               </View>
             ) : null
           }
           renderItem={renderChat}
         />
       )}
+      </View>
     </SafeAreaView>
   )
 })

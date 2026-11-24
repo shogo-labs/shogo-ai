@@ -6,7 +6,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   TextInput,
   Platform,
 } from 'react-native'
@@ -38,6 +37,8 @@ import {
 import { densityFor } from "../../../lib/phone-density";
 import { useDomainHttp } from '../../../contexts/domain'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const LOG_PREFIX = '[ToolsPanel]'
 
@@ -128,7 +129,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         // non-critical
       }
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -148,7 +149,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       const data = await res.json()
       setSearchResults(data.results || [])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsSearching(false)
     }
@@ -195,7 +196,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         setSearchResults((prev) => prev.map((r) => ( r.id === result.id ? { ...r, installed: true } : r)),
         )
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setInstalling(null)
       }
@@ -220,7 +221,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         setSearchResults((prev) => prev.map((r) => ( r.id === toolId ? { ...r, installed: false } : r)),
         )
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setUninstalling(null)
       }
@@ -267,7 +268,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         }
       } catch (err: any) {
         console.error(LOG_PREFIX, `OAuth error for ${result.composioToolkit}:`, err)
-        setError(err.message)
+        setError(errorMessage(err))
         setConnecting(null)
       } finally {
         try {
@@ -313,7 +314,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       }
     } catch (err: any) {
       console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setReconnectingToolkit(null)
       try {
@@ -332,7 +333,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       await api.disconnectIntegration(http, connectionId, { projectId })
       await loadInstalledTools()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -408,7 +409,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       >
         {isLoading ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading tools...</Text>
           </View>
         ) : (
@@ -454,7 +455,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                   style={comfortable ? { width: contentWidth } : undefined}
                 >
                   {isSearching ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <Spinner tone="onPrimary" size="small" />
                   ) : (
                     <Text className={cn('font-medium text-primary-foreground', comfortable ? 'text-base' : 'text-sm')}>Search</Text>
                   )}
@@ -606,13 +607,13 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                               )}
                             >
                               {isInstalling || isOAuthConnecting ? (
-                                <ActivityIndicator size="small" color="#fff" />
+                                <Spinner tone="onPrimary" size="small" />
                               ) : (
                                 <>
                                   {result.authType === 'oauth' ? (
-                                    <Link2 size={12} color="#fff" />
+                                    <Link2 className="text-primary-foreground" size={12} />
                                   ) : (
-                                    <Download size={12} color="#fff" />
+                                    <Download className="text-primary-foreground" size={12} />
                                   )}
                                   <Text className="text-xs font-medium text-primary-foreground">
                                     {result.authType === 'oauth' ? 'Connect' : 'Install'}
@@ -735,7 +736,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                         accessibilityLabel="Uninstall integration"
                       >
                         {isUninstalling ? (
-                          <ActivityIndicator size="small" />
+                          <Spinner size="small" />
                         ) : (
                           <Trash2 size={14} className="text-destructive/70" />
                         )}
@@ -755,7 +756,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                   </Text>
                   {expiredConnections.length > 0 && (
                     <View className="px-1.5 py-0.5 rounded-full bg-orange-500/10 flex-row items-center gap-1">
-                      <AlertTriangle size={9} color="#f97316" />
+                      <AlertTriangle className="text-warning-600 dark:text-warning-300" size={9} />
                       <Text className="text-[10px] text-orange-600 font-medium">
                         {expiredConnections.length} expired
                       </Text>
@@ -837,7 +838,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                           accessibilityLabel="Disconnect"
                         >
                           {isDisconnecting ? (
-                            <ActivityIndicator size="small" />
+                            <Spinner size="small" />
                           ) : (
                             <Trash2 size={14} className="text-destructive/70" />
                           )}

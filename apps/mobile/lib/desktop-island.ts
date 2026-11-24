@@ -531,11 +531,45 @@ export function getDesktopIslandSnapshot(): DesktopIslandSnapshot {
   return lastSnapshot
 }
 
+/**
+ * Chats whose finished reply nobody has opened yet, across every project this
+ * window has watched. The menu-bar dropdown needs this for project chats (the
+ * workspace-chat list keeps its own set) so a blue dot there means the same
+ * thing as a blue dot in the sidebar.
+ */
+export function getCompletedChatIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const activity of activityByProject.values()) {
+    for (const id of activity.completedSessionIds) ids.add(id)
+  }
+  for (const session of sessions.values()) {
+    if (session.status === 'done') ids.add(session.sessionId)
+  }
+  return ids
+}
+
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     if (sessions.size > 0) schedulePublish()
   })
 }
+
+// "Clear all notifications" from the menu-bar dropdown: every finished reply
+// stops being new, here and on the surfaces that publish these sets.
+chatSessionEvents.subscribeClearCompletions(() => {
+  let changed = false
+  for (const [projectId, activity] of activityByProject) {
+    if (activity.completedSessionIds.size === 0) continue
+    activityByProject.set(projectId, { ...activity, completedSessionIds: new Set() })
+    changed = true
+  }
+  for (const session of sessions.values()) {
+    if (session.status !== 'done') continue
+    session.status = 'idle'
+    changed = true
+  }
+  if (changed) schedulePublish()
+})
 
 chatActivityEvents.subscribe((event) => {
   // Workspace-agent chats have no notch rows — the island is project-scoped.

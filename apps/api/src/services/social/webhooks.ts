@@ -22,6 +22,8 @@ import { ingestSocialEvent } from './inbox.service'
 import { recordAutomationRun } from './automations.service'
 import { enqueueRelayedEvent } from './relay-events.service'
 import { getProfileByExternalId, type SocialProfileRow } from './profiles.service'
+import { applyProviderPostState } from './publishing.service'
+import { zernioId } from './provider-ids'
 import {
   ZERNIO_EVENT_ID_HEADER,
   ZERNIO_SIGNATURE_HEADER,
@@ -64,6 +66,50 @@ export interface ApplySocialEventInput {
 export interface ApplySocialEventResult {
   status: number
   body: unknown
+}
+
+/**
+ * Provider events that report where a post ended up. Zernio fires exactly one
+ * of `post.published` / `post.partial` / `post.failed` once every target of a
+ * publishing job has finished, and `post.platform.*` per target meanwhile.
+ * `post.id` is the `zernioPostId` we saved when we dispatched it.
+ */
+const POST_RESULT_EVENTS = new Set([
+  'post.published',
+  'post.partial',
+  'post.failed',
+  'post.platform.published',
+  'post.platform.failed',
+])
+
+export function isPostResultEvent(type: string): boolean {
+  return POST_RESULT_EVENTS.has(type)
+}
+
+/**
+ * Fold a `post.*` event onto our row, through the same writer the read path
+ * uses, so the two can never disagree. An unknown id is ignored rather than
+ * retried: the provider will keep redelivering something we do not have.
+ */
+async function applyPostResultEvent(
+  workspaceId: string,
+  detail: unknown,
+  payload: unknown,
+): Promise<{ handled: boolean; postId?: string; status?: string }> {
+  const record = (detail ?? (payload as any)?.post) as any
+  const zernioPostId = zernioId(record, 'post')
+  if (!zernioPostId) return { handled: false }
+  const row = await db.socialPost.findFirst({
+    where: { workspaceId, zernioPostId },
+    include: {
+      targets: {
+        include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } },
+      },
+    },
+  })
+  if (!row) return { handled: false }
+  await applyProviderPostState(row, record)
+  return { handled: true, postId: row.id, status: row.status }
 }
 
 /**
@@ -117,6 +163,16 @@ export async function applySocialEvent(input: ApplySocialEventInput): Promise<Ap
     account: input.account,
     occurredAt: input.occurredAt,
   })
+
+  // A `post.*` event is not in the trigger catalog: it reports where a post we
+  // already dispatched ended up, so it is written straight onto our row instead
+  // of being dropped as unmapped. Same writer as the read path.
+  if (isPostResultEvent(input.type)) {
+    const applied = await applyPostResultEvent(input.workspaceId, input.detail, input.payload)
+    return applied.handled
+      ? { status: 200, body: { ok: true, ...applied, ...(ingested.handled ? { inbox: ingested } : {}) } }
+      : { status: 200, body: { ok: true, ignored: 'unknown_post' } }
+  }
 
   const type = socialEventTypeFor(input.type)
   if (!type) {
@@ -305,6 +361,20 @@ export async function handleZernioWebhook(input: ZernioWebhookInput): Promise<{ 
       type: socialEventTypeFor(event.type) ?? event.type,
       account: event.account,
     })
+    // Same reason for the post: `recordPost` wrote the cloud's copy of a
+    // desktop's post, so a result webhook has to land on it too — otherwise the
+    // cloud's analytics and billing keep counting a delivered post as scheduled.
+    if (isPostResultEvent(event.type)) {
+      await applyPostResultEvent(profile.workspaceId, event.detail, event.payload).catch((err) => {
+        // The desktop owns the post; a copy we could not update is not a reason
+        // to make the provider redeliver the whole event.
+        console.error('[SocialWebhooks] cloud copy of a relayed post not updated', {
+          workspaceId: profile.workspaceId,
+          zernioPostId: zernioId((event.detail ?? event.payload) as any, 'post'),
+          error: (err as any)?.message ?? err,
+        })
+      })
+    }
     await relayToDesktop(profile, event)
     return { status: 200, body: { ok: true, relayed: profile.localWorkspaceId } }
   }

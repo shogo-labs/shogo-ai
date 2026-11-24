@@ -15,7 +15,7 @@
  */
 import type { Message } from '@mariozechner/pi-ai'
 import { renderTranscriptForSummary } from './compaction-transcript'
-import type { SummarizeFn } from './session-manager'
+import type { SummarizeFn, SummarizeMergeFn } from './session-manager'
 import { resolveCompactionVariant } from './compaction-variants'
 
 export interface CompactionSummarizerModel {
@@ -54,6 +54,22 @@ const SUMMARY_CONTRACT =
   '  (exact names as `name` ×count)\n' +
   'Use only tool names that appear in the transcript — never invent one.'
 
+/**
+ * The merge call of the parallel map (SHO-556). Each partial already follows
+ * the contract for its own chunk of the head; this call combines them — and
+ * the running summary of an earlier fold, when there is one — into a single
+ * summary that follows the same contract, without dropping a decision the
+ * parts agree on.
+ */
+const MERGE_PROMPT =
+  'You are given partial summaries of consecutive excerpts of one long agent ' +
+  'conversation, in order, plus the running summary of what came before them ' +
+  '(when present). Combine them into ONE summary of the whole conversation so ' +
+  'far. Merge the parts instead of concatenating them: keep every decision, ' +
+  'file edited, error and current next step, drop only repetition, and keep the ' +
+  'latest state where two parts disagree.\n\n' +
+  SUMMARY_CONTRACT
+
 /** The default one-shot call: the summarizer's own provider, one iteration, no tools. */
 async function defaultRunSummary(input: {
   provider: string
@@ -82,8 +98,14 @@ async function defaultRunSummary(input: {
 /**
  * The `SummarizeFn` the session manager installs. Runs the same summarizer code
  * the runtime uses, whichever caller asks for it.
+ *
+ * With more than one chunk the session manager calls it once per chunk with no
+ * running summary and then calls `.merge` with the partials in chunk order, so
+ * the merge call lives here next to the fold/fresh prompts (SHO-556). It is a
+ * property on the function rather than a second return value so every existing
+ * `SummarizeFn` caller — the compaction eval included — is unchanged.
  */
-export function createCompactionSummarizer(opts: CompactionSummarizerOptions): SummarizeFn {
+export function createCompactionSummarizer(opts: CompactionSummarizerOptions): CompactionSummarizer {
   const variant = resolveCompactionVariant()
   const omitResultBodies = opts.omitResultBodies ?? variant.summaryOmitsResultBodies
   const renderTranscript =
@@ -92,11 +114,11 @@ export function createCompactionSummarizer(opts: CompactionSummarizerOptions): S
       renderTranscriptForSummary(messages, { resultBodies: o.resultBodies }))
   const runSummary = opts.runSummary ?? defaultRunSummary
 
-  return async (messages, previousSummary) => {
-    // No truncation: the caller chunks the head at `summarizeChunkTokens` so
-    // each excerpt is already bounded. The old 500-char-per-message / 12k-char
-    // caps threw away ~99% of a long turn — including the decisions the summary
-    // exists to preserve (SHO-96).
+  const summarize: SummarizeFn = async (messages, previousSummary) => {
+    // No truncation: the caller chunks the head at `summarizeChunkTokens` (100k
+    // by default) so each excerpt is already bounded. The old 500-char-per-message
+    // / 12k-char caps threw away ~99% of a long turn — including the decisions
+    // the summary exists to preserve (SHO-96).
     //
     // Every toolCall is rendered, with its arguments, as `→ tool: name(args)`
     // (compaction-transcript.ts). Without that line the summarizer can only
@@ -121,4 +143,24 @@ export function createCompactionSummarizer(opts: CompactionSummarizerOptions): S
       prompt,
     })
   }
+
+  const merge: SummarizeMergeFn = async (partials, previousSummary) => {
+    const parts = partials
+      .map((part, index) => `## Part ${index + 1} of ${partials.length}\n${part}`)
+      .join('\n\n')
+    const prompt = previousSummary
+      ? `Running summary before these parts:\n${previousSummary}\n\nPartial summaries, in order:\n${parts}`
+      : `Partial summaries, in order:\n${parts}`
+    return runSummary({
+      provider: opts.model.provider,
+      model: opts.model.id,
+      system: MERGE_PROMPT,
+      prompt,
+    })
+  }
+
+  return Object.assign(summarize, { merge })
 }
+
+/** The per-chunk summarizer, with the merge call for a parallel map attached. */
+export type CompactionSummarizer = SummarizeFn & { merge: SummarizeMergeFn }

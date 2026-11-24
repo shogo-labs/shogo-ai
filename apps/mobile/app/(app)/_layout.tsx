@@ -21,7 +21,6 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   Text,
@@ -59,6 +58,7 @@ import { NotificationPermissionBanner } from "../../components/notifications/Not
 import { AgentLimitBanner } from "../../components/AgentLimitBanner";
 import { DurabilityBanner } from "../../components/DurabilityBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
+import { DesktopTrayPublisher } from "../../components/layout/DesktopTrayPublisher";
 import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -84,9 +84,11 @@ import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
+import { useWorkspaceParamAdoption } from "../../hooks/useWorkspaceParamAdoption";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
+import { Spinner } from '@/components/ui/spinner'
 
 csMark("app:layout:module-load");
 
@@ -166,6 +168,11 @@ const PHONE_OWN_CHROME_ROUTES = new Set([
   "huddles",
   "new-workspace",
   "f",
+  // A person's profile and an agent's profile draw the phone's glass header
+  // (SHO-490); without these the shared hamburger bar stacked above them and
+  // their own header started 54px down the screen.
+  "people",
+  "agents",
 ]);
 
 /**
@@ -212,6 +219,11 @@ function AppLayoutInner() {
   const activeWorkspace = useActiveWorkspace();
   const workspaceMountKey = useWorkspaceRemountKey(activeWorkspace?.id);
   const workspaces = useWorkspaceCollection();
+  // `?workspace=<id>` on any screen: the shell opens it, on a phone too. A link
+  // into a workspace on a paired computer used to land in the companion's own
+  // space on a phone and stay there, because only the web sidebar adopted it
+  // (SHO-494).
+  useWorkspaceParamAdoption();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {
@@ -247,6 +259,10 @@ function AppLayoutInner() {
     /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, "/")) &&
     pathname !== "/projects" &&
     pathname !== "/(app)/projects";
+  // The Projects list is reached from More on a phone, so its header goes back
+  // there instead of opening the sidebar drawer (SHO-570).
+  const isProjectsList =
+    pathname.replace(/^\/(app\/)?/, "/").replace(/\/+$/, "") === "/projects";
   // The mobile shell is coupled to the workspace runtime: without it, the
   // legacy home remains available instead of exposing a chat that cannot run
   // turns. All workspace kinds share this mobile chrome; wide web keeps the
@@ -582,7 +598,7 @@ function AppLayoutInner() {
     if (isIdeEmbed) {
       return (
         <View className="flex-1 items-center justify-center bg-background p-4">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="mt-3 text-sm text-muted-foreground">
             Loading Shogo chat…
           </Text>
@@ -684,7 +700,7 @@ function AppLayoutInner() {
         !isIdeEmbed &&
         !suppressNarrowAppHeader &&
         !useMobileWorkspaceShell ? (
-          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} back={isProjectsList} />
         ) : null
       }
       bottomNav={
@@ -701,6 +717,7 @@ function AppLayoutInner() {
       {!isIdeEmbed ? <AgentLimitBanner /> : null}
       {!isIdeEmbed ? <DurabilityBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
+      {!isIdeEmbed ? <DesktopTrayPublisher /> : null}
       {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {/* The shell stays mounted on every phone route and only toggles its

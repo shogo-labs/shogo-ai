@@ -16,7 +16,6 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   Text,
@@ -40,6 +39,7 @@ import {
 } from 'lucide-react-native'
 import { Switch } from '@/components/ui/switch'
 import { API_URL } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 type AuthMode = 'anyone' | 'workspace' | 'custom'
 
@@ -197,7 +197,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
 
       {loading ? (
         <View className="px-4 py-6 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       ) : (
         <View className="p-4 gap-4">
@@ -323,7 +323,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
               }`}
             >
               {saving ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Text
                   className={`${isNative ? 'text-sm' : 'text-xs'} font-semibold ${
@@ -480,7 +480,7 @@ function UsersCard({ projectId }: { projectId: string }) {
 
         {state.loading ? (
           <View className="py-6 items-center">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         ) : state.items.length === 0 ? (
           <View className="py-6 items-center">
@@ -508,7 +508,7 @@ function UsersCard({ projectId }: { projectId: string }) {
             className="self-center px-4 py-2 rounded-md border border-border active:bg-muted"
           >
             {state.loadingMore ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Text className="text-xs text-foreground">Load more</Text>
             )}

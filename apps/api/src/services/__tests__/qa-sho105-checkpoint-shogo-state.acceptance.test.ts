@@ -18,6 +18,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { stampMtime } from '../../__tests__/helpers/stamp-mtime'
+
 const { setupChannelsTestDb, seedWorkspace } = await import('../../__tests__/helpers/channels-test-db')
 
 const quiet = { log: () => {}, warn: () => {}, error: () => {} }
@@ -205,6 +207,10 @@ describe('a commit must not race a history rewrite', () => {
     const head = git(dir, 'rev-parse', 'HEAD')
 
     write(dir, '.git/shogo-repair.lock', `${process.pid}\n`)
+    // Stamp the lock on the clock `isRepairInProgress` reads. An unstamped
+    // mtime carries the OS clock, which looks N days old under the
+    // future-clock nightly, so the commit would run instead of skipping.
+    stampMtime(join(dir, '.git/shogo-repair.lock'))
     write(dir, 'src/app.ts', 'export const z = 4\n')
     const during = await svc.commit(dir, {
       message: 'AI: checkpoint',

@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, View } from 'react-native'
+import { Pressable, View } from 'react-native'
 import {
   CalendarDays,
   CheckCircle2,
@@ -51,6 +51,7 @@ import { StatCard, CostSplitLines, formatDollarCost } from './SharedAnalytics'
 import { STACKED_PALETTE, StackedAreaChart } from './StackedAreaChart'
 import { ActivityHeatmap, HourOfWeekGrid } from './ActivityHeatmap'
 import { ModelShareDonut } from './ModelShareDonut'
+import { Spinner } from '@/components/ui/spinner'
 
 export type DashboardSource =
   | { kind: 'me' }
@@ -258,7 +259,7 @@ export function UsageDashboard({
         {header}
         <View className="rounded-xl border border-border bg-card p-8 items-center justify-center gap-2">
           {loading ? (
-            <ActivityIndicator />
+            <Spinner />
           ) : (
             <>
               <Text className="text-sm text-muted-foreground">{error ?? 'No activity data'}</Text>

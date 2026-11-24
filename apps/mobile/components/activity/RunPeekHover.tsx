@@ -8,9 +8,13 @@
  * pointer is over either the row or the card, and closes on:
  *   - pointer leaving both areas (after 150 ms grace)
  *   - Escape key
- *   - scroll of a containing list
+ *   - scroll of an element that actually moves the row (the feed, the window),
+ *     not a scroll in some unrelated pane
  *   - row unmount
  *   - peek returning null (turn ended)
+ *
+ * Every close goes through `close(reason)` and leaves the reason on
+ * `data-peek-close`, so a card that vanishes on a real page says why.
  *
  * On native the component renders its children unchanged — no hover, no fetch.
  *
@@ -29,6 +33,9 @@ import { useRunPeek } from '../../hooks/useRunPeek'
 const OPEN_DELAY_MS = 350
 const CLOSE_DELAY_MS = 150
 const CARD_WIDTH = 320
+
+/** Why the card last closed; kept on `data-peek-close` for the next failure. */
+type PeekCloseReason = 'scroll' | 'leave' | 'escape' | 'done'
 
 /** What the card knows upfront from the row (shown before the fetch arrives). */
 interface RowMeta {
@@ -103,6 +110,7 @@ export function RunPeekHoverById({
 function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: string | null | undefined; chat?: RowMeta['chat']; task?: Pick<AgentTask, 'title' | 'projectName' | 'status' | 'currentStep' | 'startedAt' | 'createdAt'>; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [anchor, setAnchor] = useState<{ rowRight: number; rowTop: number; rowBottom: number } | null>(null)
+  const [closeReason, setCloseReason] = useState<PeekCloseReason | null>(null)
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -119,11 +127,20 @@ function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: s
     }
   }
 
+  /** The only way the card closes, so `data-peek-close` always names the path. */
+  const close = (reason: PeekCloseReason) => {
+    clear('both')
+    setCloseReason(reason)
+    setOpen(false)
+    setAnchor(null)
+  }
+
   const scheduleOpen = (el: HTMLElement) => {
     clear('open')
     openTimerRef.current = setTimeout(() => {
       openTimerRef.current = null
       const rect = el.getBoundingClientRect()
+      setCloseReason(null)
       setAnchor({ rowRight: rect.right, rowTop: rect.top, rowBottom: rect.bottom })
       setOpen(true)
     }, OPEN_DELAY_MS)
@@ -133,23 +150,33 @@ function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: s
     clear('close')
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null
-      setOpen(false)
-      setAnchor(null)
+      close('leave')
     }, CLOSE_DELAY_MS)
   }
 
   const cancelClose = () => clear('close')
 
-  // Close on Escape and on list scroll.
+  // Close on Escape and on a scroll that moves the row.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setOpen(false); setAnchor(null) }
+      if (e.key === 'Escape') close('escape')
     }
     const onScroll = (e: Event) => {
-      if (cardRef.current?.contains(e.target as Node)) return
-      setOpen(false)
-      setAnchor(null)
+      const target = e.target as Node | null
+      // The window/document scrolling moves everything, so it moves the row.
+      // Any other scroller only matters when it is an ancestor of the row —
+      // the feed itself. A scroll in a sibling pane (the filter strip, a rail,
+      // a chat timeline behind it) leaves this row where it is.
+      const movesRow =
+        !target ||
+        target === document ||
+        target === document.documentElement ||
+        target === document.scrollingElement ||
+        (!!rowRef.current && (target as Node).contains?.(rowRef.current) === true)
+      if (!movesRow) return
+      if (target && cardRef.current?.contains(target)) return
+      close('scroll')
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('scroll', onScroll, { passive: true, capture: true })
@@ -166,7 +193,7 @@ function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: s
     workspaceId,
     chatSessionId: chat?.chatSessionId,
     turnId: chat?.turnId,
-    onDone: () => { setOpen(false); setAnchor(null) },
+    onDone: () => close('done'),
   })
 
   const card = anchor && typeof document !== 'undefined'
@@ -205,6 +232,9 @@ function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: s
     'div',
     {
       ref: rowRef,
+      // Which close path last fired. Empty means nothing closed this card —
+      // if the card is gone with an empty attribute, the wrapper remounted.
+      'data-peek-close': closeReason ?? '',
       onMouseEnter: (e: { currentTarget: HTMLElement }) => {
         clear('close')
         scheduleOpen(e.currentTarget)

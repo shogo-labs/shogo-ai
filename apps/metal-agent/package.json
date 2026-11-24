@@ -14,7 +14,7 @@
   "scripts": {
     "start": "bun run src/server.ts",
     "e2e": "bun run src/e2e.ts",
-    "test": "bun --no-env-file test src",
+    "test": "bun --no-env-file test src load",
     "typecheck": "tsc --noEmit"
   }
 }

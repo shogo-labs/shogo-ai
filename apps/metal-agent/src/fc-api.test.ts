@@ -57,6 +57,50 @@ describe('computeReclaimMiB', () => {
   })
 })
 
+describe('FcApi.machineConfig balloon config', () => {
+  /** Capture every (method, path, body) the client sends, and answer 204. */
+  async function capture(run: (api: FcApi) => Promise<unknown>) {
+    const realFetch = globalThis.fetch
+    const calls: Array<{ method?: string; path: string; body?: any }> = []
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      calls.push({
+        method: init.method,
+        path: String(url).replace(/^http:\/\/localhost/, ''),
+        body: init.body ? JSON.parse(init.body) : undefined,
+      })
+      return new Response(null, { status: 204 })
+    }) as any
+    try {
+      await run(new FcApi('/tmp/fake.sock'))
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    return calls
+  }
+
+  test('omits free_page_reporting unless asked (byte-identical body when off)', async () => {
+    const calls = await capture((api) => api.machineConfig(2, 4096, true, 1))
+    const balloon = calls.find((c) => c.path === '/balloon')
+    expect(balloon!.body).toEqual({
+      amount_mib: 0,
+      deflate_on_oom: true,
+      stats_polling_interval_s: 1,
+    })
+  })
+
+  test('sends free_page_reporting: true when enabled', async () => {
+    const calls = await capture((api) => api.machineConfig(2, 4096, true, 1, true))
+    const balloon = calls.find((c) => c.path === '/balloon')
+    // FC 1.16.1's Balloon definition, pre-boot only (BalloonUpdate has no field).
+    expect(balloon!.body).toEqual({
+      amount_mib: 0,
+      deflate_on_oom: true,
+      stats_polling_interval_s: 1,
+      free_page_reporting: true,
+    })
+  })
+})
+
 describe('FcApi.patchDrive', () => {
   test('sends drive_id in the PATCH body (SHO-401)', async () => {
     const realFetch = globalThis.fetch

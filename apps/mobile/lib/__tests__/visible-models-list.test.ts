@@ -93,17 +93,21 @@ describe('reconcileModelSelection (stale pre-UUID selection)', () => {
     openrouterModels: [],
   } as any
 
-  test('stale slug + default visible but metadata absent → resets to Auto', () => {
-    expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshot)).toBe('auto')
-    expect(reconcileModelSelection('claude-opus-4-8', 'claude-sonnet-4-6', snapshot)).toBe('auto')
+  test('stale slug + default visible → resets to the default (never another raw slug)', () => {
+    // SH0-497: "visible" is decided by the snapshot itself — a fallback present
+    // in the live catalog is renderable, so it is the reset target. (The old
+    // rule also demanded an entry in the *global* metadata index, which a pure
+    // call cannot see and which is empty until a fetch lands.)
+    expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshot)).toBe('claude-sonnet-4-6')
+    expect(reconcileModelSelection('claude-opus-4-8', 'claude-sonnet-4-6', snapshot)).toBe('claude-sonnet-4-6')
   })
 
   test('stale slug + default NOT visible → resets to Auto (never another raw slug)', () => {
     expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshotNoDefault)).toBe('auto')
   })
 
-  test('fallback present in the snapshot but absent from server metadata → Auto', () => {
-    expect(reconcileModelSelection('legacy-model', 'claude-sonnet-4-6', snapshot)).toBe('auto')
+  test('fallback present in the snapshot → the fallback, not Auto', () => {
+    expect(reconcileModelSelection('legacy-model', 'claude-sonnet-4-6', snapshot)).toBe('claude-sonnet-4-6')
   })
 
   test('known catalog/OpenRouter id → no reset (null)', () => {

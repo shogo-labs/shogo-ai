@@ -11,6 +11,7 @@ import {
   buildPublishSchema,
   buildSeedSql,
   countSeedRows,
+  dropOrphanedSeedRows,
   orderSeedTables,
   parseBooleanColumns,
   parseModelTables,
@@ -108,11 +109,11 @@ describe('seed ordering', () => {
     ).toBe('blogs')
   })
 
-  it('reads only the side that holds the foreign key', () => {
+  it('reads only the side that holds the foreign key, with the FK columns', () => {
     const relations = parseSeedRelations(SQLITE_SCHEMA)
     expect(relations).toEqual([
-      { child: 'Post', parent: 'User' },
-      { child: 'Category', parent: 'Category' },
+      { child: 'Post', parent: 'User', childColumns: ['authorId'], parentColumns: ['id'] },
+      { child: 'Category', parent: 'Category', childColumns: ['parentId'], parentColumns: ['id'] },
     ])
   })
 
@@ -261,5 +262,203 @@ model Item {
       },
     ])
     expect(sql).toContain("(1, '1', TRUE)")
+  })
+})
+
+// SHO-551: seed rows that reference deleted parents (FK targets) must be
+// filtered out before the seed SQL is built, so Postgres doesn't reject
+// the whole seed with a foreign key violation.
+describe('dropping orphaned seed rows', () => {
+  const schema = `
+model Application {
+  id    String @id
+  title String
+  stages StageChange[]
+}
+model StageChange {
+  id            String      @id
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  note          String
+}
+`
+  const relations = parseSeedRelations(schema)
+  const modelTables = parseModelTables(schema)
+
+  const apps: import('../published-schema').SeedTableData = {
+    table: 'Application',
+    columns: ['id', 'title'],
+    rows: [['app1', 'App 1'], ['app2', 'App 2']],
+  }
+  const stages: import('../published-schema').SeedTableData = {
+    table: 'StageChange',
+    columns: ['id', 'applicationId', 'note'],
+    rows: [
+      ['s1', 'app1', 'valid'],
+      ['s2', 'app2', 'valid'],
+      ['s3', 'deleted-app', 'orphan 1'],
+      ['s4', 'gone-app', 'orphan 2'],
+    ],
+  }
+
+  it('drops children of deleted parents and reports them', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    const sc = tables.find((t: any) => t.table === 'StageChange')!
+    expect(sc.rows).toHaveLength(2)
+    expect(sc.rows.map((r: any) => r[0])).toEqual(['s1', 's2'])
+    expect(orphans).toHaveLength(1)
+    expect(orphans[0]).toMatchObject({ table: 'StageChange', count: 2 })
+    expect(orphans[0].sampleIds).toContain('deleted-app')
+  })
+
+  it('keeps valid rows and tables with no FK intact', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    const appTable = tables.find((t: any) => t.table === 'Application')!
+    expect(appTable.rows).toHaveLength(2)
+    expect(orphans.map((o: any) => o.table)).not.toContain('Application')
+  })
+
+  it('reports sample ids for the orphaned rows', () => {
+    const { orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    expect(orphans[0].sampleIds).toContain('deleted-app')
+    expect(orphans[0].sampleIds).toContain('gone-app')
+  })
+
+  it('handles tables with no relations without touching them', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps], [], modelTables)
+    expect(tables[0].rows).toHaveLength(2)
+    expect(orphans).toHaveLength(0)
+  })
+})
+
+// SHO-551 AC 1: KIF's shape — one deleted parent with three child tables, plus a
+// grandchild that only becomes an orphan once its own parent row is dropped.
+// `attachments` is listed *before* `stage_changes` deliberately: a single pass in
+// array order sees the still-unfiltered parent and keeps the grandchild, which is
+// exactly the defect QA reproduced.
+describe('dropping orphaned seed rows through several levels', () => {
+  const schema = `
+model Application {
+  id       String       @id
+  title    String
+  stages   StageChange[]
+  payments Payment[]
+  reviews  Review[]
+}
+model StageChange {
+  id            String       @id
+  applicationId String
+  application   Application  @relation(fields: [applicationId], references: [id])
+  attachments   Attachment[]
+}
+model Attachment {
+  id            String      @id
+  stageChangeId String
+  stageChange   StageChange @relation(fields: [stageChangeId], references: [id])
+  url           String
+}
+model Payment {
+  id            String      @id
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  amount        Int
+}
+model Review {
+  id            String      @id
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  rating        Int
+}
+`
+  const relations = parseSeedRelations(schema)
+  const modelTables = parseModelTables(schema)
+
+  type SeedTableData = import('../published-schema').SeedTableData
+
+  const make = () => ({
+    attachments: {
+      table: 'Attachment',
+      columns: ['id', 'stageChangeId', 'url'],
+      rows: [
+        ['a1', 's1', 'ok'],
+        ['a2', 's2', 'grandchild of a dropped row'],
+      ],
+    } as SeedTableData,
+    stages: {
+      table: 'StageChange',
+      columns: ['id', 'applicationId'],
+      rows: [
+        ['s1', 'app1', 'valid'],
+        ['s2', 'deleted-app', 'orphan'],
+        ['s3', 'app2', 'valid'],
+      ],
+    } as SeedTableData,
+    payments: {
+      table: 'Payment',
+      columns: ['id', 'applicationId', 'amount'],
+      rows: [
+        ['p1', 'app1', 100],
+        ['p2', 'gone-app', 200],
+      ],
+    } as SeedTableData,
+    reviews: {
+      table: 'Review',
+      columns: ['id', 'applicationId', 'rating'],
+      rows: [
+        ['r1', 'deleted-app', 5],
+        ['r2', 'gone-app', 1],
+      ],
+    } as SeedTableData,
+    applications: {
+      table: 'Application',
+      columns: ['id', 'title'],
+      rows: [
+        ['app1', 'App 1'],
+        ['app2', 'App 2'],
+      ],
+    } as SeedTableData,
+  })
+
+  const run = () => {
+    const fixture = make()
+    return dropOrphanedSeedRows(
+      [fixture.attachments, fixture.stages, fixture.payments, fixture.reviews, fixture.applications],
+      relations,
+      modelTables,
+    )
+  }
+
+  const rowsOf = (tables: SeedTableData[], table: string) =>
+    tables.find((t) => t.table === table)!.rows.map((row) => row[0])
+
+  it('drops orphans in all three child tables', () => {
+    const { tables } = run()
+    expect(rowsOf(tables, 'Application')).toEqual(['app1', 'app2'])
+    expect(rowsOf(tables, 'StageChange')).toEqual(['s1', 's3'])
+    expect(rowsOf(tables, 'Payment')).toEqual(['p1'])
+    expect(rowsOf(tables, 'Review')).toEqual([])
+  })
+
+  it('drops a grandchild whose own parent row was dropped', () => {
+    const { tables } = run()
+    expect(rowsOf(tables, 'Attachment')).toEqual(['a1'])
+  })
+
+  it('reports one entry per dropped relation with counts and samples', () => {
+    const { orphans } = run()
+    const byTable = Object.fromEntries(orphans.map((o) => [o.table, o]))
+    expect(byTable.StageChange).toMatchObject({ column: 'applicationId', parent: 'Application', count: 1 })
+    expect(byTable.StageChange.sampleIds).toEqual(['deleted-app'])
+    expect(byTable.Attachment).toMatchObject({ column: 'stageChangeId', parent: 'StageChange', count: 1 })
+    expect(byTable.Attachment.sampleIds).toEqual(['s2'])
+    expect(byTable.Payment).toMatchObject({ count: 1 })
+    expect(byTable.Review).toMatchObject({ count: 2 })
+    expect(orphans).toHaveLength(4)
+  })
+
+  it('leaves the input tables untouched', () => {
+    const fixture = make()
+    dropOrphanedSeedRows([fixture.stages, fixture.applications], relations, modelTables)
+    expect(fixture.stages.rows).toHaveLength(3)
   })
 })

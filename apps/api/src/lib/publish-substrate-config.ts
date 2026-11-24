@@ -7,6 +7,8 @@
  * publish route can read it cheaply without pulling a heavy controller.
  */
 
+import { parsePublishFlag, publishFlagAllows } from './publish-flag'
+
 /**
  * Whether NEW publishes are OWNED by the metal substrate.
  *
@@ -49,36 +51,37 @@ export function shouldServeStaticFromEdgeOnly(): boolean {
 }
 
 /**
- * Whether a publish should move the app's data onto Postgres (SHO-308 §1).
+ * Whether this publish keeps the environment's database on Postgres (§G).
  *
- * The publish pipeline provisions the environment's database, pushes the app's
- * schema at it and seeds it from `prisma/dev.db` — which can only work where the
- * `projects-pg` infrastructure exists. Two conditions, both real configuration
- * rather than a switch that hides a broken path:
+ * `dbProvider` on the environment row is the record of what the pod is actually
+ * mounted with, and the region switch must never contradict it. An environment
+ * that has moved to Postgres and is then published while `PUBLISH_POSTGRES` says
+ * `off` would otherwise build a SQLite image against a Postgres `DATABASE_URL`:
+ * the boot guard exits, the revision never becomes ready, and every later
+ * republish fails the same way. So a recorded Postgres environment stays on
+ * Postgres; taking it back to SQLite is an explicit cutover (which clears
+ * `dbProvider`), never a side effect of the flag.
  *
- *   1. the site is being published to **Knative**. A metal site keeps its SQLite
- *      data archive; that is the substrate's contract, and the escape hatch has
- *      to stay usable.
- *   2. the cluster is reachable *and* its databases have a pooled address —
- *      `PROJECTS_DB_ADMIN_URL` and `PROJECTS_DB_POOLER_HOST`. These are exactly
- *      the two things `ensureEnvironmentDatabase` refuses on (it answers
- *      `database_unavailable` for a missing pooler or a missing admin URL), so
- *      the gate and the refusal can never disagree: a region that would 503 is a
- *      region that this gate keeps on SQLite, publishing exactly as it does
- *      today. Checking only one of them would let the other turn every
- *      server-app publish into a 503.
- *
- * `PUBLISH_POSTGRES=on|off` forces the decision for a single rollout step —
- * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
- * of silently staying on SQLite, and `off` is how a publish is taken back off
- * Postgres without unsetting the URLs.
+ * `sticky` is reported separately from `flag`/`config` so the publish log says
+ * which rule decided.
  */
-export function shouldProvisionPublishedDatabase(substrateKind: 'knative' | 'metal'): boolean {
-  if (substrateKind !== 'knative') return false
-  const override = (process.env.PUBLISH_POSTGRES || '').trim().toLowerCase()
-  if (override === 'off') return false
-  if (override === 'on') return true
-  return !!configuredProjectsDatabase()
+export function resolvePublishDbProvider(input: {
+  serverBacked: boolean
+  substrateKind: 'knative' | 'metal'
+  /** `PublishedEnvironment.dbProvider` as stored. */
+  environmentProvider?: string | null
+  projectId?: string | null
+}): { provider: 'sqlite' | 'postgres'; reason: 'sticky' | 'flag' | 'config' | 'off' | 'not-server-backed' | 'metal' } {
+  if (!input.serverBacked) return { provider: 'sqlite', reason: 'not-server-backed' }
+  if (input.substrateKind !== 'knative') return { provider: 'sqlite', reason: 'metal' }
+  if (input.environmentProvider === 'postgres') return { provider: 'postgres', reason: 'sticky' }
+  const flag = parsePublishFlag(process.env.PUBLISH_POSTGRES)
+  const verdict = publishFlagAllows(flag, input.projectId)
+  if (verdict === true) return { provider: 'postgres', reason: 'flag' }
+  if (verdict === false) return { provider: 'sqlite', reason: 'off' }
+  return configuredProjectsDatabase()
+    ? { provider: 'postgres', reason: 'config' }
+    : { provider: 'sqlite', reason: 'off' }
 }
 
 /**

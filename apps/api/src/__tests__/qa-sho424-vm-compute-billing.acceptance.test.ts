@@ -25,7 +25,7 @@
  *  - AC5: the instance-size checkout answers 410 and no client still sells it.
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setupChannelsTestDb, seedWorkspace, type SeededWorkspace } from './helpers/channels-test-db'
@@ -72,14 +72,31 @@ const db = prisma as any
 
 const HOST = 'metal-us-qa'
 /**
- * A fixed hour inside the current billing month (today is 2026-11-18).
+ * The last hour this file may seed, and the clock it runs on (just after it).
+ *
+ * The seeds are fixed (2026-11-18/19) because the biller claims ONE run per
+ * region-hour, so they cannot float with today's date; the clock is pinned
+ * instead, so the reads under test always see them. Nothing here may depend on
+ * the real date.
+ */
+const SEEDED_THROUGH = new Date(Date.UTC(2026, 10, 19, 0, 0, 0))
+const SEEDED_AT = new Date(SEEDED_THROUGH.getTime() + 30 * 60_000)
+
+/**
+ * The next fixed hour inside the seeded billing month.
  * Every ingest and every bill run takes the next slot: the job claims ONE run
  * per region-hour, so two scenarios sharing an hour would silently skip the
  * second (which is the behaviour we want in production, and the reason this is
- * a counter rather than a constant).
+ * a counter rather than a constant). It must stay behind the pinned clock.
  */
 let slot = 9
-const nextHour = () => new Date(Date.UTC(2026, 10, 18, ++slot, 0, 0))
+const nextHour = () => {
+  const at = new Date(Date.UTC(2026, 10, 18, ++slot, 0, 0))
+  if (at.getTime() > SEEDED_THROUGH.getTime()) {
+    throw new Error(`seed hour ${at.toISOString()} is past SEEDED_THROUGH; move it and SEEDED_AT follows`)
+  }
+  return at
+}
 
 let seeded: SeededWorkspace
 let superAdmin = ''
@@ -91,7 +108,18 @@ beforeAll(async () => {
     data: { name: 'super', email: `super-${suffix}@example.com`, role: 'super_admin' },
   })
   superAdmin = su.id
+  // Pin the clock after the seeds so the 72h meter-coverage window, the 14-day
+  // history, the month boundary and the workspace chart buckets all land on
+  // those rows instead of walking off them as real time passes. `compute-usage`
+  // reads exactly one clock per path, so this is the `now` both routes and
+  // `adminComputeSummary()` see.
+  setSystemTime(SEEDED_AT)
 }, 120_000)
+
+afterAll(() => {
+  // The clock is process-wide; a later file must not inherit it.
+  setSystemTime()
+})
 
 beforeEach(() => {
   consumeCalls.length = 0
@@ -132,7 +160,13 @@ function heartbeat(fields: {
   }
 }
 
-const ASSIGNED_AT = Date.UTC(2026, 10, 18, 10, 0, 0)
+/**
+ * An hour before the first seeded slot, so a VM that reports 1,800 s (or a full
+ * hour) on its FIRST heartbeat is reporting something it could physically have
+ * used. Ingest bounds a delta by the wall clock since assignment (SHO-532), and
+ * the interval it bills `[now − billed, now]` then sits inside one hour.
+ */
+const ASSIGNED_AT = Date.UTC(2026, 10, 18, 9, 0, 0)
 
 async function rowsFor(workspaceId: string) {
   return db.vmUsageHour.findMany({ where: { workspaceId }, orderBy: { hour: 'asc' } })
@@ -453,9 +487,8 @@ describe('GET /api/admin/compute', () => {
     expect(Array.isArray(body.data.byCause)).toBe(true)
     expect(body.data.byCause.map((c: any) => c.cause)).toContain('user_open')
     expect(Array.isArray(body.data.topWorkspaces)).toBe(true)
-    // `adminComputeSummary` builds `reconciliation: reconcile()` without
-    // awaiting it, so the promise serialises to `{}` and the panel's own
-    // "this is the point of the panel" line never reaches the client.
+    // The panel's own "this is the point of the panel" line: `reconcile()` is
+    // awaited, so both fields reach the client instead of a serialised promise.
     expect(Object.keys(body.data.reconciliation ?? {})).toEqual([
       'hostsReportingUsage',
       'hostsMissingMeter',
@@ -471,6 +504,21 @@ describe('GET /api/admin/compute', () => {
     expect(summary.totals.idleVmHours).toBeGreaterThan(0)
     expect(summary.totals.platformOverheadUsd).toBeGreaterThan(0)
     expect(summary.totals.billableUsd).toBeGreaterThan(0)
+  })
+
+  test('reconcile honours the summary clock instead of the wall clock', async () => {
+    // The bug this pins: `reconcile()` used `Date.now()` for its 72h
+    // meter-coverage window and ignored the `now` the summary was given, so the
+    // line read 0 for fixed seed hours as soon as real time passed them.
+    const last = await db.vmUsageHour.findFirst({
+      where: { hostId: HOST },
+      orderBy: { hour: 'desc' },
+      select: { hour: true },
+    })
+    const inside = await adminComputeSummary({ now: new Date(last.hour.getTime() + 3_600_000) })
+    expect(inside.reconciliation.hostsReportingUsage).toBeGreaterThan(0)
+    const stale = await adminComputeSummary({ now: new Date(last.hour.getTime() + 80 * 3_600_000) })
+    expect(stale.reconciliation.hostsReportingUsage).toBe(0)
   })
 })
 

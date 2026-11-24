@@ -209,6 +209,16 @@ export function getGradientOpacity(index: number): number {
   return GRADIENT_CONFIG.opacities[Math.min(index, GRADIENT_CONFIG.opacities.length - 1)]
 }
 
+/**
+ * A tool argument as a string, or undefined. Tool args come from the model and
+ * are not schema-checked on the way to the client: a `path` sent as an array
+ * or object reached `.split` / `.replace` and took the chat panel down
+ * (Sentry SHOGO-REACT-63 / REACT-73).
+ */
+export function stringArg(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
+
 export function getToolKeyArg(toolName: string, args?: Record<string, unknown>): string | null {
   if (!args) return null
 
@@ -221,7 +231,7 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
 
   if (toolName === "Read" || toolName === "Write" || toolName === "Edit" ||
       toolName === "read_file" || toolName === "write_file" || toolName === "edit_file") {
-    const path = (args.file_path ?? args.path) as string | undefined
+    const path = stringArg(args.file_path ?? args.path)
     if (path) {
       const segments = path.split("/")
       return segments[segments.length - 1] || path
@@ -229,14 +239,14 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
   }
 
   if (toolName === "Grep" || toolName === "Glob" || toolName === "grep" || toolName === "glob" || toolName === "search") {
-    const pattern = args.pattern as string | undefined
+    const pattern = stringArg(args.pattern)
     if (pattern) {
       return pattern.length > 30 ? pattern.slice(0, 27) + "..." : pattern
     }
   }
 
   if (toolName === "Bash" || toolName === "exec") {
-    const command = args.command as string | undefined
+    const command = stringArg(args.command)
     if (command) {
       const firstLine = command.split("\n")[0]
       return firstLine.length > 40 ? firstLine.slice(0, 37) + "..." : firstLine
@@ -244,58 +254,58 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
   }
 
   if (toolName === "browser") {
-    const action = args.action as string | undefined
+    const action = stringArg(args.action)
     if (action === "navigate") {
-      const url = args.url as string | undefined
+      const url = stringArg(args.url)
       if (url) return url.length > 30 ? url.slice(0, 27) + "..." : url
     }
     return action || null
   }
 
   if (toolName === "Task") {
-    const desc = args.description as string | undefined
+    const desc = stringArg(args.description)
     if (desc) {
       return desc.length > 30 ? desc.slice(0, 27) + "..." : desc
     }
   }
 
   if (toolName === "Skill") {
-    return (args.skill as string | undefined) || null
+    return stringArg(args.skill) || null
   }
 
   if (toolName.startsWith("mcp__shogo__")) {
     const shortName = toolName.replace("mcp__shogo__", "")
 
     if (shortName.startsWith("schema_")) {
-      return (args.name as string | undefined) || (args.schemaName as string | undefined) || null
+      return stringArg(args.name) || stringArg(args.schemaName) || null
     }
 
     if (shortName.startsWith("store_")) {
-      const model = args.model as string | undefined
-      const schema = args.schema as string | undefined
+      const model = stringArg(args.model)
+      const schema = stringArg(args.schema)
       if (model && schema) return `${schema}.${model}`
       return model || schema || null
     }
 
     if (shortName.startsWith("view_")) {
-      return (args.view as string | undefined) || (args.name as string | undefined) || null
+      return stringArg(args.view) || stringArg(args.name) || null
     }
   }
 
   if (toolName.startsWith("mcp__obsidian")) {
     return (
-      (args.filename as string | undefined) ||
-      (args.query as string | undefined) ||
-      (args.directory as string | undefined) ||
+      stringArg(args.filename) ||
+      stringArg(args.query) ||
+      stringArg(args.directory) ||
       null
     )
   }
 
   if (toolName.startsWith("mcp__chrome-devtools__")) {
     const shortName = toolName.replace("mcp__chrome-devtools__", "")
-    if (shortName === "navigate_page") return (args.url as string | undefined) || null
+    if (shortName === "navigate_page") return stringArg(args.url) || null
     if (shortName === "click" || shortName === "fill" || shortName === "hover") {
-      return (args.uid as string | undefined) || null
+      return stringArg(args.uid) || null
     }
     if (shortName === "evaluate_script") return "script"
     if (shortName === "take_screenshot") return args.fullPage ? "full page" : "viewport"

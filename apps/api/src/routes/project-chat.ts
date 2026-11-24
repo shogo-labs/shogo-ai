@@ -222,6 +222,22 @@ export async function trackUsageFromStream(
      */
     resumeRetryDelaysMs?: number[]
     /**
+     * How long the tracker keeps re-attaching to a live turn's buffer after
+     * the original stream was cut (SHO-546). Defaults to the runtime's buffer
+     * life (30 min after its last write): past that the buffer is gone, so a
+     * further resume is pointless. Bounds the retry loop by the turn's
+     * lifetime, not by an attempt count — a long turn is cut and re-attached
+     * as many times as the transport makes it.
+     */
+    resumeBudgetMs?: number
+    /**
+     * Pause before the next resume leg once a replay has drained without
+     * `data-turn-complete`. Default 1 s, growing to 5 s across legs so a
+     * runtime that ends every replay immediately cannot be polled in a tight
+     * loop. Exposed for tests to shrink to `0`.
+     */
+    resumeLegDelayMs?: number
+    /**
      * Resolved chat-session id from the route handler. Takes precedence
      * over `requestBody.chatSessionId`. When the route handler reads
      * `X-Chat-Session-Id` from the request headers, it must pass that
@@ -254,6 +270,13 @@ export async function trackUsageFromStream(
      * names a different turn is not ours and is never persisted as this turn.
      */
     expectedTurnId?: string
+    /**
+     * The API-side `activityTurnId` (`ChatSession.activeTurnId`) under which
+     * `TurnJournalWriter` recorded this turn's `chat_turn_frames` rows.
+     * Distinct from `trackedTurnId` whenever upstream omits `X-Turn-Id` (or
+     * ends before `data-turn-start`), so completion cleanup deletes both keys.
+     */
+    journalTurnId?: string | null
     /** Workspace of a `project: null` turn, so its usage can still be recorded. */
     workspaceId?: string
   } = {},
@@ -274,7 +297,14 @@ export async function trackUsageFromStream(
   }
   const usageRef: { value: UsageSnapshot | null } = { value: null }
   const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
-  const agentMode = requestBody?.agentMode || 'advanced'
+  // The model this run actually started with (after any downgrade), stamped on
+  // the assistant row. `null` when the body carried none — never the legacy
+  // `advanced` sentinel, which the composer would then adopt as a pick and
+  // reset to Auto (SHO-497).
+  const agentMode: string | null =
+    typeof requestBody?.agentMode === 'string' && requestBody.agentMode.trim()
+      ? requestBody.agentMode.trim()
+      : null
 
   // Accumulate tool call data incrementally as stream events arrive.
   // Keyed by toolCallId so args, result, and duration are captured correctly.
@@ -654,6 +684,47 @@ export async function trackUsageFromStream(
   }
 
   /**
+   * Everything a resume replay rewrites, held so a replay that yields less
+   * than we already had cannot replace it (SHO-546).
+   *
+   * `orderedParts` and its part objects are captured by reference: a replay
+   * fills NEW part objects (`resetAccumulatedState` starts a fresh array), so
+   * the captured ones are never mutated afterwards. That is what makes a dead
+   * replay harmless — the tracker keeps exactly the parts the first leg had,
+   * and the final persist is never smaller than the best leg.
+   */
+  function captureAccumulators() {
+    return {
+      toolCallMap,
+      orderedParts,
+      toolPartIndex,
+      accumulatedText,
+      currentTextPart,
+      currentReasoningPart,
+      reasoningStartedAt,
+      usage: usageRef.value,
+      qualitySignals,
+      turnStartedAt,
+    }
+  }
+
+  function restoreAccumulators(state: ReturnType<typeof captureAccumulators>) {
+    toolCallMap = state.toolCallMap
+    orderedParts = state.orderedParts
+    toolPartIndex = state.toolPartIndex
+    accumulatedText = state.accumulatedText
+    currentTextPart = state.currentTextPart
+    currentReasoningPart = state.currentReasoningPart
+    reasoningStartedAt = state.reasoningStartedAt
+    usageRef.value = state.usage
+    qualitySignals = state.qualitySignals
+    turnStartedAt = state.turnStartedAt
+    turnCompletedAt = undefined
+    observedTurnComplete = false
+    turnCompleteStatus = null
+  }
+
+  /**
    * Partial reset on an inference retry. The runtime re-issued a model call
    * that dropped mid-generation, so the failed step's partial text/reasoning
    * (and any partially-streamed tool input that never executed) must be
@@ -960,6 +1031,14 @@ export async function trackUsageFromStream(
       persistenceDirty = true
     }
 
+    // Live status only: "Summarizing…" while the summarizer calls run
+    // (SHO-556). Deliberately NOT a persisted part — a reload must never
+    // resurrect a spinner that nothing will resolve. The transcript row is the
+    // `data-context-summarized` part below, which replaces it.
+    if (type === 'data-context-summarizing') {
+      return
+    }
+
     if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
       const usageData = data.usage || data.data
       if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {
@@ -1038,7 +1117,10 @@ export async function trackUsageFromStream(
    * carried between chunks, instead of `buffer +=` plus a whole-buffer
    * `split('\n')` per chunk.
    */
-  async function consumeStream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
+  async function consumeStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    opts: { replay?: boolean } = {},
+  ): Promise<boolean> {
     let buffer = ''
     try {
       while (true) {
@@ -1073,6 +1155,14 @@ export async function trackUsageFromStream(
       }
       return true
     } catch (streamErr: any) {
+      if (opts.replay) {
+        // A cut replay says nothing about what we hold: the caller compares it
+        // with the previous leg and keeps whichever is larger (SHO-546).
+        console.warn(
+          `[ProjectChat] Resume replay cut (${streamErr.code || streamErr.message}) after ${accumulatedText.length} chars — comparing with the previous leg`
+        )
+        return false
+      }
       console.warn(`[ProjectChat] Stream interrupted (${streamErr.code || streamErr.message}), persisting ${accumulatedText.length} chars accumulated so far`)
       // A read error must not lose what was already seen: write the snapshot
       // here in case the caller's own error handling returns early.
@@ -1101,20 +1191,31 @@ export async function trackUsageFromStream(
     return { outcome: 'foreign', status: null, text: '', assistantMessageId }
   }
 
-  // Auto-resume drive: when the original stream EOF'd cleanly but the runtime
-  // never emitted `data-turn-complete`, the upstream proxy cut us off mid-turn.
-  // The runtime keeps appending to its `streamBufferStore` independent of the
-  // HTTP connection, so we reconnect via `/agent/chat/:id/stream?fromSeq=0`
-  // and drain the full turn from the buffer. We use fromSeq=0 (full replay)
-  // rather than fromSeq=lastObservedSeq because the seq the heartbeat reports
-  // lags the actual chunks, and a full reset+replay avoids any text-delta
-  // duplication. If the buffer is gone (stop button or pod crash → 204), or
-  // the resume itself errors, we fall through to persisting whatever the
-  // original stream gave us.
+  // Auto-resume drive: when the stream ends without `data-turn-complete`, the
+  // upstream body was cut mid-turn (the tunnel's relay, an edge timeout, a pod
+  // restart, a dropped socket). The runtime keeps appending to its
+  // `streamBufferStore` independent of the HTTP connection, so we reconnect via
+  // `/agent/chat/:id/stream?fromSeq=0` and drain the full turn from the buffer.
+  // We use fromSeq=0 (full replay) rather than fromSeq=lastObservedSeq because
+  // the seq the heartbeat reports lags the actual chunks, and a full
+  // reset+replay avoids any text-delta duplication.
+  //
+  // One resume is not enough (SHO-546): on a desktop-hosted workspace the
+  // replacement stream is cut again a few minutes later, and the turn keeps
+  // working on the desktop. So this is a loop that re-attaches for as long as
+  // the turn is alive — bounded by the runtime's buffer life (30 min past its
+  // last write), not by an attempt count — and stops when the buffer answers
+  // 204 (gone), replays a different turn, or reaches `data-turn-complete`.
+  // Every leg replays into a fresh accumulator set and only replaces what we
+  // hold once it has caught up, so a cut leg never shrinks the row.
   let resumeOutcome: 'not-attempted' | 'recovered' | 'buffer-gone' | 'failed' = 'not-attempted'
-  const eofWithoutTurnComplete = !originalStreamErrored && !observedTurnComplete
+  // A read error is not an EOF (SHO-546 kept main's guard): the socket died
+  // under us rather than the upstream body ending cleanly, so there is no
+  // "ended without turn-complete" to resume from and the outcome stays
+  // `interrupted` — persisting what the cut stream gave us.
+  const streamEndedWithoutTurnComplete = !originalStreamErrored && !observedTurnComplete
 
-  if (eofWithoutTurnComplete && chatSessionId && options.resume) {
+  if (streamEndedWithoutTurnComplete && chatSessionId && options.resume) {
     console.log(
       `[ProjectChat] EOF without turn-complete for session ${chatSessionId} (lastObservedSeq=${lastObservedSeq}) — server-side resume from buffer`
     )
@@ -1126,72 +1227,130 @@ export async function trackUsageFromStream(
     // back up, but the buffer itself survives the restart, so a fresh
     // attempt moments later reattaches successfully.
     const RESUME_RETRY_DELAYS_MS = options.resumeRetryDelaysMs ?? [300, 800, 1500]
-    let resumeRes: Response | null = null
-    for (let resumeAttempt = 0; resumeAttempt <= RESUME_RETRY_DELAYS_MS.length; resumeAttempt++) {
-      try {
-        resumeRes = await options.resume(0)
-      } catch (err: any) {
-        resumeRes = null
-        console.warn(`[ProjectChat] Resume fetch threw: ${err?.message || err}`)
+    const resumeBudgetMs = Math.max(0, options.resumeBudgetMs ?? 30 * 60_000)
+    const resumeLegDelayMs = Math.max(0, options.resumeLegDelayMs ?? 1_000)
+    const resumeDeadline = Date.now() + resumeBudgetMs
+
+    const openResumeLeg = async (): Promise<Response | null> => {
+      let resumeRes: Response | null = null
+      for (let resumeAttempt = 0; resumeAttempt <= RESUME_RETRY_DELAYS_MS.length; resumeAttempt++) {
+        try {
+          resumeRes = await options.resume!(0)
+        } catch (err: any) {
+          resumeRes = null
+          console.warn(`[ProjectChat] Resume fetch threw: ${err?.message || err}`)
+        }
+        if (resumeRes) break
+        if (resumeAttempt < RESUME_RETRY_DELAYS_MS.length) {
+          const delay = RESUME_RETRY_DELAYS_MS[resumeAttempt]
+          console.log(
+            `[ProjectChat] Resume attempt ${resumeAttempt + 1} failed for session ${chatSessionId} — ` +
+              `retrying in ${delay}ms (runtime is likely mid-restart)`
+          )
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
       }
-      if (resumeRes) break
-      if (resumeAttempt < RESUME_RETRY_DELAYS_MS.length) {
-        const delay = RESUME_RETRY_DELAYS_MS[resumeAttempt]
-        console.log(
-          `[ProjectChat] Resume attempt ${resumeAttempt + 1} failed for session ${chatSessionId} — ` +
-            `retrying in ${delay}ms (runtime is likely mid-restart)`
-        )
-        await new Promise(resolve => setTimeout(resolve, delay))
-      }
-    }
-    if (!resumeRes) {
-      resumeOutcome = 'failed'
+      return resumeRes
     }
 
-    const resumeTurnId = resumeRes?.headers.get('X-Turn-Id') || undefined
-    if (resumeRes && resumeRes.status === 200 && trackedTurnId && resumeTurnId && resumeTurnId !== trackedTurnId) {
-      resumeOutcome = 'buffer-gone'
-      console.log(
-        `[ProjectChat] Resume for session ${chatSessionId} returned turn ${resumeTurnId}, expected ${trackedTurnId} — ` +
-          `a newer turn replaced the buffer; persisting partial`
-      )
-      try { resumeRes.body?.cancel() } catch { /* noop */ }
-    } else if (resumeRes) {
-      if (resumeRes.status === 200 && resumeRes.body) {
-        // Reset state — we're going to re-consume the entire turn from the
-        // buffer's full replay, so any text/tool data we accumulated from
-        // the original stream needs to be cleared to avoid duplication.
-        resetAccumulatedState()
-        // The accumulators are empty again and the row is not: nothing may be
-        // written until the replay has produced at least what was there (SHO-274).
-        replayShorter = true
-        const resumeOk = await consumeStream(resumeRes.body.getReader())
-        if (foreignTurn) {
-          resumeOutcome = 'buffer-gone'
-          console.log(
-            `[ProjectChat] Resume for session ${chatSessionId} replayed an older turn — keeping the persisted partial`,
-          )
-        } else if (observedTurnComplete) {
-          resumeOutcome = 'recovered'
-        } else {
-          resumeOutcome = 'failed'
-          console.warn(
-            `[ProjectChat] Resume drained without seeing data-turn-complete (resumeOk=${resumeOk}) — persisting whatever was replayed`
-          )
-        }
-      } else if (resumeRes.status === 204) {
-        // Buffer aborted (stop button), expired, or pod restarted between
-        // the original cut and our resume. Keep the partial we have.
+    for (let leg = 1; ; leg++) {
+      if (observedTurnComplete || foreignTurn) break
+      if (leg > 1 && Date.now() >= resumeDeadline) {
+        console.warn(
+          `[ProjectChat] Resume budget for session ${chatSessionId} spent after ${leg - 1} leg(s) — persisting what we hold`
+        )
+        break
+      }
+
+      const resumeRes = await openResumeLeg()
+      if (!resumeRes) {
+        // The runtime itself is unreachable after every retry: nothing more to
+        // re-attach to, and the buffer is unreachable with it.
+        resumeOutcome = 'failed'
+        break
+      }
+
+      const resumeTurnId = resumeRes.headers.get('X-Turn-Id') || undefined
+      if (resumeRes.status === 200 && trackedTurnId && resumeTurnId && resumeTurnId !== trackedTurnId) {
+        resumeOutcome = 'buffer-gone'
+        console.log(
+          `[ProjectChat] Resume for session ${chatSessionId} returned turn ${resumeTurnId}, expected ${trackedTurnId} — ` +
+            `a newer turn replaced the buffer; persisting partial`
+        )
+        try { resumeRes.body?.cancel() } catch { /* noop */ }
+        break
+      }
+
+      if (resumeRes.status === 204) {
+        // Buffer aborted (stop button), expired, or pod restarted between the
+        // original cut and our resume. Keep the partial we have.
         resumeOutcome = 'buffer-gone'
         console.log(
           `[ProjectChat] Resume returned 204 for session ${chatSessionId} — persisting partial (likely stop button or pod crash)`
         )
-      } else {
+        break
+      }
+
+      if (resumeRes.status !== 200 || !resumeRes.body) {
         resumeOutcome = 'failed'
         console.warn(
           `[ProjectChat] Resume returned unexpected status ${resumeRes.status} — persisting partial`
         )
         try { resumeRes.body?.cancel() } catch { /* noop */ }
+        break
+      }
+
+      // Replay the whole turn from the buffer's start into a FRESH accumulator
+      // set, keeping what we already had aside: any text/tool data from the
+      // previous leg must not be duplicated onto the replay, but a replay that
+      // dies early must not leave us holding less than we already had either.
+      const held = captureAccumulators()
+      const floor = snapshotSize()
+      resetAccumulatedState()
+      // The accumulators are empty again and the row is not: nothing may be
+      // written until the replay has produced at least what was there (SHO-274).
+      replayShorter = true
+      console.log(
+        `[ProjectChat] Resume leg ${leg} for session ${chatSessionId} (lastObservedSeq=${lastObservedSeq}, holding ${floor} before replay)`
+      )
+      const resumeOk = await consumeStream(resumeRes.body.getReader(), { replay: true })
+
+      if (foreignTurn) {
+        restoreAccumulators(held)
+        replayShorter = floor < lastPersistedSize
+        resumeOutcome = 'buffer-gone'
+        console.log(
+          `[ProjectChat] Resume for session ${chatSessionId} replayed an older turn — keeping the persisted partial`,
+        )
+        break
+      }
+      if (observedTurnComplete) {
+        resumeOutcome = 'recovered'
+        console.log(
+          `[ProjectChat] Resume leg ${leg} for session ${chatSessionId} reached data-turn-complete (${snapshotSize()} held)`
+        )
+        break
+      }
+
+      // The replay ended without a terminal frame: another cut. Keep whichever
+      // side holds more, then re-attach again while the turn is still alive.
+      const replayed = snapshotSize()
+      if (replayed < floor) {
+        restoreAccumulators(held)
+        console.warn(
+          `[ProjectChat] Resume leg ${leg} for session ${chatSessionId} replayed less than we had (${replayed} < ${floor}) — keeping the previous leg's parts`
+        )
+      }
+      replayShorter = snapshotSize() < lastPersistedSize
+      resumeOutcome = 'failed'
+      console.warn(
+        `[ProjectChat] Resume leg ${leg} drained without seeing data-turn-complete (resumeOk=${resumeOk}) — re-attaching while the turn is live`
+      )
+      // Make the best leg durable before waiting for the next one: the row must
+      // never sit at a stale snapshot for the whole re-attach window.
+      await flushAssistantSnapshot()
+      if (resumeLegDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(resumeLegDelayMs * leg, resumeLegDelayMs * 5)))
       }
     }
   }
@@ -1281,11 +1440,29 @@ export async function trackUsageFromStream(
   // coalesced scheduler may have skipped the last frames (SHO-277).
   await flushAssistantSnapshot()
   unregisterSnapshotFlusher()
+  // A turn that reached the end with nothing to write leaves no row at all, and
+  // until now said nothing about it (SHO-546): the prod turn that lost its row
+  // had streamed 575 heartbeats and zero payload frames, so every snapshot was
+  // gated out by `hasSnapshotContent()` and the chat simply never got a reply.
+  if (!foreignTurn && chatSessionId && !assistantMessageId && !hasSnapshotContent()) {
+    console.warn(
+      `[ProjectChat] Turn for session ${chatSessionId} produced no assistant content ` +
+        `(lastObservedSeq=${lastObservedSeq}, ${streamOutcome}) — nothing to persist. ` +
+        `Heartbeat-only turns land here: payload frames never reached the tracker.`,
+    )
+  }
   // The turn reached its terminal frame, so the journal has nothing left to
   // recover: what the client has is now in the row (SHO-274). A turn that never
-  // gets here (the process died) keeps its frames for recovery.
-  if (observedTurnComplete && trackedTurnId) {
-    void deleteTurnFrames(trackedTurnId).catch(() => 0)
+  // gets here (the process died) keeps its frames for recovery. `TurnJournalWriter`
+  // keys rows on `journalTurnId` (`activityTurnId`), which can differ from the
+  // runtime's `data-turn-start` `trackedTurnId`; delete both when present.
+  if (observedTurnComplete) {
+    const turnIdsToDelete = new Set<string>()
+    if (options.journalTurnId) turnIdsToDelete.add(options.journalTurnId)
+    if (trackedTurnId) turnIdsToDelete.add(trackedTurnId)
+    for (const id of turnIdsToDelete) {
+      void deleteTurnFrames(id).catch(() => 0)
+    }
   }
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
@@ -1590,6 +1767,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let bodyIsJson = false
       try { parsedBody = JSON.parse(body); bodyIsJson = true } catch { /* not JSON, that's fine */ }
 
+      // The model the person picked for this turn, read before any guard or
+      // run-model downgrade rewrites `agentMode` (SHO-497). It is what their
+      // own message row records, so the composer keeps showing the pick after
+      // the reply even when the run used something else.
+      const requestedAgentMode =
+        typeof parsedBody?.agentMode === 'string' ? parsedBody.agentMode.trim() || null : null
+
       // Persisted chat messages use capability URLs for attachments. The
       // runtime still expects bytes/data URLs for the current model turn, so
       // hydrate only the explicit files and latest user message before proxying.
@@ -1745,12 +1929,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // AC5 (SHO-417): a run may not use a model the acting person cannot use.
-      // When the agent's configured model is above them, this run uses their
-      // default model and the runtime states it in the reply's first line. The
-      // agent's saved config is untouched. `auto` is a sentinel, not a model, so
-      // it is never downgraded — the narrowed tier map caps it instead.
+      // When that model is above them, this run uses their default model and the
+      // runtime states it in the reply's first line. The agent's saved config is
+      // untouched. `auto` is a sentinel, not a model, so it is never downgraded —
+      // the narrowed tier map caps it instead.
+      //
+      // The starting model is the person's pick for this turn (SHO-497); the
+      // agent's configured model is only the fallback for a body with no
+      // `agentMode`.
       if (verifiedUserId) {
-        const runModel = await resolveAgentRunModelFor(projectId, project.workspaceId, verifiedUserId)
+        const runModel = await resolveAgentRunModelFor(
+          projectId,
+          project.workspaceId,
+          verifiedUserId,
+          parsedBody.agentMode,
+        )
         if (runModel) {
           parsedBody.agentMode = runModel.model
           if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
@@ -2041,7 +2234,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // turn and the transcript with no question. Awaited here, i.e. after the
       // usage-limit and attachment gates (a rejected send writes nothing) and
       // before the first proxy attempt.
-      const persistedUserMessage = await persistUserMessageForTurn(incomingChatSessionId, parsedBody as Record<string, unknown>)
+      const persistedUserMessage = await persistUserMessageForTurn(
+        incomingChatSessionId,
+        parsedBody as Record<string, unknown>,
+        { model: requestedAgentMode },
+      )
 
       // A hosted workspace whose desktop is offline queues the turn instead of
       // failing it; the desktop runs it when it is back (SHO-285).
@@ -2319,6 +2516,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // pass it through so closeSession + persistence key on the
             // same id and never diverge from billing.
             chatSessionId: incomingChatSessionId,
+            journalTurnId: turnId,
             userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
             projectName: project.name,
             // Delegated task completion is announced by agent-tasks with a

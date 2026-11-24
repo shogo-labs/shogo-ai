@@ -18,6 +18,7 @@ import { subscribeAnnounceHuddleCalls } from './notifications/huddle-call-prefs'
 import { subscribePushToken } from './notifications/mobile-push-registration'
 import type { NativeCallEndReason, NativeCallHandlers, NativeCallRing } from './native-call'
 import { ringFromPushData } from './native-call-payload'
+import { errorMessage } from './error-message'
 
 export type { NativeCallEndReason, NativeCallHandlers, NativeCallRing } from './native-call'
 
@@ -33,7 +34,7 @@ function loadCallKeep(): CallKeepModule | null {
   try {
     return require('react-native-callkeep') as CallKeepModule
   } catch (err) {
-    console.warn('[Huddles] CallKeep unavailable:', (err as Error).message)
+    console.warn('[Huddles] CallKeep unavailable:', errorMessage(err))
     return null
   }
 }
@@ -43,7 +44,7 @@ function loadVoipPush(): VoipPush | null {
   try {
     return (require('react-native-voip-push-notification') as { default: VoipPush }).default
   } catch (err) {
-    console.warn('[Huddles] VoIP push unavailable:', (err as Error).message)
+    console.warn('[Huddles] VoIP push unavailable:', errorMessage(err))
     return null
   }
 }
@@ -262,7 +263,7 @@ function setupCallKit(): void {
         },
       },
     })
-    .catch((err: unknown) => console.warn('[Huddles] CallKeep setup failed:', (err as Error).message))
+    .catch((err: unknown) => console.warn('[Huddles] CallKeep setup failed:', errorMessage(err)))
   if (Platform.OS === 'android') callKeep.setAvailable(true)
   if (Platform.OS === 'ios') {
     callKeep.addEventListener('didLoadWithEvents', (events) => {
@@ -319,7 +320,7 @@ async function syncVoipToken(): Promise<void> {
         if (voipTokenSyncRetryTimer) clearTimeout(voipTokenSyncRetryTimer)
         voipTokenSyncRetryTimer = null
       } catch (err) {
-        console.warn('[Huddles] Could not sync VoIP token; will retry:', (err as Error).message)
+        console.warn('[Huddles] Could not sync VoIP token; will retry:', errorMessage(err))
         scheduleVoipTokenSyncRetry()
       }
     })
@@ -410,7 +411,7 @@ async function refreshStorefrontPolicy(): Promise<void> {
     const iap = require('react-native-iap') as { getStorefront?: () => Promise<string | null> }
     countryCode = (await iap.getStorefront?.()) ?? null
   } catch (err) {
-    console.warn('[Huddles] Could not read App Store storefront; keeping CallKit disabled:', (err as Error).message)
+    console.warn('[Huddles] Could not read App Store storefront; keeping CallKit disabled:', errorMessage(err))
   }
   if (refreshId !== storefrontRefreshId) return
 

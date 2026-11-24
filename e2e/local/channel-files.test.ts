@@ -57,11 +57,13 @@ test.describe("Channel files", () => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await activateTeamWorkspace(page, workspaceId)
     await page.goto(`/c/${channelId}`)
-    await page.getByRole("button", { name: "Files", exact: true }).click()
+    const filesTab = page.getByTestId("channel-tabs").getByRole("tab", { name: "Files", exact: true })
+    await filesTab.click()
 
     const pane = page.getByTestId("files-pane")
     await expect(pane).toBeVisible({ timeout: 30_000 })
     await expect(page).toHaveURL(/files=1/)
+    await expect(filesTab).toHaveAttribute("aria-selected", "true")
     await expect(page.getByLabel("Message", { exact: true }).first()).toBeVisible()
     await expect(pane.getByText(`launch-spec-${suffix}.md`)).toBeVisible({ timeout: 15_000 })
     await expect(pane.getByText(`offsite-${suffix}.png`)).toBeVisible()
@@ -91,6 +93,45 @@ test.describe("Channel files", () => {
     await expect(pane.getByText(`launch-spec-${suffix}.md`)).toBeVisible({ timeout: 30_000 })
     await share(page, channelId, "Budget", { name: `budget-${suffix}.csv`, mimeType: "text/csv", buffer: Buffer.from("a,b\n1,2") })
     await expect(pane.getByText(`budget-${suffix}.csv`)).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("a file shared in a thread is listed, and Messages leaves the Files tab", async ({ page }) => {
+    // The tab strip sits beside the timeline, so the channel column has to clear
+    // the side-pane minimum (1024px) — the same reason its siblings go wide.
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await signInByApi(page)
+    await activateTeamWorkspace(page, workspaceId)
+    // A reply's file belongs to the channel's files too — the tab is the channel's, not the timeline's.
+    const root = await api(page, "POST", `/api/conversations/${channelId}/messages`, {
+      text: `thread root ${suffix}`,
+      clientMsgId: crypto.randomUUID(),
+    })
+    expect(root.status, JSON.stringify(root.json)).toBe(201)
+    const upload = await page.request.post(`${LOCAL_API_BASE}/api/conversations/${channelId}/attachments`, {
+      multipart: { file: { name: `thread-only-${suffix}.txt`, mimeType: "text/plain", buffer: Buffer.from("shared in a thread") } },
+    })
+    expect(upload.status(), await upload.text()).toBe(201)
+    const attachment = (await upload.json()).attachment
+    const reply = await api(page, "POST", `/api/conversations/${channelId}/messages`, {
+      text: "the numbers are in the file",
+      threadRootId: root.json.message.id,
+      attachmentIds: [attachment.id],
+      clientMsgId: crypto.randomUUID(),
+    })
+    expect(reply.status, JSON.stringify(reply.json)).toBe(201)
+
+    await page.goto(`/c/${channelId}?files=1`)
+    const pane = page.getByTestId("files-pane")
+    await expect(pane.getByText(`thread-only-${suffix}.txt`)).toBeVisible({ timeout: 30_000 })
+
+    // The Messages tab is how you leave the Files tab: it has to clear `files`,
+    // not just `doc` and `board`, or the tab looks stuck.
+    const tabs = page.getByTestId("channel-tabs")
+    await tabs.getByRole("tab", { name: "Messages", exact: true }).click()
+    await expect(pane).toHaveCount(0)
+    await expect(page).not.toHaveURL(/files=1/)
+    await expect(tabs.getByRole("tab", { name: "Messages", exact: true })).toHaveAttribute("aria-selected", "true")
+    await expect(tabs.getByRole("tab", { name: "Files", exact: true })).toHaveAttribute("aria-selected", "false")
   })
 
   test("an upload that carries no bytes is refused instead of stored empty", async ({ page }) => {
@@ -133,7 +174,8 @@ test.describe("Channel files", () => {
     await activateTeamWorkspace(page, workspaceId)
     await page.goto(`/c/${channelId}`)
     await page.getByRole("button", { name: "More actions" }).click()
-    await page.getByTestId("conversation-actions-sheet").getByRole("button", { name: "Files", exact: true }).click()
+    // Files is a channel tab, so the sheet lists it in the tab strip — not as an action row.
+    await page.getByTestId("conversation-actions-sheet").getByRole("tab", { name: "Files", exact: true }).click()
     const pane = page.getByTestId("files-pane")
     await expect(pane).toBeVisible({ timeout: 30_000 })
     await expect(pane.getByText(`launch-spec-${suffix}.md`)).toBeVisible({ timeout: 15_000 })

@@ -17,7 +17,6 @@ import {
   Text,
   TextInput,
   Pressable,
-  ActivityIndicator,
   Alert,
 } from 'react-native'
 import {
@@ -52,7 +51,14 @@ import {
 import { useDomainHttp } from '../../contexts/domain'
 import { AlwaysOnSection } from './AlwaysOnSection'
 import { isPublishPlanError, publishErrorMessage } from './publish-errors'
+import {
+  publishProgressLabel,
+  usePublishProgress,
+  type PublishProgressStep,
+} from './usePublishProgress'
 import { openExternalLink } from '../../lib/open-external-link';
+import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
@@ -164,9 +170,38 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
 
   const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // A publish runs server-side and the panel follows it (SHO-542): `progress`
+  // is the step it is on, and `resume()` picks that up again when the popover
+  // is reopened mid-publish. `loadPublishState` is reached through a ref
+  // because the hook needs it (`onLive`) and it needs the hook (`resume`).
+  const loadPublishStateRef = useRef<(() => Promise<void>) | null>(null)
+  const publishProgress = usePublishProgress({
+    getState: () => api.getPublishState(http, projectId),
+    onLive: () => {
+      // Live: re-read the state so the panel shows the URL, the new commit and
+      // the always-on slot exactly as a completed publish always did.
+      void loadPublishStateRef.current?.()
+      bumpPublishState()
+    },
+    onFailed: (_state, message) => {
+      setError(message)
+      bumpPublishState()
+    },
+  })
+  const progressRef = useRef(publishProgress)
+  progressRef.current = publishProgress
+  const publishStep: PublishProgressStep | null = publishProgress.progress
+  const isPublishingInFlight = publishStep !== null
+
   useEffect(() => {
     loadPublishState()
   }, [isOpen, projectId])
+
+  // Stop following when the popover closes — the next open re-reads the status
+  // and resumes from wherever the publish actually is.
+  useEffect(() => {
+    if (!isOpen) progressRef.current.stop()
+  }, [isOpen])
 
   // The dropdown only summarises the project's custom domains; the records and
   // inputs live on the Settings → Custom domain page this row links to.
@@ -203,8 +238,17 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
         setServerBacked(data.serverBacked === true)
       }
       setPlanAllowsPublish(data.canPublish !== false)
+      // The panel may have been closed while a publish was running (or the app
+      // restarted): pick the progress view back up instead of offering Publish
+      // again — a second publish would be refused as `publish_in_progress`.
+      progressRef.current.resume(data.publishStatus)
+      if (data.publishStatus === 'failed' && data.publishError) {
+        setError(data.publishErrorMessage || publishErrorMessage({ details: { error: { code: data.publishError } } }))
+      }
     } catch {}
   }, [http, projectId])
+
+  loadPublishStateRef.current = loadPublishState
 
   useEffect(() => {
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current)
@@ -231,6 +275,8 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
     setIsPublishing(true)
     setError(null)
     try {
+      // 202: the build → upload → configure pipeline runs server-side, so the
+      // panel follows `publishStatus` instead of holding the request (SHO-542).
       const data = await api.publishProject(
         http,
         projectId,
@@ -238,14 +284,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
         accessLevel,
         accessLevel === 'password' && password ? password : undefined,
       )
-      setIsPublished(true)
-      setPublishedSubdomain(data.subdomain)
-      setPublishedAt(data.publishedAt)
-      if (typeof data.hasPassword === 'boolean') setHasPassword(data.hasPassword)
       // The plaintext lives only in this submit; drop it from memory.
       setPassword('')
-      // A fresh publish may flip the app to server-backed / consume a slot.
-      bumpPublishState()
+      if (data.subdomain) setPublishedSubdomain(data.subdomain)
+      publishProgress.follow()
     } catch (err: any) {
       if (isPublishPlanError(err)) {
         // The Pro card and Upgrade button explain the gate.
@@ -311,7 +353,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
       // Unpublishing frees the always-on slot; refresh the AlwaysOnSection.
       bumpPublishState()
     } catch (err: any) {
-      setError(err.message || 'Failed to unpublish')
+      setError(errorMessage(err, 'Failed to unpublish'))
     } finally {
       setIsUnpublishing(false)
     }
@@ -329,11 +371,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
     setIsRepublishing(true)
     setError(null)
     try {
-      const data = await api.republishProject(http, projectId)
-      setPublishedAt(data.publishedAt)
-      // HEAD moved — refresh the recorded live commit sha + always-on state.
-      await loadPublishState()
-      bumpPublishState()
+      // Accepted, not finished: follow the status like a first publish, then
+      // refresh the recorded live commit sha + always-on state when it lands.
+      await api.republishProject(http, projectId)
+      publishProgress.follow()
     } catch (err: any) {
       setError(publishErrorMessage(err))
     } finally {
@@ -410,7 +451,10 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
     (subdomainStatus.available === true || subdomain === publishedSubdomain) &&
     passwordSatisfied &&
     planSatisfiesPublish &&
-    !isPublishing
+    !isPublishing &&
+    // A publish already running for this app would be refused as
+    // `publish_in_progress`; the panel shows its progress instead.
+    !isPublishingInFlight
 
   const currentAccess = ACCESS_OPTIONS.find(o => o.value === accessLevel) || ACCESS_OPTIONS[0]
 
@@ -458,6 +502,26 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
               </Pressable>
             )}
           </View>
+
+          {/* A publish that is running server-side. Shown above everything
+              else so reopening the panel mid-publish resumes here instead of
+              offering a Publish button that would be refused (SHO-542). */}
+          {publishStep && (
+            <View
+              testID="publish-progress"
+              accessibilityLabel={publishProgressLabel(publishStep)}
+              className="gap-1 p-3 bg-primary/10 rounded-lg border border-primary/20 mb-4"
+            >
+              <View className="flex-row items-center gap-2">
+                <Spinner size="small" />
+                <Text className="text-sm text-foreground">{publishProgressLabel(publishStep)}</Text>
+              </View>
+              <Text className="text-[11px] text-muted-foreground leading-4">
+                This runs on Shogo's servers, so you can close this panel — it keeps going and
+                you'll see the live URL when it's done.
+              </Text>
+            </View>
+          )}
 
           {/* Explainer: preview vs published. The preview URL is a temporary
               builder preview that sleeps when idle; publishing creates a
@@ -516,7 +580,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 className="flex-1 h-10 px-3 text-sm text-foreground web:outline-none"
               />
               <View className="pr-3">
-                {subdomainStatus.checking && <ActivityIndicator size="small" />}
+                {subdomainStatus.checking && <Spinner size="small" />}
                 {!subdomainStatus.checking && subdomainStatus.available === true && subdomain !== publishedSubdomain && (
                   <CheckCircle size={16} color="#10b981" />
                 )}
@@ -594,7 +658,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                       )}
                     >
                       {isSavingPassword ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Text
                           className={cn(
@@ -704,7 +768,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 )}
               >
                 {isPushingData ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <UploadCloud size={13} className="text-foreground" />
                 )}
@@ -777,11 +841,11 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 ) : (
                   <Pressable
                     onPress={handleRepublish}
-                    disabled={isRepublishing}
-                    className={cn('flex-1 h-10 rounded-lg items-center justify-center flex-row gap-1.5', isRepublishing ? 'bg-muted' : 'bg-primary')}
+                    disabled={isRepublishing || isPublishingInFlight}
+                    className={cn('flex-1 h-10 rounded-lg items-center justify-center flex-row gap-1.5', isRepublishing || isPublishingInFlight ? 'bg-muted' : 'bg-primary')}
                   >
-                    {isRepublishing ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                    {isRepublishing || isPublishingInFlight ? (
+                      <Spinner tone="onPrimary" size="small" />
                     ) : (
                       <UploadCloud size={14} className="text-primary-foreground" />
                     )}
@@ -818,7 +882,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                     className={cn('flex-1 h-10 rounded-lg items-center justify-center', canPublish ? 'bg-primary' : 'bg-muted')}
                   >
                     {isPublishing ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                      <Spinner tone="onPrimary" size="small" />
                     ) : (
                       <Text className={cn('text-sm font-medium', canPublish ? 'text-primary-foreground' : 'text-muted-foreground')}>
                         Publish

@@ -20,6 +20,7 @@ import { createTools, type ToolContext } from '../gateway-tools'
 import { TaskRegistry } from '../task-registry'
 import { taskOutputDir, listTaskOutputRows } from '../task-output'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { stampMtime } from './helpers/stamp-mtime'
 
 const TEST_DIR = '/tmp/qa-sho123-tasks'
 const SRC_DIR = dirname(fileURLToPath(import.meta.url)).replace(/\/__tests__$/, '')
@@ -92,6 +93,10 @@ describe('AC1/AC3: an unread result outlives the dock window, then comes back fr
     const started = await run(turn1, 'exec', { command: 'sleep 0.05; touch finished.marker', background: true })
     expect(started.status).toBe('running')
     expect(await until(() => registry.get(started.task_id)?.status === 'completed')).toBe(true)
+    // The log is written by the runtime, so its mtime is the OS clock; stamp it
+    // from the clock the recovery window reads, or a shifted clock reads it as
+    // N days old and the row is filtered out before recovery can find it.
+    stampMtime(join(TEST_DIR, started.output_file!))
 
     // Well past the short window, and nobody waited: the result is still ours.
     await sleep(150)
@@ -121,6 +126,7 @@ describe('AC1/AC3: an unread result outlives the dock window, then comes back fr
     const ctx = makeCtx(registry)
     const started = await run(ctx, 'exec', { command: 'sleep 0.05; echo QA-MARKER', background: true })
     expect(await until(() => registry.get(started.task_id)?.status === 'completed')).toBe(true)
+    stampMtime(join(TEST_DIR, started.output_file!))
     registry.markConsumed([started.task_id])
     await sleep(150)
     expect(registry.get(started.task_id)).toBeUndefined()

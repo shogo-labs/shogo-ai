@@ -214,4 +214,53 @@ describe('useProjectChatUrlMirror', () => {
     expect(result.current.chatSessionId).toBe('chat-b')
     expect(result.current.writes).toHaveLength(0)
   })
+
+  test('survives a native screen that has a window but no location', async () => {
+    // SHO-504 / SHOGO-ANDROID-27: React Native (Hermes) exposes a global
+    // `window` whose `location` is undefined, so `typeof window === 'undefined'`
+    // is false on a phone. Reading `window.location.search` there threw
+    // `TypeError: Cannot read property 'search' of undefined` and crashed the
+    // Android build the moment project chat opened.
+    const nativeWindow = window as unknown as { location?: unknown }
+    const realLocation = Object.getOwnPropertyDescriptor(window, 'location')
+    // The repair timers (900ms) are the module's other `window.location`
+    // reader: let them fire inside `act` before the assertions.
+    const repairSettled = new Promise((resolve) => setTimeout(resolve, 1000))
+    try {
+      Object.defineProperty(window, 'location', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      })
+
+      const { result, rerender } = renderHook(() => useLayoutHarness())
+      expect(result.current.writes).toHaveLength(0)
+      expect(result.current.deepLinkedChatSessionId).toBeUndefined()
+
+      // The route caller passed `enabled: true` before the caller fix, and a
+      // nav switch then rerendered the hook with a new chat id.
+      act(() => {
+        chatSessionEvents.requestSelect({
+          projectId: PROJECT_ID,
+          sessionId: 'chat-b',
+        })
+      })
+      rerender()
+
+      await act(async () => {
+        await repairSettled
+      })
+
+      // There is no address bar to mirror into, so nothing is written and the
+      // switch still lands on the screen's own state.
+      expect(result.current.chatSessionId).toBe('chat-b')
+      expect(result.current.writes).toHaveLength(0)
+    } finally {
+      if (realLocation) {
+        Object.defineProperty(window, 'location', realLocation)
+      } else {
+        delete nativeWindow.location
+      }
+    }
+  })
 })

@@ -10,7 +10,8 @@
     ".": "./src/index.ts",
     "./primitives": "./src/primitives/index.ts",
     "./screens": "./src/screens/index.ts",
-    "./branding": "./src/branding/index.ts"
+    "./branding": "./src/branding/index.ts",
+    "./spinner": "./src/primitives/Spinner.tsx"
   },
   "dependencies": {
     "@shogo/shared-app": "workspace:*",

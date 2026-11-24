@@ -98,7 +98,14 @@ import { EnvironmentBadge } from "../components/layout/EnvironmentBadge";
 import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
 
-import { isDeliberateTelemetry, isExpectedClientError, isNoiseEvent } from "../lib/sentry-noise-filter";
+import {
+  currentDeviceProfile,
+  isDeliberateTelemetry,
+  isExpectedClientError,
+  isNoiseEvent,
+  isVirtualAndroidDevice,
+  transientTransportMessage,
+} from "../lib/sentry-noise-filter";
 
 Sentry.init({
   dsn: sentryDsn,
@@ -140,7 +147,27 @@ Sentry.init({
   beforeSend(event, hint) {
     // Drop high-volume non-actionable noise (preview iframe, transient
     // backend/network, browser-extension DOM races). See triage plan Tier 2.
-    if (isNoiseEvent(event)) return null;
+    if (isNoiseEvent(event)) {
+      // A dropped connection is not a defect, but it is the context a later
+      // real failure needs: keep it as a breadcrumb the way the 4xx path below
+      // does, so the next event from this session carries the trail (SHO-566).
+      const dropped = transientTransportMessage(event);
+      if (dropped) {
+        Sentry.addBreadcrumb({
+          category: "network",
+          level: "warning",
+          message: `connection dropped: ${dropped}`,
+        });
+      }
+      return null;
+    }
+
+    // A virtual Android device — Play's pre-launch report robot, or an x86_64
+    // emulator — is not a person using the app. Its events (a sheet it backs
+    // out of, Test Lab's 504s) are about the sandbox, so they are dropped for
+    // every issue rather than filtered one message at a time (SHO-527). Play
+    // Console's own pre-launch report still shows the robot's findings.
+    if (isVirtualAndroidDevice(currentDeviceProfile())) return null;
 
     const reason = hint?.originalException as unknown;
 

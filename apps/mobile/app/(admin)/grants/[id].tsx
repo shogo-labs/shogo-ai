@@ -17,7 +17,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  ActivityIndicator,
   Alert,
   useWindowDimensions,
 } from 'react-native'
@@ -33,6 +32,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -289,7 +289,7 @@ export default function AdminGrantDetailPage() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -418,7 +418,7 @@ export default function AdminGrantDetailPage() {
               )}
             >
               {saving ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Save size={14} className="text-primary-foreground" />
               )}
@@ -438,7 +438,7 @@ export default function AdminGrantDetailPage() {
                   )}
                 >
                   {busyAction === 'apply' ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <Zap size={14} className="text-foreground" />
                   )}

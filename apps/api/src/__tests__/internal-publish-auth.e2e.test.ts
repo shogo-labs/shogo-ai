@@ -22,6 +22,9 @@ const store = {
   publishResult: null as any,
   publishCalledWith: null as any,
   resolvedWorkspaceId: null as null | string,
+  /** The staging environment row, when a test seeds one. */
+  stagingRow: null as any,
+  markedEnvironments: [] as string[],
 }
 
 mock.module('../lib/k8s-auth', () => ({
@@ -42,6 +45,12 @@ mock.module('../lib/prisma', () => ({
       findUnique: async () => store.prismaProjectFindUnique,
       findFirst: async () => null,
     },
+    publishedEnvironment: {
+      // `getEnvironment(projectId, 'staging')` — the internal GET reads this
+      // row rather than the project when `?environment=staging` is asked for.
+      findUnique: async () => store.stagingRow,
+      updateMany: async () => ({ count: 0 }),
+    },
     agentConfig: {
       updateMany: async () => ({ count: 0 }),
       findUnique: async () => null,
@@ -55,9 +64,30 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../routes/publish', () => ({
-  publishProject: async (projectId: string, opts: any) => {
+  // SHO-542: the internal POST shares the async runner with the session route,
+  // so it validates and returns `accepted` while the pipeline runs behind it.
+  startPublish: async (projectId: string, opts: any) => {
     store.publishCalledWith = { projectId, opts }
     return store.publishResult
+  },
+  // The GET asks these two about a stale in-flight status; a publish that is
+  // not running comes back exactly as stored.
+  resolveReportedPublishStatus: (row: any) => ({
+    status: row?.publishStatus ?? null,
+    interrupted: false,
+    error: row?.publishError ?? null,
+  }),
+  markPublishInterrupted: async (_projectId: string) => {},
+  markEnvironmentPublishInterrupted: async (environmentId: string) => {
+    store.markedEnvironments.push(environmentId)
+  },
+  // `publishError` holds `code` or `code: detail`; the real route splits it so
+  // clients can compare the code exactly.
+  splitPublishError: (stored: string | null | undefined) => {
+    if (!stored) return { code: null, detail: null }
+    const at = stored.indexOf(': ')
+    if (at === -1) return { code: stored, detail: null }
+    return { code: stored.slice(0, at), detail: stored.slice(at + 2) || null }
   },
 }))
 
@@ -81,14 +111,16 @@ beforeEach(() => {
   }
   store.publishResult = {
     ok: true,
+    accepted: true,
+    publishStatus: 'building',
     url: 'https://my-site.shogo.one',
     subdomain: 'my-site',
-    publishedAt: 1700000000000,
-    accessLevel: 'public',
-    hasPassword: false,
+    environment: 'production',
   }
   store.publishCalledWith = null
   store.resolvedWorkspaceId = null
+  store.stagingRow = null
+  store.markedEnvironments = []
 })
 
 afterEach(() => {
@@ -107,14 +139,22 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
     expect(body.published).toBe(false)
   })
 
-  test('POST publish: metal-shaped request reaches publishProject', async () => {
+  test('POST publish: metal-shaped request reaches the shared publish runner', async () => {
     const token = deriveRuntimeToken(PROJECT_ID)
     const res = await app.request(`/projects/${PROJECT_ID}/publish`, {
       method: 'POST',
       headers: { 'x-runtime-token': token, ...JSON_H },
       body: JSON.stringify({ subdomain: 'my-site' }),
     })
-    expect(res.status).toBe(200)
+    // 202: the pipeline runs in the background and the tool follows the GET
+    // above for the outcome (SHO-542).
+    expect(res.status).toBe(202)
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      accepted: true,
+      status: 'building',
+      subdomain: 'my-site',
+    })
     expect(store.publishCalledWith).toEqual({
       projectId: PROJECT_ID,
       opts: {
@@ -177,5 +217,105 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
       headers: { 'x-runtime-token': token },
     })
     expect(res.status).toBe(401)
+  })
+})
+
+/**
+ * A staging deploy writes only the staging environment row (SHO-308 §8), so a
+ * caller following one has to read that row. Reading the project reported
+ * production's `live` seconds after the accept and swallowed the staging
+ * failure — the tool told the agent staging had shipped when it had not
+ * (SHO-542 QA round 1).
+ */
+describe('internal publish state reads the environment it was asked about', () => {
+  /**
+   * Derived from the clock, not hard-coded: `resolveReportedPublishStatus`
+   * compares `publishStatusAt` to `Date.now()`, so a fixed date means something
+   * different every few days (the SHO-505 date bomb), and `check:test-clock`
+   * fails the build on one. The rows seeded here are `live` and `failed`, never
+   * in flight, so any settled instant behaves the same.
+   */
+  const SETTLED_AT = new Date(Date.now() - 3 * 24 * 60 * 60_000)
+
+  test('?environment=staging reports the staging row, not production', async () => {
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: 'my-app',
+      publishedAt: SETTLED_AT,
+      accessLevel: 'anyone',
+      sitePasswordHash: null,
+      publishStatus: 'live',
+      publishError: null,
+      publishStatusAt: SETTLED_AT,
+    }
+    store.stagingRow = {
+      id: 'env-staging',
+      projectId: PROJECT_ID,
+      name: 'staging',
+      subdomain: 'my-app--staging',
+      publishStatus: 'failed',
+      publishError: 'build_failed',
+      publishStatusAt: SETTLED_AT,
+    }
+
+    const token = deriveRuntimeToken(PROJECT_ID)
+    const res = await app.request(`/projects/${PROJECT_ID}/publish?environment=staging`, {
+      headers: { 'x-runtime-token': token },
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.environment).toBe('staging')
+    expect(body.publishStatus).toBe('failed')
+    expect(body.publishError).toBe('build_failed')
+    expect(body.published).toBe(false)
+    expect(body.subdomain).toBe('my-app--staging')
+  })
+
+  test('without the query the same project still reports production', async () => {
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: 'my-app',
+      publishedAt: SETTLED_AT,
+      accessLevel: 'anyone',
+      sitePasswordHash: null,
+      publishStatus: 'live',
+      publishError: null,
+      publishStatusAt: SETTLED_AT,
+    }
+    store.stagingRow = {
+      id: 'env-staging',
+      name: 'staging',
+      subdomain: 'my-app--staging',
+      publishStatus: 'failed',
+      publishError: 'build_failed',
+    }
+
+    const token = deriveRuntimeToken(PROJECT_ID)
+    const res = await app.request(`/projects/${PROJECT_ID}/publish`, {
+      headers: { 'x-runtime-token': token },
+    })
+
+    const body = await res.json()
+    expect(body.environment).toBe('production')
+    expect(body.publishStatus).toBe('live')
+    expect(body.subdomain).toBe('my-app')
+  })
+
+  test('a project with no staging environment answers 404 for staging, not production', async () => {
+    store.prismaProjectFindUnique = {
+      publishedSubdomain: 'my-app',
+      publishedAt: null,
+      accessLevel: 'anyone',
+      sitePasswordHash: null,
+      publishStatus: 'live',
+    }
+    store.stagingRow = null
+
+    const token = deriveRuntimeToken(PROJECT_ID)
+    const res = await app.request(`/projects/${PROJECT_ID}/publish?environment=staging`, {
+      headers: { 'x-runtime-token': token },
+    })
+
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toMatch(/staging/i)
   })
 })

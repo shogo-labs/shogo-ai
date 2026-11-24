@@ -35,6 +35,7 @@ import {
   type TelephonyClient,
 } from '@shogo-ai/voice'
 import { readRuntimeAuthSecret } from './runtime-token.js'
+import { BucketClient } from './bucket/client.js'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {
@@ -129,6 +130,22 @@ export interface ShogoClient<DB = unknown> {
   generateMusic: ShogoMusicGenerator | null
 
   /**
+   * The project's own Shogo-hosted bucket (SHO-491): big media goes here, not
+   * into git or `public/`. `null` when the client has no `projectId` or no
+   * credential (a pod always has `RUNTIME_AUTH_SECRET`).
+   *
+   * **Server-only** — the credential must never reach a browser bundle.
+   * End-user uploads from the browser go app route → `createUpload` → the
+   * browser PUTs straight to the presigned URL.
+   *
+   * ```ts
+   * await shogo.bucket!.put('media/intro.mp4', Bun.file('./intro.mp4'), { public: true })
+   * shogo.bucket!.url('media/intro.mp4')   // CDN URL, sync
+   * ```
+   */
+  bucket: BucketClient | null
+
+  /**
    * Voice module — Twilio + ElevenLabs telephony.
    *
    * `voice.telephony` resolves to:
@@ -168,6 +185,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   db: DB
   llm: ShogoLlmProvider | null
   generateMusic: ShogoMusicGenerator | null
+  bucket: BucketClient | null
   voice: ShogoVoiceModule
   _http: HttpClient
 
@@ -222,6 +240,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     this.shogoCloudUrl = config.shogoCloudUrl
     this.llm = this.buildLlm(config.shogoApiKey ?? null)
     this.generateMusic = this.buildMusic(config.shogoApiKey ?? null)
+    this.bucket = this.buildBucket(config)
 
     this.voice = {
       live: this.buildLive(config.shogoApiKey),
@@ -258,6 +277,26 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
       })
     }
     return null
+  }
+
+  /**
+   * The project bucket. Server-only: it holds the runtime token, so a browser
+   * bundle must never import it (the module is documented as server-only and
+   * the app's client code does not reach for it).
+   */
+  private buildBucket(config: ShogoClientConfig<DB>): BucketClient | null {
+    if (!config.projectId) return null
+    const runtimeToken = readRuntimeAuthSecret()
+    const apiKey = this.shogoApiKey
+    if (!runtimeToken && !apiKey) return null
+    return new BucketClient({
+      apiUrl: config.apiUrl,
+      projectId: config.projectId,
+      runtimeToken,
+      shogoApiKey: apiKey ?? undefined,
+      cdnBaseUrl: config.bucketCdnBaseUrl,
+      publicUrlPrefix: config.bucketPublicUrlPrefix,
+    })
   }
 
   private buildMusic(shogoApiKey: string | null): ShogoMusicGenerator | null {
@@ -351,6 +390,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     this.shogoApiKey = key
     this.llm = this.buildLlm(key)
     this.generateMusic = this.buildMusic(key)
+    this.bucket = this.buildBucket(this.config)
     this.voice = {
       live: this.buildLive(key),
       telephony: this.buildTelephony(key),

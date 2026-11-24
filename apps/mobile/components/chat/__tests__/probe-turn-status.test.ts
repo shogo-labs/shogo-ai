@@ -313,6 +313,99 @@ describe("probeChatTurnStatus retries", () => {
   })
 })
 
+describe("probeChatTurn on a refused credential (SHO-564)", () => {
+  /** 401 for any cookie but the refreshed one; `fresh` answers the live turn. */
+  function guardedFetch(body: unknown = { status: "active", turnId: "turn-live" }) {
+    const calls: Array<{ headers: any; credentials?: RequestCredentials }> = []
+    const fn = (async (_url: string, init: any) => {
+      calls.push({ headers: init?.headers, credentials: init?.credentials })
+      if (init?.headers?.Cookie === "fresh-cookie") {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return body
+          },
+        } as any
+      }
+      return { ok: false, status: 401, async json() { return null } } as any
+    }) as unknown as typeof globalThis.fetch
+    return Object.assign(fn, { calls })
+  }
+
+  test("401 triggers one reauth and the retry returns the live snapshot", async () => {
+    const fetch = guardedFetch()
+    let headers = { Cookie: "dead-cookie" }
+    let refreshes = 0
+
+    const snapshot = await probeChatTurn({
+      url: "http://x/turn",
+      fetch,
+      headers: () => headers,
+      onRefused: async () => {
+        refreshes += 1
+        headers = { Cookie: "fresh-cookie" }
+        return true
+      },
+    })
+
+    expect(refreshes).toBe(1)
+    expect(fetch.calls).toHaveLength(2)
+    // The retry carries the refreshed cookie, not the dead one.
+    expect(fetch.calls[1].headers).toEqual({ Cookie: "fresh-cookie" })
+    expect(snapshot).toEqual({ status: "active", turnId: "turn-live", answered: true })
+  })
+
+  test("a refresh that fails reports the refused session, not a silent unknown", async () => {
+    const fetch = guardedFetch()
+    const snapshot = await probeChatTurn({
+      url: "http://x/turn",
+      fetch,
+      headers: { Cookie: "dead-cookie" },
+      onRefused: async () => false,
+    })
+
+    expect(fetch.calls).toHaveLength(1)
+    expect(snapshot.refused).toBe(true)
+    expect(snapshot.answered).toBe(false)
+    expect(snapshot.status).toBe("unknown")
+  })
+
+  test("re-establishes the session at most once per probe", async () => {
+    const fetch = guardedFetch()
+    let refreshes = 0
+    const snapshot = await probeChatTurn({
+      url: "http://x/turn",
+      fetch,
+      headers: { Cookie: "dead-cookie" },
+      onRefused: async () => {
+        refreshes += 1
+        return true
+      },
+      retryDelaysMs: [1, 1],
+    })
+
+    expect(refreshes).toBe(1)
+    expect(fetch.calls).toHaveLength(2)
+    expect(snapshot.refused).toBe(true)
+  })
+
+  test("a refusal with no refresh hook is still reported as refused", async () => {
+    const fetch = guardedFetch()
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toMatchObject({
+      refused: true,
+      answered: false,
+    })
+  })
+
+  test("403 is a refusal too", async () => {
+    const fetch = (async () =>
+      ({ ok: false, status: 403, async json() { return null } }) as any
+    ) as unknown as typeof globalThis.fetch
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toMatchObject({ refused: true })
+  })
+})
+
 describe("probeChatTurnBounded", () => {
   /**
    * A socket that is half-open: the request never settles on its own. This is

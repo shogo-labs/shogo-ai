@@ -83,6 +83,12 @@ export interface RuntimeAppConfig {
     activeChildren?: number
     /** Current git HEAD; metal host uses a change to trigger repo.git.tar.gz export. */
     repoHeadSha?: string | null
+    /**
+     * Whether the runtime's root actually holds a git repo. A workspace runtime
+     * keeps its projects' repos in subfolders and reports `false`, so a host can
+     * stop asking for a HEAD it can never export (SHO-540).
+     */
+    repoPresent?: boolean
     /** Per-project API sidecar state; the metal host recycles a runtime stuck unhealthy. */
     previewHealth?: Array<{ projectId: string; apiPhase: string; apiReady: boolean }>
   }
@@ -837,6 +843,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       lastAgentRequestAt: state.lastAgentRequestAt || null,
       poolAssigned: state.poolAssigned,
       repoHeadSha: activityStats.repoHeadSha ?? null,
+      ...(activityStats.repoPresent !== undefined ? { repoPresent: activityStats.repoPresent } : {}),
       ...(activityStats.previewHealth ? { previewHealth: activityStats.previewHealth } : {}),
     })
   })

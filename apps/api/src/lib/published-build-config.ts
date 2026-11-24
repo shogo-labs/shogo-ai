@@ -18,8 +18,12 @@
  *                            the cluster namespace the Job runs in (`shogo-builds`)
  *
  * `PUBLISH_BUILD_IMAGES=on|off` forces the decision for a single rollout step,
- * same as `PUBLISH_POSTGRES`.
+ * same as `PUBLISH_POSTGRES`. `PUBLISH_BUILD_IMAGES=<projectId>[,<projectId>…]`
+ * builds only for the listed projects (§G), so a per-commit rollout is the same
+ * knob as its rollback.
  */
+
+import { parsePublishFlag, publishFlagAllows } from './publish-flag'
 
 export interface PublishedBuildConfig {
   registry: string
@@ -76,12 +80,51 @@ export function publishedBuildSetup(): PublishedBuildSetup {
  * per-commit container at all. `PUBLISH_BUILD_IMAGES=off` takes a region back to
  * the shared runtime image without unsetting anything.
  */
-export function shouldBuildPublishedImage(substrateKind: 'knative' | 'metal'): boolean {
+export function shouldBuildPublishedImage(
+  substrateKind: 'knative' | 'metal',
+  projectId?: string | null,
+): boolean {
   if (substrateKind !== 'knative') return false
-  const override = (process.env.PUBLISH_BUILD_IMAGES || '').trim().toLowerCase()
-  if (override === 'off') return false
-  if (override === 'on') return true
+  const verdict = publishFlagAllows(parsePublishFlag(process.env.PUBLISH_BUILD_IMAGES), projectId)
+  if (verdict !== null) return verdict
   return publishedBuildSetup().ok
+}
+
+/**
+ * Why a Postgres environment cannot publish, or `null` when it has its image.
+ *
+ * A Postgres environment must run its own `pg` build: inside any other build the
+ * app is a LibSQL client, so it writes to a per-pod `prisma/dev.db` while
+ * `projects-pg` stays empty. Only `/agent/publish-artifact` — the image-build
+ * path — ever applies the Postgres build context.
+ *
+ * Knative is the substrate that needs the image, because with no image ref its
+ * ksvc boots the *shared* runtime, whose boot hydrates the git tag (SQLite schema
+ * + LibSQL `db.ts`). QA round 8 proved that on staging: `POST /api/users` 200 with
+ * zero rows in the environment's Postgres database.
+ *
+ * Metal is exempt: its published microVM boots from the uploaded artifact, which
+ * does carry the Postgres context, and its substrate never reads `image` at all.
+ * A static publish is exempt too — it has no client to convert.
+ *
+ * Exported so the rule is testable without driving the whole publish route.
+ */
+export function postgresImageRefusal(input: {
+  /** The image ref this publish resolved, if any. */
+  imageRef: string | null | undefined
+  /** Which substrate will run the published site. */
+  substrate: 'knative' | 'metal'
+  serverBacked: boolean
+  /** Variables the image build is missing, from `publishedBuildSetup()`. */
+  missing: string[]
+}): string | null {
+  if (input.imageRef) return null
+  if (!input.serverBacked) return null
+  if (input.substrate !== 'knative') return null
+  if (input.missing.length) {
+    return `per-commit image builds are not configured for this region (missing ${input.missing.join(', ')}).`
+  }
+  return 'no `pg` image was built for this commit (is PUBLISH_BUILD_IMAGES off for it?).'
 }
 
 /**

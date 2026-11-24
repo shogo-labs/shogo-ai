@@ -43,7 +43,7 @@ mock.module('react-native', () => ({
   },
 }))
 
-const { isOpenableUrl, openExternalLink } = await import('../open-external-link')
+const { isOpenableUrl, openDownloadUrl, openExternalLink } = await import('../open-external-link')
 
 afterEach(() => {
   browserOpened.length = 0
@@ -129,6 +129,26 @@ describe('isOpenableUrl', () => {
       '   ',
     ]) {
       expect(isOpenableUrl(url)).toBe(false)
+    }
+  })
+})
+
+describe('openDownloadUrl (SHO-483)', () => {
+  it('on native, where window exists but window.open does not, opens the in-app browser instead of throwing', async () => {
+    // React Native defines `window` (it is the global object) with no `open`:
+    // the old `typeof window !== "undefined"` check called undefined
+    // (Sentry SHOGO-ANDROID-23 / -T, Members → Export usage CSV).
+    const g = globalThis as { window?: unknown }
+    const hadWindow = 'window' in g
+    const previous = g.window
+    g.window = {}
+    try {
+      expect(() => openDownloadUrl('https://api.test/members.csv')).not.toThrow()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(browserOpened).toEqual(['https://api.test/members.csv'])
+    } finally {
+      if (hadWindow) g.window = previous
+      else delete g.window
     }
   })
 })

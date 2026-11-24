@@ -463,8 +463,8 @@ function main() {
     })
     console.log('  ✓ Copied runtime-template')
     // The source template pins `@shogo-ai/sdk` as `workspace:*`, which a pod
-    // can't resolve. Rewrite the bundled copy to a concrete `^X.Y.Z` from
-    // npm's `latest` dist-tag so pods install cleanly + track the latest SDK.
+    // can't resolve. Rewrite the bundled copy to a concrete `X.Y.Z` (exact,
+    // SHO-522) from npm's `latest` dist-tag so pods install cleanly.
     const materializeScript = path.join(REPO_ROOT, 'scripts', 'materialize-runtime-template.ts')
     execSync(`bun run "${materializeScript}" "${path.join(runtimeTemplateDest, 'package.json')}"`, {
       stdio: 'inherit',

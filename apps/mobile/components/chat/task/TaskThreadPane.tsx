@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react"
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
+import { Pressable, ScrollView, Text, View } from "react-native"
 import { X } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { ConversationDetail, Mentionables } from "../../../lib/team-chat-api"
@@ -21,6 +21,7 @@ import { linkLabel, type TaskLink } from "../../../lib/task-link"
 import type { TaskThreadTarget } from "../../../lib/task-thread-pane-store"
 import { TimelinePane } from "../../team-chat/TimelinePane"
 import { ProjectChatView } from "../../project/ProjectChatView"
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -42,7 +43,7 @@ function Header({ target, label, subtitle, onClose }: { target: TaskThreadTarget
           {subtitle ?? target.title ?? target.taskId}
         </Text>
       </View>
-      {target.loading ? <ActivityIndicator size="small" /> : null}
+      {target.loading ? <Spinner size="small" /> : null}
       <Pressable
         onPress={onClose}
         hitSlop={8}
@@ -125,7 +126,7 @@ function ThreadView({ link, target, onClose }: { link: Extract<TaskLink, { kind:
       <View className="flex-1">
         <Header target={target} label={label} onClose={onClose} />
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       </View>
     )

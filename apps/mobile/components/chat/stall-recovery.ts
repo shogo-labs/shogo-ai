@@ -45,7 +45,22 @@ export interface StallRecoveryGateInput {
   recoveredTurnId: string | null
   renderDepthErrorTurnId: string | null
   userInitiatedStop: boolean
+  /** Recoveries already started for `recoveredTurnId`. */
+  recoveriesThisTurn?: number
+  /** `lastSeq` when the previous recovery for this turn started. */
+  seqAtLastRecovery?: number | null
+  /** `lastSeq` now. */
+  lastSeq?: number | null
+  maxRecoveriesPerTurn?: number
 }
+
+/**
+ * How many times one turn may be recovered automatically. A long reply on a
+ * phone network can drop more than once; the old once-per-turn latch left the
+ * second drop on the Retry banner (Sentry JAVASCRIPT-REACT-46 / ANDROID-5 /
+ * IOS-4, `recovered: false`, lastSeq in the thousands).
+ */
+export const MAX_RECOVERIES_PER_TURN = 3
 
 /** A status the runtime reported for a turn that is no longer running. */
 export function turnEndedOnServer(turnStatus: ChatTurnStatus): boolean {
@@ -59,6 +74,12 @@ export type StallTripDecision =
   | "stop-and-reattach"
   /** The turn already ended server-side — drop the dead body and paint history. */
   | "stop-and-reload"
+  /**
+   * The runtime answered and holds no turn for this session (404/204): the
+   * turn is not running there. Drop the body, paint saved history, and only
+   * offer Retry if history has no reply for the prompt.
+   */
+  | "stop-and-verify"
   /** Nothing confirmed the turn is alive — break the wedge and offer Retry. */
   | "stop"
 
@@ -107,7 +128,39 @@ export function decideStallTrip({
     return keptAlive >= maxKeptAlive ? "stop-and-reattach" : "stay-attached"
   }
   if (answered && turnEndedOnServer(turnStatus)) return "stop-and-reload"
+  if (answered && turnStatus === "unknown") return "stop-and-verify"
   return "stop"
+}
+
+export type StallGiveUpOutcome =
+  /** The runtime says the turn ended: its reply (or failure) is saved. */
+  | "reload-history"
+  /**
+   * The runtime answered that it has no turn for this session. The turn is
+   * not running anywhere this client can reattach to; its reply is usually
+   * already saved (the buffer is evicted after the grace window), so paint
+   * history and show Retry only when history still ends on the prompt.
+   */
+  | "reload-then-check-reply"
+  /** Nothing answered: the runtime may still be running it, so offer Retry. */
+  | "show-retry"
+
+/**
+ * What the bounded recovery poll does once it gives up. Every answered probe
+ * that reads "no turn here" used to end on the Retry banner after ~50 s, even
+ * when the reply was already saved (Sentry chat_stall_recovery_gave_up with
+ * probeAnswered=true on REACT-5Z / ANDROID-V / IOS-S / DESKTOP-15).
+ */
+export function decideStallGiveUp({
+  turnStatus,
+  answered,
+}: {
+  turnStatus: ChatTurnStatus
+  answered: boolean
+}): StallGiveUpOutcome {
+  if (!answered) return "show-retry"
+  if (turnEndedOnServer(turnStatus)) return "reload-history"
+  return "reload-then-check-reply"
 }
 
 /**
@@ -121,10 +174,24 @@ export function shouldAutoRecoverStalledTurn({
   recoveredTurnId,
   renderDepthErrorTurnId,
   userInitiatedStop,
+  recoveriesThisTurn,
+  seqAtLastRecovery,
+  lastSeq,
+  maxRecoveriesPerTurn,
 }: StallRecoveryGateInput): boolean {
   if (!stalledTurnId || userInitiatedStop) return false
   if (renderDepthErrorTurnId === stalledTurnId) return false
-  return recoveredTurnId !== stalledTurnId
+  if (recoveredTurnId !== stalledTurnId) return true
+  // The same turn dropped again. Recover once more only if the last recovery
+  // delivered frames (the seq moved), so a turn that cannot be reattached
+  // never loops.
+  const budget = maxRecoveriesPerTurn ?? MAX_RECOVERIES_PER_TURN
+  if ((recoveriesThisTurn ?? 1) >= budget) return false
+  return (
+    typeof lastSeq === "number" &&
+    typeof seqAtLastRecovery === "number" &&
+    lastSeq > seqAtLastRecovery
+  )
 }
 
 /**

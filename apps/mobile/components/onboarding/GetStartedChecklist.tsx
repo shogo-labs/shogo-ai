@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState, Pressable, Text, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem, setStorageJson } from '@/lib/storage'
 import { Check, ChevronDown, ChevronRight, ChevronUp, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -127,7 +128,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
     setSeenKinds((prev) => {
       if (prev.includes(kind)) return prev
       const next = [...prev, kind]
-      AsyncStorage.setItem(SEEN_KINDS_KEY + user.id, JSON.stringify(next)).catch(() => {})
+      setStorageJson(SEEN_KINDS_KEY + user.id, next).catch(() => {})
       return next
     })
   }, [current?.id, eligible, kind, user?.id])
@@ -223,7 +224,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
   const dismiss = useCallback(() => {
     setDismissed(true)
     trackEvent(posthog, EVENTS.GETTING_STARTED_DISMISSED, { completed_count: completedCount })
-    if (user?.id) AsyncStorage.setItem(DISMISSED_KEY + user.id, 'true').catch(() => {})
+    if (user?.id) setStorageItem(DISMISSED_KEY + user.id, 'true').catch(() => {})
   }, [completedCount, posthog, user?.id])
 
   const visible =

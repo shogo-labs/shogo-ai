@@ -97,9 +97,22 @@ function isTransparentToReasoning(part: any): boolean {
  */
 export type PartReuseCache = WeakMap<object, { index: number; part: MessagePart }>
 
+const SUMMARIZING_PART = "data-context-summarizing"
+const SUMMARIZED_PART = "data-context-summarized"
+
+export interface ExtractOrderedPartsOptions {
+  /**
+   * The message is still streaming. Only then can a "Summarizing…" row be
+   * live; once the turn is over (or errored) a pending row is stale and is
+   * dropped, so nothing spins forever.
+   */
+  streaming?: boolean
+}
+
 export function extractOrderedParts(
   message: UIMessage,
   reuse?: PartReuseCache,
+  options?: ExtractOrderedPartsOptions,
 ): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
@@ -114,6 +127,14 @@ export function extractOrderedParts(
   }
 
   const result: MessagePart[] = []
+  // A `data-context-summarized` part resolves every "Summarizing…" row before
+  // it: the compaction is done, so those rows must not stay on screen next to
+  // the divider that now states what happened (SHO-556).
+  let lastSummarizedIndex = -1
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index]?.type === SUMMARIZED_PART) lastSummarizedIndex = index
+  }
+
   /** The part this raw part produced last time, if it is still the same one. */
   const reused = (raw: any, index: number): MessagePart | undefined => {
     if (!reuse || typeof raw !== "object" || raw === null) return undefined
@@ -187,6 +208,20 @@ export function extractOrderedParts(
             keep(part, index, { type: "text", text: part.text, id: `text-${index}` }),
         )
       }
+    } else if (part.type === "data-context-summarizing") {
+      // Live status while the summarizer calls run (SHO-556). Dropped when a
+      // later `data-context-summarized` resolves it, when the turn is no longer
+      // streaming, and always after a reload (the API never persists it).
+      if (!options?.streaming || index < lastSummarizedIndex) continue
+      const payload = (part as { data?: Record<string, unknown> }).data ?? {}
+      result.push(
+        reused(part, index) ??
+          keep(part, index, {
+            type: "compaction-pending",
+            chunks: Number(payload.chunks) || 0,
+            id: `compaction-pending-${index}`,
+          }),
+      )
     } else if (part.type === "data-context-summarized") {
       // Context-summarization divider. Emitted by the runtime mid-turn (and
       // persisted by the API) since SHO-96; it sits in the transcript so the

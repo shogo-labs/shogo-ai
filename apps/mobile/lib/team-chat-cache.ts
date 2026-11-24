@@ -9,6 +9,7 @@
  * opened conversations are kept, and everything is cleared on sign-out.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from './storage'
 import type { ChatMessage, ConversationSummary } from './team-chat-api'
 
 const PREFIX = 'shogo:team-chat:v1:'
@@ -42,7 +43,7 @@ function writeLater(key: string, value: unknown): void {
   if (existing) clearTimeout(existing)
   pendingWrites.set(key, setTimeout(() => {
     pendingWrites.delete(key)
-    AsyncStorage.setItem(key, JSON.stringify(value)).catch(() => {})
+    setStorageJson(key, value).catch(() => {})
   }, WRITE_DELAY_MS))
 }
 
@@ -81,7 +82,7 @@ function touchIndex(key: string): void {
       touched.delete(k)
     }
     if (evicted.length) await AsyncStorage.multiRemove(evicted).catch(() => {})
-    await AsyncStorage.setItem(INDEX_KEY, JSON.stringify(index)).catch(() => {})
+    await setStorageJson(INDEX_KEY, index).catch(() => {})
   })
 }
 

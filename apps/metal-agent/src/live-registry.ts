@@ -117,6 +117,12 @@ export interface LiveVmEntry {
   homeUntrustedReason?: string
   /** Per-member writable-state lineage for workspace runtimes. See AssignedVm.memberData. */
   memberData?: Record<string, MemberDataState>
+  /**
+   * The guest cannot snapshot this VM's database (SHO-541). Persisted so the
+   * age of the failure survives an agent restart — adopt-on-restart would
+   * otherwise reset the alert's clock every deploy.
+   */
+  dataSnapshotFailure?: { code: string; message: string; since: number; attempts: number }
   /** Mounted member ids for a workspace runtime. See AssignedVm.workspaceMemberIds. */
   workspaceMemberIds?: string[]
   /**

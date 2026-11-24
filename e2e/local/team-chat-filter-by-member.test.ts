@@ -193,15 +193,18 @@ test.describe("Team chat: filter by member (SHO-458)", () => {
     page,
   }) => {
     // Open the channel with a thread already open.
+    // At desktop width the thread pane has the breadcrumb header, not the
+    // phone-only `floating-thread-header`; its "Close thread" control marks it.
+    const threadHeader = page.getByLabel("Close thread")
     await page.goto(`/c/${seed.channelId}?thread=${peerRootMsgId}`)
-    await expect(page.getByTestId("floating-thread-header")).toBeVisible({ timeout: 60_000 })
+    await expect(threadHeader).toBeVisible({ timeout: 60_000 })
 
     // Activate the member filter without touching the thread param.
     await page.goto(`/c/${seed.channelId}?thread=${peerRootMsgId}&from=user:${myUserId}`)
 
     // Both the filter bar and the thread pane should be visible.
     await expect(page.getByTestId("member-filter-bar")).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByTestId("floating-thread-header")).toBeVisible()
+    await expect(threadHeader).toBeVisible()
     // No MemberMessagesPane.
     await expect(page.getByTestId("member-messages-pane")).toHaveCount(0)
   })

@@ -6,7 +6,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
@@ -21,9 +20,11 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const LOG_PREFIX = '[ServicesPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
+import { errorMessage } from '../../../lib/error-message'
 
 interface Connection {
   id: string
@@ -69,7 +70,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       const data = await api.getIntegrationConnections(http, projectId)
       setConnections(data as Connection[])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -86,7 +87,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       await api.disconnectIntegration(http, connectionId, { projectId })
       await loadConnections()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -130,7 +131,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       await loadConnections()
     } catch (err: any) {
       console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
-      setError(err.message)
+      setError(errorMessage(err))
       setReconnecting(null)
     } finally {
       try {
@@ -173,7 +174,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading services...</Text>
           </View>
         ) : activeConnections.length === 0 ? (
@@ -243,7 +244,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
                         )}
                       >
                         {isDisconnecting ? (
-                          <ActivityIndicator size="small" />
+                          <Spinner size="small" />
                         ) : (
                           <LogOut size={14} className="text-muted-foreground" />
                         )}

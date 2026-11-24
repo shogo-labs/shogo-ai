@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '../storage'
 
 const STORAGE_KEY = 'shogo:notify-on-turn-complete'
 const DEFAULT = true
@@ -41,7 +42,7 @@ export async function setNotifyOnTurnComplete(value: boolean): Promise<void> {
   cachedValue = value
   for (const l of listeners) l(value)
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, value ? 'true' : 'false')
+    await setStorageItem(STORAGE_KEY, value ? 'true' : 'false')
   } catch {
     // ignore persistence errors
   }

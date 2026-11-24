@@ -48,8 +48,14 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
-import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
-import { isAgentStreamPath } from '../lib/agent-stream-paths'
+import {
+  isWorkspaceDownloadPath,
+  relayWorkspaceDownload,
+  tunnelResponseBody,
+} from '../lib/tunnel-body'
+import { HOST_RETRY_AFTER_S, PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { hostOfWorkspace } from '../lib/host-tunnel'
+import { isAgentStreamPath, isAgentStreamTunnelPath, stripAgentProxyWrapper } from '../lib/agent-stream-paths'
 import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
@@ -90,9 +96,38 @@ const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
 const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 120_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
+/**
+ * The stream timeouts, read per request so a test can shrink them
+ * (`SHOGO_TUNNEL_STREAM_*`) instead of waiting fifteen real minutes to prove a
+ * live stream is never cut (SHO-546). Production never sets them.
+ */
+function streamTimeouts(): { firstChunk: number; idle: number; max: number } {
+  const envMs = (name: string, fallback: number) => {
+    const value = Number(process.env[name])
+    return Number.isFinite(value) && value > 0 ? value : fallback
+  }
+  return {
+    firstChunk: envMs('SHOGO_TUNNEL_STREAM_FIRST_CHUNK_TIMEOUT_MS', STREAM_FIRST_CHUNK_TIMEOUT_MS),
+    idle: envMs('SHOGO_TUNNEL_STREAM_IDLE_TIMEOUT_MS', STREAM_IDLE_TIMEOUT_MS),
+    max: envMs('SHOGO_TUNNEL_STREAM_MAX_TIMEOUT_MS', STREAM_MAX_TIMEOUT_MS),
+  }
+}
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
+/**
+ * Wake window for a desktop whose heartbeat is fresh (SHO-506). A desktop learns
+ * the cloud wants its tunnel from its next heartbeat poll, so a wait shorter than
+ * the time to that poll is a coin flip on whether the wake was seen at all.
+ * `WAKE_MAX_WAIT_MS` is the worst case: an idle poll (`POLL_INTERVAL_IDLE_S`) plus
+ * a margin for the last-seen write being throttled. `WAKE_MIN_WAIT_MS` keeps a
+ * host that has just polled from being written off in milliseconds.
+ */
+const WAKE_MIN_WAIT_MS = 5_000
+const WAKE_MAX_WAIT_MS = 75_000
+const WAKE_HEARTBEAT_MARGIN_MS = 15_000
+/** Suggested client retry, in seconds, for a host that is connecting (not offline). */
+const WAKE_RETRY_AFTER_S = HOST_RETRY_AFTER_S
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -192,6 +227,10 @@ export interface TunnelRequest {
   body?: string
   /** From /api/projects/:id/agent-proxy/... before path normalization; desktop uses this to start the right runtime. */
   projectId?: string
+  /** From /api/workspaces/:id/agent-proxy/... before path normalization. */
+  workspaceId?: string
+  /** Response body encodings the cloud can decode. `['base64']` is what makes binary bodies survive. */
+  acceptBodyEncoding?: string[]
 }
 
 export interface TunnelResponse {
@@ -200,6 +239,8 @@ export interface TunnelResponse {
   status: number
   headers?: Record<string, string>
   body?: string
+  /** Set when `body` is base64-encoded bytes rather than text. */
+  bodyEncoding?: 'base64'
 }
 
 export interface TunnelStreamChunk {
@@ -217,6 +258,47 @@ interface TunnelHeartbeat {
 type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { type: 'pong' }
 
 const tunnels = new Map<string, TunnelConnection>()
+
+/**
+ * Set once this pod has been told to shut down.
+ *
+ * A socket opened while a pod is going away is registered and then told to move
+ * on immediately: the pod stays in its Service's endpoint list for a moment, so
+ * a desktop can land here after the drain broadcast went out (SHO-565).
+ */
+let drainingTunnels = false
+
+/** How long this pod expects to live after a drain — the `graceMs` it sends. */
+const TUNNEL_DRAIN_GRACE_MS = Math.max(
+  0,
+  Number(process.env.SHOGO_TUNNEL_DRAIN_GRACE_MS ?? 30_000) || 0,
+)
+
+/**
+ * Tell every open tunnel on this pod to move to another one (SHO-565).
+ *
+ * Called from the SIGTERM handler: the desktop opens a replacement on another
+ * pod first, so the turn in flight is never cut by this pod going away. Returns
+ * how many sockets were told.
+ */
+export function drainInstanceTunnels(): number {
+  drainingTunnels = true
+  const frame = JSON.stringify({ type: 'drain', graceMs: TUNNEL_DRAIN_GRACE_MS })
+  let sent = 0
+  for (const [instanceId, conn] of tunnels) {
+    try {
+      conn.ws.send(frame)
+      sent++
+    } catch (err) {
+      console.warn(
+        `[RemoteControl] drain frame to ${instanceId} failed:`,
+        (err as Error).message,
+      )
+    }
+  }
+  console.log(`[RemoteControl] Told ${sent} tunnel(s) to rotate off this pod`)
+  return sent
+}
 
 export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
@@ -252,18 +334,7 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
  * IMPORTANT: only strips query-free path segments. Callers must handle
  * query strings separately (append after normalization).
  */
-export function normalizeTransparentProxyPath(path: string): string {
-  const pathWithoutQuery = path.split('?')[0] || path
-  const wrapped = pathWithoutQuery.match(
-    /^\/api\/(?:projects|workspaces)\/[^/]+\/agent-proxy(\/.*)?$/,
-  )
-  if (wrapped) {
-    // group 1 is undefined when the path ends exactly at /agent-proxy —
-    // forward to /agent (the runtime's root) rather than "/" which 404s.
-    return wrapped[1] || '/agent'
-  }
-  return pathWithoutQuery
-}
+export const normalizeTransparentProxyPath = stripAgentProxyWrapper
 
 /**
  * Decide whether a request should use the streaming tunnel pipeline.
@@ -285,14 +356,32 @@ export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
     return
   }
 
+  // A replacement socket that lands on the pod already serving this machine is
+  // a rotation, not a reconnect: the old socket is still open and still
+  // carrying requests whose frames arrive with the same request ids. Handing
+  // those maps over is what lets a turn finish where it started — rebuilding a
+  // fresh conn here dropped every in-flight stream handler on the floor, and
+  // the turn then sat until the idle timeout (SHO-565 QA). A socket that
+  // replaces a dead one (an abnormal close, a flap) starts empty, exactly as
+  // before: its predecessor's close already rejected that work.
+  const previous = tunnels.get(instanceId)
+  const rotatingInPlace = previous !== undefined && previous.ws !== ws && previous.ws.readyState === WebSocket.OPEN
+
   const conn: TunnelConnection = {
     ws,
     instanceId,
     workspaceId,
-    pendingRequests: new Map(),
-    streamHandlers: new Map(),
+    pendingRequests: rotatingInPlace ? previous.pendingRequests : new Map(),
+    streamHandlers: rotatingInPlace ? previous.streamHandlers : new Map(),
   }
   tunnels.set(instanceId, conn)
+
+  if (rotatingInPlace) {
+    console.log(
+      `[RemoteControl] Instance ${instanceId} rotated onto this pod — carrying ` +
+        `${conn.pendingRequests.size} pending request(s) and ${conn.streamHandlers.size} stream(s) over`,
+    )
+  }
 
   // Await ownership registration BEFORE marking the instance 'online' in
   // Postgres. Otherwise another pod seeing the DB row flip to online can
@@ -322,7 +411,22 @@ export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
     data: { status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
   }).catch(() => {})
 
+  // Ownership is in Redis at this point, so the desktop may treat this socket
+  // as the one the cloud routes to (SHO-565). A rotation holds its replacement
+  // until this frame arrives, which is why it is sent only after the write.
+  sendTunnelFrame(ws, { type: 'ready', podId: getPodId() })
+  if (drainingTunnels) sendTunnelFrame(ws, { type: 'drain', graceMs: TUNNEL_DRAIN_GRACE_MS })
+
   console.log(`[RemoteControl] Instance ${instanceId} connected (workspace ${workspaceId}, pod ${getPodId()})`)
+}
+
+/** Best-effort control frame: a socket that died mid-write is not an error. */
+function sendTunnelFrame(ws: WebSocket & { data?: any }, frame: Record<string, unknown>): void {
+  try {
+    ws.send(JSON.stringify(frame))
+  } catch {
+    // The close handler owns the aftermath of a dead socket.
+  }
 }
 
 export function handleInstanceWsMessage(ws: WebSocket & { data?: any }, raw: string | Buffer) {
@@ -409,14 +513,27 @@ export function handleInstanceWsClose(
     tunnels.delete(instanceId)
   }
 
-  unregisterTunnelOwnership(instanceId).catch((err) => {
-    console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
-  })
-
-  prisma.instance.update({
-    where: { id: instanceId },
-    data: { status: 'offline' },
-  }).catch(() => {})
+  unregisterTunnelOwnership(instanceId)
+    .then((wasOwner) => {
+      if (!wasOwner) {
+        // Another pod owns this machine: this socket was replaced (SHO-565), so
+        // the tunnel is alive — flipping the row offline would 503 every
+        // request until the next heartbeat.
+        console.log(
+          `[RemoteControl] Instance ${instanceId} moved to another pod — keeping it online (${closeInfo})`,
+        )
+        return undefined
+      }
+      return prisma.instance
+        .update({
+          where: { id: instanceId },
+          data: { status: 'offline' },
+        })
+        .catch(() => undefined)
+    })
+    .catch((err) => {
+      console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
+    })
 
   console.log(`[RemoteControl] Instance ${instanceId} disconnected (${closeInfo})`)
 }
@@ -572,14 +689,21 @@ function sendLocalTunnelStreamRequest(
 
   const c = conn
   let gotFirstChunk = false
+  // An agent turn streams for as long as the model and its tools take, and the
+  // runtime sends a `data-turn-seq` heartbeat every 250 ms while it works, so a
+  // wall-clock cap can only ever cut a live turn (SHO-546: every desktop stream
+  // died at 10 min however busy it was). Liveness for those is the idle timer,
+  // which resets on every chunk. Every other stream keeps the hard cap.
+  const agentStream = isAgentStreamTunnelPath(req.method, req.path)
+  const timeouts = streamTimeouts()
   // Use a generous timeout for the first chunk — the local agent may need
   // to cold-start the runtime AND wait for the first LLM token.
-  let idleTimer = setTimeout(() => kill('idle'), STREAM_FIRST_CHUNK_TIMEOUT_MS)
-  const maxTimer = setTimeout(() => kill('max'), STREAM_MAX_TIMEOUT_MS)
+  let idleTimer = setTimeout(() => kill('idle'), timeouts.firstChunk)
+  const maxTimer = agentStream ? null : setTimeout(() => kill('max'), timeouts.max)
 
   function kill(reason: string) {
     clearTimeout(idleTimer)
-    clearTimeout(maxTimer)
+    if (maxTimer) clearTimeout(maxTimer)
     c.streamHandlers.delete(req.requestId)
     onChunk({ type: 'stream-error', requestId: req.requestId, error: `Stream timed out (${reason})` })
   }
@@ -589,11 +713,11 @@ function sendLocalTunnelStreamRequest(
     if (chunk.type === 'stream-chunk') {
       gotFirstChunk = true
       // After the first chunk, switch to the tighter inter-chunk timeout.
-      idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
+      idleTimer = setTimeout(() => kill('idle'), timeouts.idle)
     }
     if (chunk.type === 'stream-end' || chunk.type === 'stream-error') {
       clearTimeout(idleTimer)
-      clearTimeout(maxTimer)
+      if (maxTimer) clearTimeout(maxTimer)
     }
     onChunk(chunk)
   })
@@ -603,10 +727,14 @@ function sendLocalTunnelStreamRequest(
   return {
     cancel: () => {
       clearTimeout(idleTimer)
-      clearTimeout(maxTimer)
+      if (maxTimer) clearTimeout(maxTimer)
       c.streamHandlers.delete(req.requestId)
+      // A rotation replaces the connection object but carries its maps over, so
+      // the handler above is still the one to drop — only the socket to tell is
+      // whichever one the cloud routes to now (SHO-565).
+      const live = tunnels.get(instanceId) ?? c
       try {
-        c.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
+        live.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
       } catch {}
     },
   }
@@ -647,6 +775,51 @@ export function sendTunnelStreamRequest(
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
   })
   return { cancel: () => cancelRef.cancel() }
+}
+
+/**
+ * A tunneled GET handed back as a `Response`, so a caller that reads a runtime
+ * stream through `fetch`-shaped code can also reach a desktop-hosted runtime
+ * (SHO-546). `trackUsageFromStream`'s resume hook is the caller: it re-attaches
+ * to `/agent/chat/:id/stream?fromSeq=0` over the same tunnel the turn ran on.
+ *
+ * The streaming tunnel carries no response headers, so a resume cannot report
+ * `X-Turn-Id` here — the replay's own `data-turn-start` frame is what tells the
+ * tracker whether the buffer still holds its turn.
+ */
+export function tunnelStreamResponse(instanceId: string, req: TunnelRequest): Response {
+  const encoder = new TextEncoder()
+  let cancel: (() => void) | null = null
+  let settled = false
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const handle = sendTunnelStreamRequest(instanceId, req, (chunk) => {
+        if (settled) return
+        if (chunk.type === 'stream-chunk' && chunk.data) {
+          try {
+            controller.enqueue(encoder.encode(chunk.data))
+          } catch {
+            settled = true
+          }
+        } else if (chunk.type === 'stream-end') {
+          settled = true
+          try { controller.close() } catch { /* already closed */ }
+        } else if (chunk.type === 'stream-error') {
+          settled = true
+          try { controller.error(new Error(chunk.error || 'Stream error')) } catch { /* already closed */ }
+        }
+      })
+      cancel = handle.cancel
+    },
+    cancel() {
+      settled = true
+      cancel?.()
+    },
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+  })
 }
 
 // ─── REST routes ────────────────────────────────────────────────────────────
@@ -785,6 +958,17 @@ export function instanceRoutes() {
     }
 
     const id = c.req.param('id')
+    // A hosted workspace's viewer names the workspace it is opening (SHO-538):
+    // that workspace's runtime lives on this machine, so waking it is part of
+    // opening it.
+    // Only a JSON body is read: the federated fallback below forwards the raw
+    // bytes, so a request without one must reach it untouched.
+    const requestedWorkspaceId = /application\/json/i.test(c.req.header('content-type') ?? '')
+      ? await c.req
+          .json<{ workspaceId?: string }>()
+          .then((body) => (typeof body?.workspaceId === 'string' ? body.workspaceId : null))
+          .catch(() => null)
+      : null
     const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
       if (await isFederatedEnabled()) {
@@ -797,14 +981,27 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
+    // Legacy rows with no recorded owner (userId null) fall back to the
+    // membership check below, as they always have.
+    const ownsMachine = !instance.userId || instance.userId === auth.userId
+
+    // A machine serves two kinds of caller: the person it belongs to, and anyone
+    // who may open a workspace it hosts (SHO-285) — that workspace's runtime runs
+    // on this machine, so opening it has to be able to wake it (SHO-538). It is
+    // still only that one workspace, and only when it is this machine's.
+    const wakesHostedWorkspace =
+      !ownsMachine &&
+      !!requestedWorkspaceId &&
+      (await can(c, 'workspace:read', { workspaceId: requestedWorkspaceId })) &&
+      (await hostOfWorkspace(requestedWorkspaceId)) === instance.id
+
+    if (!wakesHostedWorkspace && !(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
     // Machines are scoped to the user who paired them. A workspace member
-    // may not view or drive another member's machine. Legacy rows with no
-    // recorded owner (userId null) fall back to the membership check above.
-    if (instance.userId && instance.userId !== auth.userId) {
+    // may not view or drive another member's machine.
+    if (!ownsMachine && !wakesHostedWorkspace) {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
@@ -1447,9 +1644,16 @@ export function instanceRoutes() {
     const afterPrefix = c.req.param('rest') || ''
     const rawPath = '/' + afterPrefix
 
-    // Extract projectId from wrapped agent-proxy paths before stripping
+    // Extract the target's id from wrapped agent-proxy paths before stripping.
+    // Both wrappers name their runtime: a project chat names a project, a
+    // workspace chat names a workspace (the personal companion, or a paired
+    // desktop's own). Dropping the workspace id sent the request to whichever
+    // runtime happened to be running, with no token — a 401 (SHO-526).
     const tunnelProjectId = rawPath.match(
       /^\/api\/projects\/([^/]+)\/agent-proxy(?:\/|$)/,
+    )?.[1]
+    const tunnelWorkspaceId = rawPath.match(
+      /^\/api\/workspaces\/([^/]+)\/agent-proxy(?:\/|$)/,
     )?.[1]
 
     // ── Path normalization ─────────────────────────────────────────────
@@ -1470,6 +1674,12 @@ export function instanceRoutes() {
     if (contentType) forwardHeaders['content-type'] = contentType
     const accept = c.req.header('accept')
     if (accept) forwardHeaders['accept'] = accept
+    // Video and audio seeking: the runtime already answers 206s, but the range
+    // never reached it, so a player could only ever get the whole file.
+    const range = c.req.header('range')
+    if (range) forwardHeaders['range'] = range
+    const ifRange = c.req.header('if-range')
+    if (ifRange) forwardHeaders['if-range'] = ifRange
 
     // Inject the cloud-authenticated userId so the desktop API can
     // identify who is making the request without needing a session
@@ -1546,8 +1756,28 @@ export function instanceRoutes() {
           if (body) {
             try { parsedBodyForTracker = JSON.parse(body) } catch { /* not JSON, leave empty */ }
           }
+          // EOF without `data-turn-complete` means the tunnel cut the stream,
+          // not that the turn ended: the desktop runtime keeps buffering it.
+          // Re-attach over the same tunnel so a long turn still lands in the
+          // database (SHO-546). Without this hook the tracker could only
+          // persist what the cut leg had, and logged `partial (no-resume-hook)`.
+          const chatSessionForResume = transparentChatSessionId
+          const resumeBasePath = `/agent/chat/${encodeURIComponent(chatSessionForResume || '')}/stream`
           trackUsageFromStream(trackerStream, parsedBodyForTracker, tunnelProject, {
             chatSessionId: transparentChatSessionId,
+            resume: chatSessionForResume
+              ? async (fromSeq) =>
+                  tunnelStreamResponse(instanceId, {
+                    type: 'request',
+                    requestId: generateRequestId(),
+                    method: 'GET',
+                    path: `${resumeBasePath}?fromSeq=${fromSeq}`,
+                    projectId: tunnelProjectId,
+                    workspaceId: tunnelWorkspaceId,
+                    acceptBodyEncoding: ['base64'],
+                    headers: { ...forwardHeaders, accept: 'text/event-stream' },
+                  })
+              : undefined,
           }).catch((err) =>
             console.error(`[InstanceTunnel] Usage tracking error for project ${tunnelProjectId}:`, err),
           )
@@ -1572,6 +1802,8 @@ export function instanceRoutes() {
                 method,
                 path: agentPath,
                 projectId: tunnelProjectId,
+                workspaceId: tunnelWorkspaceId,
+                acceptBodyEncoding: ['base64'],
                 headers: forwardHeaders,
                 body,
               },
@@ -1626,15 +1858,38 @@ export function instanceRoutes() {
 
     // Non-streaming: forward and return the response directly
     try {
-      const resp = await sendTunnelRequest(instanceId, {
-        type: 'request',
-        requestId,
-        method,
-        path: agentPath,
-        projectId: tunnelProjectId,
-        headers: forwardHeaders,
-        body,
-      })
+      const send = (pathWithQuery: string, headers: Record<string, string>) =>
+        sendTunnelRequest(instanceId, {
+          type: 'request',
+          requestId: generateRequestId(),
+          method,
+          path: pathWithQuery,
+          projectId: tunnelProjectId,
+          workspaceId: tunnelWorkspaceId,
+          acceptBodyEncoding: ['base64'],
+          headers,
+          body,
+        })
+
+      // A whole file cannot cross one frame: window the download and stream it.
+      if (isWorkspaceDownloadPath(method, cleanPath)) {
+        const response = await relayWorkspaceDownload({
+          agentPath,
+          headers: forwardHeaders,
+          send: async (pathWithQuery, headers) => send(pathWithQuery, headers),
+        })
+        logRemoteAction({
+          instanceId,
+          userId: auth.userId,
+          action: classifyAction(method, agentPath),
+          path: agentPath,
+          method,
+          result: `HTTP ${response.status}`,
+        })
+        return response
+      }
+
+      const resp = await send(agentPath, forwardHeaders)
 
       logRemoteAction({
         instanceId,
@@ -1655,7 +1910,7 @@ export function instanceRoutes() {
         responseHeaders['content-type'] = 'application/json'
       }
 
-      return new Response(resp.body || '', {
+      return new Response(tunnelResponseBody(resp) as BodyInit, {
         status: resp.status,
         headers: responseHeaders,
       })
@@ -1777,9 +2032,17 @@ export function heartbeatNeedsWrite(
   return false
 }
 
-export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+/**
+ * Is this host's heartbeat recent enough to expect an answer from it?
+ *
+ * Two idle polls is the same rule `/instances` uses for `heartbeat` vs `offline`:
+ * a host that polled inside that window still has a poller running, so a wake it
+ * has not answered yet is "not yet", not "away". `now` is injectable so the wake
+ * decision can be tested without a clock.
+ */
+export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null, now: number = Date.now()): boolean {
   if (!lastSeenAt) return false
-  return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+  return now - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
 }
 
 /**
@@ -1825,6 +2088,103 @@ export function hasLocalTunnel(instanceId: string): boolean {
 }
 
 /**
+ * What a wake should do, decided from the host's own heartbeat (SHO-506).
+ *
+ * A desktop has no push channel: it only sees `wsRequestedAt` on its next
+ * heartbeat poll, and an idle one polls every `POLL_INTERVAL_IDLE_S`. So for a
+ * host that polled recently the wait is the time to that poll plus a margin,
+ * capped at `maxWaitMs`; for a host whose heartbeat is stale nothing can arrive
+ * and the old short probe is all there is to try.
+ *
+ * `lastSeenAt` writes are throttled (`HEARTBEAT_WRITE_MIN_INTERVAL_MS`), which is
+ * why this is the worst case rather than a prediction of the next poll.
+ */
+export function planHostWake(input: {
+  tunnelUp: boolean
+  lastSeenAt: Date | null
+  now?: number
+  staleProbeMs?: number
+  maxWaitMs?: number
+}): { state: 'connected' | 'wait' | 'offline'; waitMs: number } {
+  const now = input.now ?? Date.now()
+  const maxWaitMs = Math.max(0, input.maxWaitMs ?? WAKE_MAX_WAIT_MS)
+  const staleProbeMs = Math.min(Math.max(0, input.staleProbeMs ?? TUNNEL_WAIT_TIMEOUT_MS), maxWaitMs)
+  if (input.tunnelUp) return { state: 'connected', waitMs: 0 }
+  if (!isRecentlySeenViaHeartbeat(input.lastSeenAt, now)) return { state: 'wait', waitMs: staleProbeMs }
+  const untilNextPoll = (input.lastSeenAt as Date).getTime() + POLL_INTERVAL_IDLE_S * 1000 + WAKE_HEARTBEAT_MARGIN_MS - now
+  return { state: 'wait', waitMs: Math.min(Math.max(untilNextPoll, WAKE_MIN_WAIT_MS), maxWaitMs) }
+}
+
+export type HostWakeState = 'connected' | 'connecting' | 'offline'
+
+export interface HostWakeResult {
+  state: HostWakeState
+  instanceId: string
+  name: string | null
+  lastSeenAt: Date | null
+  /** Seconds to wait before trying again; only meaningful for `connecting`. */
+  retryAfterSeconds: number
+}
+
+/**
+ * Wake an instance's tunnel for a caller that has to forward a request into it,
+ * and say *why* when it does not come up (SHO-506).
+ *
+ * `connecting` means the desktop is alive (its heartbeat is fresh) and its
+ * tunnel is still opening — a caller may retry, and the agent-facing surfaces
+ * tell a model to. `offline` means its heartbeat is stale, so the machine is
+ * genuinely away. The old code could only say `offline`, which read as "this Mac
+ * is off" for a Mac that had polled forty seconds earlier.
+ *
+ * `maxWaitMs` bounds the wait for callers that must answer promptly (a message
+ * that is queued on an offline host, a UI list); without it the wait is the
+ * freshness-bounded window from `planHostWake`.
+ */
+export async function wakeHostTunnel(
+  instanceId: string,
+  opts: {
+    staleProbeMs?: number
+    maxWaitMs?: number
+    now?: () => number
+    _tunnelUp?: (id: string) => Promise<boolean>
+    _lastSeenAt?: Date | null
+  } = {},
+): Promise<HostWakeResult> {
+  const now = opts.now ?? Date.now
+  const row = await prisma.instance
+    .findUnique({ where: { id: instanceId }, select: { name: true, lastSeenAt: true } })
+    .catch(() => null)
+  const lastSeenAt = opts._lastSeenAt !== undefined ? opts._lastSeenAt : row?.lastSeenAt ?? null
+  const name = row?.name ?? null
+
+  const tunnelUp = await (opts._tunnelUp ?? ((id: string) => isTunnelConnectedAnywhere(id, { retry: false })))(instanceId)
+  const plannedAt = now()
+  const plan = planHostWake({
+    tunnelUp,
+    lastSeenAt,
+    now: plannedAt,
+    staleProbeMs: opts.staleProbeMs,
+    maxWaitMs: opts.maxWaitMs,
+  })
+  const result = (state: HostWakeState): HostWakeResult => ({
+    state,
+    instanceId,
+    name,
+    lastSeenAt,
+    retryAfterSeconds: state === 'connecting' ? WAKE_RETRY_AFTER_S : 0,
+  })
+  if (plan.state === 'connected') return result('connected')
+
+  if (await requestAndWaitForTunnel(instanceId, plan.waitMs)) return result('connected')
+  // A fresh heartbeat is what separates "still opening" from "away": the machine
+  // is up either way, only its tunnel missed the window. Read it at the moment the
+  // wait was planned, not now: the wait is up to 75s long, so re-reading would
+  // turn a host that was up when we started into the non-retryable "offline" just
+  // because its own wait pushed that same heartbeat past the freshness line.
+  return result(isRecentlySeenViaHeartbeat(lastSeenAt, plannedAt) ? 'connecting' : 'offline')
+}
+
+/**
  * Wake an instance's tunnel if it is asleep and wait up to `timeoutMs` for it.
  * Used by the machine-workspace relay, which has to be honest about "offline"
  * instead of forwarding into a void.
@@ -1833,6 +2193,16 @@ export async function ensureTunnelConnected(
   instanceId: string,
   timeoutMs: number = TUNNEL_WAIT_TIMEOUT_MS,
 ): Promise<boolean> {
+  return requestAndWaitForTunnel(instanceId, timeoutMs)
+}
+
+/**
+ * Ask the desktop to open its tunnel and wait up to `timeoutMs` for the WS.
+ *
+ * The ownership check is first: a tunnel held by another pod is already up, and
+ * asking a connected desktop to reconnect would drop a session that works.
+ */
+async function requestAndWaitForTunnel(instanceId: string, timeoutMs: number): Promise<boolean> {
   if (tunnels.has(instanceId)) return true
 
   let remotePod = await getTunnelOwner(instanceId)
@@ -1899,15 +2269,23 @@ export const _testing = {
   activeControllers,
   computeNextPollIn,
   isWsRequested,
+  /** Put the "this pod is draining" flag back, so one test's drain cannot leak. */
+  resetTunnelDrain: () => { drainingTunnels = false },
   isViewerActive,
   markViewerActive,
   markControllerActive,
   getActiveControllers,
   sendLocalTunnelRequest,
   sendLocalTunnelStreamRequest,
+  tunnelStreamResponse,
+  planHostWake,
   POLL_INTERVAL_IDLE_S,
   POLL_INTERVAL_VIEWER_S,
   POLL_INTERVAL_WS_REQUESTED_S,
+  WAKE_MIN_WAIT_MS,
+  WAKE_MAX_WAIT_MS,
+  WAKE_HEARTBEAT_MARGIN_MS,
+  WAKE_RETRY_AFTER_S,
   WS_REQUEST_TTL_MS,
   VIEWER_ACTIVE_TTL_MS,
   STREAM_FIRST_CHUNK_TIMEOUT_MS,

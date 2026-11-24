@@ -42,12 +42,24 @@ export const shogoProvider = {
   async streamUpdate(
     conversation: { id: string; workspaceId: string; kind: string },
     messageId: string,
-    state: { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> },
+    state: {
+      text: string
+      tool: string | null
+      tools?: Array<{ name: string; done: boolean }>
+      /** The runtime is summarizing context, so the dock says "Summarizing…" (SHO-556). */
+      summarizing?: boolean
+    },
     audience?: string[] | null,
   ): Promise<void> {
     const to = audience === undefined ? await conversationAudience(conversation) : audience
     publishConversationEvent(conversation.workspaceId, {
-      type: 'agent.delta', conversationId: conversation.id, messageId, text: state.text, tool: state.tool, tools: state.tools,
+      type: 'agent.delta',
+      conversationId: conversation.id,
+      messageId,
+      text: state.text,
+      tool: state.tool,
+      tools: state.tools,
+      summarizing: state.summarizing,
     }, to)
   },
 }

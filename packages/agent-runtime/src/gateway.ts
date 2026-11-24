@@ -135,7 +135,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { agentBoardsRequest, deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
 import { fetchEffectiveAbilities } from './access-gate'
 import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
@@ -165,7 +165,8 @@ import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
 import { TaskRegistry, formatTaskNotification, type TaskLink, type TaskSource, type TaskStatus } from './task-registry'
-import { readDeclaredServices, shellQuote } from './services-registry'
+import { dedupeDeclaredServices, readDeclaredServices, shellQuote, undeclareService } from './services-registry'
+import { reapChildLedger } from '@shogo-ai/sdk/child-ledger'
 import { cleanupTaskOutputs, listTaskOutputRows, taskOutputBody, taskOutputDir, taskOutputRoot } from './task-output'
 import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
@@ -968,6 +969,50 @@ export function capIntegrationMockResult(toolName: string, data: unknown): Agent
   return textResult(raw + annotation)
 }
 
+/** A paired desktop as the API's device list describes it. */
+export interface PairedDeviceSummary {
+  id: string
+  name: string
+  os: string | null
+  online: boolean
+  lastSeenAt: string | null
+}
+
+/**
+ * The model-facing "Your devices" block (SHO-285 Update 2, SHO-506). Pure so the
+ * guidance the model reads is asserted in tests: `device_offline` means stop,
+ * `device_connecting` means wait `retryAfterSeconds` and call once more.
+ */
+export function renderDevicesContext(devices: PairedDeviceSummary[]): string {
+  const lines = devices.map((device) => {
+    const state = device.online
+      ? 'online'
+      : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
+    const where = device.os ? ` — ${device.os}` : ''
+    return `- **${device.name}** (${state})${where}`
+  })
+  return [
+    '## Your devices',
+    '',
+    "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
+    '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
+    "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
+    'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
+    'remote tools off, and a command or file change waits for their approval on that computer.',
+    'An offline device answers `device_offline` with its last-seen time: do not retry it, say the',
+    'machine is asleep or away. A desktop that is online but whose connection is still opening',
+    'answers `device_connecting` with `retryAfterSeconds` — wait that long and make the call once',
+    'more. One that has not allowed remote tools answers `remote_device_tools_disabled`: say so',
+    'rather than retrying.',
+    'A request nobody approves on that computer answers `remote_approval_timeout` (or',
+    '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
+    'there, then try again.',
+    '',
+    ...lines,
+    '',
+  ].join('\n')
+}
+
 export class AgentGateway {
   private workspaceDir: string
   /**
@@ -1446,6 +1491,7 @@ export class AgentGateway {
   setAccountContext(ctx: AccountContext): void {
     this.accountContext = {
       ...(ctx.planId ? { planId: ctx.planId } : {}),
+      ...(ctx.desktopUnlimited ? { desktopUnlimited: true } : {}),
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),
@@ -1953,10 +1999,19 @@ export class AgentGateway {
     // Bring back every service the agent declared with
     // `exec({ service: true })` — a cold boot and the first boot after a VM
     // recycle both land here, and for the recycle this is what makes the
-    // declaration worth having (SHO-399). Not awaited: a service that hangs on
-    // startup must not hold the gateway's own start, and each failure is
-    // logged with its name.
-    void this.restartDeclaredServices().catch((err: any) => {
+    // declaration worth having (SHO-399).
+    //
+    // Before that, clear what a previous run left behind (SHO-509): process
+    // groups whose owner is dead, duplicate declarations of the same command,
+    // and services whose card already finished. Each of those is a slot this
+    // boot does not need to spend, and a pile of them is what exhausted the
+    // process table. Not awaited: a service that hangs on startup must not hold
+    // the gateway's own start, and each failure is logged with its name.
+    void (async () => {
+      this.reapOrphanedProcessGroups()
+      await this.reapDeclaredServices()
+      await this.restartDeclaredServices()
+    })().catch((err: any) => {
       console.error('[AgentGateway] service restart failed:', err?.message ?? err)
     })
 
@@ -2018,7 +2073,11 @@ export class AgentGateway {
     // (SHO-327) instead of a copy that measures itself.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
-    this.sessionManager.setSummarizeFn(createCompactionSummarizer({ model: summarizerModel }))
+    // The summarizer's own window clamps the per-call chunk budget: the chunks
+    // are 100k by default, and a smaller summarizer must not be handed one.
+    this.sessionManager.setSummarizeFn(createCompactionSummarizer({ model: summarizerModel }), {
+      contextWindowTokens: getContextWindowTokens(summarizerModel.id),
+    })
 
     // Finish (or at least explain) turns this runtime was killed in the middle
     // of, before pruning can drop their sessions (SHO-121).
@@ -3105,6 +3164,10 @@ export class AgentGateway {
         // A late `wait` on a task whose entry was evicted reads the result back
         // from its log instead of reporting the task as unknown.
         resolveOutputRow: (id) => listTaskOutputRows(outputDir).find((row) => row.taskId === id) ?? null,
+        // A foreground command handed back on soft timeout holds its slot until
+        // this session goes quiet; the registry reads the session's own idle
+        // clock rather than keeping a second one (SHO-509).
+        sessionIdleMs: () => this.sessionManager.idleGapMs(sessionId),
       })
       reg = registry
 
@@ -3896,6 +3959,8 @@ export class AgentGateway {
         initialCwd: this.initialShellCwd(sessionWorkspaceDir),
       } : undefined,
       commandRegistry,
+      cancelServiceByName: (name: string, options?: { undeclare?: boolean }) => this.cancelServiceByName(name, options),
+      onCardFinished: (cardKey: string) => this.releaseCardServices(cardKey),
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
@@ -4238,6 +4303,28 @@ export class AgentGateway {
     // floor: below it the kept tail is the whole context, so a summary would
     // fold nothing and only lose detail.
     const contextBeforeLayer4 = this.sessionManager.estimateTokens(session)
+    // Live status for a compaction whose summarizer calls are running. Without
+    // it a 350k head is 2–5 minutes of a turn that has visibly not started
+    // (SHO-556). Transient on purpose: the API persists only
+    // `data-context-summarized`, so a reload can never show a stuck spinner.
+    const emitContextSummarizing = (data: {
+      trigger: 'pre-turn' | 'idle' | 'mid-turn' | 'reactive' | 'manual'
+      tokensBefore: number
+      chunks: number
+    }) => {
+      try {
+        uiWriter?.write({ type: 'data-context-summarizing', data })
+      } catch { /* client disconnected mid-turn — this is status, nothing to persist */ }
+    }
+    /**
+     * The frame that resolves the "Summarizing…" row into the transcript
+     * divider. Persisted API-side, so the divider survives a reload.
+     */
+    const emitContextSummarized = (data: Record<string, unknown>) => {
+      try {
+        uiWriter?.write({ type: 'data-context-summarized', data })
+      } catch { /* client disconnected mid-turn — the row still persists API-side */ }
+    }
     const idleCompactAfterMs = resolveIdleCompactAfterMs()
     const idleCompaction =
       idleCompactAfterMs > 0 &&
@@ -4248,7 +4335,16 @@ export class AgentGateway {
       const fileStateSummary = this.fileStateCache.size > 0
         ? this.fileStateCache.getSummary(this.workspaceDir)
         : undefined
-      const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
+      const preCompactResult = await this.sessionManager.compact(
+        sessionId,
+        fileStateSummary,
+        undefined,
+        ({ chunks }) => emitContextSummarizing({
+          trigger: compactionTrigger,
+          tokensBefore: contextBeforeLayer4,
+          chunks,
+        }),
+      )
       if (preCompactResult) {
         turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
         recordCompaction({
@@ -4260,6 +4356,17 @@ export class AgentGateway {
           filesTouched: preCompactResult.filesTouched ?? [],
           toolsUsed: preCompactResult.toolsUsed ?? [],
           foldedRounds: preCompactResult.foldedRounds ?? 0,
+        })
+        // The turn-boundary compaction is a transcript row too: without it the
+        // "Summarizing…" row emitted above would never resolve.
+        emitContextSummarized({
+          trigger: 'auto',
+          tokensBefore: contextBeforeLayer4,
+          tokensAfter: this.sessionManager.estimateTokens(session),
+          messagesBefore: preCompactResult.messagesBefore,
+          messagesAfter: preCompactResult.messagesAfter,
+          summaryChars: preCompactResult.summary.length,
+          contextWindowTokens: autoCompactTokens,
         })
         console.log(
           `${this.logPrefix} ${idleCompaction ? 'Idle' : 'Pre-turn'} autocompact after ${Math.round(idleGapMs / 1000)}s idle: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
@@ -5042,6 +5149,13 @@ export class AgentGateway {
         idleCompactAfterMs: resolveIdleCompactAfterMs(),
         idleCompactFloorTokens: this.sessionManager.compactionTailBudgetTokens,
         summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
+        // Say "Summarizing…" before the calls run, with how many calls are
+        // coming, so the user sees the reason the turn has not answered yet.
+        onSummarizeStart: ({ head, tokensBefore, reason }) => emitContextSummarizing({
+          trigger: reason === 'manual' ? 'manual' : reason === 'idle' ? 'idle' : 'mid-turn',
+          tokensBefore,
+          chunks: this.sessionManager.planSummarizeChunks(head).count,
+        }),
         apply: (summary, splitIndex, opts) => {
           // Session-relative index: the loop's array may include a head that a
           // previous compaction already folded away.
@@ -5158,7 +5272,17 @@ export class AgentGateway {
           const fileStateSummary = this.fileStateCache.size > 0
             ? this.fileStateCache.getSummary(this.workspaceDir)
             : undefined
-          const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
+          const tokensBeforeReactive = this.sessionManager.estimateTokens(session)
+          const r = await this.sessionManager.compact(
+            sessionId,
+            fileStateSummary,
+            4,
+            ({ chunks }) => emitContextSummarizing({
+              trigger: 'reactive',
+              tokensBefore: tokensBeforeReactive,
+              chunks,
+            }),
+          )
           if (!r) return null
           turnCompaction = { before: r.messagesBefore, after: r.messagesAfter }
           recordCompaction({
@@ -5170,6 +5294,15 @@ export class AgentGateway {
             filesTouched: r.filesTouched ?? [],
             toolsUsed: r.toolsUsed ?? [],
             foldedRounds: r.foldedRounds ?? 0,
+          })
+          emitContextSummarized({
+            trigger: 'auto',
+            tokensBefore: tokensBeforeReactive,
+            tokensAfter: this.sessionManager.estimateTokens(session),
+            messagesBefore: r.messagesBefore,
+            messagesAfter: r.messagesAfter,
+            summaryChars: r.summary.length,
+            contextWindowTokens: autoCompactTokens,
           })
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
           // LLM autocompact rewrites the prefix — drop per-session replacement
@@ -5800,6 +5933,11 @@ export class AgentGateway {
       // summary, instead of stalling on a blank/boilerplate "ran out of steps"
       // turn. Synthetic continuation prompts accumulate into history so message
       // alternation stays valid; usage is folded forward for accurate billing.
+      //
+      // `maxIterationsExhausted` is also set when a provider error cut the turn
+      // short after real tool work (SHO-517): the call that failed is worth one
+      // more attempt, and the retry gets told to shrink a big write instead of
+      // sending the same oversized call again.
       const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
       let autoContinuations = 0
       const accumulatedNewMessages = [...result.newMessages]
@@ -5813,12 +5951,20 @@ export class AgentGateway {
       ) {
         autoContinuations++
         console.warn(
-          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+          `${this.logPrefix} Auto-continuing after ${result.incompleteReason ?? 'iteration ceiling'} (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
         )
         const contHistory = [...history, ...accumulatedNewMessages]
+        // A failed large tool call (a whole file written in one request, on a
+        // huge context) is the one retry that must change shape, not just
+        // repeat: the provider had no first byte for over two minutes.
+        const splitWrites =
+          result.incompleteReason === 'provider_error'
+            ? ' If the call that failed was writing a large file in one go, split it: write_file for the first part, then append the rest in chunks of about 300 lines.'
+            : ''
         const contPrompt =
           'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
-          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.' +
+          splitWrites
         const contResult = await runAgentLoop({
           ...loopOptions,
           history: contHistory,
@@ -6926,13 +7072,7 @@ export class AgentGateway {
   private async buildDevicesContext(): Promise<string | null> {
     const apiUrl = deriveApiUrl()
     if (!apiUrl) return null
-    let devices: Array<{
-      id: string
-      name: string
-      os: string | null
-      online: boolean
-      lastSeenAt: string | null
-    }> = []
+    let devices: PairedDeviceSummary[] = []
     try {
       const res = await fetch(`${apiUrl}/api/internal/devices`, {
         headers: getInternalHeaders(),
@@ -6944,30 +7084,7 @@ export class AgentGateway {
       return null
     }
     if (!devices.length) return null
-    const lines = devices.map((device) => {
-      const state = device.online
-        ? 'online'
-        : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
-      const where = device.os ? ` — ${device.os}` : ''
-      return `- **${device.name}** (${state})${where}`
-    })
-    return [
-      '## Your devices',
-      '',
-      "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
-      '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
-      "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
-      'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
-      'remote tools off, and a command or file change waits for their approval on that computer.',
-      'An offline device answers `device_offline` with its last-seen time, and one that has not',
-      'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
-      'A request nobody approves on that computer answers `remote_approval_timeout` (or',
-      '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
-      'there, then try again.',
-      '',
-      ...lines,
-      '',
-    ].join('\n')
+    return renderDevicesContext(devices)
   }
 
   /**
@@ -8526,8 +8643,117 @@ export class AgentGateway {
   }
 
   /**
-   * Bring every service declared in `.shogo/services.json` back up. Runs once on
-   * gateway start (cold boot, or the first boot after a recycle) and is what
+   * Stop a declared service by name (SHO-509).
+   *
+   * The name is the only handle the registry file gives — a re-declaration
+   * replaces a tree it can only identify by name, and a card that reaches Done
+   * owns its services by name. Searches every session's registry. By default it
+   * also removes the declaration so the next boot cannot bring it back; a
+   * replacement passes `{ undeclare: false }` so a failed spawn leaves the
+   * declaration in place and the service still comes back on the next boot.
+   */
+  async cancelServiceByName(name: string, options: { undeclare?: boolean } = {}): Promise<boolean> {
+    let found = false
+    for (const registry of this.commandRegistries.values()) {
+      const entry = registry.listAll().find((t) => t.service && t.name === name)
+      if (!entry) continue
+      found = true
+      try {
+        await registry.cancel(entry.id)
+      } catch (err: any) {
+        console.error(`[AgentGateway] could not cancel service ${name}: ${err?.message ?? err}`)
+      }
+    }
+    if (options.undeclare === false) return found
+    const undeclared = undeclareService(this.workspaceDir, name)
+    if (undeclared) console.log(`[AgentGateway] undeclared service ${name}`)
+    return found || undeclared
+  }
+
+  /**
+   * Undeclare every service declared for a card that has finished (SHO-509).
+   *
+   * A card's dev server is not needed after the card reaches Done/Dismissed,
+   * and leaving it declared is what built up 9 stale services across 4 projects
+   * until the process table ran out. Called when a card lands in a terminal
+   * column and again at boot for services whose card finished while the app was
+   * closed.
+   */
+  async releaseCardServices(cardKey: string): Promise<string[]> {
+    const key = cardKey.trim().toUpperCase()
+    if (!key) return []
+    const owned = readDeclaredServices(this.workspaceDir).filter(
+      (svc) => (svc.workItemKey ?? '').toUpperCase() === key,
+    )
+    const released: string[] = []
+    for (const svc of owned) {
+      if (await this.cancelServiceByName(svc.name)) released.push(svc.name)
+    }
+    if (released.length) {
+      console.log(`[AgentGateway] released ${released.length} service(s) for finished card ${key}: ${released.join(', ')}`)
+    }
+    return released
+  }
+
+  /**
+   * Drop declarations a boot should not resurrect (SHO-509).
+   *
+   * Two kinds: the same command declared twice (dedupe keeps the newest), and a
+   * service whose card is already Done/Dismissed. Both are read-only checks
+   * that need no fork, so this runs even when the machine is out of slots.
+   */
+  async reapDeclaredServices(): Promise<{ deduped: string[]; finished: string[] }> {
+    const deduped = dedupeDeclaredServices(this.workspaceDir)
+    if (deduped.length) {
+      console.log(`[AgentGateway] dropped duplicate service declarations: ${deduped.join(', ')}`)
+    }
+    const finished: string[] = []
+    const workspaceId = process.env.WORKSPACE_ID
+    for (const svc of readDeclaredServices(this.workspaceDir)) {
+      if (!svc.workItemKey || !workspaceId) continue
+      try {
+        const r = await agentBoardsRequest(workspaceId, 'GET', `/agent-work-items/${encodeURIComponent(svc.workItemKey)}`, {
+          query: { projectId: this.projectId },
+        })
+        const category = r.ok ? (r.data?.item?.column?.category ?? r.data?.item?.category) : undefined
+        if (category === 'done' || category === 'dismissed') {
+          undeclareService(this.workspaceDir, svc.name)
+          finished.push(svc.name)
+        }
+      } catch {
+        // A card we cannot read is not proof it finished: keep the service.
+      }
+    }
+    if (finished.length) {
+      console.log(`[AgentGateway] undeclared ${finished.length} service(s) whose card finished: ${finished.join(', ')}`)
+    }
+    return { deduped, finished }
+  }
+
+  /**
+   * Reap process groups a previous app run left behind (SHO-509).
+   *
+   * The child ledger records every contained group the runtime spawned. On a
+   * cold boot the owner that recorded them is gone, so anything still alive is
+   * an orphan holding slots this run needs. `spareLiveOwners` keeps a group
+   * whose owner is still alive (a sibling runtime sharing the workspace).
+   */
+  reapOrphanedProcessGroups(): { reaped: number; spared: number } {
+    try {
+      const result = reapChildLedger(this.workspaceDir, { spareLiveOwners: true, reapOwnerless: true })
+      const reaped = result.reaped?.length ?? 0
+      const spared = result.spared?.length ?? 0
+      if (reaped) console.log(`[AgentGateway] reaped ${reaped} orphaned process group(s) from a previous run`)
+      return { reaped, spared }
+    } catch (err: any) {
+      console.error(`[AgentGateway] process-group reap failed: ${err?.message ?? err}`)
+      return { reaped: 0, spared: 0 }
+    }
+  }
+
+  /**
+   * Bring every service declared in `.shogo/services.json` back up. Runs once
+   * on gateway start (cold boot, or the first boot after a recycle) and is what
    * makes `exec({ service: true })` mean something (SHO-399).
    *
    * Each service is restarted through the `exec` tool itself rather than a

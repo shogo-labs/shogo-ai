@@ -1075,3 +1075,30 @@ describe("sepLabel", () => {
     expect(sepLabel(undefined)).toBe("and")
   })
 })
+
+describe("tool args the model sent with the wrong type (SHO-483)", () => {
+  // Sentry JAVASCRIPT-REACT-63 / -73: `t.split` / `t.replace is not a function`
+  // from getToolKeyArg / basename while grouping a turn's work parts.
+  const odd: unknown[] = [["a.ts", "b.ts"], { path: "a.ts" }, 42, true, null]
+
+  test("never throws for a non-string path, and shows no target", () => {
+    for (const path of odd) {
+      for (const tool of ["read_file", "Read", "write_file", "edit_file", "Delete"]) {
+        expect(() => getToolSummary(tool, { path })).not.toThrow()
+        expect(getToolSummary(tool, { path }).target).toBeUndefined()
+      }
+    }
+  })
+
+  test("other string args are type-checked too", () => {
+    for (const value of odd) {
+      expect(() => getToolSummary("exec", { command: value })).not.toThrow()
+      expect(() => getToolSummary("grep", { pattern: value })).not.toThrow()
+      expect(() => getToolSummary("web", { url: value, query: value })).not.toThrow()
+    }
+  })
+
+  test("a string path still summarises to its basename", () => {
+    expect(getToolSummary("read_file", { path: "src/app/page.tsx" }).target).toBe("page.tsx")
+  })
+})

@@ -39,7 +39,19 @@ variable "publish_domain" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "DEPRECATED: this module now looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
+  description = "DEPRECATED: this module looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. It is NOT the publish zone: every caller passes the repo-level `CLOUDFLARE_ZONE_ID`, which is the `shogo.ai` zone (the preview-router route lives there), while the publish zone is `shogo.one`. Using it here would move the `*.shogo.one` wildcard record and the published-apps Worker route into the wrong zone. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_namespace" {
+  description = "OCI Object Storage namespace (tenancy-wide, e.g. `idin4oltblww`). Pass `module.object_storage.namespace`. Required so the PAR's `namespace` comes from a value the caller already holds instead of a lookup inside this module: a deferred lookup turns `namespace` into \"(known after apply)\", which force-replaces the live PAR that the Worker's static origin embeds. Empty is rejected by the PAR's precondition."
+  type        = string
+  default     = ""
+}
+
+variable "published_apps_bucket" {
+  description = "Name of the `shogo-published-apps-<env>` bucket the PAR grants read access to. Pass `module.object_storage.published_apps_bucket`. This input is the ONLY ordering dependency on `module.object_storage` — it replaces the module-level `depends_on` that used to defer every data source in this module (and therefore force-replaced the wildcard record, Worker routes and PAR whenever object storage had any pending change)."
   type        = string
   default     = null
 }
@@ -91,6 +103,12 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "project_bucket_origin" {
+  description = "Read-only origin for project buckets (SHO-491): the `access_uri` base of the pre-authenticated request the object-storage module creates for `shogo-project-buckets-<env>`. The subdomain-router Worker serves `cdn.<publish_domain>/<projectId>/<key>` from it, reading ONLY `p/<projectId>/public/<key>` — a private object is unreachable through the CDN. Empty disables the CDN route (it answers 404), which is the correct state for an env that has not provisioned the bucket yet."
+  type        = string
+  default     = ""
+}
+
 variable "api_published_origin" {
   description = "Public base URL of the Shogo API used by the subdomain-router Worker to serve METAL-backed server-backed published apps. When a subdomain's SERVER_BACKED KV value is `metal`, the Worker proxies `/api/*` (and the wake probe) to `$${api_published_origin}/api/published/{subdomain}/...` instead of to the Knative ingress (`kourier_origin`). The API then resolves the project's `published:{id}` microVM placement and forwards to the box over the mesh — Workers can't fetch a raw IP:port (error 1003), so the API (a real hostname) is the hop. Must be a proxied hostname CF can fetch (e.g. https://api.shogo.ai). Leave null to disable metal-backed publishing at the edge (falls back to static serving)."
   type        = string
@@ -125,14 +143,26 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 # Data Sources
 # -----------------------------------------------------------------------------
-data "oci_objectstorage_namespace" "current" {
-  compartment_id = var.compartment_id
-}
+# NOTE: there is deliberately NO `data.oci_objectstorage_namespace` here. The
+# namespace is a tenancy-wide constant the caller already has as
+# `module.object_storage.namespace`; looking it up here made the PAR's
+# `namespace` argument flip to "(known after apply)" whenever this module sat
+# behind a module-level depends_on with a pending change, force-replacing a live
+# PAR that the Worker's static origin embeds (every published site 404s until
+# the new PAR + Worker propagate). See var.object_storage_namespace.
 
 # Look up the publish zone by name. The token used for tf needs `Zone:Read`
 # on this zone in addition to `Workers Routes:Edit` and `Zone DNS:Edit`.
 # Sourcing by name keeps callers from having to thread a second zone-id
 # variable through every env.
+#
+# NOTE: this lookup is intentional and must NOT be replaced with
+# `var.cloudflare_zone_id` — that variable carries the `shogo.ai` zone (where
+# the preview-router Worker route lives), while the publish zone is
+# `shogo.one`. It also stays readable at plan time now that the module-level
+# `depends_on = [module.object_storage]` is gone: only a module-level
+# depends_on defers data sources, and this lookup's config depends on nothing
+# but `var.publish_zone`.
 #
 # When `publish_domain` is itself a CF zone (e.g. `shogo.one`), the default
 # null `publish_zone` falls through to `publish_domain`. When `publish_domain`
@@ -157,22 +187,36 @@ data "cloudflare_zone" "publish" {
 # `AnyObjectReadWithoutList` (which was not a real OCI API value and
 # fails provider validation — see commit history).
 resource "oci_objectstorage_preauthrequest" "published_apps" {
-  namespace             = data.oci_objectstorage_namespace.current.namespace
-  bucket                = "shogo-published-apps-${var.environment}"
+  namespace             = var.object_storage_namespace
+  bucket                = coalesce(var.published_apps_bucket, "shogo-published-apps-${var.environment}")
   name                  = "cloudflare-cdn-access"
   access_type           = "AnyObjectRead"
   bucket_listing_action = "Deny"
   time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
+    # Fail loudly instead of creating a PAR with an empty namespace when a
+    # caller forgets the input. A precondition runs only for existing
+    # instances, so a gated-off module (count = 0) is unaffected.
+    precondition {
+      condition     = var.object_storage_namespace != ""
+      error_message = "object_storage_namespace must be set (pass module.object_storage.namespace); the PAR cannot be created without it."
+    }
+
+    precondition {
+      condition     = var.published_apps_bucket != null
+      error_message = "published_apps_bucket must be set (pass module.object_storage.published_apps_bucket). Without it the PAR has no dependency edge on the bucket, so terraform can create the PAR before OCI has propagated the bucket and the PAR API 404s."
+    }
+
     # Create the replacement PAR before destroying the old one. A PAR can be
     # force-replaced for reasons outside a real config change (e.g. the
-    # `namespace` data source resolving to "known after apply" on a stale
-    # plan). The Worker's static origin (`local.par_base_url`) embeds this
-    # PAR's `access_uri`, so a destroy-before-create replacement would leave
-    # the live Worker pointing at a deleted PAR — 404ing static assets for
-    # EVERY published app until the new PAR + Worker update propagate.
-    # create_before_destroy keeps a valid PAR referenced at all times.
+    # PAR's `namespace` resolving to "known after apply" because this module
+    # sat behind a module-level depends_on with a pending change). The Worker's
+    # static origin (`local.par_base_url`) embeds this PAR's `access_uri`, so a
+    # destroy-before-create replacement would leave the live Worker pointing at
+    # a deleted PAR — 404ing static assets for EVERY published app until the new
+    # PAR + Worker update propagate. create_before_destroy keeps a valid PAR
+    # referenced at all times.
     create_before_destroy = true
 
     # `bucket_listing_action` is set correctly on create (verified via the
@@ -381,6 +425,17 @@ resource "cloudflare_worker_script" "subdomain_router" {
     content {
       name = "API_PUBLISHED_ORIGIN"
       text = var.api_published_origin
+    }
+  }
+
+  # Project-bucket CDN origin (SHO-491). Only bound when the object-storage
+  # module created the bucket + PAR for this env; the Worker guards on its
+  # presence so the script content is identical everywhere.
+  dynamic "plain_text_binding" {
+    for_each = var.project_bucket_origin != "" ? [1] : []
+    content {
+      name = "PROJECT_BUCKET_ORIGIN"
+      text = var.project_bucket_origin
     }
   }
 
@@ -793,6 +848,88 @@ resource "cloudflare_worker_script" "subdomain_router" {
       });
     }
 
+    // ------------------------------------------------------------------
+    // Project buckets (SHO-491): `cdn.<publish domain>/<projectId>/<key>`
+    //
+    // A project's PUBLIC objects are served from its bucket through this
+    // origin. The key is always rebuilt as `p/<projectId>/public/<key>`: a
+    // private object is unreachable here even though the read-only PAR covers
+    // the whole bucket, because this function refuses to build its path.
+    //
+    // Mirrors `cdnObjectKey` in apps/api/src/lib/project-bucket-cdn.ts (this
+    // Worker is deployed by Terraform and cannot import application code —
+    // keep the two in step; the API-side unit test is the executable spec).
+    // ------------------------------------------------------------------
+    const PROJECT_BUCKET_ORIGIN = '${var.project_bucket_origin}'.replace(/\/+$/, '');
+
+    function cdnObjectKey(pathname) {
+      var trimmed = pathname.replace(/^\/+/, '');
+      if (!trimmed) return null;
+      var slash = trimmed.indexOf('/');
+      if (slash <= 0) return null;
+      var projectId = trimmed.slice(0, slash);
+      var rest = trimmed.slice(slash + 1);
+      if (!rest) return null;
+      // Ids are opaque and never contain a dot or a slash; refuse anything that
+      // could walk up a path or name another segment of the namespace.
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) return null;
+      var segments = rest.split('/');
+      for (var i = 0; i < segments.length; i++) {
+        var segment = segments[i];
+        if (!segment || segment === '.' || segment === '..') return null;
+      }
+      return 'p/' + projectId + '/public/' + rest;
+    }
+
+    // Content-addressed keys are immutable, so they can be cached hard; a
+    // caller that keeps writing the same key gets a short max-age instead.
+    function cdnCacheControl(key) {
+      var name = key.slice(key.lastIndexOf('/') + 1);
+      var immutable = /^[0-9a-f]{16}(-|\.|$)/.test(name) || /^[0-9a-f]{64}(\.|$)/.test(name);
+      return immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=300';
+    }
+
+    async function serveProjectBucket(request, env, url) {
+      if (!PROJECT_BUCKET_ORIGIN) {
+        return new Response('Not found', { status: 404 });
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response('Method not allowed', {
+          status: 405,
+          headers: { Allow: 'GET, HEAD', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+      var key = cdnObjectKey(url.pathname);
+      if (!key) {
+        return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      var headers = new Headers();
+      var range = request.headers.get('Range');
+      if (range) headers.set('Range', range);
+
+      var upstream = await fetch(PROJECT_BUCKET_ORIGIN + '/' + key, {
+        method: request.method,
+        headers: headers,
+        cf: { cacheEverything: true, cacheKey: PROJECT_BUCKET_ORIGIN + '/' + key },
+      });
+      if (upstream.status === 404) {
+        return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      var out = new Headers(upstream.headers);
+      out.set('Cache-Control', upstream.status === 206 ? 'no-transform' : cdnCacheControl(key));
+      out.set('Access-Control-Allow-Origin', '*');
+      out.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      out.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, ETag');
+      out.set('X-Content-Type-Options', 'nosniff');
+      out.delete('Set-Cookie');
+      return new Response(request.method === 'HEAD' ? null : upstream.body, {
+        status: upstream.status,
+        headers: out,
+      });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -807,6 +944,26 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // this Worker ever runs.
         const rawHost = url.hostname;
         const hostname = rawHost.replace(/^www\./, '');
+
+        // Project buckets (SHO-491). `cdn.<publish domain>` is the CDN origin
+        // in front of every project's bucket, so it is dispatched BEFORE the
+        // published-app routing (a bare `cdn` label would otherwise be looked
+        // up as a published subdomain).
+        if (hostname === 'cdn.' + PUBLISH_DOMAIN) {
+          return serveProjectBucket(request, env, url);
+        }
+        if (request.method === 'OPTIONS') {
+          // CORS preflight for a bucket object fetched from another origin.
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+              'Access-Control-Allow-Headers': 'Range, Content-Type',
+              'Access-Control-Max-Age': '86400',
+            },
+          });
+        }
 
         // Platform subdomain first; otherwise treat the host as a custom
         // domain and look up its published prefix in the KV map the API
@@ -961,6 +1118,13 @@ resource "cloudflare_worker_route" "published_apps" {
   zone_id     = data.cloudflare_zone.publish.id
   pattern     = "*.${var.publish_domain}/*"
   script_name = cloudflare_worker_script.subdomain_router.name
+
+  lifecycle {
+    # A replaced route means every published site is unrouted until the new
+    # route propagates. Fail the plan instead of being one apply away from an
+    # outage. (In-place script updates are unaffected.)
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -979,6 +1143,13 @@ resource "cloudflare_record" "custom_domain_fallback" {
   type            = "A"
   proxied         = true
   allow_overwrite = true
+
+  lifecycle {
+    # This record is the CNAME target every bring-your-own domain points at.
+    # Replacing it breaks custom-hostname routing and re-triggers cert
+    # validation for every customer domain.
+    prevent_destroy = true
+  }
 }
 
 # Designate the record above as the Cloudflare for SaaS fallback origin: all
@@ -991,6 +1162,12 @@ resource "cloudflare_custom_hostname_fallback_origin" "publish" {
   origin  = local.custom_domain_fallback_hostname
 
   depends_on = [cloudflare_record.custom_domain_fallback]
+
+  lifecycle {
+    # Destroying the fallback origin removes SaaS routing for every customer
+    # hostname in the zone. Fail the plan rather than allow a replace.
+    prevent_destroy = true
+  }
 }
 
 # Run the subdomain-router Worker for ALL traffic in the DEDICATED custom-domains
@@ -1013,6 +1190,12 @@ resource "cloudflare_worker_route" "custom_domains" {
   zone_id     = data.cloudflare_zone.custom_domains[0].id
   pattern     = "*/*"
   script_name = cloudflare_worker_script.subdomain_router.name
+
+  lifecycle {
+    # Same reasoning as cloudflare_worker_route.published_apps: a replacement
+    # unroutes every bring-your-own custom hostname in this zone.
+    prevent_destroy = true
+  }
 }
 
 # Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL).
@@ -1055,6 +1238,14 @@ resource "cloudflare_record" "wildcard" {
   # record. Flipping this on lets tf adopt the live record on first
   # apply, after which subsequent plans reconcile normally.
   allow_overwrite = true
+
+  lifecycle {
+    # Every published site resolves through this record. A replacement (even a
+    # create_before_destroy one) briefly drops `*.${var.publish_domain}` out of
+    # DNS. Fail the plan instead; in-place edits (e.g. changing `proxy`) are
+    # still allowed.
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -1093,6 +1284,11 @@ output "custom_domain_fallback_origin" {
 output "server_backed_kv_namespace_id" {
   description = "Workers KV namespace id for the server-backed publish map. Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
   value       = cloudflare_workers_kv_namespace.server_backed.id
+}
+
+output "project_bucket_cdn_host" {
+  description = "Hostname project public objects are served from (SHO-491). Wire into the API as SHOGO_BUCKET_CDN_BASE when publish_domain differs from the default `cdn.<publish_domain>` derivation."
+  value       = "cdn.${var.publish_domain}"
 }
 
 output "site_auth_kv_namespace_id" {

@@ -45,3 +45,11 @@ spec:
       server_idle_timeout: "120"
   monitoring:
     enablePodMonitor: true
+  template:
+    spec:
+      # Same data-path priority as the cluster itself: PgBouncer sits on every
+      # published request, so it must not be evicted for a runtime burst.
+      priorityClassName: shogo-db-critical
+      nodeSelector:
+        node.kubernetes.io/purpose: system
+      containers: []

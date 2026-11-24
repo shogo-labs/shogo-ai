@@ -37,6 +37,14 @@ export interface PublishHosting {
 export interface AccountContext {
   modelDisplayName?: string
   planId?: string
+  /**
+   * This is a desktop install, which has no plan limits at all (channel rule,
+   * SHO-43). Stamped by the API on every local-mode turn. Without it the agent
+   * reads only a plan id — and on desktop it used to read `Free` — then refuses
+   * or undoes heartbeats, schedules and models that work on the machine
+   * (SHO-508).
+   */
+  desktopUnlimited?: boolean
   canPublishSubdomain?: boolean
   publishHosting?: PublishHosting
   /**
@@ -61,6 +69,7 @@ export function parseAccountContext(body: Record<string, unknown>): AccountConte
   return {
     ...(name ? { modelDisplayName: name } : {}),
     ...(plan ? { planId: plan } : {}),
+    ...(body.desktopUnlimited === true ? { desktopUnlimited: true } : {}),
     ...(typeof body.canPublishSubdomain === 'boolean' ? { canPublishSubdomain: body.canPublishSubdomain } : {}),
     ...(publishHosting ? { publishHosting } : {}),
     ...(teamWorkspaceNames ? { teamWorkspaceNames } : {}),
@@ -137,9 +146,18 @@ export function buildAccountContextPrompt(ctx: AccountContext): string | null {
       `- You are running on the **${ctx.modelDisplayName}** model. If the user asks which model you are, that is the answer — it is a real Shogo model even if you don't recognize the name.`,
     )
   }
+  if (ctx.desktopUnlimited) {
+    lines.push(
+      `- Desktop install: this machine has no plan limits. Heartbeats, schedules, models and the other paid-plan features all work here, whatever a tool description says about paid plans.`,
+    )
+  }
   if (ctx.planId) {
     const plan = ctx.planId.charAt(0).toUpperCase() + ctx.planId.slice(1)
-    if (ctx.canPublishSubdomain === false) {
+    if (ctx.desktopUnlimited) {
+      // The plan id here is the linked Shogo Cloud account's, not a limit on
+      // this machine — so it is named as such and never framed as a gate.
+      lines.push(`- Linked Shogo Cloud account plan: **${plan}**.`)
+    } else if (ctx.canPublishSubdomain === false) {
       lines.push(
         `- Workspace plan: **${plan}**. This plan cannot publish to a \`*.shogo.one\` subdomain. Mention that only when the user asks to publish/deploy or when \`publish\` is called — not when they say they want to share their work. Sharing means the preview URL from \`preview_project\`, which anyone can open. If \`publish\` returns \`plan_not_allowed\`, the chat shows the user an Upgrade button; tell them their work is saved and they can publish once they upgrade.`,
       )

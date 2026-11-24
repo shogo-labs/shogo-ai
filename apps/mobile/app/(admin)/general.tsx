@@ -10,7 +10,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   TextInput,
   useWindowDimensions,
 } from 'react-native'
@@ -47,6 +46,7 @@ import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 import { refreshCloudWorkspaces } from '../../lib/workspace-route'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 /** True when this window is the Electron desktop shell — only then can we
  * use the native system-browser handshake. Metro dev or a plain browser
@@ -360,7 +360,7 @@ export default function AdminGeneralPage() {
   if (isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -497,7 +497,7 @@ export default function AdminGeneralPage() {
                     )}
                   >
                     {loginStatus === 'connecting' ? (
-                      <ActivityIndicator size="small" />
+                      <Spinner size="small" />
                     ) : (
                       <LogIn size={16} className="text-primary-foreground" />
                     )}
@@ -575,7 +575,7 @@ export default function AdminGeneralPage() {
                       )}
                     >
                       {isSubmittingKey ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <KeyRound size={16} className="text-primary-foreground" />
                       )}
@@ -639,7 +639,7 @@ export default function AdminGeneralPage() {
                   <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                     Machine Name
                   </Text>
-                  {isSavingName && <ActivityIndicator size="small" />}
+                  {isSavingName && <Spinner size="small" />}
                 </View>
                 <TextInput
                   value={instanceNameDraft}
@@ -946,7 +946,7 @@ function FeatureFlagsCard() {
       </View>
       <View className="px-5 py-4 gap-4">
         {loading ? (
-          <ActivityIndicator />
+          <Spinner />
         ) : (
           FEATURE_FLAG_DEFINITIONS.map((def) => {
             const override = flags[def.key]
@@ -1055,7 +1055,7 @@ function LiveVoiceProviderCard() {
       description="Choose the live voice transport for EZ Mode. GPT-Live is the default; ElevenLabs remains available as a fallback."
     >
       {loading ? (
-        <ActivityIndicator />
+        <Spinner />
       ) : (
         <View className="gap-2">
           {([
@@ -1152,7 +1152,7 @@ function SandboxExecCard() {
       </View>
       <View className="px-5 py-4">
         {loading ? (
-          <ActivityIndicator />
+          <Spinner />
         ) : (
           <View className="flex-row gap-2">
             {SANDBOX_EXEC_OPTIONS.map((opt) => {
@@ -1194,7 +1194,7 @@ function FeatureFlagsSaveIndicator({ status }: { status: 'idle' | 'saving' | 'sa
   if (status === 'idle') return null
   return (
     <View className="flex-row items-center gap-1.5">
-      {status === 'saving' && <ActivityIndicator size="small" />}
+      {status === 'saving' && <Spinner size="small" />}
       {status === 'saved' && <CheckCircle size={14} className="text-green-500" />}
       {status === 'error' && <AlertTriangle size={14} className="text-destructive" />}
       <Text className={cn(

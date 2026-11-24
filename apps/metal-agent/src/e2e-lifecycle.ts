@@ -136,7 +136,7 @@ async function main() {
     await Bun.sleep(SUSPEND_HOLD_MS)
 
     // ---- 2. evict hot local copy → force a durable-store pull on resume ----
-    const evicted = pool.evictLocal(PROJECT)
+    const evicted = await pool.evictLocal(PROJECT)
     log('evict', `dropped hot local snapshot: ${evicted}`)
     const canResumeFromStore = await pool.canResume(PROJECT)
     log('store', `canResume after eviction (store-only): ${canResumeFromStore}`)

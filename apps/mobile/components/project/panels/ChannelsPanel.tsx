@@ -6,7 +6,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   TextInput,
   Switch,
 } from 'react-native'
@@ -32,6 +31,8 @@ import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 import { openExternalLink } from '../../../lib/open-external-link';
+import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ChannelInfo {
   type: string
@@ -353,7 +354,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       const data = await res.json()
       setChannels(data.channels || [])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -454,7 +455,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setConnecting(null)
     }
@@ -478,7 +479,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
 
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -509,7 +510,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setSavingModel(null)
     }
@@ -595,7 +596,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     : 'Cloud (default)'}
               </Text>
               {(runOn.loading || runOn.saving) ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <ChevronDown size={12} className="text-muted-foreground" />
               )}
@@ -693,7 +694,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading && channels.length === 0 ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         ) : (
           <View className="gap-2">
@@ -784,7 +785,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                           style={isDisconnecting ? { opacity: 0.5 } : undefined}
                         >
                           {isDisconnecting ? (
-                            <ActivityIndicator size="small" />
+                            <Spinner size="small" />
                           ) : (
                             <Text className="text-[10px] text-muted-foreground">Disconnect</Text>
                           )}
@@ -1263,7 +1264,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             style={savingModel === type ? { opacity: 0.5 } : undefined}
                           >
                             <View className="flex-row items-center gap-1.5">
-                              {savingModel === type && <ActivityIndicator size="small" color="#fff" />}
+                              {savingModel === type && <Spinner tone="onPrimary" size="small" />}
                               <Text className="text-xs text-primary-foreground">Save</Text>
                             </View>
                           </Pressable>
@@ -1300,7 +1301,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                           disabled={waConnecting}
                           className="flex-row items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-[#25d366] active:opacity-80"
                         >
-                          {waConnecting && <ActivityIndicator size="small" color="#fff" />}
+                          {waConnecting && <Spinner className="text-white" size="small" />}
                           <Text className="text-sm font-semibold text-white">
                             {waConnecting ? 'Opening…' : 'Connect with Meta'}
                           </Text>
@@ -1407,7 +1408,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             style={isConnecting ? { opacity: 0.5 } : undefined}
                           >
                             <View className="flex-row items-center gap-1.5">
-                              {isConnecting && <ActivityIndicator size="small" color="#fff" />}
+                              {isConnecting && <Spinner tone="onPrimary" size="small" />}
                               <Text className="text-xs text-primary-foreground">Connect</Text>
                             </View>
                           </Pressable>

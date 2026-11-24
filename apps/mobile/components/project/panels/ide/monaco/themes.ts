@@ -31,6 +31,8 @@
  * without pulling in the Monaco bundle.
  */
 
+import { errorMessage } from '../../../../../lib/error-message'
+
 // Minimal structural subtype of Monaco's editor namespace.
 export interface MonacoLike {
   editor: {
@@ -244,7 +246,7 @@ export function parseThemeJson(input: string): ParseResult {
   try {
     raw = JSON.parse(input)
   } catch (e) {
-    return { ok: false, error: `invalid JSON: ${(e as Error).message}` }
+    return { ok: false, error: `invalid JSON: ${errorMessage(e)}` }
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'theme must be a JSON object' }

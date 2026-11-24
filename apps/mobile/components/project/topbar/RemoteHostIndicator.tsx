@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import React from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { CircleAlert, RefreshCw, Server, Wifi } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
+import { Spinner } from '@/components/ui/spinner'
 
 export type RemoteConnectionState =
   "connected" | "connecting" | "disconnected" | string;
@@ -57,7 +58,7 @@ export function RemoteHostIndicator({
       testID="remote-host-indicator"
     >
       {connecting ? (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       ) : (
         <Icon
           size={13}

@@ -15,7 +15,6 @@
 
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
@@ -46,6 +45,7 @@ import {
   unsupportedPresentationMessage,
   unsupportedDocumentMessage,
 } from "../project/panels/ide/slides-viewer-protocol"
+import { Spinner } from '@/components/ui/spinner'
 
 type MonacoNs = typeof import("monaco-editor")
 
@@ -146,27 +146,40 @@ export function FileContentView({
   }
 
   if (kind === "markdown") {
+    const body = (
+      <MarkdownBody
+        value={text}
+        name={name}
+        pathKey={pathKey ?? viewerPathKey(path ?? name)}
+        language={language ?? "markdown"}
+        readOnly={readOnly}
+        themeMode={themeMode}
+        settings={settings}
+        editorTheme={editorTheme}
+        mdMode={mdMode}
+        onMdModeChange={onMdModeChange}
+        onChange={onChange}
+        onCursor={onCursor}
+        onEditorMount={onEditorMount}
+      />
+    )
+    // A phone renders RN primitives all the way down: a `<div>` has no native
+    // view config either, and the `.shogo-ide` palette it opens only exists in
+    // the DOM (SHOGO-ANDROID-1A / SHOGO-IOS-V).
+    if (Platform.OS !== "web") {
+      return (
+        <View className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden" testID={testID}>
+          {body}
+        </View>
+      )
+    }
     return (
       <div
         className="shogo-ide flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
         data-theme={themeMode}
         data-testid={testID}
       >
-        <MarkdownBody
-          value={text}
-          name={name}
-          pathKey={pathKey ?? viewerPathKey(path ?? name)}
-          language={language ?? "markdown"}
-          readOnly={readOnly}
-          themeMode={themeMode}
-          settings={settings}
-          editorTheme={editorTheme}
-          mdMode={mdMode}
-          onMdModeChange={onMdModeChange}
-          onChange={onChange}
-          onCursor={onCursor}
-          onEditorMount={onEditorMount}
-        />
+        {body}
       </div>
     )
   }
@@ -282,19 +295,28 @@ function MarkdownBody({
     onMdModeChange?.(next)
   }
   const sourceLabel = readOnly ? "Source" : "Edit"
+  // The web tabs sit inside `.shogo-ide`, so they read the IDE palette. A phone
+  // has no `--ide-*` variables and uses the app's own theme tokens.
+  const webTabClass = (active: boolean) =>
+    `rounded px-2 py-0.5 text-[12px] ${
+      active ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]" : "text-[color:var(--ide-muted)]"
+    }`
+  const nativeTabClass = (active: boolean) => `rounded px-2 py-0.5 ${active ? "bg-muted" : ""}`
+  const nativeTabTextClass = (active: boolean) =>
+    `text-[12px] ${active ? "text-foreground" : "text-muted-foreground"}`
 
-  const tabs = (
+  // The web tabs are real DOM buttons; a phone gets Pressable + Text. A raw
+  // `<button>` inside a `<View>` has no native view config, so rendering a
+  // Markdown file crashed the app with "View config getter callback for
+  // component `button`" (SHOGO-ANDROID-1A / SHOGO-IOS-V).
+  const webTabs = (
     <>
       <button
         type="button"
         data-testid="ide-md-mode-preview"
         aria-pressed={mode === "preview"}
         onClick={() => select("preview")}
-        className={`rounded px-2 py-0.5 text-[12px] ${
-          mode === "preview"
-            ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-            : "text-[color:var(--ide-muted)]"
-        }`}
+        className={webTabClass(mode === "preview")}
       >
         Preview
       </button>
@@ -303,21 +325,40 @@ function MarkdownBody({
         data-testid={readOnly ? "file-view-md-mode-source" : "ide-md-mode-edit"}
         aria-pressed={mode === "edit"}
         onClick={() => select("edit")}
-        className={`rounded px-2 py-0.5 text-[12px] ${
-          mode === "edit"
-            ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-            : "text-[color:var(--ide-muted)]"
-        }`}
+        className={webTabClass(mode === "edit")}
       >
         {sourceLabel}
       </button>
     </>
   )
 
+  const nativeTabs = (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected: mode === "preview" }}
+        onPress={() => select("preview")}
+        testID="ide-md-mode-preview"
+        className={nativeTabClass(mode === "preview")}
+      >
+        <Text className={nativeTabTextClass(mode === "preview")}>Preview</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected: mode === "edit" }}
+        onPress={() => select("edit")}
+        testID={readOnly ? "file-view-md-mode-source" : "ide-md-mode-edit"}
+        className={nativeTabClass(mode === "edit")}
+      >
+        <Text className={nativeTabTextClass(mode === "edit")}>{sourceLabel}</Text>
+      </Pressable>
+    </>
+  )
+
   if (Platform.OS !== "web") {
     return (
       <View className="min-h-0 flex-1">
-        <View className="flex-row items-center gap-1 border-b border-border px-2 py-1">{tabs}</View>
+        <View className="flex-row items-center gap-1 border-b border-border px-2 py-1">{nativeTabs}</View>
         <ScrollView className="min-h-0 flex-1" contentContainerStyle={{ padding: 12 }}>
           {mode === "edit" ? (
             <Text selectable className="font-mono text-xs leading-5 text-foreground">
@@ -334,7 +375,7 @@ function MarkdownBody({
   return (
     <>
       <div className="flex items-center gap-1 border-b border-[color:var(--ide-border)] px-2 py-1">
-        {tabs}
+        {webTabs}
       </div>
       {mode === "edit" ? (
         <div className="min-h-0 flex-1">
@@ -469,7 +510,7 @@ function NativeVideo({
       }}
     >
       {size.width > 0 && size.height > 0 ? (
-        <Suspense fallback={<ActivityIndicator className="mt-6" />}>
+        <Suspense fallback={<Spinner className="mt-6" />}>
           <NativeVideoView
             url={url}
             width={size.width}
@@ -478,7 +519,7 @@ function NativeVideo({
           />
         </Suspense>
       ) : (
-        <ActivityIndicator className="mt-6" />
+        <Spinner className="mt-6" />
       )}
     </View>
   )
@@ -535,7 +576,7 @@ function DownloadControl({ url, name }: { url: string; name: string }) {
       testID="file-view-download"
       className="flex-row items-center gap-2 rounded-md bg-primary px-3 py-2 active:opacity-90"
     >
-      {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={14} color="#fff" />}
+      {busy ? <Spinner className="text-primary-foreground" tone="onPrimary" size="small" /> : <Download size={14} />}
       <Text className="text-sm font-semibold text-primary-foreground">Download</Text>
     </Pressable>
   )
@@ -687,7 +728,7 @@ function NativeOffice({
       />
       {state === "loading" ? (
         <View className="absolute inset-0 items-center justify-center" pointerEvents="none">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : null}
     </View>

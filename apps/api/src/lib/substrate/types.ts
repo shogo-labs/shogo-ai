@@ -139,6 +139,19 @@ export interface PublishResult {
    * deployment row so rollback/redeploy/promote switch to what actually ran.
    */
   imageRef?: string
+  /**
+   * Resolve when the runtime this publish created is actually serving, or say
+   * why it is not (SHO-536 §C).
+   *
+   * A publish used to record its deployment as `ready` the moment provisioning
+   * returned, so a revision that died with ExitCode137 and never served was
+   * still recorded healthy. The substrate owns the readiness check because only
+   * it knows what "ready" means on its surface: Knative's Revision condition
+   * plus the pod's `/ready` probe, or the metal host's view of the microVM.
+   *
+   * Static publishes return no `awaitReady` — there is no runtime to wait for.
+   */
+  awaitReady?(timeoutMs: number): Promise<{ ready: true } | { ready: false; reason: string }>
 }
 
 export interface ProjectSubstrate {

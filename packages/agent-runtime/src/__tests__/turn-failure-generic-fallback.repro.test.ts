@@ -239,6 +239,15 @@ describe('REPRO JAVASCRIPT-REACT-45 / SHOGO-DESKTOP-F: raw turn failure swallowe
     expect(calls[0].tokens).toBeGreaterThan(limit)
     expect(calls.at(-1)!.tokens).toBeLessThanOrEqual(limit)
     expect(sm.get(sessionId)!.compactionCount).toBe(1)
+    // SHO-556 AC7: the reactive compaction announces itself before the
+    // summarizer runs and resolves the status row afterwards.
+    const summarizing = chunks.filter((c) => c.type === 'data-context-summarizing')
+    expect(summarizing).toHaveLength(1)
+    expect(summarizing[0].data.trigger).toBe('reactive')
+    expect(summarizing[0].data.chunks).toBeGreaterThanOrEqual(1)
+    const summarized = chunks.filter((c) => c.type === 'data-context-summarized')
+    expect(summarized).toHaveLength(1)
+    expect(chunks.indexOf(summarizing[0])).toBeLessThan(chunks.indexOf(summarized[0]))
     expect(classifyRetryability({ message: 'Provider error: 400 prompt is too long: 1 tokens > 200000 maximum' }).reason)
       .toBe('invalid_request')
   })

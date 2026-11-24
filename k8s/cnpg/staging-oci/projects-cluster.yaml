@@ -108,3 +108,22 @@ spec:
     nodeSelector:
       node.kubernetes.io/purpose: system
     topologyKey: kubernetes.io/hostname
+---
+# A base backup on a schedule, on top of continuous WAL archiving: WAL alone
+# restores to a point in time but needs a base to start from, and an untested
+# `Backup` is how a cluster ends up with archiving "on" and no restorable base.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: projects-pg-daily
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  # CNPG cron has a seconds field: 02:30:00 daily.
+  schedule: "0 30 2 * * *"
+  # `self` so deleting the schedule does not delete the backups it took.
+  backupOwnerReference: self
+  cluster:
+    name: projects-pg

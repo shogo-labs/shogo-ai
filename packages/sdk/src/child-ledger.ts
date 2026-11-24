@@ -209,7 +209,9 @@ function readOwnFingerprint(): string | null {
     const cmd = defaultReadProcessCommand(process.pid)
     _ownFingerprint = cmd ? commandFingerprint(cmd) : null
   } catch {
-    _ownFingerprint = null
+    // Transient process-table failure (e.g. `spawn ps EAGAIN`): do not cache
+    // `null` permanently so a later spawn after slots free up can still stamp it.
+    return null
   }
   return _ownFingerprint
 }
@@ -321,15 +323,32 @@ export interface ReapChildLedgerResult {
   spared: ChildLedgerEntry[]
 }
 
-function defaultReadProcessCommand(pid: number): string | null {
-  try {
-    const out = childProcess.execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+/**
+ * Read a live process's command line via `ps`.
+ *
+ * Returns `null` only when `ps` actually ran and reported nothing for `pid`
+ * (the process exited between `isAlive` and `ps`). When `ps` itself fails to
+ * spawn or is killed (`EAGAIN` at `kern.maxprocperuid`, `EMFILE`, `ENFILE`,
+ * `ENOMEM`, `ENOENT`, or a signal), rethrow so `reapChildLedger` preserves the
+ * ledger entry for a later pass instead of mistaking `null` for a reused PID
+ * and wiping `children.json`.
+ */
+export function defaultReadProcessCommand(
+  pid: number,
+  execPs: (pidArg: string) => string = (pidArg) =>
+    childProcess.execFileSync('ps', ['-p', pidArg, '-o', 'command='], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    }),
+): string | null {
+  try {
+    const out = execPs(String(pid))
     const command = String(out).trim()
     return command.length > 0 ? command : null
-  } catch {
+  } catch (err: any) {
+    if (err?.code || err?.signal) {
+      throw err
+    }
     return null
   }
 }

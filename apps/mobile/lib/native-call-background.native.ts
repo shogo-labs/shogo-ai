@@ -13,6 +13,7 @@ import * as Notifications from 'expo-notifications'
 import * as TaskManager from 'expo-task-manager'
 import { endNativeCall, showNativeIncomingCall } from './native-call'
 import { ringFromPushData } from './native-call-payload'
+import { errorMessage } from './error-message'
 
 export const HUDDLE_BACKGROUND_TASK = 'shogo-huddle-background'
 
@@ -59,5 +60,5 @@ TaskManager.defineTask<Notifications.NotificationTaskPayload>(HUDDLE_BACKGROUND_
 })
 
 void Notifications.registerTaskAsync(HUDDLE_BACKGROUND_TASK).catch((err: unknown) => {
-  console.warn('[Huddles] background push task unavailable:', (err as Error).message)
+  console.warn('[Huddles] background push task unavailable:', errorMessage(err))
 })

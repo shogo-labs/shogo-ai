@@ -110,7 +110,9 @@ spec:
         # ─── Long-lived chat stream + WebSocket support ────────────────────
         # The desktop tunnel WebSocket bypasses Knative entirely via
         # api-tunnel-ingress.yaml (label-selector Service direct to the
-        # revision pod on :8012), so we don't need the activator pinned
+        # revision pod's app port, :8002 — not queue-proxy's :8012, so no
+        # response-start deadline cuts it and an idle tunnel is not counted
+        # as concurrency; SHO-565), so we don't need the activator pinned
         # on the data path for WS Upgrade survival.
         #
         # target-burst-capacity=0   Take the activator OUT of the request
@@ -283,6 +285,16 @@ spec:
             # `shogo-published-data-${var.environment}`.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-staging"
+            # Project object storage (SHO-491): the SDK bucket API
+            # (`shogo bucket`, /api/bucket/*) stores agent-produced media here
+            # instead of base64 in chat. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. Public reads are served by the
+            # subdomain-router Worker at `cdn.<publish_domain>/<projectId>/<key>`
+            # (read-only PAR, `p/<projectId>/public/<key>` only) — the API's
+            # presigned GET is the path for private objects.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-staging"
             - name: PUBLISH_DOMAIN
               # MUST match `publish_domain` in terraform/environments/staging
               # ("staging.shogo.one"). This API uploads into the *staging*

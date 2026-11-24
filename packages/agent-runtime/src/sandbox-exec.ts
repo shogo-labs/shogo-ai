@@ -910,6 +910,12 @@ export interface ShellExitResult {
   pipelineStatus?: 'last-stage'
   /** The shell that ran it, for the "status unavailable" message. */
   shellLabel?: string
+  /**
+   * The OS refused to start the process at all (`posix_spawn EAGAIN` when the
+   * process table is full). There is no exit code because nothing ran — and
+   * `done` resolves with this set instead of hanging forever (SHO-509).
+   */
+  spawnError?: string
 }
 
 export interface CommandHandle {
@@ -1053,6 +1059,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   let killed = false
   let killReason: string | undefined
   let exited = false
+  /** Set when the OS refused the spawn: `done` resolves with it, nothing ran. */
+  let spawnError: string | undefined
+  /** Assigned where `done` is built, below the error handler that needs it. */
+  let resolveDone: ((result: ShellExitResult) => void) | undefined
 
   const dataListeners = new Set<(chunk: string, stream: 'stdout' | 'stderr') => void>()
   const emitData = (chunk: string, stream: 'stdout' | 'stderr') => {
@@ -1094,6 +1104,23 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   child.on('error', (err) => {
     untrack()
     stderrBuf.push(`\n[shogo] spawn error: ${err.message}\n`)
+    // A refused spawn (`EAGAIN` at the fork limit) leaves `child.pid`
+    // undefined and never emits 'exit', so without this the promise hung
+    // forever and the caller waited on a process that does not exist
+    // (SHO-509). A child that did spawn still reports through 'exit', so
+    // only the pid-less case resolves here.
+    if (child.pid === undefined && !exited) {
+      spawnError = err.message
+      exited = true
+      containment?.dispose()
+      resolveDone?.({
+        exitCode: 1,
+        stdout: stdoutBuf.toString(),
+        stderr: stderrBuf.toString(),
+        killed: false,
+        spawnError: err.message,
+      })
+    }
   })
 
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
@@ -1158,6 +1185,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   }
 
   const done = new Promise<ShellExitResult>((resolve) => {
+    resolveDone = resolve
     child.on('exit', (code, signal) => {
       exited = true
       untrack()
@@ -1174,6 +1202,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         stderr: stderrBuf.toString(),
         killed,
         ...(killReason ? { killReason } : {}),
+        ...(spawnError ? { spawnError } : {}),
         ...(pipelineMasked ? { exitCodeReliable: false, pipelineStatus: 'last-stage' as const, shellLabel } : {}),
       })
     })

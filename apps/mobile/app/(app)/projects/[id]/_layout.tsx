@@ -26,7 +26,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
   ScrollView,
   Platform,
   BackHandler,
@@ -43,6 +42,7 @@ import { useRouter, Stack } from "expo-router";
 import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
@@ -131,6 +131,7 @@ import {
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
 import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
+import { resolvePickerModel } from "../../../../lib/chat-composer-memory";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -248,6 +249,7 @@ import {
   markRuntimeReadyAndFlush,
   setOpenAttemptId,
 } from "../../../../lib/cold-start-timing";
+import { Spinner } from '@/components/ui/spinner'
 
 csMark("project:layout:module-load");
 
@@ -1265,16 +1267,39 @@ export default observer(function ProjectLayout() {
   // model-stamped message yet. Updated only on explicit user picks / cold load,
   // NOT when we apply a per-chat model on switch (so the fallback is preserved).
   const globalModelPrefRef = useRef<string | null>(null);
+  // The active chat's own model, as last reported by its ChatPanel (`null` when
+  // the chat has no pick of its own). It outranks the persisted preference: the
+  // read below re-runs when the catalog or the runtime URL arrives, and a late
+  // read must not replace the model the open chat already claimed (SHO-497).
+  const activeChatModelRef = useRef<string | null>(null);
   // Dedups the runtime PATCH when applying a chat's model on switch.
   const sessionModelSyncedRef = useRef<string | null>(null);
+  // A claim only lives as long as a chat is open: with no chat on screen the
+  // picker follows the preference again (a switch keeps its claim, so the
+  // picker does not flash between chats).
+  useEffect(() => {
+    if (!chatSessionId) activeChatModelRef.current = null;
+  }, [chatSessionId]);
   useEffect(() => {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
       const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
-      setSelectedModel(next);
       setModelPrefLoaded(true);
+      // The chat's own model wins. Re-applying the preference here is what put
+      // a reloaded chat back on the last model picked anywhere, even though the
+      // chat's own pick was in the device cache and the panel had already
+      // reported it (SHO-497).
+      const resolved = resolvePickerModel({
+        chatModel: activeChatModelRef.current,
+        preference: next,
+        defaultModel: DEFAULT_MODEL,
+      });
+      setSelectedModel(resolved.model);
+      // A chat's model is synced by its own report; do not point the runtime at
+      // the preference behind its back.
+      if (resolved.fromChat) return;
       if (!agentUrl) return;
       const syncKey = `${projectId}:${next}`;
       if (modelPrefSyncedRef.current === syncKey) return;
@@ -1349,7 +1374,15 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
+      // The claim, recorded before any early return: this is the chat's own
+      // answer (including "this chat has none"), and a preference read that
+      // lands later must not overwrite it.
+      activeChatModelRef.current = modelId;
+      const { model: next } = resolvePickerModel({
+        chatModel: modelId,
+        preference: globalModelPrefRef.current,
+        defaultModel: DEFAULT_MODEL,
+      });
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;
@@ -1392,6 +1425,9 @@ export default observer(function ProjectLayout() {
   );
 
   const splitRowRef = useRef<View>(null);
+  // Measured width of that row — the task-thread pane sizes itself against it,
+  // so its remembered width survives a window change (SHO-569).
+  const [splitRowWidth, setSplitRowWidth] = useState(0);
 
   // Connection state for the canvas. The canvas iframe owns its own data
   // (SSE / HMR / API calls happen inside the workspace SPA); the parent
@@ -1531,7 +1567,7 @@ export default observer(function ProjectLayout() {
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `shogo:lastChatSession:${projectId}`,
         chatSessionId
       ).catch((e) =>
@@ -1919,7 +1955,7 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!projectId) return;
     if (showChatSessionsHydratedRef.current !== projectId) return;
-    AsyncStorage.setItem(
+    setStorageItem(
       `shogo:showChatHistory:${projectId}`,
       showChatSessions ? "1" : "0"
     ).catch(() => {});
@@ -1949,7 +1985,7 @@ export default observer(function ProjectLayout() {
 
   const persistChatPanelWidth = useCallback((w: number) => {
     setChatPanelWidth(w);
-    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
+    setStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
       () => {}
     );
   }, []);
@@ -2044,7 +2080,7 @@ export default observer(function ProjectLayout() {
     // A landing-tab deep link is an explicit choice of surface; it also means
     // the folder-project Preview auto-open must never override it.
     previewTabUserPickedRef.current.add(projectId);
-    AsyncStorage.setItem(previewTabUserPickKey(projectId), requested).catch(
+    setStorageItem(previewTabUserPickKey(projectId), requested).catch(
       () => {}
     );
     const nativePhoneChat = nativePhone;
@@ -2164,7 +2200,7 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`,
         previewTab
       ).catch(() => {});
@@ -2227,6 +2263,10 @@ export default observer(function ProjectLayout() {
     },
     []
   );
+  // "Clear all notifications" from the menu-bar dropdown drops every project
+  // tab's dot with one event, the same one the sidebar and the island listen to.
+  useEffect(() => chatSessionEvents.subscribeClearCompletions(() => setCompletedTabIds(new Set())), [])
+
   // Clear the "new activity" dot once the user opens that tab.
   useEffect(() => {
     if (!chatSessionId) return;
@@ -2358,7 +2398,7 @@ export default observer(function ProjectLayout() {
       // for this project — this session and every later one (SHO-200).
       if (projectId) {
         previewTabUserPickedRef.current.add(projectId);
-        AsyncStorage.setItem(previewTabUserPickKey(projectId), tabId).catch(
+        setStorageItem(previewTabUserPickKey(projectId), tabId).catch(
           () => {}
         );
       }
@@ -3933,15 +3973,11 @@ export default observer(function ProjectLayout() {
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so keep the way back and
             the name on screen while it loads instead of a bare spinner. */}
-        {Platform.OS !== "web" ? (
-          <View className="bg-background" style={{ paddingTop: insets.top }}>
-            <ProjectSurfaceHeader projectId={projectId} />
-          </View>
-        ) : null}
+        <ProjectSurfaceHeader projectId={projectId} />
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>
-              <ActivityIndicator size="large" />
+              <Spinner size="large" />
               <Text className="text-muted-foreground mt-3 text-sm">
                 {stillBootingRuntime
                   ? "Starting your project…"
@@ -3960,7 +3996,7 @@ export default observer(function ProjectLayout() {
           )}
           {showStalledRecovery && !runtimeCapacity && (
             <View className="w-full max-w-sm gap-3 items-center">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
               <Text className="text-foreground text-base font-semibold text-center">
                 This is taking longer than expected
               </Text>
@@ -4182,7 +4218,7 @@ export default observer(function ProjectLayout() {
                 <PanelErrorBoundary panelName="Shogo IDE Chat">
                   {workspaceChatLoading ? (
                     <View className="flex-1 items-center justify-center bg-background">
-                      <ActivityIndicator size="large" />
+                      <Spinner size="large" />
                       <Text className="mt-3 text-sm text-muted-foreground">
                         Loading project chat…
                       </Text>
@@ -4286,6 +4322,13 @@ export default observer(function ProjectLayout() {
                     return current === rounded ? current : rounded;
                   });
                 }
+                const nextWidth = event.nativeEvent?.layout?.width;
+                if (typeof nextWidth === "number" && nextWidth > 0) {
+                  setSplitRowWidth((current) => {
+                    const rounded = Math.round(nextWidth);
+                    return current === rounded ? current : rounded;
+                  });
+                }
               }}
             >
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
@@ -4380,7 +4423,7 @@ export default observer(function ProjectLayout() {
                           testID="workspace-chat-loading"
                           className="absolute inset-0 bg-background items-center justify-center"
                         >
-                          <ActivityIndicator size="large" />
+                          <Spinner size="large" />
                           <Text className="text-sm text-muted-foreground mt-3 text-center">
                             Starting workspace…
                           </Text>
@@ -4519,7 +4562,7 @@ export default observer(function ProjectLayout() {
 
               {/* The thread a pressed background task runs in: a pane beside the
                   canvas (wide) or a sheet (phone). The chat column stays put. */}
-              <TaskThreadPaneHost />
+              <TaskThreadPaneHost containerWidth={splitRowWidth || undefined} />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View
@@ -5682,7 +5725,7 @@ function CanvasPanel({
           </>
         ) : (
           <>
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text
               className={cn(
                 "text-foreground font-medium mb-1",
@@ -5770,7 +5813,7 @@ function AppPreviewPanel({
   if (!previewUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" className="mb-4" />
+        <Spinner size="large" className="mb-4" />
         <Text className="text-muted-foreground text-center">
           Connecting to preview server...
         </Text>
@@ -5793,7 +5836,7 @@ function AppPreviewPanel({
 
         {!previewReady && (
           <View className="absolute inset-0 z-[5] items-center justify-center bg-background/90">
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text className="text-foreground font-medium text-base mb-1">
               {PHASE_LABELS[phase] || "Preparing preview..."}
             </Text>

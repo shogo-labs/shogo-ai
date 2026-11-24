@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
-import { View, Text, Pressable, TextInput, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable, TextInput } from 'react-native'
 import { Star } from 'lucide-react-native'
+import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ReviewFormProps {
   onSubmit: (data: { rating: number; title: string; body: string }) => Promise<void>
@@ -26,7 +28,7 @@ export function ReviewForm({ onSubmit, existingReview }: ReviewFormProps) {
     try {
       await onSubmit({ rating, title, body })
     } catch (e: any) {
-      setError(e.message || 'Failed to submit review')
+      setError(errorMessage(e, 'Failed to submit review'))
     } finally {
       setSubmitting(false)
     }
@@ -76,7 +78,7 @@ export function ReviewForm({ onSubmit, existingReview }: ReviewFormProps) {
         disabled={submitting || rating === 0}
         className="flex-row items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-primary active:opacity-80 disabled:opacity-50"
       >
-        {submitting && <ActivityIndicator size="small" color="white" />}
+        {submitting && <Spinner tone="onPrimary" size="small" />}
         <Text className="text-sm font-medium text-primary-foreground">
           {existingReview ? 'Update Review' : 'Submit Review'}
         </Text>

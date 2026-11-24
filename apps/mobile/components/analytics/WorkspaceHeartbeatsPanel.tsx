@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native'
+import { Pressable, ScrollView, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import {
   Activity,
@@ -48,6 +48,7 @@ import { nativeActivePill } from '../../lib/native-active-shadow'
 import { Text } from '../settings/account-sheet-chrome'
 import { LoadErrorNotice } from './LoadErrorNotice'
 import { StatCard, CostSplitLines, formatDollarCost, getModelDisplayName } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 export type HeartbeatPeriod = '24h' | '7d' | '30d'
 
@@ -399,7 +400,7 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
 
       <View className="flex-row items-center justify-between gap-2 flex-wrap">
         <PeriodPills value={period} onChange={setPeriod} />
-        {state.loading && state.data ? <ActivityIndicator size="small" /> : null}
+        {state.loading && state.data ? <Spinner size="small" /> : null}
       </View>
 
       {state.error && !state.data ? (
@@ -440,7 +441,7 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
         {!state.data ? (
           <View className="py-10 items-center justify-center gap-2">
             {state.loading ? (
-              <ActivityIndicator />
+              <Spinner />
             ) : (
               <Text className="text-sm text-muted-foreground">
                 {state.error ?? 'Heartbeat spend is unavailable right now'}

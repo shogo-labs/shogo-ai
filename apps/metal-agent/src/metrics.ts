@@ -80,6 +80,13 @@ export const M = {
   suspendRetiredStale: 'metal_suspend_retired_stale_total',
   // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
   rolloutRotated: 'metal_rollout_rotated_total',
+  // A staged rootfs was refused because a real VM could not boot from it
+  // (SHO-552). Non-zero means a release is broken and this host stayed on the
+  // image it had — the log line names the error.
+  rootfsBootProbeFailed: 'metal_rootfs_boot_probe_failed_total',
+  // Activations undone automatically after a burst of failed cold boots, and by
+  // an operator (`POST /admin/rollback-rootfs`).
+  rootfsRollback: 'metal_rootfs_rollback_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
@@ -156,6 +163,20 @@ export const M = {
   dataUploadRecycle: 'metal_data_upload_recycle_total',
   // Periodic uploads skipped by the large-database cadence limit.
   dataUploadThrottled: 'metal_data_upload_throttled_total',
+  // The guest could not snapshot its database at all (named code
+  // `sqlite_snapshot_failed`), so this project has NO writable-state backup.
+  // Counted once per failure streak, not per retry (SHO-541).
+  dataSnapshotFailed: 'metal_data_snapshot_failed_total',
+  // A VM on a superseded rootfs that rotation cannot take. Non-zero means a
+  // runtime is stuck on old code with no way out but a human (SHO-541).
+  rotationBlocked: 'metal_rotation_blocked_total',
+  // Durability gauges for writable state: how many assigned VMs cannot back
+  // their database up, how long the oldest has been unable to, and how many
+  // are pinned to a superseded rootfs. The alert reads these — one broken
+  // database used to be invisible for four days (SHO-541).
+  dataSnapshotFailedVms: 'metal_data_snapshot_failed_vms',
+  dataSnapshotFailedOldestSec: 'metal_data_snapshot_failed_oldest_seconds',
+  rotationBlockedVms: 'metal_rotation_blocked_vms',
   // End-of-day restore points (`project-data/daily/<date>.tar.gz`).
   dataDailyCopied: 'metal_data_daily_copy_ok_total',
   dataDailyCopyFailed: 'metal_data_daily_copy_failed_total',
@@ -226,6 +247,45 @@ export const M = {
   idleSuspendedByTier: 'metal_idle_suspended_by_tier_total',
   idleReapDeferred: 'metal_idle_reap_deferred_total',
   idleWindowMs: 'metal_idle_window_ms',
+  // Why each assigned VM is still resident, as a gauge per reason
+  // `{reason="window"|"busy"|"refused"|"alwaysOn"|"legacy"|"evictable"}`. They
+  // are disjoint and sum to `metal_assigned_count`, so one scrape answers "why
+  // are 140 VMs loaded while 20 projects are active". `evictable` means nothing
+  // is holding it — the next pass suspends it, so a sustained non-zero
+  // `evictable` means the reaper is not keeping up (SHO-533).
+  idleHoldReason: 'metal_idle_hold_reason',
+  // Idle-VM reclaim (SHO-534): MiB the balloon has taken out of idle guests
+  // (a total, so the fleet's saved RAM is one sum), how many assigned VMs are
+  // currently holding reclaimed RAM (state), how many deflates happened and how
+  // long one took. The deflate latency matters because it sits behind the first
+  // request after an idle period: it is off the request's critical path, but a
+  // slow PATCH is why the first click after an idle spell feels sluggish.
+  balloonReclaimedMiB: 'metal_balloon_reclaimed_mib_total',
+  balloonDeflated: 'metal_balloon_deflated_total',
+  idleReclaimedVms: 'metal_idle_reclaimed_vms',
+  idleReclaimDeflateMs: 'metal_idle_reclaim_deflate_ms',
+  // Host RAM and KSM (SHO-534). `hostMemUsedMiB` is MemTotal - MemAvailable, not
+  // the sum of FC RSS: a restored VM's guest memory is a MAP_PRIVATE file
+  // mapping, so per-process RSS under-counts the page cache the host really
+  // holds. The KSM gauges are what the ksmd CPU budget and the dedup gain are
+  // read from while KSM is being evaluated on staging; they stay zero on a host
+  // with KSM off, which is every prod host until Russell signs off on it.
+  hostMemUsedMiB: 'metal_host_mem_used_mib',
+  hostMemAvailableMiB: 'metal_host_mem_available_mib',
+  ksmPagesSharing: 'metal_ksm_pages_sharing',
+  ksmPagesShared: 'metal_ksm_pages_shared',
+  ksmFullScans: 'metal_ksm_full_scans',
+  ksmdCpuPct: 'metal_ksmd_cpu_pct',
+  /** Window (ms) the ksmd CPU percentage was measured over — a fixed 30s. */
+  ksmdCpuWindowMs: 'metal_ksmd_cpu_window_ms',
+  // Idle-suspend refusals: each one means the guest's HEAD is not in the durable
+  // repo yet, so the VM may not be suspended (SHO-442). Counted per attempt
+  // (`refused`) and summed per reaper pass for VMs waiting out their backoff
+  // (`refused_backoff`), because a refusal costs a full repo export and retrying
+  // one every scan starves the reaper (SHO-533).
+  idleSuspendRefused: 'metal_idle_suspend_refused_total',
+  idleSuspendRefusedVms: 'metal_idle_suspend_refused_vms',
+  idleReapRefusedBackoff: 'metal_idle_reap_refused_backoff_total',
   // VMs the reaper would have suspended if their guest did not report busy:
   // assigned, not always-on, `busy` true, and no user activity for the current
   // idle window. A non-zero gauge is the "reports busy, does nothing" tail that

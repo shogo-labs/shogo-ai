@@ -9,9 +9,9 @@
 import { useMemo, useState } from 'react'
 import { Pressable, ScrollView, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { ChevronRight, Plus } from 'lucide-react-native'
+import { Plus } from 'lucide-react-native'
 import { Avatar, cn } from '@shogo/shared-ui/primitives'
-import { ConversationRow, CountPill, PanelLink, PanelSection, attentionCount, rowTitle } from '../ConversationRows'
+import { ChatRowView, ConversationRow, CountPill, PanelLink, PanelSection, attentionCount, rowIconSize, rowTitle } from '../ConversationRows'
 import { PresenceDot } from '../PresenceDot'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
 import { resolveAvatarUrl } from '../../../lib/chat-attachment-url'
@@ -20,6 +20,7 @@ import { type ConversationSummary } from '../../../lib/team-chat-api'
 import { AgentAvatar } from '../AgentAvatar'
 import { useRecentAgentChats } from '../../../hooks/useRecentAgentChats'
 import { relativeTime } from '../../../lib/activity-feed'
+import { usePhoneLayout } from '../../../lib/native-phone-layout'
 
 // In the sidebar the panel sits inside the sidebar's own scroll view.
 function Rows({ children, ...props }: any) {
@@ -33,9 +34,10 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
   const { starred, others } = useMemo(() => splitStarredDms(chat.list, filter), [chat.list, filter])
   const contacts = useMemo(() => recentContacts(chat.list), [chat.list])
   const { chats: recentChats } = useRecentAgentChats({ limit: 20, perAgent: false })
-  if (!chat.enabled || !chat.workspaceId) return null
-  const workspaceId = chat.workspaceId
   const screen = variant === 'screen'
+  // The same `comfortable` a person's `ConversationRow` resolves, so an agent
+  // row and a person row are the same height (SHO-537).
+  const comfortable = usePhoneLayout()
 
   const agents = chat.mentionables?.agents ?? []
 
@@ -70,6 +72,9 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
     rest.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
     return [...chatted, ...rest]
   }, [agents, lastChatByAgent])
+
+  if (!chat.enabled || !chat.workspaceId) return null
+  const workspaceId = chat.workspaceId
 
   // No "Note to self" shortcut: every member is provisioned one, so it is
   // already a row below, under your own name.
@@ -106,37 +111,6 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
       </ScrollView>
 
       <Rows className={cn(screen && 'flex-1')} {...(screen ? { contentContainerClassName: 'px-2 pb-28' } : { })}>
-        {showAgents && sortedAgents.length > 0 && (
-          <PanelSection label="Agents">
-            {sortedAgents.map((agent) => {
-              const lastChat = lastChatByAgent.get(agent.projectId ?? 'ws')
-              const subtitle = lastChat
-                ? `${lastChat.title} · ${relativeTime(Date.parse(lastChat.lastActiveAt))}`
-                : 'Start a chat'
-              return (
-                <Pressable
-                  key={agent.key}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${agent.name ?? 'Agent'}, ${subtitle}`}
-                  onPress={() => openAgentChats(agent.projectId)}
-                  className="flex-row items-center gap-3 rounded-lg px-2 py-2.5 active:bg-muted/50"
-                >
-                  <AgentAvatar
-                    name={agent.name ?? 'Agent'}
-                    projectId={agent.projectId}
-                    workspaceId={workspaceId}
-                    size={screen ? 36 : 28}
-                  />
-                  <View className="min-w-0 flex-1">
-                    <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{agent.name ?? 'Agent'}</Text>
-                    <Text className="text-xs text-muted-foreground" numberOfLines={1}>{subtitle}</Text>
-                  </View>
-                  <ChevronRight size={16} className="text-muted-foreground" />
-                </Pressable>
-              )
-            })}
-          </PanelSection>
-        )}
         {showPeople && starred.length > 0 && <PanelSection label="Starred">{starred.map(row)}</PanelSection>}
         {showPeople && others.map(row)}
         {showAgents && sortedAgents.length === 0 && showPeople && starred.length === 0 && others.length === 0 && (
@@ -146,8 +120,60 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
           <Text className="px-3 py-4 text-xs text-muted-foreground">{filter === 'unreads' ? "You're all caught up." : 'No conversations yet.'}</Text>
         )}
         {showPeople && <PanelLink icon={Plus} label="New message" onPress={() => chat.startCreate('message')} />}
+        {showAgents && sortedAgents.length > 0 && (
+          <PanelSection label="Agents">
+            {sortedAgents.map((agent) => (
+              <AgentRow
+                key={agent.key}
+                agent={agent}
+                lastChat={lastChatByAgent.get(agent.projectId ?? 'ws')}
+                workspaceId={workspaceId}
+                comfortable={comfortable}
+                showSubtitle={screen}
+                onPress={() => openAgentChats(agent.projectId)}
+              />
+            ))}
+          </PanelSection>
+        )}
       </Rows>
     </View>
+  )
+}
+
+/**
+ * An agent in the same row a person gets (SHO-537): same height, same start
+ * slot. The extra line is the person's message preview's slot, so it only shows
+ * where person previews show — on the phone screen. It stays in the
+ * accessibility label either way.
+ */
+function AgentRow({
+  agent,
+  lastChat,
+  workspaceId,
+  comfortable,
+  showSubtitle,
+  onPress,
+}: {
+  agent: { key: string; name: string; projectId: string | null }
+  lastChat?: { title: string; lastActiveAt: string }
+  workspaceId: string
+  comfortable: boolean
+  showSubtitle: boolean
+  onPress: () => void
+}) {
+  const name = agent.name || 'Agent'
+  const subtitle = lastChat ? `${lastChat.title} · ${relativeTime(Date.parse(lastChat.lastActiveAt))}` : 'Start a chat'
+  return (
+    <ChatRowView
+      testID="agent-row"
+      comfortable={comfortable}
+      accessibilityRole="button"
+      accessibilityLabel={`${name}, ${subtitle}`}
+      start={<AgentAvatar name={name} projectId={agent.projectId} workspaceId={workspaceId} size={rowIconSize(comfortable)} />}
+      title={name}
+      subtitle={showSubtitle ? subtitle : undefined}
+      onPress={onPress}
+    />
   )
 }
 

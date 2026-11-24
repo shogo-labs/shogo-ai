@@ -13,6 +13,7 @@ import {
   subscribeNotificationPermissionGranted,
 } from './chat-notifier'
 import { getNotifyOnTurnComplete } from './preferences'
+import { errorMessage } from '../error-message'
 
 let registeredDevice: { userId: string; pushToken: string; agentTurns: boolean } | null = null
 const pushTokenListeners = new Set<(token: string | null) => void>()
@@ -76,7 +77,7 @@ async function registerCurrentDevice(userId: string, agentTurns: boolean) {
     )
     pushToken = tokenResponse.data
   } catch (err) {
-    reportRegistrationProblem(`Could not get an Expo push token: ${(err as Error).message}`)
+    reportRegistrationProblem(`Could not get an Expo push token: ${errorMessage(err)}`)
     return
   }
   if (!pushToken) {
@@ -93,7 +94,7 @@ async function registerCurrentDevice(userId: string, agentTurns: boolean) {
       agentTurns,
     })
   } catch (err) {
-    reportRegistrationProblem(`Could not register this device for pushes: ${(err as Error).message}`)
+    reportRegistrationProblem(`Could not register this device for pushes: ${errorMessage(err)}`)
     return
   }
   registeredDevice = { userId, pushToken, agentTurns }
@@ -120,7 +121,7 @@ export function useMobilePushRegistration(userId: string | null, agentTurns = tr
         registrationInFlight = null
       })
       await registrationInFlight.catch((err) => {
-        reportRegistrationProblem(`Push registration failed: ${(err as Error).message}`)
+        reportRegistrationProblem(`Push registration failed: ${errorMessage(err)}`)
       })
     }
     void register()

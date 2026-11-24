@@ -191,7 +191,7 @@ export const config = {
     '--color-card-foreground': '222 222 222',
     '--color-popover': '30 30 30',
     '--color-popover-foreground': '222 222 222',
-    '--color-primary': '240 144 80',
+    '--color-primary': '226 121 39',
     '--color-primary-foreground': '255 255 255',
     '--color-secondary': '51 51 51',
     '--color-secondary-foreground': '255 255 255',
@@ -203,7 +203,7 @@ export const config = {
     '--color-destructive-foreground': '255 255 255',
     '--color-border': '51 51 51',
     '--color-input': '51 51 51',
-    '--color-ring': '240 144 80',
+    '--color-ring': '226 121 39',
 
     '--color-primary-0': '166 166 166',
     '--color-primary-50': '175 175 175',

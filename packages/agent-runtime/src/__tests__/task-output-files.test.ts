@@ -3,10 +3,11 @@
 /** Per-task log files: header/footer, size cap with kept tail, retention sweep. */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync, readFileSync, writeFileSync, utimesSync, existsSync } from 'fs'
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { TaskOutputWriter, cleanupTaskOutputs, taskOutputDir, taskOutputRoot } from '../task-output'
 import { TaskRegistry } from '../task-registry'
+import { stampMtime } from './helpers/stamp-mtime'
 
 const DIR = '/tmp/test-task-output-files'
 
@@ -58,8 +59,8 @@ describe('cleanupTaskOutputs', () => {
     mkdirSync(newDir, { recursive: true })
     writeFileSync(join(oldDir, 't_old.log'), 'x')
     writeFileSync(join(newDir, 't_new.log'), 'x')
-    const past = (Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000
-    utimesSync(join(oldDir, 't_old.log'), past, past)
+    stampMtime(join(oldDir, 't_old.log'), Date.now() - 2 * 24 * 60 * 60 * 1000)
+    stampMtime(join(newDir, 't_new.log'))
 
     expect(newDir.endsWith('new_session')).toBe(true)
     expect(cleanupTaskOutputs(root)).toBe(1)

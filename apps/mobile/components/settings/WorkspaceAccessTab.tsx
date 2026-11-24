@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native'
+import { Pressable, ScrollView, TextInput, View } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { Check as CheckIcon, Lock as LockIcon, ShieldCheck as ShieldCheckIcon } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -32,6 +32,7 @@ import {
   modelGrantWrite,
   type ModelGrantMode,
 } from './access-policy-draft'
+import { Spinner } from '@/components/ui/spinner'
 
 interface AbilityOption {
   id: string
@@ -257,7 +258,7 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
   if (loading) {
     return (
       <View className="bg-card border border-border rounded-xl px-5 py-6 items-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -298,7 +299,7 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
           onError={setError}
           onNotice={setNotice}
           icon={<ShieldCheck size={16} className="text-foreground" />}
-          checkIcon={<Check size={13} color="#fff" />}
+          checkIcon={<Check className="text-primary-foreground" size={13} />}
         />
       )}
 
@@ -874,7 +875,7 @@ function PoliciesCard({
                 className={cn('px-4 py-2.5 rounded-md', saving ? 'bg-muted' : 'bg-primary')}
               >
                 {saving ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Text className="text-sm font-medium text-primary-foreground">Save policy</Text>
                 )}

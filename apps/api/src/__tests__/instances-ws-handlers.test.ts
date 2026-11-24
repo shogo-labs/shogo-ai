@@ -10,6 +10,8 @@ let resolveApiKeyResult: any = { workspaceId: 'ws-1', userId: 'user-1' }
 let createError: Error | null = null
 let registerError: Error | null = null
 let unregisterError: Error | null = null
+/** Whether this pod still owned the tunnel when it unregistered (SHO-565). */
+let unregisterWasOwner = true
 const registered: string[] = []
 const unregistered: string[] = []
 
@@ -45,6 +47,7 @@ mock.module('../lib/tunnel-redis', () => ({
   unregisterTunnelOwnership: async (instanceId: string) => {
     unregistered.push(instanceId)
     if (unregisterError) throw unregisterError
+    return unregisterWasOwner
   },
   evictTunnelOwnership: async () => {},
   refreshTunnelOwnership: async () => true,
@@ -92,6 +95,7 @@ mock.module('../routes/remote-audit', () => ({
 const {
   _testing,
   authenticateInstanceWs,
+  drainInstanceTunnels,
   handleInstanceWsClose,
   handleInstanceWsMessage,
   handleInstanceWsOpen,
@@ -107,6 +111,8 @@ beforeEach(() => {
   createError = null
   registerError = null
   unregisterError = null
+  unregisterWasOwner = true
+  _testing.resetTunnelDrain()
 })
 
 function fakeWs(data: Record<string, unknown> = {}) {

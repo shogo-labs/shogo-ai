@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Drag handle and remembered width for the team-chat side panes (thread and
- * project). The handle is web-only — the desktop app loads the same build —
- * and the width persists through `safe-storage`, which uses localStorage
- * when it is available.
+ * Drag handle and remembered width for a side pane that sits to the right of a
+ * chat column (team chat's thread/project/card/file/doc panes, the workspace
+ * agent chat's plan/file/project panes and the task-thread pane). The handle is
+ * web-only — the desktop app loads the same build — and the width persists
+ * through `safe-storage`, which uses localStorage when it is available.
  */
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Platform, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../../lib/safe-storage'
+
+/**
+ * Narrowest the chat column may get before a right-hand pane stops growing.
+ * The pane's max width is the row minus this (and minus any sibling pane), so
+ * dragging a pane wider can never squeeze the conversation off the screen.
+ */
+export const SIDE_PANE_CHAT_MIN_WIDTH = 480
+
+/** A press this soon after a click on the handle is the second half of a double-click. */
+const DOUBLE_CLICK_MS = 350
 
 export function clampSidePaneWidth(value: number, minWidth: number, maxWidth: number): number {
   const upper = Math.max(minWidth, maxWidth)
@@ -79,6 +90,9 @@ export function SidePaneResizeHandle({
   const [hovered, setHovered] = useState(false)
   const latestWidthRef = useRef(width)
   const stopDrag = useRef<(() => void) | null>(null)
+  // When the last press on the handle was released without moving.
+  const lastClickAtRef = useRef(0)
+  const movedRef = useRef(false)
   latestWidthRef.current = width
 
   useEffect(() => () => stopDrag.current?.(), [])
@@ -86,6 +100,18 @@ export function SidePaneResizeHandle({
   const handlePointerDown = useCallback(
     (e: ReactPointerEvent) => {
       e.preventDefault()
+      // react-native-web forwards no `onDoubleClick` to the DOM, and the drag
+      // overlay below takes the pointerup, so the browser never counts the
+      // second `click` either. Count the presses here instead: a press that
+      // arrives this soon after a click (a press released in place) is the
+      // second half of a double-click.
+      const pressedAt = Date.now()
+      if (pressedAt - lastClickAtRef.current < DOUBLE_CLICK_MS) {
+        onReset()
+        return
+      }
+      lastClickAtRef.current = 0
+      movedRef.current = false
       const startX = e.clientX
       const startWidth = width
       setDragging(true)
@@ -100,6 +126,7 @@ export function SidePaneResizeHandle({
       document.body.style.userSelect = 'none'
 
       const onPointerMove = (ev: PointerEvent) => {
+        movedRef.current = true
         const next = clampSidePaneWidth(startWidth + (startX - ev.clientX), minWidth, maxWidth)
         latestWidthRef.current = next
         onResize(next)
@@ -112,13 +139,19 @@ export function SidePaneResizeHandle({
         document.body.style.userSelect = ''
         overlay.remove()
         setDragging(false)
+        // A press released in place is a click — remember it so the next press
+        // can be recognised as a double-click — and a click is not a resize.
+        if (!movedRef.current) {
+          lastClickAtRef.current = Date.now()
+          return
+        }
         onResizeEnd(latestWidthRef.current)
       }
       stopDrag.current = onPointerUp
       document.addEventListener('pointermove', onPointerMove)
       document.addEventListener('pointerup', onPointerUp)
     },
-    [width, minWidth, maxWidth, onResize, onResizeEnd],
+    [width, minWidth, maxWidth, onResize, onResizeEnd, onReset],
   )
 
   if (Platform.OS !== 'web') return null
@@ -129,7 +162,6 @@ export function SidePaneResizeHandle({
       accessibilityLabel="Resize panel"
       // @ts-expect-error web-only event handlers
       onPointerDown={handlePointerDown}
-      onDoubleClick={onReset}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       style={{

@@ -3,6 +3,7 @@
 import { Component, type ReactNode } from 'react'
 import { Platform, View, Text, Pressable, StyleSheet } from 'react-native'
 import * as Sentry from '@sentry/react-native'
+import { resolveAccentWithoutContext } from '../lib/accent-themes'
 
 interface Props {
   children: ReactNode
@@ -54,7 +55,6 @@ const styles = StyleSheet.create({
   },
   button: {
     marginTop: 8,
-    backgroundColor: '#3b82f6',
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 24,
@@ -62,7 +62,6 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#ffffff',
   },
 })
 
@@ -94,6 +93,11 @@ export class RootErrorBoundary extends Component<Props, State> {
   render() {
     if (!this.state.hasError) return this.props.children
 
+    // The surfaces below stay a fixed neutral palette on purpose: this screen
+    // has to render when the theme providers themselves are what failed. The
+    // action button still takes the live accent, read without a hook.
+    const accent = resolveAccentWithoutContext()
+
     return (
       <View style={styles.container}>
         <View style={styles.card}>
@@ -107,11 +111,11 @@ export class RootErrorBoundary extends Component<Props, State> {
             </Text>
           )}
           <Pressable
-            style={styles.button}
+            style={[styles.button, { backgroundColor: accent.primary }]}
             onPress={this.handleReload}
             accessibilityLabel="Reload the application"
           >
-            <Text style={styles.buttonText}>Reload</Text>
+            <Text style={[styles.buttonText, { color: accent.primaryForeground }]}>Reload</Text>
           </Pressable>
         </View>
       </View>

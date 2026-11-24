@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
+import { refreshStorageHealthInBackground, storageHealth } from './services/storage-health.service'
+import { buildHealthPayload } from './lib/health-payload'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
@@ -77,6 +79,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
+import { projectBucketPublicRoutes, projectBucketRoutes } from './routes/project-bucket'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
@@ -320,6 +323,7 @@ const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () =>
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
 const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
+const drainInstanceTunnels: any = cloud.drainInstanceTunnels ?? (() => 0)
 const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
 const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
 const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
@@ -840,6 +844,14 @@ const csrfMiddleware = csrf({
     // Hono never passes `undefined` here — the wrapper below handles that
     // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
+    // The app's own origin, always (SHO-494). This handler replaces Hono's
+    // default rule (`origin === new URL(c.req.url).origin`), so a form POST from
+    // the API's own origin was refused whenever that origin was not in
+    // ALLOWED_ORIGINS — a self-host, a preview pod, a plain IP — and a channel
+    // attachment upload answered 403 "Forbidden" before its bytes were read. The
+    // URL's origin comes from the Host header, which a browser cannot forge, so
+    // a cross-site page still fails: its Origin is its own domain.
+    if (origin === new URL(c.req.url).origin) return true
     if (isDevOriginAllowed(origin)) return true
     return allowedOrigins.includes(origin)
   },
@@ -1023,15 +1035,19 @@ const healthHandler = async (c: any) => {
   if (!redis.healthy) {
     console.warn('[Health] Redis unhealthy:', redis.error)
   }
-  const ok = !degraded && redis.healthy
-  const body = {
-    ok,
+  // Resolved on the first request and refreshed on a slow interval, so a probe
+  // never waits on a bucket. NOT part of `ok`: see lib/health-payload. The
+  // deploy gate asks for `?storage=refresh` so its verdict is authoritative.
+  const storage = await storageHealth({ force: c.req.query('storage') === 'refresh' })
+  const body = buildHealthPayload({
+    redis,
+    degraded,
+    storage,
     // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
     // admin analytics can always compare installs against the deployed tag.
     version: deployedAppVersionOrUnknown(),
-    redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
-  }
-  return c.json(body, ok ? 200 : 503)
+  })
+  return c.json(body, body.ok ? 200 : 503)
 }
 app.get('/api/health', healthHandler)
 app.get('/health', healthHandler)
@@ -1841,6 +1857,10 @@ startAgentScheduleWorker(getRuntimeManager())
 // Deliver workspace events (member.joined, Composio triggers) to their subscriptions.
 startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
+// Warm the object-storage verdict at boot (SHO-514). /api/health only ever
+// reads the cache — its probe timeout is 1s — so the first probe after a deploy
+// finds an answer instead of starting a HeadBucket round trip.
+refreshStorageHealthInBackground()
 startChatQueueWorker()
 startChatSweepWorker()
 // Journal retention for cloud too (SHO-482): the desktop sweep was the only one
@@ -3861,6 +3881,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // Only the header carrying it needs forwarding; the `ETag` on the way back
   // already survives the response-header copy below.
   const ifNoneMatch = c.req.header('if-none-match')
+  // Media playback through the tunnel asks for byte ranges; the runtime already
+  // answers 206s, but the range never reached it (SHO-526).
+  const rangeHeader = c.req.header('range')
+  const ifRangeHeader = c.req.header('if-range')
   // Every project is served by a merged-root runtime that authenticates with
   // the WORKSPACE token, not the project token — sending the project token
   // here 401s every proxied call (config, quick-actions, workspace
@@ -3917,6 +3941,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (contentType) tunnelHeaders['content-type'] = contentType
       if (accept) tunnelHeaders['accept'] = accept
       if (ifNoneMatch) tunnelHeaders['if-none-match'] = ifNoneMatch
+      if (rangeHeader) tunnelHeaders['range'] = rangeHeader
+      if (ifRangeHeader) tunnelHeaders['if-range'] = ifRangeHeader
       tunnelHeaders['x-runtime-token'] = runtimeToken
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
       if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
@@ -6434,6 +6460,18 @@ app.route('/api', gitHttpRouter)
 // mints the batch response, so no git-lfs binary is needed here.
 const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitLfsRouter)
+
+// Mount the project bucket API (SHO-491). Object bytes never pass through the
+// API on cloud — `POST /uploads` mints a presigned PUT (or a multipart upload
+// for big files) and the client streams straight to object storage. Desktop has
+// no object storage, so the same ticket points at this API's upload route,
+// which streams to `<dataDir>/project-buckets/`. Auth is the project's own
+// session or runtime token, applied by `requireProjectAccess`.
+const projectBucketRouter = projectBucketRoutes()
+app.route('/api', projectBucketRouter)
+// The desktop stand-in for `cdn.<publish domain>`: public objects only, bytes
+// streamed from disk with `Range`. Cloud answers 404 here.
+app.route('/', projectBucketPublicRoutes())
 
 // Mount GitHub routes
 const githubRouter = githubRoutes()
@@ -11046,6 +11084,17 @@ async function gracefulShutdown(signal: string) {
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Tell desktops to move their tunnel to another pod before this one goes
+  // away (SHO-565). Each one opens a replacement first and only then closes the
+  // socket here, so a turn being streamed over it is never cut — and, because
+  // the tunnel no longer arrives through queue-proxy, it is not a request this
+  // pod has to wait out either.
+  try {
+    drainInstanceTunnels()
+  } catch (err: any) {
+    console.error('[Server] Tunnel drain failed:', err?.message ?? err)
+  }
 
   // Hand chat turns this pod is following to another replica's reattach job
   // before the trackers die with the process.

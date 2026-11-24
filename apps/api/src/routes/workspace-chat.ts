@@ -365,6 +365,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       if (respContentType) responseHeaders.set('content-type', respContentType)
       const respContentLength = response.headers.get('content-length')
       if (respContentLength) responseHeaders.set('content-length', respContentLength)
+      // A waking host's refusal says when to come back here as well as in the
+      // body, and the client's retry reads both (SHO-538).
+      const respRetryAfter = response.headers.get('retry-after')
+      if (respRetryAfter) responseHeaders.set('retry-after', respRetryAfter)
       return new Response(response.body, { status: response.status, headers: responseHeaders })
     } catch (err: any) {
       console.warn(`[WorkspaceAgentProxy] proxy error for ${workspaceId}${path}:`, err?.message || err)
@@ -737,6 +741,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       /* not JSON, that's fine */
     }
 
+    // The model the person picked for this turn, read before any guard or
+    // run-model downgrade rewrites `agentMode` (SHO-497). It is what their own
+    // message row records, so the composer keeps showing the pick after the
+    // reply even when the run used something else.
+    const requestedAgentMode =
+      typeof parsedBody?.agentMode === 'string' ? parsedBody.agentMode.trim() || null : null
+
     // chat-session id is REQUIRED. Header takes precedence, then
     // `sessionId` / `chatSessionId` in the body. The runtime keys its
     // in-memory SessionManager + durable turn buffer on this id, and the
@@ -848,13 +859,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       stampModelProvider(parsedBody)
     }
 
-    // AC5 (SHO-417): the workspace agent's configured model may be above the
-    // person chatting with it. This run then uses their default model and the
-    // runtime states it in the reply's first line; the agent's saved config is
+    // AC5 (SHO-417): the model a run starts with may be above the person
+    // chatting with it. This run then uses their default model and the runtime
+    // states it in the reply's first line; the agent's saved config is
     // untouched. A personal companion is exempt — its model is a platform-wide
     // super-admin choice, not a per-person pick.
+    //
+    // The starting model is the person's pick for this turn (SHO-497); the
+    // agent's configured model is only the fallback for a body with no
+    // `agentMode`.
     if (auth.kind !== 'personal' && auth.userId) {
-      const runModel = await resolveAgentRunModelFor(null, workspaceId, auth.userId)
+      const runModel = await resolveAgentRunModelFor(null, workspaceId, auth.userId, parsedBody.agentMode)
       if (runModel) {
         parsedBody.agentMode = runModel.model
         if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
@@ -945,7 +960,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // The person's message must be durable before the turn starts (SHO-274), on
     // the same contract as project-chat: awaited after every gate (a rejected
     // send writes nothing) and before the first proxy attempt.
-    const persistedUserMessage = await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+    const persistedUserMessage = await persistUserMessageForTurn(
+      sessionId,
+      parsedBody as Record<string, unknown>,
+      { model: requestedAgentMode },
+    )
 
     // A hosted workspace whose desktop is offline queues the turn instead of
     // failing it; the desktop runs it when it is back (SHO-285).
@@ -1293,6 +1312,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             billingProjectId ? { id: billingProjectId, workspaceId } : null,
             {
               chatSessionId: sessionId,
+              journalTurnId: turnId,
               userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
               workspaceId,
               projectName: 'Workspace project',
@@ -1745,6 +1765,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, '/agent/stop', {
         method: 'POST',
         body: body || '{}',
+        // The runtime resolves a stop from the header or the body; the client
+        // sends `chatSessionId` in the body, while a caller that only sends the
+        // header would otherwise reach it with nothing to stop (SHO-494).
+        ...(sessionId ? { headers: { 'x-chat-session-id': sessionId } } : {}),
       }, runtimeExtra)
       const result = await response.json()
       if (sessionId) {
@@ -1766,7 +1790,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }
-      return c.json(result)
+      // A refused stop is the caller's to see: answering 200 around the
+      // runtime's 400 made a stop that stopped nothing look like it worked.
+      return c.json(result, response.ok ? 200 : (response.status as any))
     } catch (error: any) {
       console.error('[WorkspaceChat] Stop error:', error)
       return c.json({ success: false, error: error.message }, 500)

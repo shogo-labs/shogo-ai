@@ -44,7 +44,21 @@ import {
 import { PortForward } from './port-forward'
 import { announceRestarting, reportPlacement, startRegistration } from './register'
 import { RequestDrain } from './request-drain'
-import { getRootfsRevision, getRootfsSha, getStagedRootfs, imagesToKeep, maybeImageGc } from './self-update'
+import {
+  getRejectedRootfs,
+  getRootfsFailed,
+  getRootfsPrev,
+  getRootfsRevision,
+  getRootfsSha,
+  getRootfsWatch,
+  getStagedRootfs,
+  imagesToKeep,
+  keptRootfsImage,
+  maybeImageGc,
+  restartAgent,
+  rollbackRootfs,
+  type KeptImageName,
+} from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -190,9 +204,58 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           rootfsSha: getRootfsSha(),
           rootfsRevision: getRootfsRevision(),
           stagedRootfs: getStagedRootfs(),
+          // The rollback state (SHO-552): what a rollback would put back, whether
+          // the live image is still on probation, and what was rejected last —
+          // otherwise none of it is visible without catting the markers.
+          rootfsPrevious: getRootfsPrev(),
+          rootfsWatch: getRootfsWatch(),
+          // The generation a rollback took out of service and kept for inspection
+          // (SHO-563): what it was, why, and where its evidence is.
+          rootfsFailed: getRootfsFailed(),
+          rootfsRejected: getRejectedRootfs(),
         })
       }
       if (path === '/vms') return Response.json(pool.status())
+
+
+      // Manual rollback (SHO-552): put `<base>.prev` back now, instead of waiting
+      // for the watch to decide. The automatic path covers a host whose cold
+      // boots fail; this covers the failure a boot cannot see (a bad kernel
+      // config, a project that could never boot on the new image) and a
+      // watchdog-only host. Same auth tier as /gc.
+      if (path === '/admin/rollback-rootfs' && req.method === 'POST') {
+        const res = await rollbackRootfs('manual', {
+          // Let this response flush before the process goes down: the handler
+          // lives in the agent being restarted.
+          restart: () => setTimeout(restartAgent, 500),
+        })
+        return Response.json(res, { status: res.ok ? 200 : 409 })
+      }
+
+      // Boot a kept image on demand (SHO-563): `live`, `prev`, `staged` or
+      // `failed`. This is how an operator answers "would that image have
+      // booted?" without activating it, and how the image a rollback kept is
+      // inspected after the fact. It boots real VMs and holds them for `holdMs`
+      // (default METAL_ROOTFS_PROBE_HOLD_MS), so it is slow by design; it never
+      // touches the live image, the pool or the watch ledger, and a probe VM is
+      // never counted as a cold boot of the live image.
+      if (path === '/admin/probe-rootfs' && req.method === 'POST') {
+        const body = await json(req).catch(() => ({}) as any)
+        const name = String(body?.image ?? '').trim() as KeptImageName
+        if (!['live', 'prev', 'staged', 'failed'].includes(name)) {
+          return Response.json(
+            { error: `image must be one of live, prev, staged, failed (got '${body?.image ?? ''}')` },
+            { status: 400 },
+          )
+        }
+        const vmClass = body?.vmClass === 'docker' ? 'docker' : 'standard'
+        const holdMs = Number.isFinite(body?.holdMs) ? Math.max(0, Math.min(10 * 60_000, Number(body.holdMs))) : undefined
+        if (!keptRootfsImage(name, vmClass)) {
+          return Response.json({ ok: false, error: `no ${name} image for the ${vmClass} class on this host` }, { status: 404 })
+        }
+        const res = await pool.probeKeptRootfs(name, vmClass, holdMs)
+        return Response.json(res, { status: res.ok ? 200 : 422 })
+      }
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
 
       // A guest redeeming a hydrate grant. Not part of the control-plane API:
@@ -247,9 +310,13 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
       }
 
       if (path === '/resume' && req.method === 'POST') {
-        const { projectId, env } = await json(req)
+        const { projectId, env, cause } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        const r = await pool.resume(projectId, env ?? {})
+        // Same contract as /assign (SHO-533): a resume nobody asked for must not
+        // look like a user opening the project, or `userSeenSinceAssign` hands it
+        // the relaxed idle window. Absent/unknown `cause` stays `user_open`, so
+        // every existing caller behaves exactly as before.
+        const r = await pool.resume(projectId, env ?? {}, undefined, isVmCause(cause) ? cause : 'user_open')
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
         const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
         return Response.json({ url, source: r.source, readyMs: r.readyMs, suspendReason: r.suspendReason })
@@ -398,7 +465,7 @@ console.log(
 )
 console.log('[metal-agent] warming pool...')
 pool.start().then(
-  (adoption) => {
+  async (adoption) => {
     console.log('[metal-agent] pool ready')
     // Rolling deploy: adopt() re-attached live VMs that survived this restart.
     // Re-assert their (persisted) DNAT rules and tear down forwards for any VM
@@ -416,7 +483,7 @@ pool.start().then(
     // Reclaim files left over from a prior run once the suspended index is
     // rehydrated (start() calls rehydrate()), so a deploy doesn't leak disk.
     try {
-      const n = pool.reclaimOrphans()
+      const n = await pool.reclaimOrphans()
       if (n) console.log(`[metal-agent] startup reclaimed ${n} orphaned artifact(s)`)
     } catch (err: any) {
       console.error('[metal-agent] startup orphan reclaim failed:', err?.message ?? err)
@@ -507,6 +574,17 @@ if (config.idleSuspendMs > 0) {
           lastIdleReason = w.reason
         }
         metrics.gauge(M.idleWindowMs, w.idleMs)
+        // Before the reaper: a VM idle enough to reclaim is idle enough to be
+        // about to be suspended, and reclaiming first means the snapshot path
+        // finds a balloon already inflated (it tops it up rather than starting
+        // from scratch). Always-on VMs are only ever reached by this pass — they
+        // are never suspended, so their RAM was never given back at all (SHO-534).
+        return pool.reclaimIdleVms().then((reclaimed) => ({ w, reclaimed }))
+      })
+      .then(({ w, reclaimed }) => {
+        if (reclaimed.length) {
+          console.log(`[metal-agent] idle-reclaimed (balloon): ${reclaimed.join(', ')}`)
+        }
         const retired: string[] = []
         return pool.reapIdle(w.idleMs, { tier: w.tier, retired }).then((ids) => ({ ids, retired }))
       })
@@ -553,6 +631,29 @@ if (config.idleSuspendMs > 0) {
   )
 }
 
+// Idle-VM reclaim on a host with no reaper (SHO-534). The reclaim pass is
+// normally the step just before `reapIdle` in the tick above, because it needs a
+// fresh activity poll to know nobody is using a VM. With idle-suspend disabled —
+// an operator's choice, and how the density soak runs — that tick does not exist,
+// so reclaim gets its own small loop: poll, then reclaim. Nothing else from the
+// reaper runs here.
+let reclaimLoop: GuardedInterval | null = null
+if (config.idleSuspendMs <= 0 && config.idleReclaim) {
+  console.log(
+    `[metal-agent] idle reclaim on (no idle-suspend): idleMs=${config.idleReclaimMs} scan=${config.reapIntervalMs}ms`,
+  )
+  reclaimLoop = guardedInterval('idle reclaim', config.reapIntervalMs, () =>
+    pool
+      .pollActivity()
+      .catch(() => {})
+      .then(() => pool.reclaimIdleVms())
+      .then((ids) => {
+        if (ids.length) console.log(`[metal-agent] idle-reclaimed (balloon): ${ids.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] idle reclaim error:', err?.message ?? err)),
+  )
+}
+
 // GC sweep: reclaim orphans + evict LRU suspended snapshots under disk pressure
 // (treats NVMe as a bounded cache backed by the durable store).
 let gc: ReturnType<typeof setInterval> | null = null
@@ -561,41 +662,57 @@ if (config.gcIntervalMs > 0) {
     `[metal-agent] gc on: interval=${config.gcIntervalMs}ms high=${config.diskHighPct}% low=${config.diskLowPct}% ` +
       `cacheMax=${config.cacheMaxBytes || 'off'} rootfsCow=${config.rootfsCow}`,
   )
-  gc = setInterval(() => {
-    // Safety net: SIGKILL any firecracker process orphaned by a failure/race
-    // path (the churn leak). Normally 0 — every failure path now stops its own
-    // VM — but this guarantees the host can't accumulate untracked FC processes.
+  // Single-flight: the sweep's teardown calls are child processes now (awaited,
+  // so they no longer block the loop and starve a boot's socket waiter), which
+  // means one sweep can outlive the interval. Two overlapping sweeps would
+  // reconcile the same orphans twice, so a tick that arrives mid-sweep is
+  // dropped and the next one picks it up.
+  let sweeping = false
+  const sweep = async (): Promise<void> => {
+    if (sweeping) return
+    sweeping = true
     try {
-      pool.reapOrphanProcs()
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
-    }
-    // Reclaim leaked tap devices, which each hold a /30 out of a finite space
-    // (16384 per host). Runs before the disk GC because exhausting it fails
-    // every new VM outright, and it fills silently.
-    try {
-      pool.reapOrphanTaps()
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-tap reap error:', err?.message ?? err)
-    }
-    // Reclaim leaked dm devices / loops / CoW files from teardown races (bounded
-    // per sweep so a large backlog drains gradually without stalling the timer).
-    try {
-      const n = pool.reconcileOrphanDevices()
-      if (n) console.log(`[metal-agent] reconciled ${n} orphaned dm device(s)/CoW`)
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-device reconcile error:', err?.message ?? err)
-    }
-    pool.gcSweep().then(
-      (report) => {
+      // Safety net: SIGKILL any firecracker process orphaned by a failure/race
+      // path (the churn leak). Normally 0 — every failure path now stops its own
+      // VM — but this guarantees the host can't accumulate untracked FC processes.
+      try {
+        pool.reapOrphanProcs()
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
+      }
+      // Reclaim leaked tap devices, which each hold a /30 out of a finite space
+      // (16384 per host). Runs before the disk GC because exhausting it fails
+      // every new VM outright, and it fills silently.
+      try {
+        await pool.reapOrphanTaps()
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-tap reap error:', err?.message ?? err)
+      }
+      // Reclaim leaked dm devices / loops / CoW files from teardown races
+      // (bounded per sweep so a large backlog drains gradually without stalling
+      // the timer).
+      try {
+        const n = await pool.reconcileOrphanDevices()
+        if (n) console.log(`[metal-agent] reconciled ${n} orphaned dm device(s)/CoW`)
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-device reconcile error:', err?.message ?? err)
+      }
+      try {
+        const report = await pool.gcSweep()
         for (const id of report.evicted) reportPlacement(report.durableRemoved.includes(id) ? 'cold' : 'evicted', id)
         // Same shape as an LRU eviction from the registry's point of view: the
         // local copy is gone, the durable one is not. Told promptly so routing
         // stops preferring this host for a snapshot it can no longer restore.
         for (const id of report.staleReclaimed) reportPlacement('evicted', id)
-      },
-      (err) => console.error('[metal-agent] gc error:', err?.message ?? err),
-    )
+      } catch (err: any) {
+        console.error('[metal-agent] gc error:', err?.message ?? err)
+      }
+    } finally {
+      sweeping = false
+    }
+  }
+  gc = setInterval(() => {
+    void sweep().catch((err: any) => console.error('[metal-agent] gc sweep error:', err?.message ?? err))
   }, config.gcIntervalMs)
 }
 
@@ -683,6 +800,7 @@ process.on('SIGTERM', async () => {
   stopRegistration()
   serialWatcher?.stop()
   reaper?.stop()
+  reclaimLoop?.stop()
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
   projectDataExporter?.stop()

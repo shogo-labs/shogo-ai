@@ -1741,67 +1741,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
-   * Build a merged security policy for a project runtime (local mode only).
-   * Reads user-level preference from LocalConfig and project-level overrides
-   * from Project.settings, merges with escalation protection, and returns
-   * a base64-encoded JSON string for the SECURITY_POLICY env var.
-   */
-  private async buildSecurityPolicy(projectId: string): Promise<string | null> {
-    try {
-      const { prisma } = await import('../prisma')
-      const localDb = prisma as any
-
-      const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
-
-      // Read user-level preference
-      let userPref = DEFAULT_PREF
-      try {
-        const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
-        if (row?.value) {
-          userPref = { ...DEFAULT_PREF, ...JSON.parse(row.value) }
-        }
-      } catch { /* use default */ }
-
-      // Read project-level override
-      let projectOverride: any = null
-      try {
-        const project = await prisma.project.findUnique({
-          where: { id: projectId },
-          select: { settings: true },
-        })
-        const settings = parseProjectSettings(project?.settings)
-        if (settings?.security) {
-          projectOverride = settings.security
-        }
-      } catch { /* no override */ }
-
-      // Merge with escalation protection; per-tool action rules always combine.
-      const { composeLocalPolicy, encodePolicy } = await import('../security-policy')
-      let effective = composeLocalPolicy(userPref, projectOverride)
-
-      // Desktop local-access policy (per-app data access, blocked folders,
-      // computer use). Not overridable per project.
-      try {
-        const accessRow = await localDb.localConfig.findUnique({ where: { key: 'LOCAL_ACCESS_PREFS' } })
-        if (accessRow?.value) {
-          const { normalizeLocalAccessPrefs, toLocalAccessPolicy } = await import(
-            '@shogo/agent-runtime/src/local-access'
-          )
-          effective = {
-            ...effective,
-            localAccess: toLocalAccessPolicy(normalizeLocalAccessPrefs(JSON.parse(accessRow.value))),
-          } as any
-        }
-      } catch { /* unconfigured: no local-access restrictions */ }
-
-      return encodePolicy(effective)
-    } catch (err) {
-      console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
-      return null
-    }
-  }
-
-  /**
    * Resolve the project-anchored spawn options for an anchor project: its
    * workspace id plus the current attachment / linked-folder / read-only
    * sets. Mirrors the lookup in `local-projects.ts:restartAnchorRuntime`
@@ -3824,6 +3763,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   /** Public status of a workspace runtime, or null when not running. */
   workspaceStatus(workspaceId: string): IProjectRuntime | null {
     return this.status(workspaceRuntimeKey(workspaceId))
+  }
+
+  /**
+   * The runtime currently serving workspace W, in whichever slot it lives.
+   *
+   * A workspace-level resolve that mounts nothing of its own is served by the
+   * workspace's *project-anchored* runtime (`ws:proj:<anchor>`, SHO-107), so
+   * asking only `ws:<id>` would answer "not running" for a workspace that is
+   * very much up. Synchronous on purpose: the tunnel resolver answers one
+   * request at a time and must never await a spawn (SHO-185).
+   */
+  runningWorkspaceRuntime(workspaceId: string): IProjectRuntime | null {
+    const direct = this.status(workspaceRuntimeKey(workspaceId))
+    if (direct?.agentPort && direct.status === 'running') return direct
+    for (const [key, owner] of this.runtimeOwners) {
+      if (!key.startsWith('ws:proj:') || owner.workspaceId !== workspaceId) continue
+      const anchored = this.status(key)
+      if (anchored?.agentPort && anchored.status === 'running') return anchored
+    }
+    return null
   }
 
   /**

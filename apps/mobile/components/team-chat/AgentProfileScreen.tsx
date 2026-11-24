@@ -6,7 +6,7 @@
  * Owners and workspace admins can change how the agent looks.
  */
 import { useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronLeft, FolderOpen, MessageSquare, Palette } from 'lucide-react-native'
@@ -19,6 +19,9 @@ import { AgentProfileBody, useAgentCard } from './AgentProfileBody'
 import { buddyAvatarColor } from './BuddyAvatar'
 import { useAgentLookEditor } from './useAgentLookEditor'
 import { openConversationTarget } from '../../lib/team-chat-nav'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 const SIDE_PANE_MIN_WIDTH = 1024
 
@@ -30,7 +33,9 @@ export function agentKeyProjectId(key: string | undefined): string | null {
 
 export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: string; agentKey: string | undefined }) {
   const router = useRouter()
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
   const projectId = agentKeyProjectId(agentKey)
   const { card, failed, toggleMute } = useAgentCard(workspaceId, projectId)
   const look = useAgentLook(workspaceId, projectId)
@@ -50,13 +55,20 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-background" testID="agent-profile-screen">
-      <View className="flex-row items-center px-2 py-2">
-        <Pressable onPress={goBack} accessibilityRole="button" accessibilityLabel="Back" className="rounded-lg p-2 active:bg-muted">
-          <ChevronLeft size={22} className="text-foreground" />
-        </Pressable>
-      </View>
-      <ScrollView contentContainerClassName="items-center px-5 pb-10">
+    <SafeAreaView className="flex-1 bg-background" testID="agent-profile-screen" edges={phone ? ['bottom'] : undefined}>
+      {phone ? (
+        <PhoneScreenHeader title={name} backLabel="Back" onBack={goBack} onLayout={header.onLayout} />
+      ) : (
+        <View className="flex-row items-center px-2 py-2">
+          <Pressable onPress={goBack} accessibilityRole="button" accessibilityLabel="Back" className="rounded-lg p-2 active:bg-muted">
+            <ChevronLeft size={22} className="text-foreground" />
+          </Pressable>
+        </View>
+      )}
+      <ScrollView
+        contentContainerClassName="items-center px-5 pb-10"
+        contentContainerStyle={phone ? { paddingTop: header.height } : undefined}
+      >
         <View className="w-full max-w-[560px] gap-5">
           <View className="items-center gap-2">
             <View style={{ width: 160, height: 160, alignItems: 'center', justifyContent: 'flex-end', overflow: 'visible' }}>
@@ -82,7 +94,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
             ) : null}
           </View>
 
-          {!card && !failed ? <ActivityIndicator /> : null}
+          {!card && !failed ? <Spinner /> : null}
           {failed ? <Text className="text-center text-sm text-muted-foreground">Couldn’t load this agent’s details.</Text> : null}
           {card ? (
             <View className="rounded-xl border border-border bg-card p-4">

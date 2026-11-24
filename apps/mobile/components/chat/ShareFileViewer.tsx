@@ -15,7 +15,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  ActivityIndicator,
   Image,
   Modal,
   Platform,
@@ -34,6 +33,9 @@ import { useResolvedTheme } from "../../contexts/theme"
 import { FileContentView, viewerPathKey } from "../files/FileContentView"
 import { blobMimeType, fileViewKind, type FileViewKind } from "../files/file-view-kind"
 import { FileTypeIcon } from "./FileTypeIcon"
+import { GlassButton } from "../team-chat/FloatingChrome"
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from "../layout/PhoneScreenHeader"
+import { Spinner } from '@/components/ui/spinner'
 
 export type ShareFileTarget = Pick<InAppFileRef, "href" | "name"> &
   Partial<Pick<InAppFileRef, "kind" | "path">>
@@ -68,9 +70,12 @@ export interface ShareFileViewProps {
   /** True inside the conversation's side pane, where the pane draws its own edges. */
   embedded?: boolean
   className?: string
+  /** Phone: a full-screen file sits under the DM's floating glass header. */
+  floating?: boolean
 }
 
-export function ShareFileView({ target, onClose, embedded = false, className }: ShareFileViewProps) {
+export function ShareFileView({ target, onClose, embedded = false, className, floating = false }: ShareFileViewProps) {
+  const header = usePhoneScreenHeaderInset()
   const [state, setState] = useState<ViewerState>({ status: "loading" })
   const [reloadKey, setReloadKey] = useState(0)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -102,8 +107,12 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
         // seeks included.
         const namedKind = fileViewKind(target.name, null)
         const streamsInPlace = namedKind === "video" || namedKind === "audio"
+        // Native never needs the bytes of anything but text: the blob below was
+        // only read for its size, and a 100 MB download buffered into the JS
+        // heap is the Android OOM / iOS watchdog kill (Sentry
+        // SHOGO-ANDROID-1K…1R, SHOGO-IOS-2).
         const nativeDocument =
-          Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")
+          Platform.OS !== "web" && namedKind !== "text" && namedKind !== "markdown"
         // Office files are never buffered here: the viewer buffers them itself,
         // under its own size cap, so a 300 MB file is refused before it lands
         // in memory (SHO-426 slides, SHO-467 documents).
@@ -279,6 +288,23 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
       }`}
       testID="share-file-view"
     >
+      {floating ? (
+        <PhoneScreenHeader
+          title={target.name}
+          subtitle={subtitle}
+          closeLabel="Close file"
+          closeTestID="share-file-close"
+          onClose={onClose}
+          onLayout={header.onLayout}
+          actions={
+            state.status === "ready" ? (
+              <GlassButton label={`Download ${target.name}`} onPress={() => void save()}>
+                <Download size={20} className="text-foreground" />
+              </GlassButton>
+            ) : null
+          }
+        />
+      ) : (
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
         <FileTypeIcon path={target.name} size={16} />
         <View className="min-w-0 flex-1">
@@ -326,7 +352,7 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
             testID="share-file-download"
             className="flex-row items-center gap-1 rounded-md px-2 py-1 hover:bg-muted active:opacity-70"
           >
-            {saving ? <ActivityIndicator size="small" /> : <Download size={14} className="text-muted-foreground" />}
+            {saving ? <Spinner size="small" /> : <Download size={14} className="text-muted-foreground" />}
             <Text className="text-[11px] text-muted-foreground">Download</Text>
           </Pressable>
         ) : null}
@@ -342,14 +368,16 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
           </Pressable>
         ) : null}
       </View>
+      )}
 
+      <View className="min-h-0 flex-1" style={floating ? { paddingTop: header.height } : undefined}>
       {saveError ? (
         <Text className="px-3 pt-2 text-[11px] text-destructive">{saveError}</Text>
       ) : null}
 
       {state.status === "loading" ? (
         <View className="flex-1 items-center justify-center py-8">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : null}
 
@@ -394,6 +422,7 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
           />
         </View>
       ) : null}
+      </View>
     </View>
   )
 }

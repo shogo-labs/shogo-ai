@@ -43,6 +43,12 @@ let isApplyingUpdate = false
 // Tracks a version the user dismissed in this session so we don't re-prompt
 // every probe interval. Cleared on app restart by design.
 let dismissedVersion: string | null = null
+/**
+ * Why the last user-started download failed, when it did (SHO-510). Sent with
+ * the status so the banner and Settings → Updates can show it beside the retry
+ * instead of bouncing silently from 'downloading' back to 'available'.
+ */
+let lastUpdateError: string | null = null
 let feedURL: string | null = null
 let userAgent: string | null = null
 let currentChannel: UpdateChannel = 'stable'
@@ -161,6 +167,7 @@ function broadcastUpdateStatus() {
     releaseName: updateReleaseName,
     availableVersion,
     channel: currentChannel,
+    error: lastUpdateError,
   }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('desktop-update-status', payload)
@@ -212,6 +219,7 @@ async function runProbe(): Promise<void> {
       console.log(`${TAG} Previously-available update is no longer offered — clearing banner`)
       currentStatus = 'idle'
       availableVersion = null
+      lastUpdateError = null
       broadcastUpdateStatus()
     }
     return
@@ -231,6 +239,7 @@ async function runProbe(): Promise<void> {
   console.log(`${TAG} Update available: ${offered ?? '(unnamed)'}`)
   currentStatus = 'available'
   availableVersion = offered
+  lastUpdateError = null
   broadcastUpdateStatus()
 }
 
@@ -278,6 +287,7 @@ export function initAutoUpdater(): void {
     releaseName: updateReleaseName,
     availableVersion,
     channel: currentChannel,
+    error: lastUpdateError,
   }))
 
   ipcMain.handle('get-update-channel', () => ({ channel: currentChannel }))
@@ -297,6 +307,7 @@ export function initAutoUpdater(): void {
     availableVersion = null
     updateReleaseName = null
     dismissedVersion = null
+    lastUpdateError = null
     applyFeedForChannel(next)
     broadcastUpdateStatus()
     void runProbe()
@@ -305,6 +316,11 @@ export function initAutoUpdater(): void {
 
   ipcMain.handle('check-for-updates', () => {
     console.log(`${TAG} Manual update check requested`)
+    // Asking explicitly overrides a "not now" from this session, so the same
+    // version comes back with a Download button on Settings → Updates (SHO-510).
+    // The background interval probe still respects the dismissal.
+    dismissedVersion = null
+    lastUpdateError = null
     void runProbe()
     return { ok: true }
   })
@@ -315,6 +331,7 @@ export function initAutoUpdater(): void {
       return { ok: false, error: `not available (status=${currentStatus})` }
     }
     console.log(`${TAG} User opted in — starting download`)
+    lastUpdateError = null
     // Squirrel's checkForUpdates() is the only way to kick off the download;
     // it will fire 'update-available' immediately (since we already know one
     // is) and then 'update-downloaded' when the bits are on disk.
@@ -330,6 +347,7 @@ export function initAutoUpdater(): void {
     console.log(`${TAG} User dismissed update ${dismissedVersion ?? '(unnamed)'} for this session`)
     currentStatus = 'idle'
     availableVersion = null
+    lastUpdateError = null
     broadcastUpdateStatus()
     return { ok: true }
   })
@@ -398,6 +416,7 @@ export function initAutoUpdater(): void {
   autoUpdater.on('update-available', () => {
     console.log(`${TAG} Update available — downloading…`)
     currentStatus = 'downloading'
+    lastUpdateError = null
     broadcastUpdateStatus()
   })
 
@@ -406,6 +425,7 @@ export function initAutoUpdater(): void {
     if (currentStatus === 'available') {
       currentStatus = 'idle'
       availableVersion = null
+      lastUpdateError = null
       broadcastUpdateStatus()
     }
   })
@@ -415,6 +435,7 @@ export function initAutoUpdater(): void {
     console.log(`${TAG} Update downloaded: ${displayName}`)
     currentStatus = 'ready'
     updateReleaseName = displayName
+    lastUpdateError = null
     broadcastUpdateStatus()
   })
 
@@ -437,8 +458,12 @@ export function initAutoUpdater(): void {
 
     // If the user-initiated download failed, return the banner to the
     // 'available' state so they can retry instead of being stuck on the
-    // 'downloading' spinner forever.
+    // 'downloading' spinner forever — and say why (SHO-510).
     if (currentStatus === 'downloading') {
+      lastUpdateError =
+        msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')
+          ? 'Could not reach the update server — check your connection and try again.'
+          : 'The download did not finish — try again.'
       currentStatus = 'available'
       broadcastUpdateStatus()
     }

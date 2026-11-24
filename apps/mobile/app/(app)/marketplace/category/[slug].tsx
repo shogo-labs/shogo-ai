@@ -8,7 +8,6 @@ import {
   Pressable,
   ScrollView,
   FlatList,
-  ActivityIndicator,
   Platform,
   useWindowDimensions,
 } from 'react-native'
@@ -28,6 +27,7 @@ import {
 import { findCategory } from '@shogo/shared-app'
 import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../../hooks/useGridColumns'
 import { overlayScrollbarProps } from '../../../../lib/overlay-scrollbar'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ListingFromAPI {
   id: string
@@ -185,7 +185,7 @@ export default observer(function CategoryLandingScreen() {
       <View className="flex-1 bg-background">
         <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
           <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-            <ArrowLeft size={20} color="#71717a" />
+            <ArrowLeft className="text-muted-foreground" size={20} />
           </Pressable>
         </View>
         <View className="flex-1 items-center justify-center px-6">
@@ -228,7 +228,7 @@ export default observer(function CategoryLandingScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back to marketplace"
         >
-          <ArrowLeft size={20} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={20} />
         </Pressable>
         <View className="flex-1 min-w-0">
           {isWide && (
@@ -386,14 +386,14 @@ export default observer(function CategoryLandingScreen() {
         ListFooterComponent={
           loadingMore ? (
             <View className="py-4 items-center">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : null
         }
         ListEmptyComponent={
           !loading ? (
             <View className="items-center py-20 px-6">
-              <Search size={32} color="#a1a1aa" />
+              <Search className="text-muted-foreground" size={32} />
               <Text className="text-foreground font-medium mt-3 mb-1">
                 {error ? error : `No ${category.label} agents yet`}
               </Text>
@@ -415,7 +415,7 @@ export default observer(function CategoryLandingScreen() {
             </View>
           ) : (
             <View className="items-center py-12">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           )
         }
