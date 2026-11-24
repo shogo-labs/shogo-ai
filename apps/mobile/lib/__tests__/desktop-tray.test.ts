@@ -7,7 +7,7 @@
  *   bun test apps/mobile/lib/__tests__/desktop-tray.test.ts
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from 'bun:test'
 import {
   TRAY_MAX_GROUPS,
   TRAY_MAX_ROWS_PER_GROUP,
@@ -16,6 +16,12 @@ import {
   type TrayModelInput,
   type TrayRecentChat,
 } from '../desktop-tray'
+
+// Every fixture is dated 2026-11-24 and only compared with the other fixtures;
+// pin "now" to that day so no assertion can end up reading a wall clock that
+// has drifted past its seeds.
+beforeAll(() => setSystemTime(new Date('2026-11-24T12:00:00Z')))
+afterAll(() => setSystemTime())
 
 function input(overrides: Partial<TrayModelInput> = {}): TrayModelInput {
   return {
