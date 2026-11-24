@@ -73,13 +73,13 @@ const host = (tag: string) => (props: any) => {
     className,
     style,
     onPointerDown,
-    onDoubleClick,
     onPointerEnter,
     onPointerLeave,
   } = props
   // The right-hand panes carry their width in `style`, which a DOM host would
-  // otherwise drop — publish it so a test can read the pane's width. The
-  // resize handle's drag and reset handlers are plain web events on a View.
+  // otherwise drop — publish it so a test can read the pane's width. Only the
+  // pointer handlers react-native-web actually forwards to the DOM are copied
+  // across, so the harness can never stand in for a prop the browser drops.
   const width = Array.isArray(style) ? undefined : style?.width
   return createElement(
     tag,
@@ -89,7 +89,6 @@ const host = (tag: string) => (props: any) => {
       className,
       "data-width": typeof width === "number" ? String(width) : undefined,
       onPointerDown,
-      onDoubleClick,
       onPointerEnter,
       onPointerLeave,
     },
@@ -549,11 +548,33 @@ test("a saved width never squeezes the chat below 480px", async () => {
 test("double-clicking the handle restores the 45% default", async () => {
   safeSetItem("shogo.workspaceChat.projectPaneWidth", "560")
   await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
 
-  fireEvent.doubleClick(within(paneHost()).getByLabelText("Resize panel"))
+  // A click is a press released in place, and two of those in a row is the
+  // double-click the handle has to recognise itself: react-native-web never
+  // delivers `dblclick` to a View, and the drag overlay takes the pointerup
+  // that would make the browser count a second `click`.
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerUp(document)
+  fireEvent.pointerDown(handle, { clientX: 900 })
 
   expect(paneHost().getAttribute("data-width")).toBe("648")
   expect(safeGetItem("shogo.workspaceChat.projectPaneWidth")).toBeNull()
+})
+
+test("a drag released in place is not the first half of a double-click", async () => {
+  await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
+
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerMove(document, { clientX: 800 })
+  fireEvent.pointerUp(document)
+  expect(paneHost().getAttribute("data-width")).toBe("748")
+
+  // Pressing again straight after a drag starts a new drag, it does not reset.
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerUp(document)
+  expect(paneHost().getAttribute("data-width")).toBe("748")
 })
 
 afterEach(() => {

@@ -19,6 +19,9 @@ import { safeGetItem, safeRemoveItem, safeSetItem } from '../../lib/safe-storage
  */
 export const SIDE_PANE_CHAT_MIN_WIDTH = 480
 
+/** A press this soon after a click on the handle is the second half of a double-click. */
+const DOUBLE_CLICK_MS = 350
+
 export function clampSidePaneWidth(value: number, minWidth: number, maxWidth: number): number {
   const upper = Math.max(minWidth, maxWidth)
   return Math.round(Math.min(upper, Math.max(minWidth, value)))
@@ -87,6 +90,9 @@ export function SidePaneResizeHandle({
   const [hovered, setHovered] = useState(false)
   const latestWidthRef = useRef(width)
   const stopDrag = useRef<(() => void) | null>(null)
+  // When the last press on the handle was released without moving.
+  const lastClickAtRef = useRef(0)
+  const movedRef = useRef(false)
   latestWidthRef.current = width
 
   useEffect(() => () => stopDrag.current?.(), [])
@@ -94,6 +100,18 @@ export function SidePaneResizeHandle({
   const handlePointerDown = useCallback(
     (e: ReactPointerEvent) => {
       e.preventDefault()
+      // react-native-web forwards no `onDoubleClick` to the DOM, and the drag
+      // overlay below takes the pointerup, so the browser never counts the
+      // second `click` either. Count the presses here instead: a press that
+      // arrives this soon after a click (a press released in place) is the
+      // second half of a double-click.
+      const pressedAt = Date.now()
+      if (pressedAt - lastClickAtRef.current < DOUBLE_CLICK_MS) {
+        onReset()
+        return
+      }
+      lastClickAtRef.current = 0
+      movedRef.current = false
       const startX = e.clientX
       const startWidth = width
       setDragging(true)
@@ -108,6 +126,7 @@ export function SidePaneResizeHandle({
       document.body.style.userSelect = 'none'
 
       const onPointerMove = (ev: PointerEvent) => {
+        movedRef.current = true
         const next = clampSidePaneWidth(startWidth + (startX - ev.clientX), minWidth, maxWidth)
         latestWidthRef.current = next
         onResize(next)
@@ -120,13 +139,19 @@ export function SidePaneResizeHandle({
         document.body.style.userSelect = ''
         overlay.remove()
         setDragging(false)
+        // A press released in place is a click — remember it so the next press
+        // can be recognised as a double-click — and a click is not a resize.
+        if (!movedRef.current) {
+          lastClickAtRef.current = Date.now()
+          return
+        }
         onResizeEnd(latestWidthRef.current)
       }
       stopDrag.current = onPointerUp
       document.addEventListener('pointermove', onPointerMove)
       document.addEventListener('pointerup', onPointerUp)
     },
-    [width, minWidth, maxWidth, onResize, onResizeEnd],
+    [width, minWidth, maxWidth, onResize, onResizeEnd, onReset],
   )
 
   if (Platform.OS !== 'web') return null
@@ -137,7 +162,6 @@ export function SidePaneResizeHandle({
       accessibilityLabel="Resize panel"
       // @ts-expect-error web-only event handlers
       onPointerDown={handlePointerDown}
-      onDoubleClick={onReset}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       style={{
