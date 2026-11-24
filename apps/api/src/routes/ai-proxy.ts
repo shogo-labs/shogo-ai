@@ -6479,14 +6479,32 @@ export function aiProxyRoutes() {
     // One entitlement resolution per request, and only for a model that needs
     // it: `hasAdvancedModelAccess` is workspace-wide, so it is memoised here
     // rather than consulted once per model id.
+    //
+    // The promise is what gets memoised, not its result. The list below is built
+    // with `Promise.all`, so every model starts its accessibility check before
+    // the first lookup settles; assigning the resolved value (`??= await …`)
+    // therefore left `advancedAccess` undefined for all of them and issued one
+    // query per model — 13 per `GET /v1/models`, ~5,900 s/day of DB time.
     let advancedAccess: boolean | undefined
+    let advancedAccessLookup: Promise<boolean> | undefined
+    const resolveAdvancedAccess = (): Promise<boolean> => {
+      if (advancedAccess !== undefined) return Promise.resolve(advancedAccess)
+      advancedAccessLookup ??= billingService.hasAdvancedModelAccess(tokenPayload.workspaceId).then(
+        (granted) => {
+          advancedAccess = granted
+          return granted
+        },
+        (error) => {
+          advancedAccessLookup = undefined
+          throw error
+        },
+      )
+      return advancedAccessLookup
+    }
     const isAccessible = (id: string): Promise<boolean> =>
       isModelAccessibleForWorkspace(tokenPayload.workspaceId, id, {
         advancedAccess,
-        resolveAdvancedAccess: async () => {
-          advancedAccess ??= await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
-          return advancedAccess
-        },
+        resolveAdvancedAccess,
       })
 
     const models = [
