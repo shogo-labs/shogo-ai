@@ -34,6 +34,7 @@ import {
 import type { BottomTabId } from "@shogo/shared-app";
 import { chatColumn } from "../../lib/chat-column";
 import { settingsTargetFor } from "../../lib/bottom-nav-settings";
+import { projectSurfaceRoute } from "../../lib/project-surface-route";
 import { nativeComposerKeyboardOpenFromSource } from "../../lib/native-composer-keyboard";
 import {
   nativeComposerKeyboardOverlapFromEvent,
@@ -214,6 +215,8 @@ export function MobileBottomNav() {
       if (tab === "canvas" || tab === "external-preview" || tab === "app-preview")
         return "canvas";
       if (tab === "files" || tab === "plans") return tab;
+      // A project's settings surface is the ⚙️ tab's destination, so it stays lit there.
+      if (tab === "settings") return "more";
       return "chat";
     }
     if (pathname.includes("/tasks")) return "tasks";
@@ -282,15 +285,7 @@ export function MobileBottomNav() {
 
   const openProjectSurface = (tab: "canvas" | "files" | "plans") => {
     if (!activeProjectId) return;
-    router.replace({
-      pathname: "/(app)/project-surface/[id]" as any,
-      params: {
-        id: activeProjectId,
-        ...(chatSessionId ? { chatSessionId } : {}),
-        surface: tab,
-        navTab: tab,
-      },
-    } as any);
+    router.replace(projectSurfaceRoute(activeProjectId, tab, { chatSessionId }) as any);
   };
 
   const taskItem = {
