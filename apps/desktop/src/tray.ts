@@ -51,8 +51,6 @@ let model: TrayModel = EMPTY_TRAY_MODEL
 let icons: TrayIcons = { running: null, needsYou: null, newReply: null }
 let lastTemplateSignature: string | null = null
 let lastTemplate: MenuItemConstructorOptions[] = []
-/** Last read of the "Show Count" setting, so a title tick never touches disk. */
-let showCount = true
 /** The 1 s tick that keeps the recording timer live. Only runs while recording. */
 let titleTimer: ReturnType<typeof setInterval> | null = null
 
@@ -99,8 +97,13 @@ function statusBarImage(recording: boolean): NativeImage {
   if (cached) return cached
   const name = recording ? 'trayRecording.png' : process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png'
   const image = loadTrayImage(name, !recording && process.platform === 'darwin') ?? nativeImage.createEmpty()
-  if (recording) statusIcons.recording = image
-  else statusIcons.idle = image
+  // Never cache an empty image: a missing or unreadable asset on the first
+  // build would otherwise leave the menu bar blank for the rest of the session,
+  // retried on every rebuild instead.
+  if (!image.isEmpty()) {
+    if (recording) statusIcons.recording = image
+    else statusIcons.idle = image
+  }
   return image
 }
 
@@ -184,7 +187,9 @@ function refreshTitle(): void {
     return
   }
   stopTitleTimer()
-  const count = showCount ? model.attentionCount : 0
+  // Read the setting rather than remembering it: it can be changed from
+  // Settings in another window, and the title must follow without a rebuild.
+  const count = readConfig().tray.showCount ? model.attentionCount : 0
   tray.setTitle(count > 0 ? String(count) : '')
   tray.setToolTip(count > 0 ? `Shogo — ${count} waiting` : 'Shogo')
 }
@@ -212,7 +217,6 @@ function rebuild(opts: { force?: boolean } = {}): void {
   tray.setImage(statusBarImage(status.isRecording))
 
   const menu = menuOptions()
-  showCount = menu.showCount
   const template = buildTrayMenuTemplate(menu)
   const signature = describeTrayMenuTemplate(template).join('\n')
   if (opts.force || signature !== lastTemplateSignature) {
