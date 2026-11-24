@@ -33,6 +33,9 @@ export const DEFAULT_ROLLBACK_RATE = 0.5
 export const WATCH_MARKER = 'ROOTFS_WATCH'
 export const PREV_MARKER = 'ROOTFS_PREV'
 export const BAD_MARKER = 'ROOTFS_BAD'
+export const FAILED_MARKER = 'ROOTFS_FAILED'
+/** Where the serial logs of a rolled-back generation's first failed boots are kept. */
+export const FAILED_DIR = 'rootfs-failed'
 /** The bad list is a diagnostic, not a ledger: the last N is plenty. */
 export const BAD_CAP = 20
 
@@ -57,6 +60,22 @@ export interface RootfsPrevious {
   /** Rootfs identities (snapshot-compatibility keys) of the outgoing images. */
   identities: { standard?: string; docker?: string }
   activatedAt: number
+}
+
+/**
+ * The generation a rollback took out of service, kept on disk for inspection
+ * (SHO-563). `.failed` is never booted by the pool and never a rollback target —
+ * it is evidence: the image that failed, its revision, why, and the guest serials
+ * of its first failed cold boots, so the next person can find out what actually
+ * happened instead of rebuilding from a commit and hoping.
+ */
+export interface RootfsFailed {
+  version: string
+  revision: string | null
+  reason: string
+  at: number
+  /** Copies of the first failed cold boots' serial logs, under `<agentDir>/rootfs-failed/`. */
+  serials: string[]
 }
 
 /** A generation proven not to boot, so it is never rebuilt or re-applied. */
@@ -145,6 +164,21 @@ export function clearPrevious(dir: string): void {
   clearMarker(dir, PREV_MARKER)
 }
 
+export function readFailed(dir: string): RootfsFailed | null {
+  const m = readJson<RootfsFailed>(dir, FAILED_MARKER)
+  return m && typeof m.version === 'string' && typeof m.at === 'number'
+    ? { ...m, serials: Array.isArray(m.serials) ? m.serials : [] }
+    : null
+}
+
+export function writeFailed(dir: string, failed: RootfsFailed): void {
+  writeJson(dir, FAILED_MARKER, failed)
+}
+
+export function clearFailed(dir: string): void {
+  clearMarker(dir, FAILED_MARKER)
+}
+
 export function readBadList(dir: string): BadRootfs[] {
   const m = readJson<BadRootfs[]>(dir, BAD_MARKER)
   return Array.isArray(m) ? m.filter((e) => e && typeof e.version === 'string') : []
@@ -176,6 +210,8 @@ export interface ColdBootEvent {
   at: number
   ok: boolean
   error?: string
+  /** The failed boot's serial log, kept so a rollback can preserve the evidence. */
+  serial?: string
 }
 
 /**
@@ -192,9 +228,28 @@ export class ColdBootLedger {
 
   constructor(private cap = 500) {}
 
-  record(ok: boolean, error?: string, at = Date.now()): void {
-    this.events.push({ at, ok, ...(ok ? {} : { error: error ?? 'unknown error' }) })
+  record(ok: boolean, error?: string, at = Date.now(), serial?: string): void {
+    this.events.push({
+      at,
+      ok,
+      ...(ok ? {} : { error: error ?? 'unknown error', ...(serial ? { serial } : {}) }),
+    })
     if (this.events.length > this.cap) this.events.splice(0, this.events.length - this.cap)
+  }
+
+  /**
+   * The serial logs of the first `limit` failed cold boots since `since` — the
+   * evidence a rollback copies off the host before the VMs' run files are
+   * cleaned up (SHO-563).
+   */
+  failedSerials(limit = 3, since = 0): string[] {
+    const out: string[] = []
+    for (const e of this.events) {
+      if (e.ok || e.at < since || !e.serial) continue
+      if (!out.includes(e.serial)) out.push(e.serial)
+      if (out.length >= limit) break
+    }
+    return out
   }
 
   reset(): void {

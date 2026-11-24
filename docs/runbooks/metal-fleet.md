@@ -412,9 +412,14 @@ of them leaves the live image in service:
    path after 3h. On a bad one it logs `REFUSING to activate rootfs …`, leaves
    the staged file for inspection, clears the staged marker so the next heartbeat
    rebuilds, and the host keeps serving its current image.
-4. `maybeActivateRootfs` boots a real throwaway VM from the staged image before
-   the swap (SHO-552). Gate 3 catches a missing init; this catches an init that
-   is present, executable, and still cannot serve a VM. On failure it logs
+4. `maybeActivateRootfs` boots real throwaway VMs from the staged image before
+   the swap (SHO-552, SHO-563). Gate 3 catches a missing init; this catches an
+   init that is present, executable, and still cannot serve a VM. It boots
+   `min(2, METAL_POOL_BOOT_CONCURRENCY)` VMs in parallel (the way the post-restart
+   fill boots them), provisions the standard image through the same dm snapshot
+   live will use, and holds each VM up for `METAL_ROOTFS_PROBE_HOLD_MS`
+   (default 30 s) after it first answers `/health` — an image that answers once
+   and then dies is a bad image. On failure it logs
    `REFUSING to activate rootfs … boot probe failed: …`, marks the version as
    bad so the next heartbeat does not rebuild the same broken release, and leaves
    the live image untouched.
@@ -502,6 +507,74 @@ To force a retry of a version on the bad list (after a fix is deployed):
 cat /opt/metal-agent/ROOTFS_BAD | jq 'map(select(.version != "v1.2.3"))' \
   | sudo tee /opt/metal-agent/ROOTFS_BAD
 ```
+
+### The generation a rollback removed is kept, and can be probed (SHO-563)
+
+A rollback used to destroy the only copy of the image that failed: `.prev` was
+renamed over `runtime.ext4` and the bad inode was gone. Staging lost the
+`d9b63a52` image that way on 2026-11-24, and the investigation had nothing to
+boot. Now the bad image is parked first:
+
+```
+/opt/metal-agent/runtime.ext4.failed           # the standard class
+/opt/metal-agent/docker-runtime.ext4.failed    # the docker class
+/opt/metal-agent/ROOTFS_FAILED                 # what it was and why
+/opt/metal-agent/rootfs-failed/*.serial        # first 3 failed cold boots' serials
+```
+
+`ROOTFS_FAILED` is JSON — `{version, revision, reason, at, serials[]}` — and is
+also reported as `rootfsFailed` by the admin status route:
+
+```bash
+curl -s http://<host>:9900/status | jq '.rootfsFailed'
+# {"version":"d9b63a5","revision":"d9b63a52","reason":"auto rollback: 8/8 cold boots failed (VM … exited before healthy (signal SIGKILL))","at":…,"serials":[…]}
+```
+
+At most one `.failed` exists per class: the next rollback replaces it, and an
+activation whose watch closes cleanly deletes it (it is a spare, not a
+generation). Under disk pressure it is the **first** thing dropped, before
+`.prev` — it is evidence, never a rollback target.
+
+Inspect it without activating it:
+
+```bash
+# What is inside (read-only, no mounts)?
+debugfs -R 'stat /usr/local/bin/fc-init' /opt/metal-agent/runtime.ext4.failed
+debugfs -R 'cat /etc/shogo-runtime-revision' /opt/metal-agent/runtime.ext4.failed
+
+# Boot it for real, in the class it failed in, and watch /health for 30 s.
+curl -sX POST http://<host>:9900/admin/probe-rootfs \
+  -d '{"image":"failed","vmClass":"standard"}'
+# {"ok":false,"error":"stopped answering /health inside the 30000ms hold window (signal SIGKILL 2.1s after spawn)","healthyAfterMs":812,"fcExit":{"code":null,"signal":"SIGKILL"},"serialTail":"…","heldMs":30000,"image":"/opt/metal-agent/runtime.ext4.failed"}
+```
+
+`image` is one of `live`, `prev`, `staged`, `failed`; `vmClass` is `standard`
+(default) or `docker`; `holdMs` defaults to `METAL_ROOTFS_PROBE_HOLD_MS`. The
+route boots real VMs and holds them, so it is slow by design. It never touches
+the live image, the pool, or the watch ledger, and it refuses (404) when the
+class holds no such image. `422` means the image booted and did not survive —
+which is the answer, not a bug.
+
+Delete it when you are done with it (or let the next rollback replace it):
+
+```bash
+systemctl stop metal-agent
+rm -f /opt/metal-agent/runtime.ext4.failed /opt/metal-agent/ROOTFS_FAILED
+rm -rf /opt/metal-agent/rootfs-failed
+systemctl start metal-agent
+```
+
+**A boot that never answers `/health` says how it died.** `exited before healthy`
+carries the firecracker exit code or signal and the guest's last serial line, so
+a host kill and a guest crash are distinguishable from the log alone:
+
+```
+VM fcvm-5-mwugbkru exited before healthy (signal SIGKILL 2.1s after spawn, last: [fc-init] workspace drive /dev/vdc mounted at /data)
+VM fcvm-6-mwugbkru exited before healthy (code 0 3.4s after spawn, last: Kernel panic - not syncing: …)
+```
+
+The `ROLLED BACK` line carries the same text as its `<top error>`, and the 20-line
+serial tail rides on the error for the caller.
 
 **Stale `*.bak` files.** Hosts that were manually recovered before SHO-552 may
 still have `runtime.ext4.bak` or similar files from July 2026. These are not

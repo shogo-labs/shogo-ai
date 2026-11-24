@@ -33,7 +33,7 @@ import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 import { hostFullness, resolveMemReserveMiB, selectEvictionVictim } from './evict'
 import { FcApi } from './fc-api'
-import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
+import { FirecrackerVMManager, readSerialTail, serialLastLine, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
@@ -94,8 +94,7 @@ import {
   type RepoManifestBundle,
   type RepoManifestLfsMissing,
 } from './vendor/repo-bundles'
-import { readSerialTail } from './serial-watcher'
-import { getRootfsPrev, getRootfsWatch, reportColdBoot, stagedRootfsPath } from './self-update'
+import { getRootfsPrev, getRootfsWatch, keptRootfsImage, reportColdBoot, stagedRootfsPath, type KeptImageName } from './self-update'
 import type { ArchiveRef } from './archive-ref'
 import { describeHomeStateArchive, uploadHomeStateGuarded } from './home-state-archive'
 
@@ -452,6 +451,30 @@ export interface PooledVm {
   handle: FcVmHandle
   ready: boolean
   createdAt: number
+  /** How long the guest took to answer /health after boot, for a probe's report. */
+  healthMs?: number
+}
+
+/** What a rootfs boot probe saw. `POST /admin/probe-rootfs` returns this shape. */
+export interface RootfsProbeResult {
+  ok: boolean
+  /** Why the probe failed, with the firecracker exit and the guest's last line. */
+  error: string | null
+  /** Time to the first healthy `/health`, or null when it never answered. */
+  healthyAfterMs: number | null
+  /** How the firecracker process ended, when it did. */
+  fcExit: { code: number | null; signal: string | null } | null
+  /** Last 20 serial lines of the probe VM. */
+  serialTail: string
+  /** How long the probe held the VM up after it answered /health. */
+  heldMs: number
+}
+
+export interface RootfsProbeOptions {
+  /** Override the hold window (METAL_ROOTFS_PROBE_HOLD_MS). */
+  holdMs?: number
+  /** Force the dm-snapshot boot path on or off (defaults per class, see probeBoot). */
+  dmBase?: boolean
 }
 
 /** `POST /status` body: the substrate contract fields plus what re-warm needs. */
@@ -1727,11 +1750,29 @@ export class MetalWarmPool {
   async waitForHealth(handle: FcVmHandle, isAlive: () => boolean): Promise<number> {
     const start = performance.now()
     for (let i = 0; i < this.cfg.healthRetries; i++) {
-      if (!isAlive()) throw new Error(`VM ${handle.id} exited before healthy`)
+      if (!isAlive()) throw this.diedError(handle)
       if (await probeHealth(handle.agentUrl, 500)) return performance.now() - start
       await Bun.sleep(this.cfg.healthIntervalMs)
     }
     throw new Error(`VM ${handle.id} never became healthy`)
+  }
+
+  /**
+   * The error for a VM whose firecracker process went away before it answered
+   * /health. It carries the FC exit code or signal (the host killed it, or the
+   * guest shut down) and the guest's own last serial line (the kernel or PID 1
+   * died), because "exited before healthy" alone cannot tell those apart — and
+   * telling them apart is the difference between a host bug and a bad image
+   * (SHO-563). The 20-line tail rides along on the error for the caller.
+   */
+  private diedError(handle: FcVmHandle): Error & { serialTail?: string } {
+    const last = serialLastLine(handle.serialLog)
+    const how = this.mgr.exitSummary(handle.id)
+    const err = new Error(
+      `VM ${handle.id} exited before healthy (${how}${last ? `, last: ${last}` : ''})`,
+    ) as Error & { serialTail?: string }
+    err.serialTail = readSerialTail(handle.serialLog, 20)
+    return err
   }
 
   /**
@@ -1746,6 +1787,7 @@ export class MetalWarmPool {
     vmClass: VmClass = 'standard',
     rootfsBase?: string,
     size?: { memoryMB?: number; cpus?: number },
+    opts: { dmBase?: boolean } = {},
   ): Promise<PooledVm> {
     // startVM resolves memory and vCPUs from the class's own config
     // (classConfig in config.ts) unless an assignment asked for a bigger VM.
@@ -1755,6 +1797,7 @@ export class MetalWarmPool {
       handle = await this.mgr.startVM({
         vmClass,
         ...(rootfsBase ? { rootfsBase } : {}),
+        ...(opts.dmBase ? { rootfsBaseBecomesClassBase: true } : {}),
         ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
         ...(size?.cpus ? { cpus: size.cpus } : {}),
       })
@@ -1766,39 +1809,134 @@ export class MetalWarmPool {
     // healthy is our responsibility to stop, or its FC process leaks (never
     // enters `available`/`assigned`, so nothing else would ever kill it).
     this.inFlight.add(handle.id)
+    let healthMs: number | undefined
     try {
-      await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+      healthMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
     } catch (err: any) {
       await this.mgr.stopVM(handle).catch(() => {})
-      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err))
+      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err), handle.serialLog)
       throw err
     } finally {
       this.inFlight.delete(handle.id)
     }
     if (fromLiveImage) reportColdBoot(true)
-    return { handle, ready: true, createdAt: Date.now() }
+    return { handle, ready: true, createdAt: Date.now(), healthMs: Math.round(healthMs ?? 0) }
   }
 
   /**
-   * Boot one VM from `rootfsBase` and stop it: the activation gate (SHO-552).
-   * Returns why the image could not serve a VM, or null when one became healthy.
+   * Boot VMs from `rootfsBase` and hold them: the activation gate (SHO-552,
+   * SHO-563). Returns why the image could not serve a VM, or null when every
+   * probe VM became healthy AND was still answering `/health` at the end of the
+   * hold window.
    *
    * This is the only check that proves an image works — the static probe only
-   * proves `/usr/local/bin/fc-init` is inside it. It uses the ordinary boot path
-   * and the normal health timeout (`healthRetries × healthIntervalMs`), so it
-   * sees exactly what a user's cold boot would have seen. It never enters
-   * `available`/`assigned` and is never reported to the watch: a probe that fails
-   * is already fatal on its own, and counting it twice would roll a good image
-   * back on its first activation. Never throws.
+   * proves `/usr/local/bin/fc-init` is inside it. Three things make it boot the
+   * way production boots:
+   *
+   *   1. `dmBase` provisions the rootfs through the same dm snapshot live will
+   *      use once the staged file is renamed into place. Before SHO-563 this
+   *      booted a full COPY of the staged image, which is a different boot path
+   *      from every live VM (provisionDm → a loop of the base) and could pass
+   *      while live failed.
+   *   2. `min(2, poolBootConcurrency)` VMs boot in parallel, the way the
+   *      post-restart fill boots them, so a race that only shows up in a group
+   *      is exercised.
+   *   3. The hold window (`METAL_ROOTFS_PROBE_HOLD_MS`): an image that answers
+   *      /health and then dies is a bad image, and a probe that stops at the
+   *      first 200 OK scores it healthy. The VM must still be alive and
+   *      answering at the end of the hold.
+   *
+   * A probe never enters `available`/`assigned` and is never reported to the
+   * watch: a probe that fails is already fatal on its own, and counting it twice
+   * would roll a good image back on its first activation. Never throws.
    */
-  async probeBoot(vmClass: VmClass, rootfsBase: string): Promise<string | null> {
+  async probeBoot(vmClass: VmClass, rootfsBase: string, opts: RootfsProbeOptions = {}): Promise<RootfsProbeResult> {
+    const parallelism = Math.max(1, Math.min(2, this.cfg.poolBootConcurrency))
+    const holdMs = opts.holdMs ?? this.cfg.rootfsProbeHoldMs
+    // dm mode snapshots the standard golden base and copies the docker one, so a
+    // probe must use the same strategy per class to be a probe of the live path.
+    const dmBase = opts.dmBase ?? vmClass === 'standard'
+    const results = await Promise.all(
+      Array.from({ length: parallelism }, () => this.probeOne(vmClass, rootfsBase, holdMs, dmBase)),
+    )
+    const failed = results.find((r) => !r.ok)
+    if (failed) return failed
+    const healthy = results
+      .map((r) => r.healthyAfterMs ?? 0)
+      .sort((a, b) => b - a)[0] ?? 0
+    return { ok: true, error: null, healthyAfterMs: healthy, fcExit: null, serialTail: '', heldMs: holdMs }
+  }
+
+  /** One probe VM: boot → healthy → hold → still healthy → stop. Never throws. */
+  private async probeOne(
+    vmClass: VmClass,
+    rootfsBase: string,
+    holdMs: number,
+    dmBase: boolean,
+  ): Promise<RootfsProbeResult> {
+    let vm: PooledVm | null = null
     try {
-      const vm = await this.bootOne(false, vmClass, rootfsBase)
-      await this.mgr.stopVM(vm.handle).catch(() => {})
-      return null
+      vm = await this.bootOne(false, vmClass, rootfsBase, undefined, { dmBase })
+      const handle = vm.handle
+      const healthyAfterMs = vm.healthMs ?? 0
+      // The hold: the whole point. An image that answers once and dies is a bad
+      // image, and a user's next cold boot is the one that finds out.
+      const deadline = Date.now() + holdMs
+      while (Date.now() < deadline) {
+        await Bun.sleep(Math.min(500, Math.max(0, deadline - Date.now())))
+        if (!this.mgr.isRunning(handle)) {
+          return this.probeFailure(handle, healthyAfterMs, holdMs, `died inside the ${holdMs}ms hold window`)
+        }
+        if (!(await probeHealth(handle.agentUrl, 2000))) {
+          return this.probeFailure(handle, healthyAfterMs, holdMs, `stopped answering /health inside the ${holdMs}ms hold window`)
+        }
+      }
+      return { ok: true, error: null, healthyAfterMs, fcExit: null, serialTail: '', heldMs: holdMs }
     } catch (err: any) {
-      return err?.message ?? String(err)
+      const handle = vm?.handle
+      if (!handle) {
+        return { ok: false, error: err?.message ?? String(err), healthyAfterMs: null, fcExit: null, serialTail: '', heldMs: holdMs }
+      }
+      return this.probeFailure(handle, null, holdMs, err?.message ?? String(err))
+    } finally {
+      if (vm) await this.mgr.stopVM(vm.handle).catch(() => {})
     }
+  }
+
+  private probeFailure(handle: FcVmHandle, healthyAfterMs: number | null, heldMs: number, why: string): RootfsProbeResult {
+    const exit = this.mgr.procExit(handle.id)
+    console.error(`[pool] rootfs probe VM ${handle.id} failed: ${why} (${this.mgr.exitSummary(handle.id)})`)
+    return {
+      ok: false,
+      error: `${why} (${this.mgr.exitSummary(handle.id)})`,
+      healthyAfterMs,
+      fcExit: exit ? { code: exit.code, signal: exit.signal } : null,
+      serialTail: readSerialTail(handle.serialLog, 20),
+      heldMs,
+    }
+  }
+
+  /**
+   * Probe one kept image on demand: `live`, `prev`, `staged` or `failed` (see
+   * `keptRootfsImage`). Reuses the activation probe, never touches the live
+   * image, the pool or the watch ledger — the operator route behind it is
+   * `POST /admin/probe-rootfs`.
+   */
+  async probeKeptRootfs(name: KeptImageName, vmClass: VmClass, holdMs?: number): Promise<RootfsProbeResult & { image: string | null }> {
+    const image = keptRootfsImage(name, vmClass)
+    if (!image) {
+      return {
+        ok: false,
+        error: `no ${name} image for the ${vmClass} class on this host`,
+        healthyAfterMs: null,
+        fcExit: null,
+        serialTail: '',
+        heldMs: holdMs ?? this.cfg.rootfsProbeHoldMs,
+        image: null,
+      }
+    }
+    const res = await this.probeBoot(vmClass, image, { holdMs })
+    return { ...res, image }
   }
 
   /**
@@ -2063,7 +2201,14 @@ export class MetalWarmPool {
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
     }
-    const reaped = this.mgr.reapHostOrphans(adoptedIds)
+    // Every id the pool owns, not just the adopted ones: a fill that started
+    // while these health probes were running (a claim, the reaper tick's
+    // `reconcile`) has already spawned warm VMs, and they are in neither the live
+    // registry nor `adoptedIds`. Killing those is how one activation restart on
+    // staging made 8/8 cold boots fail and rolled a good image back (SHO-563).
+    const keep = this.liveHandleIds()
+    for (const id of adoptedIds) keep.add(id)
+    const reaped = this.mgr.reapHostOrphans(keep)
     if (adoptedProjects.length) {
       console.log(`[pool] adopted ${adoptedProjects.length} live microVM(s) across restart: ${adoptedProjects.join(', ')}`)
     }

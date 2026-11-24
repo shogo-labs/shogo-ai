@@ -24,7 +24,18 @@
 
 import { spawn, spawnSync } from 'child_process'
 import { createHash } from 'crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config, type VmClass } from './config'
@@ -34,19 +45,24 @@ import { metrics, M } from './metrics'
 import { computeRootfsIdentity } from './snapshot-store'
 import {
   ColdBootLedger,
+  FAILED_DIR,
   addBadRootfs as addToBadList,
+  clearFailed,
   clearPrevious,
   clearWatch,
   findBadRootfs,
   latestBadRootfs,
   readBadList,
+  readFailed,
   readPrevious,
   readWatch,
   rollbackDecision,
   writeBadList,
+  writeFailed,
   writePrevious,
   writeWatch,
   type BadRootfs,
+  type RootfsFailed,
   type RootfsPrevious,
   type RootfsWatch,
 } from './rootfs-rollback'
@@ -248,9 +264,46 @@ function clearRootfsMarker(): void {
 // one disk where space is the failure mode.
 
 export const PREV_SUFFIX = '.prev'
+export const FAILED_SUFFIX = '.failed'
 
 export function prevRootfsPath(base: string): string {
   return `${base}${PREV_SUFFIX}`
+}
+
+/**
+ * Where a rolled-back generation is parked for inspection (SHO-563). `.prev` has
+ * to take the live name again, so the image that failed moves here instead of
+ * being destroyed by the rename — the one thing SHO-552 got wrong, and the
+ * reason this incident could not be diagnosed from the artifact itself.
+ */
+export function failedRootfsPath(base: string): string {
+  return `${base}${FAILED_SUFFIX}`
+}
+
+/** The generation a rollback took out of service, with its serials (SHO-563). */
+export function getRootfsFailed(): RootfsFailed | null {
+  return readFailed(config.agentDir)
+}
+
+/** Which class base `vmClass` boots from (the docker class may be unconfigured). */
+export function classBaseRootfs(vmClass: VmClass): string {
+  return vmClass === 'docker' ? config.dockerClass.baseRootfs || config.baseRootfs : config.baseRootfs
+}
+
+export type KeptImageName = 'live' | 'prev' | 'staged' | 'failed'
+
+/**
+ * A kept image by role, for `POST /admin/probe-rootfs`. `null` when this host
+ * does not hold that image for the class — never a path to something that is not
+ * there, so the operator gets "no failed image" rather than a boot error about a
+ * missing file.
+ */
+export function keptRootfsImage(name: KeptImageName, vmClass: VmClass = 'standard'): string | null {
+  const base = classBaseRootfs(vmClass)
+  if (!base) return null
+  const path =
+    name === 'live' ? base : name === 'prev' ? prevRootfsPath(base) : name === 'staged' ? stagedRootfsPath(base) : failedRootfsPath(base)
+  return existsSync(path) ? path : null
 }
 
 /** The generation an activation displaced (see `RootfsPrevious`). */
@@ -289,35 +342,42 @@ export function markRootfsBad(
  */
 export const coldBoots = new ColdBootLedger()
 
-export function reportColdBoot(ok: boolean, error?: string): void {
-  coldBoots.record(ok, error)
+export function reportColdBoot(ok: boolean, error?: string, serial?: string): void {
+  coldBoots.record(ok, error, Date.now(), serial)
 }
 
 /**
- * The last resort before a rebuild: delete the spare generation so the pull and
+ * The last resort before a rebuild: delete the spare generations so the pull and
  * the build have room. Only ever called when the disk is still over the GC
  * threshold with every other image already collected, and NEVER while a watch is
  * open — then `.prev` is the only image a rollback could restore. Failure here is
  * a log line, never a failed build: a host that cannot free the space is exactly
  * the host that must not skip its rootfs rebuild silently.
+ *
+ * Order matters: the failed generation goes FIRST, in every case including inside
+ * a watch. It is evidence, never a rollback target, so it is the cheapest thing
+ * to lose — and keeping 20 GB of a bad image on the disk whose being full is what
+ * kills the host is not a trade worth making (SHO-563).
  */
-function dropPreviousGeneration(usedPct: number): void {
-  if (getRootfsWatch()) return
+export function dropSpareGenerations(usedPct: number): void {
   const bases = [config.baseRootfs, config.dockerClass.baseRootfs].filter((b): b is string => !!b)
-  for (const base of bases) {
-    const prev = prevRootfsPath(base)
-    if (!existsSync(prev)) continue
+  const drop = (path: string, label: string): void => {
+    if (!existsSync(path)) return
     try {
-      const gb = statSync(prev).size / 1e9
-      rmSync(prev, { force: true })
+      const gb = statSync(path).size / 1e9
+      rmSync(path, { force: true })
       console.warn(
-        `[self-update] dropped ${prev} (${gb.toFixed(1)}GB): root disk at ${usedPct.toFixed(0)}% ` +
-          `after image GC and no rootfs watch is open — no rollback target until the next activation`,
+        `[self-update] dropped ${path} (${gb.toFixed(1)}GB, ${label}): root disk at ${usedPct.toFixed(0)}% ` +
+          'after image GC — the newest rollback target is untouched',
       )
     } catch (err: any) {
-      console.warn(`[self-update] could not drop ${prev}:`, err?.message ?? err)
+      console.warn(`[self-update] could not drop ${path}:`, err?.message ?? err)
     }
   }
+  for (const base of bases) drop(failedRootfsPath(base), 'failed generation')
+  clearFailed(config.agentDir)
+  if (getRootfsWatch()) return
+  for (const base of bases) drop(prevRootfsPath(base), 'previous generation')
   clearPrevious(config.agentDir)
 }
 
@@ -748,13 +808,16 @@ export interface RollbackResult {
 }
 
 /**
- * Put the previous generation back and delete the one that failed (SHO-552).
+ * Put the previous generation back and KEEP the one that failed (SHO-552, SHO-563).
  *
- * The bad image is dropped rather than kept: `.prev` is the only spare the host
- * has room for, and after a rollback it has to hold the image that works. So the
- * rename over `base` destroys the bad inode, the marker goes back to the version
- * that was serving, and the bad list keeps its revision so no later heartbeat
- * rebuilds it.
+ * SHO-552 dropped the bad image because `.prev` is the only spare the host has
+ * room for. The 2026-11-24 staging incident showed that was the wrong trade: the
+ * rename destroyed the only artifact that could say why every cold boot died, so
+ * the investigation had to start from a serial log and a commit. The bad base is
+ * now renamed to `<base>.failed` (one per class, replaced by the next rollback and
+ * deleted when a watch passes) and `ROOTFS_FAILED` records its version, revision,
+ * reason and the serials of its first failed boots. Disk pressure drops `.failed`
+ * before `.prev` — it is evidence, never a rollback target.
  *
  * Never throws; returns why it refused instead. Used by both the automatic
  * watch (`maybeRollbackRootfs`) and an operator (`POST /admin/rollback-rootfs`).
@@ -791,9 +854,15 @@ export async function rollbackRootfs(
     } catch {
       badRevision = null
     }
-    if (config.dockerClass.baseRootfs) {
-      const dockerPrev = prevRootfsPath(config.dockerClass.baseRootfs)
-      if (existsSync(dockerPrev)) renameSync(dockerPrev, config.dockerClass.baseRootfs)
+    const dockerBase = config.dockerClass.baseRootfs
+    const dockerPrev = dockerBase ? prevRootfsPath(dockerBase) : null
+    // Park the failed bytes beside the live name before anything else takes it:
+    // a rename over `base` unlinks the bad inode, and this is the only copy.
+    const serials = keepFailedGeneration(badVersion, badRevision)
+    parkFailed(config.baseRootfs)
+    if (dockerBase && dockerPrev && existsSync(dockerPrev)) {
+      parkFailed(dockerBase)
+      renameSync(dockerPrev, dockerBase)
     }
     renameSync(prevPath, base)
     if (prev.version) writeRootfsMarker(prev.version)
@@ -805,11 +874,19 @@ export async function rollbackRootfs(
     const why = `${reason} rollback: ${counts.failures}/${total} cold boots failed` +
       (counts.topError ? ` (${counts.topError})` : '')
     markRootfsBad(badVersion, badRevision, why, now)
+    writeFailed(config.agentDir, {
+      version: badVersion,
+      revision: badRevision,
+      reason: why,
+      at: now,
+      serials,
+    })
     metrics.inc(M.rootfsRollback)
     console.log(
       `[self-update] ROLLED BACK rootfs ${badVersion} → ${prev.version ?? 'previous generation'}` +
         `${reason === 'manual' ? ' (manual)' : ''}: ${counts.failures}/${total} cold boots failed ` +
-        `in ${minutes}m${counts.topError ? ` (${counts.topError})` : ''} — restarting metal-agent...`,
+        `in ${minutes}m${counts.topError ? ` (${counts.topError})` : ''} — kept it at ` +
+        `${failedRootfsPath(base)} (see ROOTFS_FAILED, ${serials.length} serial(s)) — restarting metal-agent...`,
     )
     ;(opts.restart ?? restartAgent)()
     return { ok: true }
@@ -820,6 +897,69 @@ export async function rollbackRootfs(
   } finally {
     updating = false
   }
+}
+
+/** An activation that passed its watch releases the failed generation for its disk. */
+function dropFailedGeneration(): void {
+  const bases = [config.baseRootfs, config.dockerClass.baseRootfs].filter((b): b is string => !!b)
+  for (const base of bases) {
+    const path = failedRootfsPath(base)
+    if (!existsSync(path)) continue
+    try {
+      const gb = statSync(path).size / 1e9
+      rmSync(path, { force: true })
+      console.log(`[self-update] dropped ${path} (${gb.toFixed(1)}GB): the generation on probation passed its watch`)
+    } catch (err: any) {
+      console.warn(`[self-update] could not drop ${path}:`, err?.message ?? err)
+    }
+  }
+  clearFailed(config.agentDir)
+  rmSync(join(config.agentDir, FAILED_DIR), { recursive: true, force: true })
+}
+
+/**
+ * Move `base` to `<base>.failed`, replacing the previous failed generation of
+ * that class. At most one per class, so a host cannot accumulate dead images.
+ */
+function parkFailed(base: string): void {
+  if (!existsSync(base)) return
+  const dest = failedRootfsPath(base)
+  try {
+    rmSync(dest, { force: true })
+    renameSync(base, dest)
+  } catch (err: any) {
+    console.warn(`[self-update] could not keep the failed image at ${dest}:`, err?.message ?? err)
+  }
+}
+
+/**
+ * Copy the serial logs of the generation's first failed cold boots into
+ * `<agentDir>/rootfs-failed/`, so the evidence outlives the VMs it came from (a
+ * failed VM's run files are cleaned up with it). Returns the copies' paths.
+ */
+function keepFailedGeneration(version: string, revision: string | null): string[] {
+  const watch = getRootfsWatch()
+  const sources = coldBoots.failedSerials(3, watch?.activatedAt ?? 0)
+  if (!sources.length) return []
+  const dir = join(config.agentDir, FAILED_DIR)
+  const out: string[] = []
+  try {
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    const stamp = version.replace(/[^A-Za-z0-9._-]/g, '_')
+    sources.forEach((src, i) => {
+      const dest = join(dir, `${stamp}-${i + 1}-${revision?.slice(0, 8) ?? 'unknown'}.serial`)
+      try {
+        copyFileSync(src, dest)
+        out.push(dest)
+      } catch {
+        /* the VM may already be gone — the others still copy */
+      }
+    })
+  } catch (err: any) {
+    console.warn('[self-update] could not preserve the failed boots\' serial logs:', err?.message ?? err)
+  }
+  return out
 }
 
 /**
@@ -844,6 +984,7 @@ export async function maybeRollbackRootfs(now = Date.now()): Promise<boolean> {
   if (decision === 'ok') return false
   if (decision === 'expired') {
     clearWatch(config.agentDir)
+    dropFailedGeneration()
     const total = counts.failures + counts.successes
     console.log(
       `[self-update] rootfs ${watch.version} passed its watch: ${counts.failures}/${total} cold boots ` +
@@ -1050,7 +1191,7 @@ export async function stageRootfs(baseDir: string, desired: DesiredAgent): Promi
   if (rootDiskUsage('/').usedPct >= config.rootDiskGcPct) {
     await collectUnderLock('pre-rebuild', keep)
     const after = rootDiskUsage('/').usedPct
-    if (after >= config.rootDiskGcPct) dropPreviousGeneration(after)
+    if (after >= config.rootDiskGcPct) dropSpareGenerations(after)
   }
   await buildRootfsImage({
     script,

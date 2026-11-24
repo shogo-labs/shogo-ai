@@ -247,9 +247,13 @@ export function rootfsHooks(pool: MetalWarmPool): RootfsHooks {
   return {
     onStaged: (ids) => pool.dropStagedSnapshots(list(ids)),
     promote: (ids) => pool.promoteStagedSnapshots(list(ids)),
-    // The gate that proves a staged image works: one real cold boot from it,
-    // on the ordinary health timeout (SHO-552).
-    probeBoot: (image, vmClass) => pool.probeBoot(vmClass, image),
+    // The gate that proves a staged image works: real cold boots from it, on the
+    // ordinary health timeout, held for METAL_ROOTFS_PROBE_HOLD_MS (SHO-552,
+    // SHO-563).
+    probeBoot: async (image, vmClass) => {
+      const res = await pool.probeBoot(vmClass, image)
+      return res.ok ? null : (res.error ?? 'boot probe failed')
+    },
   }
 }
 

@@ -143,6 +143,40 @@ describe('MetalWarmPool.adopt', () => {
     expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
   })
 
+  test('the host-scan keep-set is every id the pool owns, not just the adopted ones (SHO-563)', async () => {
+    const cfg = makeCfg()
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+    const child = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => child.kill('SIGKILL'))
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'adopted-proj', child.pid, agentUrl))
+
+    let reapKeep: Set<string> | null = null
+    const fakeMgr = {
+      adoptVM: () => {},
+      reapHostOrphans: (keep: Set<string>) => {
+        reapKeep = keep
+        return 0
+      },
+      procCount: () => 0,
+    }
+
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    // A fill that started while adopt()'s health probes were still running, and a
+    // warm VM the pool already holds: neither is in the live registry, and the old
+    // keep-set (adopted ids only) left both to be SIGKILLed on staging — 8/8 cold
+    // boots died inside 12s of an activation restart (SHO-563).
+    ;(pool as any).inFlight.add('fcvm-booting')
+    ;(pool as any).available.push({ handle: { id: 'fcvm-warm' }, ready: true, createdAt: Date.now() })
+
+    await pool.adopt()
+
+    expect(reapKeep && [...reapKeep].sort()).toEqual(['fcvm-adopted-proj', 'fcvm-booting', 'fcvm-warm'])
+  })
+
   test('re-adopts a reclaimed VM’s balloon target when idle reclaim is on (SHO-534)', async () => {
     // The balloon target lives in the guest/vmstate, not in the agent's memory: a
     // restart mid-idle must not forget that a VM is running with RAM taken out, or
