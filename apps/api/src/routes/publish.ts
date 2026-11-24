@@ -21,6 +21,7 @@ import { PutObjectCommand, CopyObjectCommand, HeadObjectCommand } from "@aws-sdk
 import { prisma } from "../lib/prisma"
 import { removePublishedCustomDomainMapping } from "../lib/published-custom-domain-mapping"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
+import { resolvePublishCommitSha as resolvePublishCommitFromHead } from "../lib/publish-commit"
 import {
   PUBLISH_BUCKET,
   PUBLISH_DATA_BUCKET,
@@ -1334,7 +1335,7 @@ async function configurePublishedService(
     // not `bun install` + `prisma generate` + a Vite build. Gated twice: static
     // apps have nothing to build, and a cluster without the OCIR/build env keeps
     // today's mutable-tag behaviour instead of refusing every publish.
-    const commitSha = await currentPublishedCommitSha(projectId)
+    const commitSha = await resolvePublishCommitSha(projectId, serverBacked)
     let publishedImageRef: string | undefined
     let publishedImageDigest: string | null = null
     if (serverBacked && commitSha) {
@@ -1380,37 +1381,36 @@ async function configurePublishedService(
       }
     }
 
-    // §G1: a Postgres environment has no SQLite fallback, and "some image was
-    // available" is not enough — it has to be the `pg` build. Its pod mounts a
-    // Postgres `DATABASE_URL`, and the app only becomes PrismaPg inside a `pg`
-    // build context; anything else serves the SQLite client and writes to a
-    // per-pod LibSQL file (QA round 5 on staging).
+    // §G1: a Postgres environment has no SQLite fallback. On Knative, "no image"
+    // is not "no image needed" — the ksvc boots the SHARED runtime, and its boot
+    // hydrates the git tag (the SQLite schema and a LibSQL client), so the app
+    // writes to a per-pod `dev.db` while `projects-pg` stays empty (QA round 8 on
+    // staging). Only a `pg` build carries the PrismaPg client. Refuse rather than
+    // serve SQLite against a Postgres URL.
     //
-    // Only when this publish was supposed to produce that image, though. A first
-    // publish has no `publishedCommitSha` — the publish writes it only once it has
-    // succeeded — so no image is built for it by design, and the environment is
-    // served from the Postgres-converted artifact the runtime uploads. Refusing
-    // there locked every new project out of Postgres permanently: the commit the
-    // build wants is written by a publish that has to succeed first.
+    // `resolvePublishCommitSha` above is what makes this reachable on a first
+    // publish: it asks the pod for HEAD instead of reading `publishedCommitSha`,
+    // which a publish writes only once it has succeeded.
     if (currentDbProvider === "postgres") {
-      const { publishedBuildSetup, shouldBuildPublishedImage, postgresImageRefusal } = await import(
-        "../lib/published-build-config"
-      )
+      const { publishedBuildSetup, postgresImageRefusal } = await import("../lib/published-build-config")
       const refusal = postgresImageRefusal({
         imageRef: publishedImageRef,
-        buildPlanned:
-          serverBacked &&
-          !!commitSha &&
-          shouldBuildPublishedImage(substrate.kind as "knative" | "metal", projectId),
+        substrate: substrate.kind as "knative" | "metal",
         serverBacked,
         missing: publishedBuildSetup().missing,
       })
       if (refusal) {
-        throw new PublishConfigureError(
-          "build_unavailable",
-          `${projectId} is on Postgres, which needs its own image: ${refusal}`,
-          503,
+        const message = `${projectId} is on Postgres, which needs its own \`pg\` image: ${refusal}`
+        // Same as a failed build above: park the reason on the environment row,
+        // because that is what the Deployment tab and the publish status read —
+        // a refusal that leaves the row `live` looks like it worked.
+        const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+        await setEnvironmentPublishStatus(environment.id, "failed", `build_unavailable: ${message}`).catch(
+          (err: any) => {
+            console.warn(`[Publish] could not record the image refusal: ${err?.message ?? err}`)
+          },
         )
+        throw new PublishConfigureError("build_unavailable", message, 503)
       }
     }
 
@@ -1484,6 +1484,27 @@ async function currentPublishedCommitSha(projectId: string): Promise<string | nu
   } catch {
     return null
   }
+}
+
+/**
+ * The commit THIS publish ships.
+ *
+ * `project.publishedCommitSha` is a record of the last publish that *succeeded*,
+ * so reading it here meant a first publish had no commit to build its image from
+ * — refused forever, since the commit it wants is written by the publish that has
+ * to succeed first (QA round 7) — and every later publish was labelled with the
+ * previous publish's commit, one code-change behind its own image (QA round 8).
+ *
+ * The pod owns the repo, so the commit being published is its HEAD. Asking for it
+ * up front costs a `git-flush` that `tagPublishedCommit` performs at the end
+ * anyway, and makes the image, the deployment record and the tag name one commit.
+ */
+function resolvePublishCommitSha(projectId: string, serverBacked: boolean): Promise<string | null> {
+  return resolvePublishCommitFromHead({
+    serverBacked,
+    flushHead: () => flushGitSync(projectId),
+    recordedCommitSha: () => currentPublishedCommitSha(projectId),
+  })
 }
 
 /**

@@ -276,6 +276,27 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
       expect(dbModule, "the pod must not construct a libsql client").not.toContain("PrismaLibSql")
     }
 
+    // The two ways a Postgres environment ends up on SQLite *anyway* (QA round 8):
+    // the ksvc boots the SHARED runtime image, so its boot hydrates the git tag —
+    // a SQLite schema, a LibSQL client, and a `prisma/dev.db` that absorbs every
+    // write while `projects-pg` stays empty. The schema/db.ts assertions above
+    // catch the symptom; these catch the cause, so a regression names it.
+    const image = kubectl(["get", "pod", pod!, "-o", "jsonpath={.spec.containers[0].image}"]).trim()
+    evidence.podImage = image
+    saveEvidence()
+    expect(image, "a Postgres environment must run its own per-commit build").toContain("/published/")
+    const devDb = podExec(pod!, [
+      "sh",
+      "-lc",
+      'for p in /app/prisma/dev.db /app/workspace/prisma/dev.db; do [ -e "$p" ] && echo "EXISTS $p"; done; echo checked',
+    ])
+    evidence.podDevDb = devDb.slice(0, 400)
+    saveEvidence()
+    expect(
+      devDb,
+      "a Postgres pod must not carry a SQLite database — that is the per-pod file writes were landing in",
+    ).not.toContain("EXISTS")
+
     for (const m of models.filter((m) => m === "User").concat(models.filter((m) => m !== "User"))) {
       const candidate = routePathFor(m)
       const probe = await page.request.get(`${LIVE}/api/${candidate}`, { timeout: 30_000, failOnStatusCode: false })
