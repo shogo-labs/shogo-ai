@@ -6,6 +6,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setDockerClassOverride } from '../../lib/runtime-class-setting'
+import { parseProjectSettings } from '../../lib/project-settings'
 
 // ─── billing.service mock ──────────────────────────────────────────────
 let paidAnswer = true
@@ -265,17 +266,16 @@ describe('configureProject — Docker-class platform gate', () => {
     const p = seedProject({ workspaceId: 'ws_micro', settings: { techStackId: 'nextjs' } })
     const result = await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })
     expect((result.settings as Record<string, unknown>).techStackId).toBe('docker-compose')
-    // The write path JSON-encodes settings before it reaches Prisma.
-    const stored = projects.get(p.id)!.settings
-    expect(JSON.parse(stored as string).techStackId).toBe('docker-compose')
+    // The write path encodes settings for the active DB (a JSON string on
+    // SQLite, a bare object on Postgres), so assert what the read path sees.
+    expect(parseProjectSettings(projects.get(p.id)!.settings)?.techStackId).toBe('docker-compose')
   })
 
   it('does not re-check the platform gate when techStackId is unchanged (re-PATCHing the same stack)', async () => {
     setDockerClassOverride(false)
     const p = seedProject({ settings: { techStackId: 'docker-compose' } })
     await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })
-    const stored = projects.get(p.id)!.settings
-    expect(JSON.parse(stored as string).techStackId).toBe('docker-compose')
+    expect(parseProjectSettings(projects.get(p.id)!.settings)?.techStackId).toBe('docker-compose')
   })
 
   it('throws not_found for a nonexistent project', async () => {
