@@ -8,8 +8,9 @@
  * in the composer dropped mid-turn. Before SHO-96 a compaction rewrote the
  * session's messages silently and left no trace in the transcript.
  */
-import { ActivityIndicator, View, Text } from "react-native"
+import { View, Text } from "react-native"
 import { Scissors } from "lucide-react-native"
+import { Spinner } from "@/components/ui/spinner"
 
 export interface ContextCompactionPart {
   trigger: "auto" | "manual"
@@ -57,7 +58,7 @@ export function ContextCompactingRow({ chunks = 0 }: { chunks?: number }) {
     <View className="my-2 flex-row items-center gap-2" testID="context-compacting-row">
       <View className="h-px flex-1 bg-border" />
       <View className="flex-row items-center gap-1.5 rounded-full border border-border px-2 py-0.5">
-        <ActivityIndicator size="small" color="#8b8b8b" style={{ transform: [{ scale: 0.6 }] }} />
+        <Spinner tone="muted" size="small" style={{ transform: [{ scale: 0.6 }] }} />
         <Text className="text-[11px] text-muted-foreground">
           Summarizing earlier conversation…
           {chunks > 1 ? ` · ${chunks} parts` : ""}
