@@ -95,6 +95,35 @@ export interface SeedRelation {
   child: string
   /** Model it points at. */
   parent: string
+  /**
+   * Physical columns in the child table that hold the FK values.
+   * Extracted from `@relation(fields: [...])`.
+   */
+  childColumns: string[]
+  /**
+   * Physical columns in the parent table that the child references.
+   * Extracted from `@relation(references: [...])`.
+   */
+  parentColumns: string[]
+}
+
+/**
+ * A row that was dropped because its foreign-key target no longer exists.
+ *
+ * Surfaces in the publish result so the user knows which tables were silently
+ * filtered and can decide whether to clean their dev database.
+ */
+export interface SeedOrphan {
+  /** Physical table the orphaned rows came from. */
+  table: string
+  /** Physical FK column in that table. */
+  column: string
+  /** Physical parent table the FK pointed at. */
+  parent: string
+  /** Number of rows dropped. */
+  count: number
+  /** Up to ten FK values that had no matching parent, for debugging. */
+  sampleIds: unknown[]
 }
 
 export interface SeedTableData {
@@ -155,10 +184,15 @@ export function parseSeedRelations(schema: string): SeedRelation[] {
       if (!/@relation\([^)]*fields\s*:\s*\[/.test(line)) continue
       const parent = field[2]
       if (!parent) continue
+      // Extract fields: [...] and references: [...] from the @relation decorator.
+      const fieldsMatch = /fields\s*:\s*\[([^\]]*)\]/.exec(line)
+      const refsMatch = /references\s*:\s*\[([^\]]*)\]/.exec(line)
+      const childColumns = fieldsMatch ? fieldsMatch[1]!.split(',').map((s) => s.trim()).filter(Boolean) : []
+      const parentColumns = refsMatch ? refsMatch[1]!.split(',').map((s) => s.trim()).filter(Boolean) : []
       // A self-reference is kept: it needs no cross-table ordering (a single
       // multi-row INSERT resolves it at statement end), but the caller should be
       // able to see the schema it was given.
-      out.push({ child: child!, parent })
+      out.push({ child: child!, parent, childColumns, parentColumns })
     }
   }
   return out
@@ -358,6 +392,99 @@ export function buildSeedSql(tables: SeedTableData[]): string {
   }
   statements.push('COMMIT;')
   return statements.join('\n')
+}
+
+/**
+ * Remove rows from child tables whose FK value has no matching parent.
+ *
+ * KIF live data had 1,918 `stage_changes`, 188 `payments` and 175 `reviews`
+ * rows referencing deleted `applications` rows (SHO-551). Those rows can never
+ * render in a published app, but Postgres refuses them with a foreign key
+ * violation. This filters them out before the seed SQL is built, and returns
+ * a report so the publish result can say which tables were cleaned.
+ *
+ * FK matching uses the physical column names from `parseSeedRelations` and
+ * the physical table names from `parseModelTables`. Rows with a composite FK
+ * are matched as a `\u0001`-joined key, the same separator `orderSeedTables` uses
+ * internally.
+ */
+export function dropOrphanedSeedRows(
+  tables: SeedTableData[],
+  relations: SeedRelation[],
+  modelTables: Map<string, string>,
+): { tables: SeedTableData[]; orphans: SeedOrphan[] } {
+  const tableOf = (model: string) => modelTables.get(model) ?? model
+  // Parent key sets keyed by `parentTable\u0001col1,col2` so two FKs pointing at
+  // the same parent with different referenced columns don't share one set.
+  const parentKeys = new Map<string, Set<string>>()
+
+  const buildParentKeySet = (parentTable: string, parentColumns: string[], cacheKey: string) => {
+    if (parentKeys.has(cacheKey)) return parentKeys.get(cacheKey)!
+    const parentData = tables.find((p) => p.table === parentTable)
+    const keySet = new Set<string>()
+    if (parentData) {
+      const refIdxs = parentColumns.map((col) => parentData.columns.indexOf(col))
+      if (refIdxs.every((i) => i >= 0)) {
+        for (const row of parentData.rows) {
+          keySet.add(refIdxs.map((i) => String(row[i])).join('\u0001'))
+        }
+      }
+    }
+    parentKeys.set(cacheKey, keySet)
+    return keySet
+  }
+
+  const result: SeedTableData[] = []
+  const orphans: SeedOrphan[] = []
+
+  for (const t of tables) {
+    // Collect every relation where this table is the child.
+    const childRelations = relations.filter(
+      (r) => tableOf(r.child) === t.table && r.childColumns.length > 0 && r.parentColumns.length > 0,
+    )
+    if (childRelations.length === 0) {
+      result.push(t)
+      continue
+    }
+
+    let kept = t.rows
+    for (const rel of childRelations) {
+      const parentTable = tableOf(rel.parent)
+      const cacheKey = `${parentTable}\u0001${rel.parentColumns.join(',')}`
+      const parentKeySet = buildParentKeySet(parentTable, rel.parentColumns, cacheKey)
+      const childIdxs = rel.childColumns.map((col) => t.columns.indexOf(col))
+      if (childIdxs.some((i) => i < 0)) continue // column not found — skip the check
+      const sampleIds: unknown[] = []
+      const next: unknown[][] = []
+      for (const row of kept) {
+        const fkVal = row[childIdxs[0]!]
+        // A NULL FK is an optional relation — no parent required, keep the row.
+        if (fkVal === null || fkVal === undefined) {
+          next.push(row)
+          continue
+        }
+        const key = childIdxs.map((i) => String(row[i])).join('\u0001')
+        if (parentKeySet.has(key)) {
+          next.push(row)
+        } else {
+          if (sampleIds.length < 10) sampleIds.push(fkVal)
+        }
+      }
+      if (next.length < kept.length) {
+        orphans.push({
+          table: t.table,
+          column: rel.childColumns.join(', '),
+          parent: parentTable,
+          count: kept.length - next.length,
+          sampleIds,
+        })
+        kept = next
+      }
+    }
+    result.push({ ...t, rows: kept })
+  }
+
+  return { tables: result, orphans }
 }
 
 /** Rows copied, for the publish report and the agent's tool result. */

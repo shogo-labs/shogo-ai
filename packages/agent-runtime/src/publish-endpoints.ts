@@ -229,7 +229,39 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     }
     await cp(projectDir, contextDir, { recursive: true, filter })
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
+
+    // SHO-551 B: when the API requests a Postgres build context, overwrite
+    // prisma/schema.prisma and src/lib/db.tsx in the copied context.
+    // The editor's own files are never touched.
+    const targetDb = (c.req.query('db') || '').trim()
+    if (targetDb === 'postgres') {
+      const { buildPublishSchema } = await import('@shogo/shared-runtime/published-schema')
+      const { generateDbModule } = await import('@shogo-ai/sdk/generators/server-generator')
+      const rawSchemaPath = join(projectDir, 'prisma', 'schema.prisma')
+      if (existsSync(rawSchemaPath)) {
+        const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
+        try {
+          const rawSchema = readFileSync(rawSchemaPath, 'utf-8')
+          const pgSchema = buildPublishSchema(rawSchema)
+          const ctxSchemaPath = join(contextDir, 'prisma', 'schema.prisma')
+          mkdirSync(join(contextDir, 'prisma'), { recursive: true })
+          writeFileSync(ctxSchemaPath, pgSchema.content, 'utf-8')
+          // db.tsx must exist and use PrismaPg — the runtime always writes
+          // db.tsx for SQLite at /templates/copy, so overwrite in the context.
+          const dbTsxPath = join(contextDir, 'src', 'lib', 'db.tsx')
+          if (existsSync(join(projectDir, 'src', 'lib', 'db.tsx'))) {
+            mkdirSync(join(contextDir, 'src', 'lib'), { recursive: true })
+            writeFileSync(dbTsxPath, generateDbModule(), 'utf-8')
+          }
+          console.log('[agent-runtime] publish-artifact: wrote Postgres schema + db.tsx into build context')
+        } catch (err: any) {
+          console.warn('[agent-runtime] publish-artifact: could not write Postgres context:', err?.message ?? err)
+        }
+      }
+    }
     // Media out before the tar, so neither the tar nor the upload carries it.
+    // SHO-551 C: a CredentialsProviderError on the runtime's own store is not
+    // fatal — media stays in the tar and the upload still goes through putUrl.
     let offloaded: ArtifactMediaOffloadResult | null = null
     if (store) {
       try {
@@ -243,7 +275,12 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
         if (err instanceof ArtifactMediaOffloadError) {
           return c.json({ error: 'lfs_object_missing', message: err.message }, 500)
         }
-        throw err
+        const isCredentialsError = /CredentialsProvider|AccessDenied|InvalidAccessKeyId/i.test(String(err?.name ?? '') + String(err?.message ?? ''))
+        if (isCredentialsError) {
+          console.warn('[agent-runtime] publish-artifact: media offload skipped (credentials unavailable):', err?.message ?? err)
+        } else {
+          throw err
+        }
       }
     }
     await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
@@ -273,16 +310,10 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
       )
     }
 
-    if (targetBucket && targetKey && store) {
-      await putFileToObjectStore(
-        { bucket: targetBucket, client: store.client },
-        targetKey,
-        archivePath,
-        { bytes, contentType: 'application/gzip' },
-      )
-      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
-    }
-
+    // SHO-551 C: prefer the presigned PUT from the API over the runtime's own
+    // store. The API's credentials are known to work; a runtime whose S3 creds
+    // are invalid (e.g. a metal host that has S3_LFS_BUCKET set but no access
+    // key) would 500 on `putFileToObjectStore`, losing the artifact entirely.
     if (targetBucket && targetKey && targetPutUrl) {
       try {
         await putArtifactToPresignedUrl(targetPutUrl, archivePath, bytes)
@@ -291,6 +322,20 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
           { error: 'artifact_upload_failed', message: err?.message ?? String(err) },
           502,
         )
+      }
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
+    }
+
+    if (targetBucket && targetKey && store) {
+      try {
+        await putFileToObjectStore(
+          { bucket: targetBucket, client: store.client },
+          targetKey,
+          archivePath,
+          { bytes, contentType: 'application/gzip' },
+        )
+      } catch (err: any) {
+        return c.json({ error: 'artifact_upload_failed', message: err?.message ?? String(err) }, 502)
       }
       return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
     }

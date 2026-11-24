@@ -3178,12 +3178,17 @@ export class PreviewManager {
     }
 
     const devDb = join(cwd, 'prisma', 'dev.db')
-    if (existsSync(devDb)) {
-      console.log(`[${LOG_PREFIX}] SQLite db exists — skipping db push`)
+
+    // SHO-551 D: in a published pod, always run an additive db push even when
+    // dev.db already exists — a republish may add new nullable columns that the
+    // server's client expects. In the editor, keep today's behaviour (skip).
+    const isPublishedMode =
+      process.env.SHOGO_PUBLISHED_MODE === 'true' ||
+      process.env.SHOGO_PREBUILT_IMAGE === 'true'
+
+    if (existsSync(devDb) && !isPublishedMode) {
+      console.log(`[${LOG_PREFIX}] SQLite db exists — skipping db push (editor mode)`)
       timings.dbPush = 0
-      // NB: do NOT set `_phase='pushing-db'` before this early return — a skip
-      // would otherwise leave the phase wedged off 'ready' when a caller (e.g.
-      // the schema watcher) doesn't own a subsequent phase restore.
       return
     }
 
@@ -3194,13 +3199,18 @@ export class PreviewManager {
         env: await this.projectProcessEnv({ DATABASE_URL: `file:${devDb}` }),
       })
       timings.dbPush = Date.now() - t2
-      console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
+      const mode = existsSync(devDb) && isPublishedMode ? 'Additive' : 'Fresh'
+      console.log(`[${LOG_PREFIX}] ${mode} db push succeeded (${timings.dbPush}ms)`)
     } catch (err: any) {
       timings.dbPush = Date.now() - t2
-      console.error(`[${LOG_PREFIX}] Prisma db push failed:`, err.message?.slice(0, 200))
+      const msg = err.message?.slice(0, 400) ?? String(err)
+      console.error(`[${LOG_PREFIX}] Prisma db push failed:`, msg)
+      if (isPublishedMode) {
+        // Boot fails → revision marked failed rather than starting against a schema mismatch.
+        throw new Error(`Prisma db push failed (additive schema sync): ${msg}`)
+      }
     }
   }
-
   /**
    * Stop the preview server and kill the bundler process.
    */

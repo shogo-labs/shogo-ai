@@ -11,6 +11,7 @@ import {
   buildPublishSchema,
   buildSeedSql,
   countSeedRows,
+  dropOrphanedSeedRows,
   orderSeedTables,
   parseBooleanColumns,
   parseModelTables,
@@ -108,11 +109,11 @@ describe('seed ordering', () => {
     ).toBe('blogs')
   })
 
-  it('reads only the side that holds the foreign key', () => {
+  it('reads only the side that holds the foreign key, with the FK columns', () => {
     const relations = parseSeedRelations(SQLITE_SCHEMA)
     expect(relations).toEqual([
-      { child: 'Post', parent: 'User' },
-      { child: 'Category', parent: 'Category' },
+      { child: 'Post', parent: 'User', childColumns: ['authorId'], parentColumns: ['id'] },
+      { child: 'Category', parent: 'Category', childColumns: ['parentId'], parentColumns: ['id'] },
     ])
   })
 
@@ -261,5 +262,71 @@ model Item {
       },
     ])
     expect(sql).toContain("(1, '1', TRUE)")
+  })
+})
+
+// SHO-551: seed rows that reference deleted parents (FK targets) must be
+// filtered out before the seed SQL is built, so Postgres doesn't reject
+// the whole seed with a foreign key violation.
+describe('dropping orphaned seed rows', () => {
+  const schema = `
+model Application {
+  id    String @id
+  title String
+  stages StageChange[]
+}
+model StageChange {
+  id            String      @id
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  note          String
+}
+`
+  const relations = parseSeedRelations(schema)
+  const modelTables = parseModelTables(schema)
+
+  const apps: import('../published-schema').SeedTableData = {
+    table: 'Application',
+    columns: ['id', 'title'],
+    rows: [['app1', 'App 1'], ['app2', 'App 2']],
+  }
+  const stages: import('../published-schema').SeedTableData = {
+    table: 'StageChange',
+    columns: ['id', 'applicationId', 'note'],
+    rows: [
+      ['s1', 'app1', 'valid'],
+      ['s2', 'app2', 'valid'],
+      ['s3', 'deleted-app', 'orphan 1'],
+      ['s4', 'gone-app', 'orphan 2'],
+    ],
+  }
+
+  it('drops children of deleted parents and reports them', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    const sc = tables.find((t: any) => t.table === 'StageChange')!
+    expect(sc.rows).toHaveLength(2)
+    expect(sc.rows.map((r: any) => r[0])).toEqual(['s1', 's2'])
+    expect(orphans).toHaveLength(1)
+    expect(orphans[0]).toMatchObject({ table: 'StageChange', count: 2 })
+    expect(orphans[0].sampleIds).toContain('deleted-app')
+  })
+
+  it('keeps valid rows and tables with no FK intact', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    const appTable = tables.find((t: any) => t.table === 'Application')!
+    expect(appTable.rows).toHaveLength(2)
+    expect(orphans.map((o: any) => o.table)).not.toContain('Application')
+  })
+
+  it('reports sample ids for the orphaned rows', () => {
+    const { orphans } = dropOrphanedSeedRows([apps, stages], relations, modelTables)
+    expect(orphans[0].sampleIds).toContain('deleted-app')
+    expect(orphans[0].sampleIds).toContain('gone-app')
+  })
+
+  it('handles tables with no relations without touching them', () => {
+    const { tables, orphans } = dropOrphanedSeedRows([apps], [], modelTables)
+    expect(tables[0].rows).toHaveLength(2)
+    expect(orphans).toHaveLength(0)
   })
 })

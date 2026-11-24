@@ -241,6 +241,26 @@ export function generateDbModule(): string {
 }
 
 /**
+ * Guard that refuses to generate a SQLite db module when the app's DATABASE_URL
+ * is already a Postgres connection string (SHO-551 B).
+ *
+ * A published Postgres pod boots with `DATABASE_URL=postgres://...`. Silently
+ * replacing its db.tsx with a libsql adapter would make every query fail on a
+ * driver mismatch. The guard is called before any rewrite that would down-convert
+ * a Postgres app to SQLite; if the URL is Postgres the caller skips the rewrite.
+ */
+export function databaseUrlGuard(databaseUrl: string | null | undefined): {
+  isPostgres: boolean
+  isSqlite: boolean
+} {
+  const url = (databaseUrl ?? '').trim()
+  return {
+    isPostgres: /^postgres(ql)?:\/\//.test(url),
+    isSqlite: !url || /^file:|\.db($|\?)|^sqlite/i.test(url),
+  }
+}
+
+/**
  * Generate Prisma database module for SQLite using prisma-adapter-bun-sqlite (Prisma 7)
  */
 export function generateSqliteDbModule(): string {

@@ -42,14 +42,31 @@ export function publishedImageTag(commitSha: string): string {
   return sanitizeSegment(sha)
 }
 
-/** `<repo>:<commit>` — what the BuildKit Job pushes to. */
+/**
+ * The tag for a given (commit, variant) pair.
+ *
+ * A variant is used when the same commit produces more than one image — e.g. a
+ * Postgres build (`pg`) and a SQLite build (no suffix). The variant is appended
+ * to the commit sha so the two images can coexist in the same repository
+ * without overwriting each other (SHO-551 B).
+ */
+export function publishedImageCommitTag(commitSha: string, variant?: string): string {
+  const base = publishedImageTag(commitSha)
+  if (!variant) return base
+  const suffix = variant.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+$/, '')
+  return suffix ? `${base}-${suffix}` : base
+}
+
+/** `<repo>:<commit[-variant]>` — what the BuildKit Job pushes to. */
 export function publishedImageTagRef(input: {
   registry: string
   namespace: string
   projectId: string
   commitSha: string
+  /** Optional build variant (e.g. `'pg'` for a Postgres image). */
+  variant?: string
 }): string {
-  return `${publishedImageRepository(input)}:${publishedImageTag(input.commitSha)}`
+  return `${publishedImageRepository(input)}:${publishedImageCommitTag(input.commitSha, input.variant)}`
 }
 
 /**

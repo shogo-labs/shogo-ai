@@ -96,7 +96,7 @@ export async function pushPublishedSchema(
       return {
         ok: false,
         code: 'schema_push_failed',
-        message: `Could not apply the schema to the published database: ${tailLines(String(err?.message ?? err), 6)}`,
+        message: `Could not apply the schema to the published database: ${describeDatabaseFailure(String(err?.message ?? err), 'push')}`,
       }
     }
 
@@ -109,7 +109,7 @@ export async function pushPublishedSchema(
         return {
           ok: false,
           code: 'seed_failed',
-          message: `Schema applied, but the seed data did not load: ${tailLines(String(err?.message ?? err), 6)}`,
+          message: `Schema applied, but the seed data did not load: ${describeDatabaseFailure(String(err?.message ?? err), 'seed')}`,
         }
       }
     }
@@ -144,8 +144,40 @@ export function runPrisma(args: string[], cwd: string, env: NodeJS.ProcessEnv): 
   })
 }
 
+/**
+ * The one sentence a publish failure should carry: which table and which
+ * constraint, not the Prisma stack it came out of.
+ *
+ * A `seed_failed` used to read `ERROR: insert or update on table
+ * "stage_changes" violates foreign key constraint ...` buried six stack frames
+ * deep, so the publish log told nobody which rows to look at (SHO-551). The
+ * database names the offending object; this finds it and says it plainly, with
+ * as much of Prisma's own detail appended as stays readable.
+ */
+export function describeDatabaseFailure(raw: string, kind: 'push' | 'seed'): string {
+  const text = raw.replace(/\s+/g, ' ')
+  const withTable = /on table "([^"]+)" violates foreign key constraint "([^"]+)"/.exec(text)
+  const constraintOnly = withTable ? null : /violates foreign key constraint "([^"]+)"/.exec(text)
+  if (withTable || constraintOnly) {
+    const table = withTable?.[1]
+    const constraint = withTable?.[2] ?? constraintOnly?.[1]
+    return (
+      'row(s) reference a record that does not exist' +
+      `${table ? ` in table "${table}"` : ''}${constraint ? ` (constraint "${constraint}")` : ''}`
+    )
+  }
+  const notNull = /null value in column "([^"]+)" of relation "([^"]+)"/.exec(text)
+  if (notNull) return `column "${notNull[1]}" of table "${notNull[2]}" is required but the row has no value`
+  const unique = /duplicate key value violates unique constraint "([^"]+)"/.exec(text)
+  if (unique) return `a row duplicates a value the database requires to be unique (constraint "${unique[1]}")`
+  const missingRelation = /relation "([^"]+)" does not exist/.exec(text)
+  if (missingRelation) return `table "${missingRelation[1]}" does not exist`
+  const detail = tailLines(raw, 3).slice(0, 400)
+  return kind === 'seed' ? `the rows were refused: ${detail}` : `Prisma reported: ${detail}`
+}
+
 /** The useful end of a Prisma CLI error, for the publish error message. */
-function tailLines(text: string, lines: number): string {
+export function tailLines(text: string, lines: number): string {
   const split = text.trim().split('\n').filter(Boolean)
   return split.slice(-lines).join(' ').slice(0, 600)
 }
