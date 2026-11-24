@@ -1425,6 +1425,9 @@ export default observer(function ProjectLayout() {
   );
 
   const splitRowRef = useRef<View>(null);
+  // Measured width of that row — the task-thread pane sizes itself against it,
+  // so its remembered width survives a window change (SHO-569).
+  const [splitRowWidth, setSplitRowWidth] = useState(0);
 
   // Connection state for the canvas. The canvas iframe owns its own data
   // (SSE / HMR / API calls happen inside the workspace SPA); the parent
@@ -4315,6 +4318,13 @@ export default observer(function ProjectLayout() {
                     return current === rounded ? current : rounded;
                   });
                 }
+                const nextWidth = event.nativeEvent?.layout?.width;
+                if (typeof nextWidth === "number" && nextWidth > 0) {
+                  setSplitRowWidth((current) => {
+                    const rounded = Math.round(nextWidth);
+                    return current === rounded ? current : rounded;
+                  });
+                }
               }}
             >
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
@@ -4548,7 +4558,7 @@ export default observer(function ProjectLayout() {
 
               {/* The thread a pressed background task runs in: a pane beside the
                   canvas (wide) or a sheet (phone). The chat column stays put. */}
-              <TaskThreadPaneHost />
+              <TaskThreadPaneHost containerWidth={splitRowWidth || undefined} />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View
