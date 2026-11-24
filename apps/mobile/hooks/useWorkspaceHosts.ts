@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { AppState } from "react-native"
 import { API_URL } from "../lib/api"
+import { agentFetch } from "../lib/agent-fetch"
 import type { WorkspaceHostInfo, MachinePresence } from "../lib/workspace-entries"
 
 /** Cloud presence is heartbeat-driven; one read per window keeps it inside 60 s. */
@@ -61,7 +62,10 @@ export function useWorkspaceHosts(): UseWorkspaceHostsResult {
 
     const load = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/machines`, { credentials: "include" })
+        // Native needs its own Cookie header and `credentials: 'omit'`; a bare
+        // `credentials: "include"` let iOS add the cookie jar on top and the
+        // whole badge 401'd every poll (SHO-564).
+        const res = await agentFetch(`${API_URL}/api/machines`)
         const body = await res.json().catch(() => ({}))
         if (!live) return
         if (!res.ok) {

@@ -84,8 +84,6 @@ const HIDDEN_TOOLS = new Set(["notify_user_error"]);
 
 const UNGROUPABLE_TOOLS = new Set([
   "ask_user",
-  "TodoWrite",
-  "todo_write",
   "connect",
   // Legacy: keep so historical install turns still render ungrouped
   "tool_install",
@@ -103,6 +101,21 @@ const UNGROUPABLE_TOOLS = new Set([
 
 const MIN_WORK_GROUP_SIZE = 1;
 const MIN_GROUP_SIZE = 2;
+
+/**
+ * The agent's session checklist (`todo_write` / `TodoWrite`). It renders as a
+ * quiet pointer to the dock's Tasks panel, and it is *transparent* to grouping:
+ * a todo never starts, ends or splits a work run — see `groupWorkParts`.
+ */
+const TODO_TOOL_NAMES = new Set(["todo_write", "TodoWrite"]);
+
+export function isTodoTool(toolName: string): boolean {
+  return TODO_TOOL_NAMES.has(toolName);
+}
+
+function isTodoPart(part: MessagePart): boolean {
+  return part.type === "tool" && isTodoTool(part.tool.toolName);
+}
 
 function isExplorationTool(tool: ToolCallData): boolean {
   const { verb } = getToolSummary(tool.toolName, tool.args);
@@ -145,6 +158,7 @@ const CUSTOM_RENDER_TOOLS = new Set([
 export function isGenericTool(tool: ToolCallData): boolean {
   const name = tool.toolName;
   if (
+    isTodoTool(name) ||
     UNGROUPABLE_TOOLS.has(name) ||
     HIDDEN_TOOLS.has(name) ||
     CUSTOM_RENDER_TOOLS.has(name) ||
@@ -174,18 +188,30 @@ function isWorkTool(tool: ToolCallData): boolean {
  * the run but not counted toward the tool threshold). Returns the
  * exclusive end of the *trimmed* slice (trailing reasoning excluded)
  * and the tool count.
+ *
+ * `foldTodos` opts todo parts into the same transparency. Unlike trailing
+ * reasoning, a trailing todo stays inside the slice: it belongs to the run
+ * that just happened, and leaving it out would pop it out as a lone row
+ * between two groups.
  */
 function scanTransparentRun(
   parts: MessagePart[],
   start: number,
   accept: (tool: ToolCallData) => boolean,
+  foldTodos: boolean = false,
 ): { endIdx: number; toolCount: number } {
   let j = start + 1;
   let toolCount = 1;
   let lastToolIdx = start;
+  let lastTodoIdx = -1;
   while (j < parts.length) {
     const next = parts[j];
     if (next.type === "reasoning") {
+      j++;
+      continue;
+    }
+    if (foldTodos && isTodoPart(next)) {
+      lastTodoIdx = j;
       j++;
       continue;
     }
@@ -197,13 +223,32 @@ function scanTransparentRun(
     }
     break;
   }
-  return { endIdx: lastToolIdx + 1, toolCount };
+  return { endIdx: Math.max(lastToolIdx, lastTodoIdx) + 1, toolCount };
+}
+
+/**
+ * Index of the work tool a run of todo parts should join, looking only
+ * through the parts a run can absorb (reasoning and further todos). `-1`
+ * when that todo has no work tool to fold into and keeps its own row.
+ */
+function findWorkToolAfter(parts: MessagePart[], start: number): number {
+  let j = start + 1;
+  while (j < parts.length) {
+    const next = parts[j];
+    if (next.type === "reasoning" || isTodoPart(next)) {
+      j++;
+      continue;
+    }
+    return next.type === "tool" && isWorkTool(next.tool) ? j : -1;
+  }
+  return -1;
 }
 
 /**
  * Group consecutive "work" tool calls (reads/searches/fetches/edits/
  * writes/shell commands, in any mix, with reasoning riding along
- * transparently) into a single `work-group`. Falls back to same-name
+ * transparently) into a single `work-group`. Todo parts ride along the same
+ * way — they never begin, end or split a run. Falls back to same-name
  * grouping (`tool-group`) for repeated non-work tools (MCP/skill
  * calls), and passes everything else through unchanged.
  *
@@ -245,26 +290,39 @@ export function groupWorkParts(
       continue;
     }
 
-    if (isWorkTool(part.tool)) {
-      const { endIdx, toolCount } = scanTransparentRun(
-        visibleParts,
-        i,
-        isWorkTool,
-      );
-      if (toolCount >= MIN_WORK_GROUP_SIZE) {
-        const slice = visibleParts.slice(i, endIdx);
-        const id = `work-${visibleParts[i].id}`;
-        const prior = prevById.get(id);
-        result.push(
-          prior && prior.type === "work-group" && sameParts(prior.items, slice)
-            ? prior
-            : { type: "work-group", items: slice, id },
+    if (isWorkTool(part.tool) || isTodoPart(part)) {
+      // A todo part is transparent to grouping: it rides along in the run of
+      // work around it instead of splitting that stretch of work in two. Only
+      // a todo with no work tool on either side keeps a row of its own.
+      const runStart = isTodoPart(part) ? findWorkToolAfter(visibleParts, i) : i;
+      const runStartPart = runStart === -1 ? undefined : visibleParts[runStart];
+      if (runStartPart && runStartPart.type === "tool" && isWorkTool(runStartPart.tool)) {
+        const { endIdx, toolCount } = scanTransparentRun(
+          visibleParts,
+          runStart,
+          isWorkTool,
+          true,
         );
-        i = endIdx;
+        if (toolCount >= MIN_WORK_GROUP_SIZE) {
+          const slice = visibleParts.slice(i, endIdx);
+          const id = `work-${visibleParts[runStart].id}`;
+          const prior = prevById.get(id);
+          result.push(
+            prior && prior.type === "work-group" && sameParts(prior.items, slice)
+              ? prior
+              : { type: "work-group", items: slice, id },
+          );
+          i = endIdx;
+          continue;
+        }
+        // Unreachable while MIN_WORK_GROUP_SIZE is 1, but keep the
+        // fallthrough so raising the threshold later degrades safely.
+      }
+      if (isTodoPart(part)) {
+        result.push(part);
+        i++;
         continue;
       }
-      // Unreachable while MIN_WORK_GROUP_SIZE is 1, but keep the
-      // fallthrough so raising the threshold later degrades safely.
     }
 
     if (part.tool.toolName === "generate_image") {

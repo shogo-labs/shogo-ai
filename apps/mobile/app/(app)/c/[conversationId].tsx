@@ -47,7 +47,7 @@ import { FilesPane } from '../../../components/team-chat/FilesPane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/layout/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
-import { ChannelTabs, channelSupportsDoc, channelTabItems } from '../../../components/team-chat/ChannelTabs'
+import { ChannelTabs, channelSupportsDoc, channelSupportsTabs, channelTabItems } from '../../../components/team-chat/ChannelTabs'
 import { ShareFileView } from '../../../components/chat/ShareFileViewer'
 import { ShareFileProvider, type ShareFileTarget } from '../../../components/chat/share-file-context'
 import { parseInAppFileHref } from '../../../lib/share-file-links'
@@ -274,7 +274,7 @@ export default function ConversationScreen() {
   )
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openFiles = useCallback(
-    () => router.setParams({ files: '1', doc: undefined, thread: undefined, project: undefined } as any),
+    () => router.setParams({ files: '1', doc: undefined, board: undefined, card: undefined, thread: undefined, project: undefined } as any),
     [router],
   )
   const closeFiles = useCallback(() => router.setParams({ files: undefined } as any), [router])
@@ -294,6 +294,8 @@ export default function ConversationScreen() {
     [router],
   )
   const closeDoc = useCallback(() => router.setParams({ doc: undefined, board: undefined } as any), [router])
+  /** The Messages tab: out of the doc, a board or the files list, back to the timeline. */
+  const showMessages = useCallback(() => router.setParams({ doc: undefined, board: undefined, files: undefined } as any), [router])
   const openBoard = useCallback(
     (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined, from: undefined } as any),
     [router],
@@ -386,6 +388,8 @@ export default function ConversationScreen() {
 
   const visible = focused && foreground
   const supportsDoc = channelSupportsDoc(conversation)
+  // DMs list their files too, so every conversation but #activity gets tabs.
+  const supportsTabs = channelSupportsTabs(conversation)
   const boardId = supportsDoc && boardsOn ? boardParam : null
   const docOpen = supportsDoc && docParam && !boardId
   const {
@@ -427,14 +431,16 @@ export default function ConversationScreen() {
     conversation,
     docOpen,
     onOpenDoc: openDoc,
-    onShowMessages: closeDoc,
+    onShowMessages: showMessages,
+    filesOpen,
+    onOpenFiles: openFiles,
     boards,
     activeBoardId: boardId,
     onOpenBoard: openBoard,
     onAddBoard,
   }
   // On a phone the tabs live in the header's glass panel (like Slack), not in a strip under it.
-  const tabsMenu = supportsDoc && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
+  const tabsMenu = supportsTabs && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
   const header = (
     <ConversationHeader
       conversation={conversation}
@@ -445,7 +451,6 @@ export default function ConversationScreen() {
       onDeleted={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
-      onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
       onFilterByMember={filterByMember}
       onClearMemberFilter={clearMemberFilter}
@@ -454,7 +459,7 @@ export default function ConversationScreen() {
       tabsMenu={tabsMenu}
     />
   )
-  const tabs = supportsDoc && !floating ? <ChannelTabs {...tabProps} /> : null
+  const tabs = supportsTabs && !floating ? <ChannelTabs {...tabProps} /> : null
   // The phone header floats over the content; the content clears it with this inset.
   const topInset = headerHeight
 

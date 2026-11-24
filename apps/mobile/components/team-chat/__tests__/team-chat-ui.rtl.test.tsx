@@ -1947,7 +1947,8 @@ describe('ConversationHeader channel editing', () => {
 
 describe('desktop header overflow', () => {
   // The desktop channel header's actions, in the order the header builds them.
-  const actions = ['agent-profile', 'edit', 'notify', 'star', 'pins', 'files', 'catchup', 'members', 'leave', 'archive', 'delete'].map((key) => ({ key }))
+  // Files is a tab, not a header action, so it is not in this list.
+  const actions = ['agent-profile', 'edit', 'notify', 'star', 'pins', 'catchup', 'members', 'leave', 'archive', 'delete'].map((key) => ({ key }))
   const keys = (list: Array<{ key: string }>) => list.map((a) => a.key)
 
   test('an unmeasured or wide header keeps every action inline', () => {
@@ -1956,15 +1957,15 @@ describe('desktop header overflow', () => {
   })
 
   test('More appears only once the actions no longer fit', () => {
-    // 196px of fixed room plus 36px per icon: all 11 actions need 592px.
-    expect(splitHeaderActions(actions, 592).overflow).toEqual([])
-    expect(splitHeaderActions(actions, 591).overflow.length).toBeGreaterThan(0)
+    // 196px of fixed room plus 36px per icon: all 10 actions need 556px.
+    expect(splitHeaderActions(actions, 556).overflow).toEqual([])
+    expect(splitHeaderActions(actions, 555).overflow.length).toBeGreaterThan(0)
   })
 
   test('a narrow header keeps the most useful actions inline and moves the rest under More', () => {
     const { inline, overflow } = splitHeaderActions(actions, 480)
-    expect(keys(inline)).toEqual(['notify', 'star', 'pins', 'files', 'catchup', 'members'])
-    expect(keys(overflow)).toEqual(['agent-profile', 'edit', 'leave', 'archive', 'delete'])
+    expect(keys(inline)).toEqual(['agent-profile', 'notify', 'star', 'pins', 'catchup', 'members'])
+    expect(keys(overflow)).toEqual(['edit', 'leave', 'archive', 'delete'])
   })
 
   test('below the compact width only More remains, with every action under it', () => {

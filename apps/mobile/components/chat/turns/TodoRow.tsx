@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * The agent's session checklist in the stream — a quiet pointer to the Tasks
+ * panel, never the checklist itself: the full list lives in the dock
+ * (`ChecklistDockPanel`) on desktop/web and in the "Worked" sheet on phone.
+ *
+ * Text only, no icon (SHO-574): it shares the 11px muted row style of every
+ * other minimal tool row, and it usually rides inside the surrounding
+ * work-group (`WorkGroup.tsx`) rather than standing alone.
+ */
 
 import { useMemo } from "react"
-import { Loader2, ListTodo } from "lucide-react-native"
 import { Pressable, Text } from "react-native"
 import type { ToolCallData } from "../tools/types"
 import { parseTodos } from "../../../lib/todo-state-store"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
-import { Spin } from "@/components/ui/Spin";
 
 export interface TodoRowProps {
   tool: ToolCallData
@@ -35,15 +42,8 @@ export function TodoRow({ tool, className }: TodoRowProps) {
       accessibilityRole={nativePhone ? undefined : "button"}
       disabled={nativePhone}
       onPress={() => dockStore.openPanel("checklist")}
-      className={`flex-row items-center gap-1.5 rounded py-0.5 ${className ?? ""}`}
+      className={`flex-row items-center rounded py-0.5 ${className ?? ""}`}
     >
-      {isPlanning ? (
-        <Spin>
-          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-        </Spin>
-      ) : (
-        <ListTodo className="h-3 w-3 text-muted-foreground" />
-      )}
       <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
         {content}
       </Text>

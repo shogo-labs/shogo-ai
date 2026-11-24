@@ -93,7 +93,7 @@ mock.module('../../../lib/api', () => ({
 
 const { BoardKanban } = await import('../BoardKanban')
 const { CardPane } = await import('../CardPane')
-const { ChannelTabs } = await import('../../team-chat/ChannelTabs')
+const { ChannelTabs, channelTabItems } = await import('../../team-chat/ChannelTabs')
 
 const columns = [
   { id: 'c1', name: 'Triage', position: 0, category: 'backlog', wipLimit: null, agentRef: 'project:p1', slaHours: 4 },
@@ -267,25 +267,59 @@ describe('BoardKanban sort', () => {
 describe('ChannelTabs', () => {
   const conversation = { id: 'conv', kind: 'public', hasDoc: false } as any
 
-  test('lists boards between Messages and Doc and switches between them', () => {
+  const tabProps = (over: Record<string, unknown> = {}) => ({
+    conversation,
+    docOpen: false,
+    onOpenDoc: () => {},
+    onShowMessages: () => {},
+    ...over,
+  })
+
+  const tabLabels = () => screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))
+
+  test('lists Files after Messages, then boards, then Doc, and switches between them', () => {
     const opened: string[] = []
     let adding = 0
+    let files = 0
     render(createElement(ChannelTabs, {
-      conversation,
-      docOpen: false,
-      onOpenDoc: () => {},
-      onShowMessages: () => {},
+      ...tabProps({ onOpenFiles: () => files++ }),
       boards: [board as any, { ...board, id: 'b2', slug: 'renewals', name: 'Renewals' } as any],
       activeBoardId: 'b2',
       onOpenBoard: (id: string) => opened.push(id),
       onAddBoard: () => adding++,
     }))
-    const labels = screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))
-    expect(labels).toEqual(['Messages', 'Support', 'Renewals', 'Add doc', 'Add board'])
+    expect(tabLabels()).toEqual(['Messages', 'Files', 'Support', 'Renewals', 'Add doc', 'Add board'])
+    fireEvent.click(screen.getByTestId('channel-tab-files'))
     fireEvent.click(screen.getByTestId('channel-tab-board-support'))
     fireEvent.click(screen.getByTestId('channel-add-board'))
+    expect(files).toBe(1)
     expect(opened).toEqual(['b1'])
     expect(adding).toBe(1)
+  })
+
+  test('the open files list selects Files and Messages steps aside', () => {
+    // `active` is what the tab publishes as aria-selected; the DOM assertion
+    // lives in e2e/local/channel-files.test.ts, against real react-native-web.
+    const open = channelTabItems(tabProps({ filesOpen: true, onOpenFiles: () => {} }) as any)
+    expect(open.filter((i) => i.active).map((i) => i.key)).toEqual(['files'])
+
+    const closed = channelTabItems(tabProps({ filesOpen: false, onOpenFiles: () => {} }) as any)
+    expect(closed.filter((i) => i.active).map((i) => i.key)).toEqual(['messages'])
+  })
+
+  test('a DM gets Messages and Files, with no Doc tab', () => {
+    render(createElement(ChannelTabs, tabProps({ conversation: { ...conversation, kind: 'dm' }, onOpenFiles: () => {} })))
+    expect(tabLabels()).toEqual(['Messages', 'Files'])
+  })
+
+  test('#activity gets no Files tab and no Doc tab', () => {
+    render(createElement(ChannelTabs, tabProps({ conversation: { ...conversation, kind: 'activity' }, onOpenFiles: () => {} })))
+    expect(tabLabels()).toEqual(['Messages'])
+  })
+
+  test('no Files tab when the screen does not offer one', () => {
+    render(createElement(ChannelTabs, tabProps()))
+    expect(tabLabels()).toEqual(['Messages', 'Add doc'])
   })
 })
 
