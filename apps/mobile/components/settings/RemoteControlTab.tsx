@@ -11,7 +11,6 @@ import { useMemo, useEffect, useState, useCallback } from 'react'
 import {
   View,
   Pressable,
-  ActivityIndicator,
   Platform,
   Alert,
 } from 'react-native'
@@ -56,6 +55,7 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import { Spin } from "@/components/ui/Spin";
+import { Spinner } from '@/components/ui/spinner'
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === 'web') return {}
@@ -269,11 +269,11 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
           <Button
             size="sm"
             onPress={() => setAddOpen(true)}
-            className="bg-brand-landing hover:opacity-90"
+            className="bg-primary hover:opacity-90"
           >
             <View className="flex-row items-center gap-1.5 px-1">
-              <Plus size={16} color="#fff" />
-              <Text className="text-sm font-semibold text-white">Add Device</Text>
+              <Plus size={16} className="text-primary-foreground" />
+              <Text className="text-sm font-semibold text-primary-foreground">Add Device</Text>
             </View>
           </Button>
         </View>
@@ -332,7 +332,7 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
 
         {loading && instances.length === 0 ? (
           <View className="py-20 items-center">
-            <ActivityIndicator size="large" color="rgb(var(--color-primary))" />
+            <Spinner size="large" />
             <Text className="text-sm text-muted-foreground mt-4">Discovering instances...</Text>
           </View>
         ) : instances.length === 0 ? (
@@ -404,7 +404,7 @@ export const RemoteControlTab = observer(function RemoteControlTab() {
                         ) : null}
                       </View>
                       {isConnecting ? (
-                        <ActivityIndicator size="small" color="rgb(var(--color-primary))" />
+                        <Spinner size="small" />
                       ) : (
                         <View className="flex-row items-center gap-1">
                           {isActive && <Check size={18} className="text-primary mr-1" />}

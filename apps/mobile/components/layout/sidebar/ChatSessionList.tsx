@@ -13,7 +13,6 @@
  */
 import { useCallback, useState, type ReactNode } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   Text,
@@ -27,6 +26,7 @@ import { projectChatLabel } from "../../../lib/project-chat-sessions";
 import { ChatTreeItem } from "./ChatTreeItem";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 import { useSidebarScrollEnd } from "./SidebarScrollContext";
+import { Spinner } from '@/components/ui/spinner'
 
 export const INITIAL_VISIBLE_CHATS = 5;
 export const INLINE_CHAT_INCREMENT = 10;
@@ -544,7 +544,7 @@ export function ChatSessionList({
           accessibilityLabel={headerAction.accessibilityLabel}
           icon={
             headerAction.busy ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               headerAction.icon
             )

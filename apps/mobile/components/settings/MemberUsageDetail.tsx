@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, ScrollView, Pressable, Modal, ActivityIndicator } from 'react-native'
+import { View, ScrollView, Pressable, Modal } from 'react-native'
 import { X } from 'lucide-react-native'
 import type { MemberInsight } from '../../lib/api'
 import {
@@ -9,6 +9,7 @@ import {
   useAccountSheetIcons,
 } from './account-sheet-chrome'
 import { StackedAreaChart } from '../analytics/StackedAreaChart'
+import { Spinner } from '@/components/ui/spinner'
 
 type MemberUsagePeriod = '7d' | '30d' | '90d'
 
@@ -92,7 +93,7 @@ export function MemberUsageDetail({
 
             {loading ? (
               <View className="h-48 items-center justify-center">
-                <ActivityIndicator />
+                <Spinner />
               </View>
             ) : member ? (
               <>

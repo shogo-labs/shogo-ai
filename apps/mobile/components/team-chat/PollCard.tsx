@@ -73,7 +73,7 @@ export function PollCardView({ message, me, canManage }: { message: ChatMessage;
             <View className="absolute inset-y-0 left-0 bg-primary/10" style={{ width: `${pct}%` }} />
             <View className="flex-row items-center gap-2">
               <View className={cn('h-4 w-4 items-center justify-center border', poll.multiple ? 'rounded' : 'rounded-full', picked ? 'border-primary bg-primary' : 'border-muted-foreground/50')}>
-                {picked ? <Check size={10} color="white" /> : null}
+                {picked ? <Check className="text-primary-foreground" size={10} /> : null}
               </View>
               <Text className="flex-1 text-sm text-foreground">{option.text}</Text>
               <Text className="text-xs text-muted-foreground">{votes}</Text>

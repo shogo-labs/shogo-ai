@@ -25,7 +25,20 @@ mock.module('react-native', () =>
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(' '), Avatar: () => createElement('span') }))
 mock.module('lucide-react-native', () => ({ Plus: () => createElement('span'), ChevronRight: () => createElement('span') }))
 mock.module(resolve(import.meta.dir, '../../PresenceDot'), () => ({ PresenceDot: () => createElement('span') }))
+// SHO-537: people and agents render through one row, so the stub exposes that
+// row's slot sizes the way the real one does.
+const iconSize = (comfortable: boolean) => (comfortable ? 22 : 12)
 mock.module(resolve(import.meta.dir, '../../ConversationRows'), () => ({
+  ChatRowView: ({ title, subtitle, start, testID, accessibilityLabel, comfortable }: any) =>
+    createElement(
+      'div',
+      { 'data-testid': testID ?? 'chat-row', 'data-comfortable': String(comfortable), 'aria-label': accessibilityLabel },
+      createElement('span', { 'data-testid': 'chat-row-lead' }, String(iconSize(comfortable))),
+      start,
+      createElement('span', { 'data-testid': 'chat-row-title' }, title),
+      subtitle ? createElement('span', { 'data-testid': 'chat-row-subtitle' }, subtitle) : null,
+    ),
+  rowIconSize: iconSize,
   ConversationRow: ({ conversation }: any) => createElement('div', { 'data-testid': `row-${conversation.id}` }),
   PanelSection: ({ label, children }: any) => createElement('section', { 'data-section': label }, createElement('h3', null, label), children),
   PanelLink: ({ label, onPress }: any) => createElement('button', { onClick: onPress }, label),
@@ -113,22 +126,31 @@ describe('DmsPanel — Agents chip (SHO-473)', () => {
     expect(screen.queryByText('Workspace agent')).toBeNull()
   })
 
-  test('agent row shows last chat title when chat history exists', () => {
+  test('in the sidebar an agent row is one line and keeps its last chat in the label', () => {
     chat.mentionables = { agents: [agent('ws', 'Workspace agent', null)] }
     recentChats = [recentChat('s1', 'ws', null, 'Help with onboarding')]
 
     render(createElement(DmsPanel, {}))
     fireEvent.click(screen.getByRole('button', { name: 'Agents' }))
 
-    expect(screen.getByText(/Help with onboarding/)).toBeTruthy()
+    expect(screen.queryByTestId('chat-row-subtitle')).toBeNull()
+    expect(screen.getByTestId('agent-row').getAttribute('aria-label')).toMatch(/^Workspace agent, Help with onboarding · .+$/)
   })
 
-  test('agent row shows "Start a chat" when no history exists', () => {
+  test('on the phone screen the agent row shows its last chat like a person preview', () => {
+    chat.mentionables = { agents: [agent('ws', 'Workspace agent', null)] }
+    recentChats = [recentChat('s1', 'ws', null, 'Help with onboarding')]
+
+    render(createElement(DmsPanel, { variant: 'screen' }))
+
+    expect(screen.getByTestId('chat-row-subtitle').textContent).toMatch(/^Help with onboarding · .+$/)
+  })
+
+  test('on the phone screen an agent with no history says "Start a chat"', () => {
     chat.mentionables = { agents: [agent('ws', 'Workspace agent', null)] }
     recentChats = []
 
-    render(createElement(DmsPanel, {}))
-    fireEvent.click(screen.getByRole('button', { name: 'Agents' }))
+    render(createElement(DmsPanel, { variant: 'screen' }))
 
     expect(screen.getByText('Start a chat')).toBeTruthy()
   })

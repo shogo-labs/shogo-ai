@@ -11,7 +11,7 @@
  * full-screen `/c/new` route on phones.
  */
 import { useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { Check, Headphones, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { huddleMediaSupported, joinHuddleCall } from '../../lib/huddle-call'
@@ -20,6 +20,7 @@ import { PresenceDot } from './PresenceDot'
 import { UserAvatar } from './UserAvatar'
 import { useInviteDialog } from '../workspace/invite-dialog-context'
 import { usePermissions } from '../../hooks/usePermissions'
+import { Spinner } from '@/components/ui/spinner'
 
 export type NewMessageFilter = 'all' | 'people'
 
@@ -240,7 +241,7 @@ export function NewMessagePicker({
           className="mt-2 items-center rounded-md bg-primary py-3"
         >
           {busy ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Text className="text-sm font-medium text-primary-foreground">
               {selected.length > 1 ? `Start group message (${selected.length})` : 'Start message'}

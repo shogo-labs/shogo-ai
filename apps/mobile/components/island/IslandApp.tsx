@@ -703,10 +703,10 @@ export const IslandApp = observer(function IslandApp({
           accessibilityLabel="Open Shogo"
           hitSlop={6}
         >
-          <ExternalLink size={13} color="#a1a1aa" />
+          <ExternalLink className="text-muted-foreground" size={13} />
         </Pressable>
         <Pressable onPress={collapse} accessibilityLabel="Collapse" hitSlop={6}>
-          <Minus size={14} color="#a1a1aa" />
+          <Minus className="text-muted-foreground" size={14} />
         </Pressable>
       </View>
     </View>
@@ -758,7 +758,7 @@ export const IslandApp = observer(function IslandApp({
             <Text className="max-w-[140px] text-[10px] font-medium text-zinc-300" numberOfLines={1}>
               {target.projectName}
             </Text>
-            <ChevronsUpDown size={9} color="#a1a1aa" />
+            <ChevronsUpDown className="text-muted-foreground" size={9} />
           </Pressable>
         ) : null
       }

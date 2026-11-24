@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -25,6 +25,7 @@ import { setChatPrefill } from '../../../hooks/useChatPrefill'
 import { api, type PersonalGoal, type PersonalGoalEvent, type PersonalAgentTaskSummary } from '../../../lib/api'
 import { isPhoneLayout } from '../../../lib/native-phone-layout'
 import { PhoneScreenHeader, usePhoneScreenHeaderPadding } from '../../../components/layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 type GoalWithDetail = PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
 
@@ -110,7 +111,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
     return (
       <View className="flex-1 bg-background">
         <DetailHeader title="Goal" onBack={goBack} contentWidth={contentWidth} isWide={isWide} />
-        <View className="flex-1 items-center justify-center" style={{ paddingTop: headerPad }}><ActivityIndicator /></View>
+        <View className="flex-1 items-center justify-center" style={{ paddingTop: headerPad }}><Spinner /></View>
       </View>
     )
   }
@@ -178,7 +179,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
                         className="flex-1 items-center rounded-xl bg-emerald-600 px-3 py-2.5 active:opacity-80 disabled:opacity-50"
                       >
                         {decidingEventId === event.id ? (
-                          <ActivityIndicator size="small" color="#fff" />
+                          <Spinner className="text-white" size="small" />
                         ) : (
                           <Text className="text-sm font-semibold text-white">Approve</Text>
                         )}

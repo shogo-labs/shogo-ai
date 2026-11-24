@@ -7,7 +7,7 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
+import { AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -89,6 +89,7 @@ import {
   publishWorkspaceSessionScopeChanged,
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
+import { Spinner } from '@/components/ui/spinner'
 
 /** Wide enough to show a project beside the chat (same as team chat's side pane). */
 const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
@@ -816,7 +817,7 @@ export const WorkspaceAgentChatScreen = observer(
             </>
           ) : loadingView === "spinner" ? (
             <>
-              <ActivityIndicator />
+              <Spinner />
               <Text className="mt-3 text-sm text-muted-foreground">
                 Preparing Workspace Agent Chat…
               </Text>

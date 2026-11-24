@@ -36,6 +36,7 @@ import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
+import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -244,6 +245,20 @@ export type DriveResizeResult = { fromMiB: number; toMiB: number } | 'unchanged'
 
 /** How long a rollout rotation that aborted waits before trying again. */
 export const ROTATE_RETRY_MS = 10 * 60_000
+
+/**
+ * How long a rotation that is BLOCKED on an un-snapshottable database waits
+ * before trying again.
+ *
+ * Retrying every {@link ROTATE_RETRY_MS} is how one broken database re-exported
+ * and re-uploaded its 1.7 GB source bundle every ten minutes for four days
+ * (SHO-541). A database that cannot be snapshotted does not heal on its own —
+ * it needs a fixed guest or a human to recover it — so this retry is a slow
+ * safety net, not a repair loop. Blocked is reported on `/status` and alerted
+ * once, so it does not depend on anyone reading these retries.
+ */
+export const ROTATE_BLOCKED_RETRY_MS = 6 * 60 * 60_000
+
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
 const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
 
@@ -469,6 +484,19 @@ export interface ProjectStatus {
    * on `saving-failing` for more than 30 minutes.
    */
   durability?: ProjectDurability
+  /**
+   * The project database this VM is running cannot be snapshotted, so its
+   * writable state is not being backed up (SHO-541). Present only while the
+   * failure streak is live; `attempts` says how many consecutive exports
+   * failed and `since` when the streak began.
+   */
+  dataSnapshot?: DataSnapshotFailure
+  /**
+   * The VM is on a superseded rootfs that rotation refuses to take, with the
+   * reason. `stale_rootfs_blocked` means it will stay on the old runtime until
+   * someone acts — the state Samsara's VM sat in for four days (SHO-541).
+   */
+  rotationBlocked?: RotationBlocked
 }
 
 /** Git durability of a running VM, as the API and the UI see it. */
@@ -479,6 +507,32 @@ export interface ProjectDurability {
   /** When this VM's HEAD last reached the durable repo, if it ever did. */
   lastSavedAt?: number
   reason?: string
+}
+
+/**
+ * A VM whose database could not be snapshotted (SHO-541).
+ *
+ * `attempts` counts consecutive failures, so `since` is when the current
+ * streak began and not when the VM was assigned — an alert needs to know how
+ * long the project has had no writable-state backup.
+ */
+export interface DataSnapshotFailure {
+  code: string
+  message: string
+  since: number
+  attempts: number
+}
+
+/**
+ * Why a VM on a superseded rootfs is still running, when rotation has given up
+ * on its own. `stale_rootfs_blocked` is the state Samsara's VM sat in for four
+ * days: rotation needs a final backup, the backup could not be taken, and
+ * nothing reported it (SHO-541).
+ */
+export interface RotationBlocked {
+  code: 'stale_rootfs_blocked'
+  reason: string
+  since: number
 }
 
 /** How a suspend request ended (see `suspendOrRetire`). */
@@ -497,6 +551,29 @@ export type SuspendOutcome =
  * warm (`evictable`). See `MetalWarmPool.vmResidency`.
  */
 export type VmResidency = 'active' | 'evictable'
+
+/**
+ * Liveness class of one assigned VM. `agent` = a streamed turn in flight or a
+ * recent agent request, `app` = recent end-user app traffic, `idle` = neither —
+ * including a guest that is busy with work no person asked for. See
+ * `vmLiveness`, the ONE classifier the gauges, the bill and the reaper share.
+ */
+export type VmLiveness = 'agent' | 'app' | 'idle'
+
+/**
+ * Why the idle reaper is leaving an assigned VM resident right now.
+ *
+ *   alwaysOn  — paid, never idle-suspended
+ *   refused   — its HEAD is not durable yet, so a suspend would lose work (backed off)
+ *   busy      — a turn or task is in flight (`vmBusy`), retried at the next quiet poll
+ *   window    — inside the idle window the reaper is applying
+ *   legacy    — no per-class activity: its clock is the catch-all, which our own exports move
+ *   evictable — past the window and idle: the next reaper pass suspends it
+ *
+ * `window`/`evictable` use the window the reaper ACTUALLY applied (the control
+ * plane's relaxed directive when it has one), not `METAL_IDLE_SUSPEND_MS`.
+ */
+export type VmHoldReason = 'window' | 'busy' | 'refused' | 'alwaysOn' | 'legacy' | 'evictable'
 
 /**
  * Why a VM was suspended. `idle` is the reaper's window; `evicted` is an
@@ -612,6 +689,28 @@ export interface AssignedVm {
    */
   lastRealActivityAt?: number
   /**
+   * MiB the balloon is currently holding, i.e. RAM this idle VM has handed back
+   * to the host (SHO-534). `undefined` = nothing reclaimed. Set by
+   * `reclaimIdleVms`, cleared by the first sign of activity (`deflateReclaimed`),
+   * which is fire-and-forget so it never sits on a request's path.
+   */
+  balloonedMiB?: number
+  /**
+   * This VM's agent does not expose balloon statistics (it booted before reclaim
+   * asked for them), so its RAM cannot be sized safely. `reclaimIdleVms` skips it
+   * from then on instead of re-probing every tick, and never blind-inflates it.
+   */
+  balloonUnsupported?: boolean
+  /**
+   * Wall-clock (ms) of the last time this VM's balloon was touched — handed back
+   * on activity, or probed by the idle pass and found to have nothing above the
+   * floor. The hysteresis for `reclaimIdleVms`: a VM is not reclaimed again until
+   * a full window passes, so a VM woken every few seconds cannot flap between
+   * inflated and deflated, and a guest that is already at its floor is not
+   * re-probed on every tick.
+   */
+  lastBalloonAt?: number
+  /**
    * Wall-clock (ms) of the last time a PERSON used this VM, on a clock that only
    * real user requests move. `lastRealActivityAt` cannot serve this purpose: it
    * is stamped on every poll where the guest reports busy, so a guest stuck
@@ -699,6 +798,32 @@ export interface AssignedVm {
    * companion to `activeStreams` for a turn that is still in flight.
    */
   lastAgentRequestAt?: number
+  /**
+   * Whether a PERSON has used this VM since it was placed. `false` on a VM the
+   * platform started on its own initiative (a schedule tick, an agent wake, a
+   * `rewarm`/`prewarm`), `true` for a `user_open`/`published` one, and flipped
+   * to `true` by the first app/agent request that arrives afterwards.
+   *
+   * It narrows the idle window for such a VM to the aggressive one even under a
+   * relaxed directive: nobody asked for those 4 hours, so a scheduled wake must
+   * not buy them (SHO-533). `undefined` (an adopted VM, cause unknown) is never
+   * narrowed.
+   */
+  userSeenSinceAssign?: boolean
+  /**
+   * Consecutive idle-suspend refusals and when the streak started. A refusal
+   * means the guest's HEAD is not in the durable repo yet (SHO-442), so the VM
+   * cannot be suspended — but every attempt pays a full repo export, so retrying
+   * one every scan starves the reaper of the passes every OTHER idle VM needs.
+   * The streak backs the retry off (see `refuseBackoffMs`) and is cleared by the
+   * first suspend that succeeds.
+   */
+  refuseCount?: number
+  refusedSince?: number
+  /** Don't attempt this VM again before this wall-clock (refusal backoff). */
+  refuseRetryAt?: number
+  /** The once-per-VM refusal warning has been logged. */
+  refusalLogged?: boolean
   /**
    * Whether the guest reports the per-class fields at all. An older runtime
    * image omits them entirely (as opposed to sending `null`, which means
@@ -804,6 +929,18 @@ export interface AssignedVm {
   dataExportFailures?: number
   /** Epoch ms before which the periodic exporter should not retry. */
   dataExportRetryAfter?: number
+  /**
+   * The guest answered `/pool/export-data` with `sqlite_snapshot_failed`: it
+   * cannot produce a snapshot of the project database. Set from the guest's
+   * named code rather than the message, because the message is SQLite's and
+   * changes with the shape of the damage.
+   *
+   * Until this exists a failing snapshot looked exactly like a slow guest: it
+   * logged a 500 line every cycle and nothing else (SHO-541 — Samsara's VM went
+   * four days and 336 failures with no alert, and could never rotate because
+   * rotation needs a final backup first).
+   */
+  dataSnapshotFailure?: DataSnapshotFailure
   /**
    * ETag of the encrypted home-directory archive (`home-state.enc`) this VM's
    * `~/.ssh`, `~/.oci`, ... descend from. Same role as `dataParentEtag`.
@@ -958,6 +1095,53 @@ interface DataSaveOpts {
   reason?: 'periodic' | 'final' | 'recycle'
 }
 
+/** What `recycle()` may be asked to do. */
+export interface RecycleOpts {
+  reason?: string
+  env?: Record<string, string>
+  /** Remove the VM even if a backup failed (the caller knows it is gone). */
+  force?: boolean
+  /** Release rotation: settle background tasks before the source backup. */
+  stopBackgroundTasks?: boolean
+}
+
+/**
+ * The guest's named code for "I cannot snapshot the project database"
+ * (`packages/agent-runtime/src/writable-state.ts`). A string the two sides
+ * share, so a rename on one side fails loudly instead of quietly matching
+ * nothing.
+ */
+export const SQLITE_SNAPSHOT_FAILED = 'sqlite_snapshot_failed'
+
+/** An error from the guest's export endpoint, carrying the code it sent. */
+export interface GuestExportError extends Error {
+  code?: string
+}
+
+/** What `/pool/export-data` gave back: bytes, or why it gave none. */
+type DataExportResult = { bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null
+
+/**
+ * Turn a failed `/pool/export-data` reply into an error, keeping the guest's
+ * own `code`. The body is JSON (`{ error, code }`) for a named failure and may
+ * be anything at all for an unhandled one, so the raw text is kept for the log
+ * and the guest's own message is used when there is one — that message ends up
+ * on the VM's status, where `{"error":…}` JSON is unreadable.
+ */
+async function exportError(res: Response): Promise<GuestExportError> {
+  const text = await res.text()
+  let code: string | undefined
+  let message = text
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed.code === 'string') code = parsed.code
+    if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) message = parsed.error.trim()
+  } catch {}
+  const err = new Error(`/pool/export-data failed (${res.status}): ${message}`) as GuestExportError
+  if (code) err.code = code
+  return err
+}
+
 /**
  * One writable-state backup target: a single-project VM (the top-level
  * `dataParentEtag` fields) or one member of a workspace runtime. `commit`
@@ -1073,13 +1257,20 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
- * How recently a VM must have served end-user *app* traffic to count as
- * "app-active" in the fleet gauges. Generous enough to bridge the gaps between
- * a real user's requests (page loads, API calls) without flapping the bucket,
- * short enough that a genuinely-abandoned app falls into the idle tail. Purely
- * an observability window — it does not affect suspend/reap decisions.
+ * How recently a VM must have served a request of a given class — an end-user
+ * app request, or an agent turn — to still count as live in that class.
+ * Generous enough to bridge the gaps between a real user's requests (page
+ * loads, API calls) without flapping the bucket, short enough that a
+ * genuinely-abandoned VM falls into the idle tail.
+ *
+ * One window for both classes, and one consumer: `vmLiveness` decides the
+ * fleet gauges, the bill AND (through `lastRealActivityAt`) whether the idle
+ * reaper may suspend the VM. A VM the reaper has to leave resident because
+ * someone just used it is the same VM the meter must not call idle — the two
+ * disagreeing is what billed 96% idle VM-hours on boxes that never idled
+ * (SHO-533).
  */
-const APP_ACTIVE_WINDOW_MS = 120_000
+const ACTIVITY_WINDOW_MS = 120_000
 
 /**
  * How long a stopped VM's final meter is retried before it is dropped, and how
@@ -1090,6 +1281,15 @@ const APP_ACTIVE_WINDOW_MS = 120_000
  */
 const CLOSED_METER_TTL_MS = 60 * 60_000
 const MAX_CLOSED_METERS = 2_000
+
+/**
+ * How many VMs one reaper tick will hand RAM back for (SHO-534). Each reclaim is
+ * a stats read plus one PATCH (the inflate itself lands later, guest-paced), so
+ * a pass costs a few milliseconds per VM — but a host that suddenly goes quiet
+ * saw 150 VMs idle at once, and a tick that touched all of them at once would
+ * still be a burst of FC control traffic. The rest wait for the next tick.
+ */
+const MAX_IDLE_RECLAIMS_PER_PASS = 8
 
 /**
  * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
@@ -1613,7 +1813,7 @@ export class MetalWarmPool {
   }
 
   async start(): Promise<{ adopted: string[]; reaped: number }> {
-    this.rehydrate()
+    await this.rehydrate()
     // Adopt live VMs that survived the restart BEFORE filling the pool (fillPool
     // spawns new FCs; adopt must first claim survivors + reap non-adopted ones
     // so the host-scan reaper can't race a freshly-booted warm VM).
@@ -1622,7 +1822,7 @@ export class MetalWarmPool {
     // tap BEFORE reconcile() fills the warm pool — otherwise a fresh warm VM
     // would reuse a device name still held by an adopted VM (or reclaimed on a
     // suspended project's resume) and setupTap would tear down that live tap.
-    this.seedVmIndexAllocator()
+    await this.seedVmIndexAllocator()
     await this.reconcile()
     return adoption
   }
@@ -1633,7 +1833,7 @@ export class MetalWarmPool {
    * (suspended, whose exact device is recreated on resume). Without this the
    * counter reset to 0 on every restart and warm VMs collided with survivors.
    */
-  private seedVmIndexAllocator(): void {
+  private async seedVmIndexAllocator(): Promise<void> {
     let maxIdx = -1
     for (const e of this.live.all()) {
       const n = tapIndex(e.net)
@@ -1651,14 +1851,14 @@ export class MetalWarmPool {
     // setupTap deletes-then-recreates it and blackholes the running guest (the
     // prod incident: duplicate 172.16.0.x mesh IPs, dead guests, 502s). `ip
     // link` is the ground truth that survives the registry wipe.
-    for (const n of this.hostTapIndices()) {
+    for (const n of await this.hostTapIndices()) {
       if (n > maxIdx) maxIdx = n
     }
     if (maxIdx >= 0) this.mgr.seedVmSeq(maxIdx + 1)
   }
 
   /** Live host tap indices (`ip link`). Overridable seam for tests. */
-  protected hostTapIndices(): Set<number> {
+  protected hostTapIndices(): Promise<Set<number>> {
     return existingTapIndices()
   }
 
@@ -1758,6 +1958,17 @@ export class MetalWarmPool {
         workspaceDrive: e.workspaceDrive,
       }
       this.mgr.adoptVM(handle)
+      // A VM reclaimed before the restart still has its balloon inflated, but the
+      // accounting lived in this process's memory. Read the target back, so a
+      // request can deflate it and the idle pass can re-bank it, instead of
+      // leaving the guest short of RAM until it hits OOM. `deflate_on_oom` is the
+      // backstop, not the plan. Gated: with reclaim off this is an FC call per
+      // adopted VM that nothing would ever act on.
+      let balloonedMiB: number | undefined
+      if (this.cfg.idleReclaim) {
+        const target = await this.mgr.balloonTargetMiB(handle).catch(() => undefined)
+        if (target && target > 0) balloonedMiB = target
+      }
       this.assigned.set(e.projectId, {
         projectId: e.projectId,
         alwaysOn: e.alwaysOn,
@@ -1765,6 +1976,7 @@ export class MetalWarmPool {
         publishedSubdomain: e.publishedSubdomain,
         publishedDataLoaded: e.publishedDataLoaded,
         handle,
+        balloonedMiB,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
         // Fresh idle window across the restart, like lastTouchedAt: the guest's
@@ -1791,6 +2003,7 @@ export class MetalWarmPool {
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
         dataUntrustedReason: e.dataUntrustedReason,
+        dataSnapshotFailure: e.dataSnapshotFailure,
         homeParentEtag: e.homeParentEtag,
         homeUntrustedReason: e.homeUntrustedReason,
         memberData: e.memberData,
@@ -1856,6 +2069,7 @@ export class MetalWarmPool {
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
       dataUntrustedReason: a.dataUntrustedReason,
+      dataSnapshotFailure: a.dataSnapshotFailure,
       homeParentEtag: a.homeParentEtag,
       homeUntrustedReason: a.homeUntrustedReason,
       memberData: a.memberData,
@@ -1874,7 +2088,7 @@ export class MetalWarmPool {
    * so a node-agent restart keeps NVMe locality (no store re-pull stampede).
    * Entries whose artifacts are missing are dropped (their index file removed).
    */
-  rehydrate(): number {
+  async rehydrate(): Promise<number> {
     let n = 0
     for (const e of this.index.all()) {
       const s = this.entryToSuspended(e)
@@ -1891,7 +2105,7 @@ export class MetalWarmPool {
     for (const e of this.stagedIndex.all()) {
       const s = this.entryToSuspended(e)
       if (!s || s.rootfsIdentity !== this.stagedRootfs(s.snapshot.vmClass ?? 'standard')?.identity) {
-        if (s) this.deleteLocalArtifacts(s.snapshot)
+        if (s) await this.deleteLocalArtifacts(s.snapshot)
         this.stagedIndex.remove(e.projectId)
         continue
       }
@@ -2210,11 +2424,11 @@ export class MetalWarmPool {
         if (held && held.rootfsIdentity === staged.identity && !this.assigned.has(projectId)) {
           return { mode: 'prewarmed', stagedSnapshotIdentity: staged.identity }
         }
-        if (held) this.dropStaged(projectId)
+        if (held) await this.dropStaged(projectId)
       } else if (this.stagedSuspended.has(projectId)) {
         // A user open changes the project's data, so a snapshot pre-warmed
         // before it is already behind.
-        this.dropStaged(projectId)
+        await this.dropStaged(projectId)
       }
       // Idempotent: if the project is already live here, hand back the same VM
       // rather than restoring a duplicate from the store (which a re-/assign
@@ -2322,7 +2536,7 @@ export class MetalWarmPool {
             `[pool] resume failed for ${projectId}, falling back to cold boot:`,
             err?.message ?? err,
           )
-          this.evictLocal(projectId)
+          await this.evictLocal(projectId)
         }
       } else {
         staleReason = 'no_snapshot'
@@ -2504,6 +2718,11 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
+      // Only a person opening the project (or a visitor hitting a published
+      // site) has earned the relaxed idle window. A schedule tick, an agent
+      // wake or a prewarm gets the aggressive one until someone actually shows
+      // up (SHO-533).
+      userSeenSinceAssign: cause === 'user_open' || cause === 'published',
       // Warm VMs never outlive the agent process (prepareForRestart kills
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: stagedIdentity ?? this.classRootfsIdentity(vm.handle.vmClass),
@@ -3330,7 +3549,7 @@ export class MetalWarmPool {
     token?: string,
     knownTag?: string,
     dir?: string,
-  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
+  ): Promise<DataExportResult> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
@@ -3348,7 +3567,7 @@ export class MetalWarmPool {
       // A guest from before this endpoint existed. Distinguished from a real
       // failure because it is permanent for this VM and must not be retried.
       if (res.status === 404) return 'unsupported'
-      if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
+      if (!res.ok) throw await exportError(res)
       const buf = await res.arrayBuffer()
       if (!buf.byteLength) return null
       return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
@@ -4601,6 +4820,36 @@ export class MetalWarmPool {
   }
 
   /**
+   * Record a failed writable-state export on the VM, so a database nobody can
+   * snapshot is VISIBLE instead of being one 500 line among hundreds.
+   *
+   * Only a named snapshot failure gets an entry, and only the first one of a
+   * streak raises the alert: a guest that keeps failing is retried on its
+   * backoff and every retry is already logged, but the fleet-wide signal (the
+   * gauge, the journal line naming the project and the SQLite message) fires
+   * once per streak. Otherwise a VM stuck for four days would page every ten
+   * minutes (SHO-541).
+   */
+  private noteDataExportError(a: AssignedVm, slot: DataSlot, err: any): void {
+    if (err?.code !== SQLITE_SNAPSHOT_FAILED) return
+    const message = String(err?.message ?? err).slice(0, 500)
+    const prev = a.dataSnapshotFailure
+    a.dataSnapshotFailure = {
+      code: SQLITE_SNAPSHOT_FAILED,
+      message,
+      since: prev?.since ?? Date.now(),
+      attempts: (prev?.attempts ?? 0) + 1,
+    }
+    this.writeLive(a)
+    if (prev) return
+    metrics.inc(M.dataSnapshotFailed)
+    console.error(
+      `[pool] writable-state snapshot FAILED for ${slot.label} (${SQLITE_SNAPSHOT_FAILED}): ${message}. ` +
+        `Its database is not being backed up; the exports are retried with backoff.`,
+    )
+  }
+
+  /**
    * Pull the guest's CURRENT writable state and upload it under the guard.
    *
    * Serialized per project: the periodic exporter and `suspend()` both call
@@ -4710,7 +4959,13 @@ export class MetalWarmPool {
     // The guest short-circuits on an unchanged tag, so an idle project costs
     // one round-trip with no snapshot, no packing and no transfer.
     const known = this.dataTags.get(slot.flightKey)
-    const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known, slot.dir)
+    let exported: DataExportResult
+    try {
+      exported = await this.fetchDataExport(a.handle, a.runtimeToken, known, slot.dir)
+    } catch (err: any) {
+      this.noteDataExportError(a, slot, err)
+      throw err
+    }
     if (exported === 'unchanged') {
       metrics.inc(M.dataUnchanged)
       return false
@@ -4728,6 +4983,14 @@ export class MetalWarmPool {
     }
     if (!exported) return false
     const { bytes, tag } = exported
+    // A snapshot arrived, so whatever the last failure was, it is over. Cleared
+    // before the upload, not after: the guest producing a snapshot is the fact
+    // the rotation rule and the alert care about, and a refused upload
+    // (`conflict`) is a different, already-tracked problem.
+    if (a.dataSnapshotFailure) {
+      a.dataSnapshotFailure = undefined
+      this.writeLive(a)
+    }
 
     if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
 
@@ -5359,10 +5622,10 @@ export class MetalWarmPool {
         // `stagedSuspended`); the project's current snapshot keeps serving.
         if (untrustedSource) {
           console.error(`[pool] not keeping a pre-warmed snapshot of ${projectId} — source tree untrusted (${untrustedSource})`)
-          this.deleteLocalArtifacts(snapshot)
+          await this.deleteLocalArtifacts(snapshot)
           return s
         }
-        this.dropStaged(projectId)
+        await this.dropStaged(projectId)
         this.stagedSuspended.set(projectId, s)
         this.writeIndex(s, this.stagedIndex)
         return s
@@ -5371,7 +5634,9 @@ export class MetalWarmPool {
       // Replaces a current snapshot only a staged boot leaves behind (a normal
       // assign resumes, which consumes it).
       const prior = this.suspended.get(projectId)
-      if (prior && prior.snapshot.snapshotPath !== snapshot.snapshotPath) this.deleteLocalArtifacts(prior.snapshot)
+      if (prior && prior.snapshot.snapshotPath !== snapshot.snapshotPath) {
+        await this.deleteLocalArtifacts(prior.snapshot)
+      }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
 
@@ -5383,7 +5648,7 @@ export class MetalWarmPool {
           `[pool] not keeping a snapshot of ${projectId} — its source tree is untrusted (${untrustedSource}). ` +
             `The next open cold-boots from the durable backups.`,
         )
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         return s
       }
 
@@ -5727,7 +5992,7 @@ export class MetalWarmPool {
           `${this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')}) — evicting and cold-booting for fresh guest code`,
       )
       this.lastStaleReason.set(projectId, 'rootfs')
-      this.evictLocal(projectId)
+      await this.evictLocal(projectId)
       s = undefined
     }
 
@@ -5738,7 +6003,7 @@ export class MetalWarmPool {
         console.warn(
           `[pool] local snapshot for ${projectId} holds foreign workspace members ${foreign.join(',')}; evicting it`,
         )
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         s = undefined
       }
     }
@@ -5752,7 +6017,7 @@ export class MetalWarmPool {
       } else if (drift.length) {
         skipStale(drift[0].kind)
         console.warn(`[pool] local snapshot for ${projectId} is behind durable storage — ${drift[0].detail}; evicting it`)
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         s = undefined
       }
     }
@@ -5818,7 +6083,10 @@ export class MetalWarmPool {
       // than fail the whole resume over a file that was never going to be here.
       const dataDrive =
         pulled.meta.dataDriveMiB && pulled.meta.dataDriveMiB > 0
-          ? this.mgr.provisionFreshDataDrive(`restored-${projectId}-${Date.now().toString(36)}`, pulled.meta.dataDriveMiB)
+          ? await this.mgr.provisionFreshDataDrive(
+              `restored-${projectId}-${Date.now().toString(36)}`,
+              pulled.meta.dataDriveMiB,
+            )
           : undefined
       const snapshot: FcSnapshot = {
         vmId: `restored-${projectId}`,
@@ -5911,6 +6179,9 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
+      // Same rule as assign: a resume nobody asked for (schedule / agent_wake /
+      // rewarm / prewarm) does not buy the relaxed window (SHO-533).
+      userSeenSinceAssign: cause === 'user_open' || cause === 'published',
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // The restored guest runs the image its snapshot was taken on (already
       // gated fresh above); unstamped legacy snapshots count as current.
@@ -6062,7 +6333,44 @@ export class MetalWarmPool {
   /** Mark a project as active so the idle reaper doesn't suspend it. */
   touch(projectId: string): void {
     const a = this.assigned.get(projectId)
-    if (a) a.lastTouchedAt = Date.now()
+    if (!a) return
+    a.lastTouchedAt = Date.now()
+    // Every proxied request lands here, so this is where an idle-reclaimed VM
+    // gets its RAM back before the request reaches the guest. Fire-and-forget:
+    // a `deflate_on_oom` balloon already hands pages back under pressure, so no
+    // request may wait on (or fail because of) the PATCH.
+    this.deflateReclaimed(a, 'request')
+  }
+
+  /**
+   * Hand a reclaimed VM's RAM back to the guest. Never throws and never awaited
+   * by the request or poll that calls it — the balloon's `deflate_on_oom` is the
+   * safety net if the PATCH is slow or lost — but always clears the accounting
+   * first, so a burst of requests cannot queue up N deflates.
+   *
+   * `lastBalloonAt` is the hysteresis: the VM is not reclaimed again until a
+   * full `METAL_IDLE_RECLAIM_MS` passes, so a request every few seconds cannot
+   * flap the balloon (each inflate/deflate costs the guest real work).
+   */
+  private deflateReclaimed(a: AssignedVm, why: string): void {
+    if (a.balloonedMiB === undefined) return
+    const reclaimedMiB = a.balloonedMiB
+    a.balloonedMiB = undefined
+    a.lastBalloonAt = Date.now()
+    const started = performance.now()
+    void this.mgr
+      .deflate(a.handle)
+      .then(() => {
+        metrics.gauge(M.idleReclaimDeflateMs, +(performance.now() - started).toFixed(1))
+      })
+      .catch((err: any) => {
+        console.error(
+          `[pool] balloon deflate (${why}) failed for ${a.projectId}:`,
+          err?.message ?? err,
+        )
+      })
+    metrics.inc(M.balloonDeflated)
+    console.log(`[pool] balloon deflated ${reclaimedMiB} MiB (${why}): ${a.projectId}`)
   }
 
   /**
@@ -6123,13 +6431,15 @@ export class MetalWarmPool {
           // SHO-399). `undefined` on a guest too old to report them.
           a.activeTurns = typeof body.activeTurns === 'number' ? body.activeTurns : undefined
           a.liveStreams = typeof body.liveStreams === 'number' ? body.liveStreams : undefined
-          if (this.vmBusy(a)) {
-            a.lastTouchedAt = now // an active turn is activity
-            a.lastRealActivityAt = now
-            // Deliberately NOT lastUserActivityAt: a guest that wrongly reports
-            // busy would then look freshly used forever, and the busy-idle
-            // ceiling could never fire (SHO-420).
-          }
+          // A busy guest — a turn, a background task, a heartbeat run — is NOT
+          // activity in the reaper's sense, so it no longer moves
+          // `lastRealActivityAt` (SHO-533). It used to, on every poll, and since
+          // the recipes tick every 10-60 min the window never elapsed: 120-190
+          // VMs stayed resident for 13-24h while the meter billed them idles.
+          // `vmBusy` still blocks suspension (see `reapIdle`), so a real turn is
+          // never snapshotted away; it just cannot buy another full window. The
+          // reaper's clock moves below, only when `vmLiveness` says someone is
+          // using this VM.
           // Did the catch-all counter move since the previous poll? Captured
           // before we overwrite it, because the legacy fallback below needs it.
           const prevSeen = a.lastActivityAt
@@ -6185,6 +6495,7 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
               a.lastUserActivityAt = now
+              a.userSeenSinceAssign = true
             }
           }
           if (typeof agentAt === 'number') {
@@ -6194,7 +6505,24 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
               a.lastUserActivityAt = now
+              a.userSeenSinceAssign = true
             }
+          }
+          // The one clock the reaper, the meter and the fleet gauges share
+          // (`vmLiveness`). A live streamed turn or a request of either class
+          // inside the activity window is "someone is using this"; anything
+          // else — a heartbeat run, a background task, an export sweep — is not,
+          // however busy it makes the guest look.
+          if (this.vmLiveness(a, now) !== 'idle') {
+            a.lastTouchedAt = now
+            a.lastRealActivityAt = now
+            // Someone is using it: hand back any RAM the idle pass reclaimed.
+            this.deflateReclaimed(a, 'activity')
+          } else if (this.vmBusy(a)) {
+            // Nobody is using it, but the guest is doing real work (a background
+            // task, a scheduled run). It needs the RAM it has, so give it back
+            // too — reclaim only ever targets a VM that is doing nothing.
+            this.deflateReclaimed(a, 'busy')
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
@@ -6207,12 +6535,11 @@ export class MetalWarmPool {
           }
 
           // Legacy runtime: no per-class signal exists, so the catch-all is the
-
-          // Legacy runtime: no per-class signal exists, so the catch-all is the
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
             a.lastUserActivityAt = now
+            a.userSeenSinceAssign = true
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -6229,14 +6556,6 @@ export class MetalWarmPool {
     )
   }
 
-  /**
-   * True if the project's guest is mid-generation — an active agent message
-   * stream (`activeStreams > 0` from /pool/activity). Suspending it would
-   * snapshot away a live turn, so both the explicit `/stop` and the idle reaper
-   * consult this first. Fail-SAFE: a poll error → treat as busy (don't suspend
-   * on an unknown state); a clean 404 (guest opts out) or `activeStreams:0` →
-   * not busy. Only assigned (running) projects can be busy.
-   */
   /**
    * Whether this guest is doing real work, as far as the last activity poll can
    * tell. The guest's own `busy` verdict wins when it reports one; older guests
@@ -6270,6 +6589,17 @@ export class MetalWarmPool {
     return (a.activeTurns ?? 0) > 0 || (a.liveStreams ?? 0) > 0
   }
 
+  /**
+   * Is this guest mid-generation, asked live rather than from the last cached
+   * poll — the explicit `POST /stop` consults this before suspending, so it must
+   * not act on a 30s-old answer. Reads the same guest verdict `vmBusy` reads:
+   * `busy` (the guest's own count, which excludes a leaked `activeStreams`) and
+   * the counter only as the fallback for an older guest.
+   *
+   * Fail-SAFE: an unreachable guest is busy (don't snapshot a turn we cannot
+   * see), except a mute guest whose last agent turn is old — then it is safe to
+   * stop. A clean 404 (guest opts out) is not busy. Only assigned VMs can be.
+   */
   async isBusy(projectId: string): Promise<boolean> {
     const a = this.assigned.get(projectId)
     if (!a) return false
@@ -6322,6 +6652,105 @@ export class MetalWarmPool {
   }
 
   /**
+   * The idle window this VM gets, given the window the reaper is applying on
+   * this pass.
+   *
+   * A VM the platform started on its own initiative — a schedule tick, an agent
+   * wake, a `rewarm`/`prewarm` — has not been asked for by any person yet, so it
+   * only gets the aggressive window (`METAL_IDLE_SUSPEND_MS`) even while the
+   * region's directive says relaxed. An automated wake buying four hours of
+   * resident RAM nobody wanted is a large share of the idle bill (SHO-533). The
+   * first real app/agent request lifts the narrowing (`userSeenSinceAssign`).
+   */
+  private idleWindowFor(a: AssignedVm, windowMs: number): number {
+    if (a.userSeenSinceAssign === false && this.cfg.idleSuspendMs > 0) {
+      return Math.min(windowMs, this.cfg.idleSuspendMs)
+    }
+    return windowMs
+  }
+
+  /** Retry delay after the Nth consecutive idle-suspend refusal: 1m doubling to 1h. */
+  private refuseBackoffMs(count: number): number {
+    return Math.min(60 * 60_000, 60_000 * 2 ** Math.min(Math.max(count, 1) - 1, 6))
+  }
+
+  /** Whether this VM is in its refusal backoff window (don't attempt it again yet). */
+  private refuseBackoffActive(a: AssignedVm, now = Date.now()): boolean {
+    return a.refuseRetryAt !== undefined && a.refuseRetryAt > now
+  }
+
+  /**
+   * Reclaim the host RAM of VMs nobody is using, without suspending them
+   * (SHO-534). Driven by the same reaper tick as `reapIdle`, immediately after
+   * the activity poll and before it, so an idle VM gets small long before it is
+   * ever snapshotted — and an always-on VM, which is never suspended at all, is
+   * the case this exists for.
+   *
+   * "Idle" is `vmLiveness` — the one classifier the reaper, the meter and the
+   * fleet gauges share — not a second opinion about who is using a VM. On top of
+   * it: the guest must not be busy (`vmBusy`; a background task or heartbeat run
+   * needs its RAM), the full `METAL_IDLE_RECLAIM_MS` window must have passed
+   * since the last real user activity, and the VM must not have been deflated
+   * within that window (hysteresis, so a request every few seconds cannot make
+   * the balloon flap).
+   *
+   * The inflate itself is stats-guided and bounded: `maxWaitMs: 0` sets the
+   * target and returns, because a reaper tick must never sit through GiB-scale
+   * inflation. A VM whose agent has no balloon statistics is marked and skipped
+   * for good — never blind-inflated.
+   */
+  async reclaimIdleVms(now = Date.now()): Promise<string[]> {
+    if (!this.cfg.idleReclaim) return []
+    const windowMs = this.cfg.idleReclaimMs
+    if (!(windowMs > 0)) return []
+
+    const picked: AssignedVm[] = []
+    for (const a of this.assigned.values()) {
+      if (picked.length >= MAX_IDLE_RECLAIMS_PER_PASS) break
+      if (a.balloonedMiB !== undefined || a.balloonUnsupported) continue
+      if (this.vmLiveness(a, now) !== 'idle') continue
+      if (this.vmBusy(a)) continue
+      if (now - (a.lastRealActivityAt ?? a.assignedAt) < windowMs) continue
+      if (a.lastBalloonAt !== undefined && now - a.lastBalloonAt < windowMs) continue
+      picked.push(a)
+    }
+    if (!picked.length) return []
+
+    const reclaimed: string[] = []
+    for (const a of picked) {
+      try {
+        const r = await this.mgr.reclaimIdle(a.handle, {
+          floorMiB: this.cfg.idleReclaimFloorMiB,
+          maxWaitMs: 0,
+        })
+        if (!r.statsAvailable) {
+          a.balloonUnsupported = true
+          continue
+        }
+        // Either way the balloon has been looked at: a guest with nothing above
+        // the floor is not re-probed on every tick, and one that was reclaimed
+        // earlier (before an agent restart lost the accounting) is re-adopted
+        // rather than counted twice.
+        a.lastBalloonAt = now
+        if (r.reclaimedMiB <= 0) continue
+        const already = a.balloonedMiB !== undefined
+        a.balloonedMiB = r.reclaimedMiB
+        metrics.inc(M.balloonReclaimedMiB, r.increasedMiB)
+        if (already) continue
+        reclaimed.push(a.projectId)
+        const idleMin = Math.round((now - (a.lastRealActivityAt ?? a.assignedAt)) / 60_000)
+        console.log(
+          `[pool] idle reclaim: ballooned ${r.reclaimedMiB} MiB on ${a.projectId} ` +
+            `(idle ${idleMin}m${a.alwaysOn ? ', always-on' : ''})`,
+        )
+      } catch (err: any) {
+        console.error(`[pool] idle reclaim failed for ${a.projectId}:`, err?.message ?? err)
+      }
+    }
+    return reclaimed
+  }
+
+  /**
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
@@ -6334,6 +6763,9 @@ export class MetalWarmPool {
       return []
     }
     const now = Date.now()
+    // What `status()` reports as each VM's `holdReason`, so "why is this one
+    // still resident" is answerable from the window the reaper actually used.
+    this.reapWindowMs = idleMs
     // Final tick before anything is suspended: a VM's last running seconds are
     // metered while it is still assigned, so suspending it never loses billable
     // time (`closeMeter` is the belt to this braces).
@@ -6350,15 +6782,29 @@ export class MetalWarmPool {
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
     //
-    // The second clause is the busy-idle ceiling: a VM whose guest keeps
-    // reporting busy but which no person has used for hours is suspended
-    // anyway, overriding `busy`, `activeStreams`, `activeTurns` and tasks.
-    const stale = [...this.assigned.values()]
-      .filter(
-        (a) =>
-          !a.alwaysOn &&
-          ((idleFor(a) >= idleMs && !this.vmBusy(a)) || this.pastBusyIdleCeiling(a, now)),
-      )
+    // `vmBusy` blocks the suspend but no longer extends the window: once the
+    // window has passed, the VM goes on the first quiet poll between two
+    // heartbeat ticks (SHO-533). A continuously busy guest is still caught by
+    // the busy-idle ceiling — the second clause, which overrides `busy`,
+    // `activeStreams`, `activeTurns` and tasks.
+    // A VM whose HEAD could not be made durable is not suspendable, and every
+    // attempt pays a full repo export. Retrying it on every scan starves the pass
+    // every other idle VM needs (SHO-533: one VM on dal-1 was refused 2,367 times
+    // in 24h), so it sits out its backoff — and it is dropped here, BEFORE the
+    // per-pass cap. Filtering it after the cap was worse than not filtering at
+    // all: refused VMs have the longest `idleFor`, so they sort to the head, take
+    // every slot, and a host whose refused set reached `METAL_REAP_MAX_PER_PASS`
+    // would suspend nothing, ever (QA round 1).
+    const candidates = [...this.assigned.values()].filter(
+      (a) =>
+        !a.alwaysOn &&
+        ((idleFor(a) >= this.idleWindowFor(a, idleMs) && !this.vmBusy(a)) ||
+          this.pastBusyIdleCeiling(a, now)),
+    )
+    const backingOff = candidates.filter((a) => this.refuseBackoffActive(a, now))
+    if (backingOff.length) metrics.inc(M.idleReapRefusedBackoff, backingOff.length)
+    const stale = candidates
+      .filter((a) => !this.refuseBackoffActive(a, now))
       .sort((x, y) => idleFor(y) - idleFor(x))
     // VMs the reaper would have suspended if their guest did not report busy.
     metrics.gauge(
@@ -6366,6 +6812,10 @@ export class MetalWarmPool {
       [...this.assigned.values()].filter(
         (a) => !a.alwaysOn && this.vmBusy(a) && now - (a.lastUserActivityAt ?? a.assignedAt) >= idleMs,
       ).length,
+    )
+    metrics.gauge(
+      M.idleSuspendRefusedVms,
+      [...this.assigned.values()].filter((a) => this.refuseBackoffActive(a, now)).length,
     )
     for (const id of this.busyIdleCeilingLogged) if (!this.assigned.has(id)) this.busyIdleCeilingLogged.delete(id)
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
@@ -6390,10 +6840,14 @@ export class MetalWarmPool {
         const outcome = await this.suspendOrRetire(a.projectId, { reason: 'idle' })
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
         else if (outcome.kind === 'refused') {
-          // Not stopped: its HEAD is not durable yet. Leave it running and let
-          // the next sweep retry (SHO-442).
+          // Not stopped: its HEAD is not durable yet (SHO-442). Leave it running,
+          // but back off — a refusal costs a full repo export (seconds to a
+          // minute), so retrying it every scan is what starved the reaper of the
+          // passes every OTHER idle VM needed (SHO-533).
+          this.noteSuspendRefused(a, outcome.reason, now)
           continue
         } else done.push(a.projectId)
+        this.clearSuspendRefusal(a)
         metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
         if (byCeiling) metrics.inc(M.busyIdleCeilingSuspended)
       } catch (err: any) {
@@ -6401,6 +6855,34 @@ export class MetalWarmPool {
       }
     }
     return done
+  }
+
+  /**
+   * Record one more consecutive idle-suspend refusal on this VM and back its next
+   * attempt off. Warns once per VM with the reason and how long it has been
+   * refused: the underlying export path already logs every attempt, and with the
+   * backoff that is now once an hour instead of once a scan.
+   */
+  private noteSuspendRefused(a: AssignedVm, reason: string, now: number): void {
+    a.refuseCount = (a.refuseCount ?? 0) + 1
+    a.refusedSince ??= now
+    a.refuseRetryAt = now + this.refuseBackoffMs(a.refuseCount)
+    metrics.inc(M.idleSuspendRefused)
+    if (!a.refusalLogged) {
+      a.refusalLogged = true
+      console.warn(
+        `[pool] idle-suspend is HELD for ${a.projectId} by a non-durable HEAD: ${reason}. ` +
+          `Backing off ${Math.round(this.refuseBackoffMs(a.refuseCount) / 60_000)}m per attempt ` +
+          `(refused since ${new Date(a.refusedSince).toISOString()}); counted in ${M.idleSuspendRefused}.`,
+      )
+    }
+  }
+
+  private clearSuspendRefusal(a: AssignedVm): void {
+    a.refuseCount = undefined
+    a.refusedSince = undefined
+    a.refuseRetryAt = undefined
+    a.refusalLogged = undefined
   }
 
   /**
@@ -6530,6 +7012,13 @@ export class MetalWarmPool {
     return hostMemory()
   }
 
+  /** KSM counters for the host gauges; `undefined` off Linux or with no KSM. */
+  protected hostKsmNow():
+    | (KsmCounters & { ksmdCpuPct?: number; ksmdCpuWindowMs?: number })
+    | undefined {
+    return hostKsm()
+  }
+
   /**
    * The reaper's proactive headroom pass: keep `METAL_EVICT_HEADROOM_SLOTS`
    * VMs' worth of room free so most assigns never pay for an on-demand
@@ -6559,6 +7048,15 @@ export class MetalWarmPool {
    * agent turn. Unlike `reapIdle`, always-on VMs rotate too; they come back
    * separately because the control plane boots them again instead of leaving
    * them suspended.
+   *
+   * A failed backup blocks rotation, and it blocked it FOREVER and silently:
+   * one database that could not be snapshotted kept its VM on a
+   * pre-SHO-485/514 runtime for four days while the rotation re-uploaded a
+   * 1.7 GB source bundle every ten minutes (SHO-541). It still refuses to
+   * rotate — there is no way to prove the durable archive already holds a
+   * database nobody can read — but it now names the failure on the VM's status
+   * as `stale_rootfs_blocked`, alerts once, and backs off to
+   * {@link ROTATE_BLOCKED_RETRY_MS} instead of hammering the host.
    */
   async rotateStale(now = Date.now()): Promise<{ retired: string[]; alwaysOn: string[] }> {
     const out = { retired: [] as string[], alwaysOn: [] as string[] }
@@ -6571,6 +7069,7 @@ export class MetalWarmPool {
     for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
 
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
+    for (const id of this.rotationBlocked.keys()) if (!staleIds.has(id)) this.rotationBlocked.delete(id)
 
     const due = stale.filter((a) => {
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
@@ -6595,12 +7094,32 @@ export class MetalWarmPool {
           stopBackgroundTasks: true,
         })
         if (r.aborted) {
-          this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
-          const failed = r.steps.filter((s) => !s.ok).map((s) => `${s.step}: ${s.detail ?? 'failed'}`)
-          console.warn(
-            `[pool] rollout rotation of ${a.projectId} aborted (${failed.join('; ') || 'no step failed'}); ` +
-              `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
-          )
+          const failed = r.steps.filter((s) => !s.ok)
+          const detail = failed.map((s) => `${s.step}: ${s.detail ?? 'failed'}`).join('; ') || 'no step failed'
+          // A database nobody can snapshot is not going to become snapshot-able
+          // by retrying, and rotating anyway would replace it with whatever the
+          // durable archive happens to hold. Name the state it is stuck in, alert
+          // once, and stop burning a 1.7 GB source export every ten minutes on a
+          // rotation that cannot succeed (SHO-541: four days of exactly that).
+          const dataOnly = failed.length > 0 && failed.every((s) => s.step === 'data') && !!a.dataSnapshotFailure
+          if (dataOnly) {
+            this.markRotationBlocked(
+              a,
+              `its database cannot be snapshotted (${a.dataSnapshotFailure!.message}), so the final backup ` +
+                `rotation requires will not happen; the VM stays on its current runtime`,
+            )
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_BLOCKED_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} BLOCKED (${detail}); ` +
+                `retrying in ${ROTATE_BLOCKED_RETRY_MS / 3_600_000}h`,
+            )
+          } else {
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} aborted (${detail}); ` +
+                `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
+            )
+          }
           continue
         }
       } catch (err: any) {
@@ -6610,18 +7129,60 @@ export class MetalWarmPool {
       }
       this.staleSince.delete(a.projectId)
       this.rotateRetryAt.delete(a.projectId)
+      this.rotationBlocked.delete(a.projectId)
       metrics.inc(M.rolloutRotated)
       ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
     }
     return out
   }
 
+  /**
+   * This VM's database durability for the status surfaces: how long the
+   * current snapshot-failure streak has run, or nothing when it is healthy.
+   */
+  private dataHealthOf(a: AssignedVm, now = Date.now()): (DataSnapshotFailure & { failingMs: number }) | undefined {
+    const f = a.dataSnapshotFailure
+    return f ? { ...f, failingMs: Math.max(0, now - f.since) } : undefined
+  }
+
+  /** Why rotation gave up on this project's VM, if it did. */
+  private rotationBlockedOf(projectId: string): RotationBlocked | undefined {
+    const b = this.rotationBlocked.get(projectId)
+    return b ? { code: 'stale_rootfs_blocked', reason: b.reason, since: b.since } : undefined
+  }
+
   /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
+  /** VMs on a superseded rootfs that rotation has given up on, and why. */
+  private rotationBlocked = new Map<string, { reason: string; since: number }>()
+
+  /**
+   * Record — and report once — that a VM cannot leave a superseded rootfs.
+   * The alternative was a journal line every ten minutes and nothing else;
+   * the status field is what the pool and Ops views read (SHO-541).
+   */
+  private markRotationBlocked(a: AssignedVm, reason: string): void {
+    const prev = this.rotationBlocked.get(a.projectId)
+    if (prev && prev.reason === reason) return
+    this.rotationBlocked.set(a.projectId, { reason, since: prev?.since ?? Date.now() })
+    metrics.inc(M.rotationBlocked)
+    console.error(
+      `[pool] stale_rootfs_blocked: ${a.projectId} is on a superseded rootfs and rotation cannot take it — ` +
+        `${reason}. It stays on the old runtime until this is resolved.`,
+    )
+  }
   /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
   private busyIdleCeilingLogged = new Set<string>()
+  /**
+   * The idle window the last reaper pass applied (see `idleWindowFor`): the
+   * control plane's relaxed directive when it has one, else the aggressive
+   * `METAL_IDLE_SUSPEND_MS`. `status()` reports each VM's `holdReason` against
+   * it, so "why is this one still resident" answers against the window that
+   * actually kept it, not the configured one.
+   */
+  private reapWindowMs?: number
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
@@ -6662,7 +7223,7 @@ export class MetalWarmPool {
         if (await this.rescueFromDisk(a)) {
           metrics.inc(M.rescueDisk)
           console.log(`[pool] rescued ${a.projectId} from its disk before discard (${why})`)
-          try { this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
+          try { await this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
           if (a.handle.workspaceDrive) {
             try { this.mgr.releaseDataDrive(a.handle.workspaceDrive) } catch { /* GC reclaims it */ }
           }
@@ -6681,7 +7242,7 @@ export class MetalWarmPool {
     if (a.handle.workspaceDrive) {
       try { keptDrive = this.mgr.quarantineWorkspaceDrive(a.handle.workspaceDrive, label) } catch { /* reported below */ }
     }
-    try { kept = this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
+    try { kept = await this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
     if (keptDrive && !kept) kept = keptDrive
     if (kept) {
       try {
@@ -7021,7 +7582,7 @@ export class MetalWarmPool {
    */
   async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
     metrics.inc(M.gcRuns)
-    const orphansRemoved = this.reclaimOrphans()
+    const orphansRemoved = await this.reclaimOrphans()
     const staleReclaim = await this.reclaimStaleSnapshots()
 
     const disk = this.disk()
@@ -7056,7 +7617,7 @@ export class MetalWarmPool {
       for (const s of [...this.stagedSuspended.values()]) {
         if (this.openFlight.has(s.projectId) || this.suspendFlight.has(s.projectId)) continue
         bytesReclaimed += this.entryBytes(s)
-        this.dropStaged(s.projectId)
+        await this.dropStaged(s.projectId)
       }
     }
 
@@ -7153,7 +7714,7 @@ export class MetalWarmPool {
         if (this.assigned.has(id)) continue
         if (this.openFlight.has(id) || this.suspendFlight.has(id) || this.recycleFlight.has(id)) continue
         const b = this.entryBytes(s)
-        if (!this.evictLocal(id)) continue
+        if (!(await this.evictLocal(id))) continue
         projectIds.push(id)
         bytes += b
         await yieldToEventLoop()
@@ -7184,7 +7745,7 @@ export class MetalWarmPool {
       if (!head || head.rootfsIdentity !== this.classRootfsIdentity(head.vmClass ?? 'standard')) return false
     }
 
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
     this.index.remove(projectId)
 
@@ -7194,7 +7755,7 @@ export class MetalWarmPool {
     return true
   }
 
-  private deleteLocalArtifacts(snap: FcSnapshot): void {
+  private async deleteLocalArtifacts(snap: FcSnapshot): Promise<void> {
     for (const p of [snap.snapshotPath, snap.memFilePath]) {
       try {
         rmSync(p, { force: true })
@@ -7203,9 +7764,11 @@ export class MetalWarmPool {
       }
     }
     // rootfs may be a dm device / cow file — route through the manager so dm
-    // resources are torn down correctly.
+    // resources are torn down correctly. Awaited: `dmsetup remove --retry` is a
+    // child process now, and jumping to the next boot's work before it finishes
+    // is what starves the socket waiter this whole path was blocking.
     try {
-      this.mgr.releaseRootfs(snap.rootfs)
+      await this.mgr.releaseRootfs(snap.rootfs)
     } catch {
       /* ignore */
     }
@@ -7225,7 +7788,7 @@ export class MetalWarmPool {
     // VM restored onto; tearing that down would cut a running guest's network.
     if (!this.tapHeldByRunningVm(snap.net)) {
       try {
-        this.mgr.releaseTap(snap.net)
+        await this.mgr.releaseTap(snap.net)
       } catch {
         /* best-effort; the GC sweep retries from the host side */
       }
@@ -7247,7 +7810,7 @@ export class MetalWarmPool {
    * ones orphaned) or when the index and disk drift. Files backing a running
    * VM's memory mapping or a live cache entry are protected.
    */
-  reclaimOrphans(): number {
+  async reclaimOrphans(): Promise<number> {
     const protectedPaths = new Set<string>()
     for (const vm of this.available) {
       protectedPaths.add(vm.handle.rootfs)
@@ -7288,11 +7851,11 @@ export class MetalWarmPool {
     // boot+assign, regardless of which map does or doesn't reference it.
     const cutoff = Date.now() - ORPHAN_GRACE_MS
     let removed = 0
-    const sweepDir = (
+    const sweepDir = async (
       dir: string,
       match: (name: string) => boolean,
       kind: 'plain' | 'rootfs' | 'dataDrive' = 'plain',
-    ): void => {
+    ): Promise<void> => {
       let names: string[] = []
       try {
         names = readdirSync(dir)
@@ -7314,7 +7877,7 @@ export class MetalWarmPool {
         if (kind === 'rootfs' && this.cfg.rootfsCow === 'dm') {
           const vmId = name.replace(/\.cow$/, '')
           if (protectedPaths.has(`/dev/mapper/mvm-${vmId}`)) continue
-          if (this.mgr.rootfsDeviceMapped(vmId)) continue
+          if (await this.mgr.rootfsDeviceMapped(vmId)) continue
         }
         // Age gate: skip artifacts still within the in-flight grace window.
         try {
@@ -7323,7 +7886,7 @@ export class MetalWarmPool {
           continue // vanished under us — nothing to reclaim
         }
         try {
-          if (kind === 'rootfs') this.mgr.releaseRootfs(full)
+          if (kind === 'rootfs') await this.mgr.releaseRootfs(full)
           else if (kind === 'dataDrive') this.mgr.releaseDataDrive(full)
           else rmSync(full, { force: true })
           removed++
@@ -7333,13 +7896,13 @@ export class MetalWarmPool {
       }
     }
 
-    sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
-    sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), 'rootfs')
+    await sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), 'rootfs')
     // Docker-class second data drive — no shared base, so it's always a plain
     // file regardless of rootfsCow mode (see data-drive.ts).
-    sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
-    sweepDir(this.cfg.runDir, (n) => n.endsWith(WORKSPACE_DRIVE_SUFFIX), 'dataDrive')
-    if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith(WORKSPACE_DRIVE_SUFFIX), 'dataDrive')
+    if (this.cfg.rootfsCow === 'dm') await sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
     return removed
   }
 
@@ -7385,7 +7948,7 @@ export class MetalWarmPool {
    * remove` orphaned the device, which then pinned its CoW past the GC's sweep).
    * Bounded per call; driven by the GC timer. Returns the number reclaimed.
    */
-  reconcileOrphanDevices(): number {
+  async reconcileOrphanDevices(): Promise<number> {
     if (this.cfg.rootfsCow !== 'dm') return 0
     return this.mgr.reconcileOrphanRootfs(this.ownedRootfsVmIds(), ORPHAN_GRACE_MS)
   }
@@ -7419,8 +7982,8 @@ export class MetalWarmPool {
    * than the GC's last sweep — so it is still the truth on a host with the GC
    * turned off, which is exactly where a leak would run unchecked.
    */
-  tapUsage(): { inUse: number; capacity: number } {
-    return { inUse: existingTapIndices().size, capacity: TAP_NET_CAPACITY }
+  async tapUsage(): Promise<{ inUse: number; capacity: number }> {
+    return { inUse: (await existingTapIndices()).size, capacity: TAP_NET_CAPACITY }
   }
 
   /**
@@ -7434,8 +7997,11 @@ export class MetalWarmPool {
    * that didn't go through `stopVM` keeps its four addresses, and the only
    * symptom is that spawns get slower to find a free index until there are none.
    */
-  reapOrphanTaps(): number {
-    const { removed, suspected, inUse } = this.mgr.reconcileOrphanTaps(this.ownedTapIndices(), ORPHAN_GRACE_MS)
+  async reapOrphanTaps(): Promise<number> {
+    const { removed, suspected, inUse } = await this.mgr.reconcileOrphanTaps(
+      this.ownedTapIndices(),
+      ORPHAN_GRACE_MS,
+    )
     if (removed) {
       metrics.inc(M.gcTapsReclaimed, removed)
       console.warn(`[pool] reclaimed ${removed} leaked tap device(s) (${suspected} suspected this sweep)`)
@@ -7486,10 +8052,58 @@ export class MetalWarmPool {
     metrics.gauge(M.repoUntrustedOldestSec, oldestUntrustedSec)
     metrics.gauge(M.repoUnsavedSeconds, worstUnsavedSec)
 
+    // Writable-state durability (SHO-541). A database that cannot be
+    // snapshotted is a project with no backup at all, and until these existed
+    // the only trace of it was one 500 line per export cycle.
+    let snapshotFailing = 0
+    let oldestSnapshotFailingSec = 0
+    for (const a of this.assigned.values()) {
+      const f = a.dataSnapshotFailure
+      if (!f) continue
+      snapshotFailing++
+      oldestSnapshotFailingSec = Math.max(oldestSnapshotFailingSec, Math.round((now - f.since) / 1000))
+    }
+    metrics.gauge(M.dataSnapshotFailedVms, snapshotFailing)
+    metrics.gauge(M.dataSnapshotFailedOldestSec, oldestSnapshotFailingSec)
+    metrics.gauge(M.rotationBlockedVms, this.rotationBlocked.size)
+
+    // Idle reclaim + host memory (SHO-534). Emitted BEFORE the dm-only early
+    // return below, because a reflink host (every prod host today) is exactly
+    // where the density question is asked, and it has no CoW store to sample.
+    let balloonedVms = 0
+    for (const a of this.assigned.values()) {
+      if (a.balloonedMiB === undefined) continue
+      balloonedVms++
+    }
+    metrics.gauge(M.idleReclaimedVms, balloonedVms)
+    const mem = this.hostMemoryNow()
+    if (mem) {
+      metrics.gauge(M.hostMemAvailableMiB, mem.availableMiB)
+      metrics.gauge(M.hostMemUsedMiB, Math.max(0, mem.totalMiB - mem.availableMiB))
+    }
+    const ksm = this.hostKsmNow()
+    if (ksm) {
+      metrics.gauge(M.ksmPagesSharing, ksm.pagesSharing)
+      metrics.gauge(M.ksmPagesShared, ksm.pagesShared)
+      metrics.gauge(M.ksmFullScans, ksm.fullScans)
+      if (ksm.ksmdCpuPct !== undefined) metrics.gauge(M.ksmdCpuPct, ksm.ksmdCpuPct)
+      if (ksm.ksmdCpuWindowMs !== undefined) {
+        metrics.gauge(M.ksmdCpuWindowMs, ksm.ksmdCpuWindowMs)
+      }
+    }
+
     // Only dm mode has exception stores to run out of; the other rootfs modes
-    // give each VM its own file and fail with an ordinary ENOSPC.
+    // give each VM its own file and fail with an ordinary ENOSPC. Sampled off
+    // the hot path (it reads `dmsetup status`): a gauge is state, so one poll
+    // interval of lag costs nothing and `publishGauges` stays synchronous for
+    // its callers in status()/gcSweep().
     if (this.cfg.rootfsCow !== 'dm') return
-    const cow = this.mgr.sampleCowUsage()
+    void this.publishCowGauges()
+  }
+
+  private async publishCowGauges(): Promise<void> {
+    const cow = await this.mgr.sampleCowUsage().catch(() => null)
+    if (!cow) return
     metrics.gauge(M.cowInvalid, cow.invalid)
     metrics.gauge(M.cowMaxUsedPct, +cow.maxUsedPct.toFixed(2))
     metrics.gauge(M.cowNearLimit, cow.nearLimit)
@@ -7507,11 +8121,11 @@ export class MetalWarmPool {
 
   /**
    * Decompose the assigned (running) set by liveness class for the fleet
-   * gauges. A VM counts as `agentActive` if it reported an in-flight agent turn
-   * at the last poll, `appActive` if it served end-user app traffic within
-   * {@link APP_ACTIVE_WINDOW_MS}, and `idleTail` otherwise (running but neither
-   * being used nor edited — the 30-min idle-suspend tail). agent-active wins
-   * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
+   * gauges, using exactly {@link vmLiveness}: `agentActive` for a streamed turn
+   * in flight or a recent agent request, `appActive` for end-user app traffic
+   * within {@link ACTIVITY_WINDOW_MS}, `idleTail` otherwise (running but neither
+   * being used nor edited — the idle-suspend tail). agent-active wins when a VM
+   * is both, so the buckets are disjoint and sum to `assigned.size`.
    *
    * `active` / `evictable` are the OTHER decomposition of the same set (see
    * {@link vmResidency}): whether the VM is holding a slot someone needs, or is
@@ -7537,7 +8151,7 @@ export class MetalWarmPool {
     let evictable = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
-      const cls = this.vmMeterClass(a, now)
+      const cls = this.vmLiveness(a, now)
       if (cls === 'agent') agentActive++
       else if (cls === 'app') appActive++
       else idleTail++
@@ -7545,6 +8159,28 @@ export class MetalWarmPool {
       else active++
     }
     return { appActive, agentActive, idleTail, unhealthy, active, evictable }
+  }
+
+  /**
+   * The assigned set counted by `vmHoldReason`, and the same numbers pushed out
+   * as one gauge per reason. Disjoint and they sum to `assigned.size`, so a host
+   * reporting 140 resident with `evictable=0` reads immediately as "nothing is
+   * reapable", and one with `refused=3` says which three VMs to go look at.
+   */
+  protected countHoldReasons(now = Date.now()): Record<VmHoldReason, number> {
+    const counts: Record<VmHoldReason, number> = {
+      window: 0,
+      busy: 0,
+      refused: 0,
+      alwaysOn: 0,
+      legacy: 0,
+      evictable: 0,
+    }
+    for (const a of this.assigned.values()) counts[this.vmHoldReason(a, now)]++
+    for (const [reason, n] of Object.entries(counts)) {
+      metrics.gauge(`${M.idleHoldReason}{reason="${reason}"}`, n)
+    }
+    return counts
   }
 
   /**
@@ -7576,14 +8212,62 @@ export class MetalWarmPool {
   }
 
   /**
-   * Liveness class of ONE VM: an in-flight agent turn wins, then recent end-user
-   * app traffic, else the idle tail. `classifyAssigned` buckets the fleet with
-   * exactly this, and the billing meter charges time to exactly this — one
-   * classifier, so the fleet gauges and the bill can never disagree.
+   * Why the idle reaper is leaving this VM resident right now — the answer to
+   * "150 VMs are resident and ~20 projects are active; what is holding the other
+   * 130?". Reported per VM by `status()` and summed per reason into a gauge, so
+   * one curl answers it instead of a forensic pass over five hosts (SHO-533).
+   *
+   * Read against the window the reaper actually applied (`reapWindowMs`), which
+   * is why it can say `window` for a VM `vmResidency` already calls `evictable`:
+   * residency answers "may this be evicted if room is needed" (the aggressive
+   * window), the hold reason answers "why is the reaper not suspending it" (the
+   * relaxed window it is running under).
    */
-  private vmMeterClass(a: AssignedVm, now: number): 'agent' | 'app' | 'idle' {
-    if ((a.activeStreams ?? 0) > 0) return 'agent'
-    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) return 'app'
+  protected vmHoldReason(a: AssignedVm, now = Date.now()): VmHoldReason {
+    if (a.alwaysOn) return 'alwaysOn'
+    if (this.refuseBackoffActive(a, now)) return 'refused'
+    if (this.vmBusy(a)) return 'busy'
+    const windowMs = this.reapWindowMs ?? this.cfg.idleSuspendMs
+    if (now - (a.lastRealActivityAt ?? a.assignedAt) < this.idleWindowFor(a, windowMs)) return 'window'
+    if (a.perClassActivity !== true) return 'legacy'
+    return 'evictable'
+  }
+
+  /**
+   * Whether a streamed turn is still in flight, as opposed to the guest merely
+   * reporting `busy`. `liveStreams` is streams that still hold their turn; the
+   * raw `activeStreams` counter can outlive one (SHO-348), and a guest that
+   * reports its own `busy: false` has said so itself. A guest too old to
+   * break the count down only has `busy`/`activeStreams`, which is why the
+   * fallback is `vmBusy` rather than the counter.
+   */
+  private vmStreaming(a: AssignedVm): boolean {
+    if (a.liveStreams === undefined) return this.vmBusy(a)
+    return a.liveStreams > 0
+  }
+
+  /**
+   * Liveness class of ONE VM — the single answer to "is anyone using this?"
+   * that the fleet gauges, the bill AND the idle reaper all read.
+   *
+   *   agent — a streamed turn is in flight, or someone talked to the agent
+   *           within the activity window;
+   *   app   — an end-user app request within the activity window;
+   *   idle  — everything else, including a guest that is busy with work no
+   *           person asked for (a heartbeat run, a background task) and a
+   *           leaked `activeStreams` with no live stream behind it.
+   *
+   * `classifyAssigned` buckets the fleet with exactly this, `advanceOneMeter`
+   * charges time to exactly this, and `pollActivity` moves the reaper's clock
+   * (`lastRealActivityAt`) only when this is not `idle`. One classifier, so the
+   * gauges, the bill and the reaper cannot disagree about what "idle" means —
+   * which is what let production bill 96% idle VM-hours while the same VMs were
+   * never suspended (SHO-533).
+   */
+  protected vmLiveness(a: AssignedVm, now = Date.now()): VmLiveness {
+    if (this.vmStreaming(a)) return 'agent'
+    if (a.lastAgentRequestAt && now - a.lastAgentRequestAt <= ACTIVITY_WINDOW_MS) return 'agent'
+    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= ACTIVITY_WINDOW_MS) return 'app'
     return 'idle'
   }
 
@@ -7609,7 +8293,7 @@ export class MetalWarmPool {
     const elapsed = Math.max(0, now - m.advancedAt)
     m.advancedAt = now
     if (elapsed > 0) {
-      const cls = this.vmMeterClass(a, now)
+      const cls = this.vmLiveness(a, now)
       if (cls === 'agent') m.agentMs += elapsed
       else if (cls === 'app') m.appMs += elapsed
       else m.idleMs += elapsed
@@ -7694,20 +8378,20 @@ export class MetalWarmPool {
    * so the next resume must pull from the store — the cross-host mobility path.
    * Test/ops hook; not part of the normal request flow.
    */
-  evictLocal(projectId: string): boolean {
+  async evictLocal(projectId: string): Promise<boolean> {
     const s = this.suspended.get(projectId)
     if (!s) return false
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
     this.index.remove(projectId)
     return true
   }
 
   /** Delete a project's pre-warmed staged snapshot, if any. */
-  dropStaged(projectId: string): boolean {
+  async dropStaged(projectId: string): Promise<boolean> {
     const s = this.stagedSuspended.get(projectId)
     if (!s) return false
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.stagedSuspended.delete(projectId)
     this.stagedIndex.remove(projectId)
     return true
@@ -7717,11 +8401,11 @@ export class MetalWarmPool {
    * Drop staged snapshots not taken on one of `keep` (a newer staged build
    * replaced their image, so they can never be resumed). Returns the count.
    */
-  dropStagedSnapshots(keep: string[] = []): number {
+  async dropStagedSnapshots(keep: string[] = []): Promise<number> {
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (s.rootfsIdentity && keep.includes(s.rootfsIdentity)) continue
-      if (this.dropStaged(s.projectId)) n++
+      if (await this.dropStaged(s.projectId)) n++
     }
     if (n) console.log(`[pool] dropped ${n} pre-warmed snapshot(s) for a superseded staged rootfs`)
     return n
@@ -7735,7 +8419,7 @@ export class MetalWarmPool {
    * Their durable push was deferred while staged; `pushPendingDurable` does it
    * after the restart. Staged snapshots for any other identity are dropped.
    */
-  promoteStagedSnapshots(identities: string[]): number {
+  async promoteStagedSnapshots(identities: string[]): Promise<number> {
     // The base on disk is already the new image. This process keeps running
     // (drain, a last GC sweep) until the restart, and must judge freshness
     // against that image, or it reclaims the snapshots it just promoted.
@@ -7744,10 +8428,10 @@ export class MetalWarmPool {
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (!s.rootfsIdentity || !identities.includes(s.rootfsIdentity) || this.assigned.has(s.projectId)) {
-        this.dropStaged(s.projectId)
+        await this.dropStaged(s.projectId)
         continue
       }
-      this.evictLocal(s.projectId)
+      await this.evictLocal(s.projectId)
       const promoted: SuspendedVm = { ...s, durablePending: this.store.kind !== 'none' }
       this.stagedSuspended.delete(s.projectId)
       this.stagedIndex.remove(s.projectId)
@@ -7773,7 +8457,7 @@ export class MetalWarmPool {
       const outcome = await this.pushDurable(s, s.workspaceOrigin)
       if (this.suspended.get(s.projectId) !== s) continue
       if (outcome === 'blocked') {
-        this.evictLocal(s.projectId)
+        await this.evictLocal(s.projectId)
         continue
       }
       if (outcome === 'failed') continue
@@ -7805,6 +8489,8 @@ export class MetalWarmPool {
     let removedLocal = false
     let removedDurable = false
 
+    this.rotationBlocked.delete(projectId)
+    this.rotateRetryAt.delete(projectId)
     const a = this.assigned.get(projectId)
     if (a) {
       await this.mgr.stopVM(a.handle).catch(() => {})
@@ -7825,10 +8511,10 @@ export class MetalWarmPool {
       stoppedVm = true
     }
 
-    if (this.dropStaged(projectId)) removedLocal = true
+    if (await this.dropStaged(projectId)) removedLocal = true
     const s = this.suspended.get(projectId)
     if (s) {
-      this.deleteLocalArtifacts(s.snapshot)
+      await this.deleteLocalArtifacts(s.snapshot)
       this.suspended.delete(projectId)
       this.index.remove(projectId)
       removedLocal = true
@@ -7862,10 +8548,15 @@ export class MetalWarmPool {
    *
    * The next open then cold-boots from the durable backups. Without `force`, a
    * failed step aborts before anything is removed and the VM keeps running.
+   *
+   * A database the guest cannot snapshot fails the `data` step and therefore
+   * aborts the recycle: there is no way to prove the durable archive already
+   * holds it, and a cold boot would replace it with whatever the archive did
+   * hold. `rotateStale` reports that as `stale_rootfs_blocked` (SHO-541).
    */
   async recycle(
     runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean } = {},
+    opts: RecycleOpts = {},
   ): Promise<RecycleReport> {
     if (this.openFlight.has(runtimeKey) || this.suspendFlight.has(runtimeKey)) {
       return {
@@ -7880,10 +8571,7 @@ export class MetalWarmPool {
     return this.recycleFlight.run(runtimeKey, () => this.recycleInner(runtimeKey, opts))
   }
 
-  private async recycleInner(
-    runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean },
-  ): Promise<RecycleReport> {
+  private async recycleInner(runtimeKey: string, opts: RecycleOpts): Promise<RecycleReport> {
     const force = !!opts.force
     const state = this.getProjectStatus(runtimeKey).state
     const steps: RecycleStep[] = []
@@ -7953,7 +8641,6 @@ export class MetalWarmPool {
       const ok = await this.backupForRecycle(a, steps, {
         stopBackgroundTasks: opts.stopBackgroundTasks,
         reason: opts.reason,
-        notices,
         noteTmp,
       })
       if (!ok && !force) {
@@ -7974,7 +8661,15 @@ export class MetalWarmPool {
    * refused or quarantined write counts as a failure, because the cold boot
    * that follows restores the durable copy, not the quarantined one.
    */
-  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: DroppedTmpReport) => void } = {}): Promise<boolean> {
+  private async backupForRecycle(
+    a: AssignedVm,
+    steps: RecycleStep[],
+    opts: {
+      stopBackgroundTasks?: boolean
+      reason?: string
+      noteTmp?: (tmp: DroppedTmpReport) => void
+    } = {},
+  ): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
       try {
         const problem = await fn()
@@ -8045,9 +8740,26 @@ export class MetalWarmPool {
     await run('data', async () => {
       // Twice: the first may join an in-flight periodic export (possibly
       // throttled). The second is a cheap 304 when the first already landed.
-      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
-      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      // Caught rather than thrown: a snapshot failure has to be classified
+      // before it can be named, and `run` would otherwise record the raw
+      // SQLite message as the reason.
+      let saveError: unknown
+      try {
+        await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+        await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      } catch (err) {
+        saveError = err
+      }
       if (a.dataExportUnsupported) return 'guest cannot export its database (predates /pool/export-data)'
+      // A database the guest cannot snapshot is a database this recycle cannot
+      // carry across: the cold boot would hydrate whatever the durable archive
+      // last held, and nothing can prove that is still this data. Refusing is
+      // the only option that cannot lose writes; `rotateStale` turns this into
+      // `stale_rootfs_blocked` with the SQLite error on the VM's status.
+      if (a.dataSnapshotFailure) {
+        return `database not persisted — ${a.dataSnapshotFailure.message}`
+      }
+      if (saveError) throw saveError
       const untrusted = isWorkspace
         ? Object.entries(a.memberData ?? {})
             .filter(([, s]) => s.untrustedReason)
@@ -8137,6 +8849,8 @@ export class MetalWarmPool {
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
         durability: this.durabilityOf(a),
+        ...(a.dataSnapshotFailure ? { dataSnapshot: a.dataSnapshotFailure } : {}),
+        ...(this.rotationBlockedOf(a.projectId) ? { rotationBlocked: this.rotationBlockedOf(a.projectId) } : {}),
       }
     }
     const s = this.suspended.get(projectId)
@@ -8179,6 +8893,9 @@ export class MetalWarmPool {
     const now = Date.now()
     this.publishGauges()
     const liveness = this.classifyAssigned(now)
+    // Per-reason counts of the resident set, so the next "why are 150 VMs loaded
+    // while 20 projects are active" is one curl instead of a forensic pass.
+    const holds = this.countHoldReasons(now)
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
@@ -8205,6 +8922,10 @@ export class MetalWarmPool {
       // Assigned (running) set decomposed by why each VM is live, so the raw
       // count can be read as app-users + agent-turns + idle-tail.
       liveness,
+      // The same set decomposed by what is KEEPING it resident (see
+      // `vmHoldReason`), plus the window it was judged against.
+      holdReasons: holds,
+      reapWindowMs: this.reapWindowMs ?? this.cfg.idleSuspendMs,
       // Live FC processes vs tracked VMs — a growing gap flags a process leak.
       fcProcs: this.mgr.procCount(),
       assigned: [...this.assigned.values()].map((a) => ({
@@ -8227,15 +8948,29 @@ export class MetalWarmPool {
         // `active` = holding a slot someone needs; `evictable` = warm but free
         // capacity, suspended early only when an assign here needs the room.
         residency: this.vmResidency(a, now),
+        // Why the reaper is leaving it resident (window | busy | refused |
+        // alwaysOn | legacy | evictable). `evictable` = the next pass suspends it.
+        holdReason: this.vmHoldReason(a, now),
         // Reports busy, but no user activity past the ceiling: the reaper will
         // suspend it on its next pass.
         busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
+        // MiB this idle VM has handed back to the host via the balloon (SHO-534),
+        // and when it was last handed back. Debug only, per VM: VM ids are not
+        // metric labels, so per-VM numbers live here and only the sums are gauges.
+        balloonedMiB: a.balloonedMiB ?? null,
+        balloonUnsupported: a.balloonUnsupported === true,
+        balloonIdleMs: a.lastBalloonAt !== undefined ? now - a.lastBalloonAt : null,
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
         unhealthy: a.lastHealthOk === false,
         apiUnhealthyMs: a.apiUnhealthySince !== undefined ? now - a.apiUnhealthySince : null,
         apiUnhealthyProjects: a.apiUnhealthyProjects ?? null,
+        // Writable-state durability of this VM's database (SHO-541). `data` is
+        // set only while the snapshot keeps failing; `rotation` names a VM on a
+        // superseded rootfs that rotation has given up on.
+        data: this.dataHealthOf(a, now),
+        rotation: this.rotationBlockedOf(a.projectId),
       })),
       suspended: [...this.suspended.values()].map((s) => ({
         projectId: s.projectId,

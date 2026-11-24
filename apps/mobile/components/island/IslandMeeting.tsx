@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useState } from "react"
-import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native"
+import { Pressable, Text, TextInput, View } from "react-native"
 import { Mic, Sparkles, Square, X } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { formatDuration } from "../../lib/format-duration"
 import type { IslandMeetingDecision, IslandMeetingState } from "./types"
 import type { IslandMeetingNotes } from "./useIslandMeetingNotes"
 import { Pulse } from "@/components/ui/Spin";
+import { Spinner } from '@/components/ui/spinner'
 
 export function useElapsedSeconds(startedAt: number | undefined): number {
   const [now, setNow] = useState(() => Date.now())
@@ -95,7 +96,7 @@ export function IslandMeetingBanner({
             </Text>
           </Pressable>
           {busy ? (
-            <ActivityIndicator size="small" color="#a1a1aa" />
+            <Spinner tone="muted" size="small" />
           ) : (
             <Pressable
               onPress={() => onDecision("stop")}
@@ -139,11 +140,11 @@ export function IslandMeetingBanner({
               <Text className="text-[10px] text-zinc-400">Record it with Shogo? Let others know first.</Text>
             </View>
             <Pressable onPress={() => onDecision("dismiss")} accessibilityLabel="Not now" hitSlop={6}>
-              <X size={13} color="#71717a" />
+              <X className="text-muted-foreground" size={13} />
             </Pressable>
           </View>
           <View className="flex-row items-center justify-end gap-1.5">
-            {busy ? <ActivityIndicator size="small" color="#a1a1aa" /> : null}
+            {busy ? <Spinner tone="muted" size="small" /> : null}
             <MeetingButton label="Not now" onPress={() => onDecision("dismiss")} disabled={busy} />
             {prompt.suggestAutoRecord ? (
               <MeetingButton label="Always record" onPress={() => onDecision("always", prompt.id)} disabled={busy} />
@@ -155,7 +156,7 @@ export function IslandMeetingBanner({
       {followUp && notes ? (
         <View className="flex-row items-center gap-2">
           <View className="h-6 w-6 items-center justify-center rounded-full bg-orange-500/15">
-            {notes.finished ? <Sparkles size={12} color="#fb923c" /> : <ActivityIndicator size="small" color="#fb923c" />}
+            {notes.finished ? <Sparkles className="text-primary" size={12} /> : <Spinner size="small" />}
           </View>
           <View className="min-w-0 flex-1">
             <Text className="text-[12px] font-semibold text-zinc-50" numberOfLines={1}>
@@ -180,7 +181,7 @@ export function IslandMeetingBanner({
                 }}
               />
               <Pressable onPress={notes.dismissFinished} accessibilityLabel="Dismiss" hitSlop={6}>
-                <X size={12} color="#71717a" />
+                <X className="text-muted-foreground" size={12} />
               </Pressable>
             </>
           ) : null}
@@ -191,7 +192,7 @@ export function IslandMeetingBanner({
           <Text className="min-w-0 flex-1 text-[11px] text-rose-400">{error}</Text>
           {!prompt && !recording ? (
             <Pressable onPress={() => onDecision("dismiss")} accessibilityLabel="Dismiss" hitSlop={6}>
-              <X size={12} color="#71717a" />
+              <X className="text-muted-foreground" size={12} />
             </Pressable>
           ) : null}
         </View>

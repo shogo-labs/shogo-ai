@@ -105,7 +105,7 @@ export function CreatorChip({
           {displayName}
         </Text>
         {verified && (
-          <ShieldCheck size={dims.shield} color="#3b82f6" />
+          <ShieldCheck className="text-primary" size={dims.shield} />
         )}
       </View>
       {size !== 'xs' && (

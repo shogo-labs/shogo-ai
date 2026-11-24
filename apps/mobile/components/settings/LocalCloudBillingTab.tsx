@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, View } from 'react-native'
+import { Platform, Pressable, View } from 'react-native'
 import { AlertCircle, CreditCard, ExternalLink, RefreshCw } from 'lucide-react-native'
 import {
   Badge,
@@ -27,6 +27,7 @@ import {
 } from '../../lib/billing-config'
 import { SetSpendLimitDialog } from '../billing/SetSpendLimitDialog'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 const Alert = accountSheetIcon(AlertCircle)
 const CardIcon = accountSheetIcon(CreditCard)
@@ -62,7 +63,7 @@ export function LocalCloudBillingTab() {
   if (isLoading && !summary) {
     return (
       <View className="py-12 items-center gap-3">
-        <ActivityIndicator />
+        <Spinner />
         <Text className="text-sm text-muted-foreground">Loading Shogo Cloud billing…</Text>
       </View>
     )

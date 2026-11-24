@@ -55,7 +55,7 @@ async function main() {
     // ---- 1. restart keeps locality ---------------------------------------
     // A brand-new pool over the SAME NVMe simulates a node-agent restart/deploy.
     const pool2 = new MetalWarmPool()
-    const rehydrated = pool2.rehydrate()
+    const rehydrated = await pool2.rehydrate()
     log('restart', `rehydrated ${rehydrated} suspended snapshot(s) from index`)
     checks.rehydratedFromIndex = rehydrated >= 1
 
@@ -85,7 +85,7 @@ async function main() {
     // ---- 4. orphan reclaim -----------------------------------------------
     const junk = join(config.snapDir, 'orphan-junk.vmstate')
     writeFileSync(junk, 'junk')
-    const removed = pool2.reclaimOrphans()
+    const removed = await pool2.reclaimOrphans()
     checks.orphanReclaimed = removed >= 1
     log('orphan', `reclaimed ${removed} orphan artifact(s)`)
 

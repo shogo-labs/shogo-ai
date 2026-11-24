@@ -400,13 +400,55 @@ export const config = {
   /**
    * Cap on how long to wait for inflation to settle before snapshotting. The
    * driver reclaims GiBs over several seconds; the stats-guided poll breaks
-   * early on convergence/plateau so this is an upper bound, mostly hit only by
-   * the no-stats blind-inflate path (older snapshots). Suspend is a background
-   * op, so this latency isn't user-facing.
+   * early on convergence/plateau, so this is an upper bound — reached only when
+   * the guest really is still handing pages over at the deadline. Suspend is a
+   * background op, so this latency isn't user-facing. Reclaim reads no stats for
+   * nothing: a guest without balloon statistics is skipped, never blind-inflated
+   * (there is no way to ask it for the RAM back safely later).
    */
   balloonMaxWaitMs: parseInt(env('METAL_SNAP_BALLOON_MAX_WAIT_MS', '10000'), 10),
   /** Poll interval while waiting for the balloon `actual` size to converge. */
   balloonPollMs: parseInt(env('METAL_SNAP_BALLOON_POLL_MS', '250'), 10),
+
+  /**
+   * Idle-VM reclaim. Prod VMs are 4 GiB guests on hosts where RAM, not CPU, is
+   * what limits density, and a VM that is loaded but idle keeps its whole
+   * footprint (96% of VM-hours are idle; the balloon was only ever inflated
+   * right before a snapshot). With this on, the reaper inflates the balloon on
+   * a VM that nobody is using — leaving `idleReclaimFloorMiB` of headroom — so
+   * the idle tail costs a fraction of its RAM. Activity deflates it again.
+   *
+   * Off by default: the fleet only turns it on after the staging A/B/C numbers
+   * in docs/runbooks/metal-idle-memory.md. Requires balloon stats, which VMs
+   * booted before stats existed do not have — those are skipped, never
+   * blind-inflated.
+   */
+  idleReclaim: env('METAL_IDLE_RECLAIM', '0') !== '0',
+  /**
+   * How long an assigned VM must be idle before its RAM is reclaimed. Must stay
+   * shorter than the idle-suspend window, or reclaim would only ever run on a
+   * VM that is about to be snapshotted anyway. Also the hysteresis: a VM that
+   * was just deflated (by a request) is not reclaimed again until another full
+   * window passes, so a polled-every-few-seconds VM cannot flap.
+   */
+  idleReclaimMs: parseInt(env('METAL_IDLE_RECLAIM_MS', '300000'), 10),
+  /** Guest headroom (MiB) left un-reclaimed while the VM is only idle. */
+  idleReclaimFloorMiB: parseInt(
+    env('METAL_IDLE_RECLAIM_FLOOR_MB', env('METAL_SNAP_BALLOON_FLOOR_MB', '256')),
+    10,
+  ),
+
+  /**
+   * Free page reporting on the balloon. With it on, the guest reports freed
+   * pages as it frees them and Firecracker drops them from the host, so an
+   * ACTIVE VM gets smaller too — reclaim only helps the idle tail. Pre-boot
+   * only (FC's BalloonUpdate takes `amount_mib` alone). Needs
+   * CONFIG_PAGE_REPORTING in the guest kernel; the FC CI 6.1.102 kernel we run
+   * has it (`docs/runbooks/metal-idle-memory.md`). Off by default: it changes
+   * what a snapshot's mem image contains, so it is turned on per host after the
+   * staging snap/restore check.
+   */
+  balloonFreePageReporting: env('METAL_BALLOON_FREE_PAGE_REPORTING', '0') !== '0',
 
   /**
    * Durable snapshot store. Local NVMe always holds the hot snapshot for

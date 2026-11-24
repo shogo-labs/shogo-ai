@@ -15,10 +15,11 @@ import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 
 const TEXT_CLASS = "text-xs text-muted-foreground"
-const SHIMMER_TEXT_STYLE = { color: "#a3a3a3", fontSize: 12 } as const
-// Phone rows share the 15px activity scale; only the size moves, the dim
-// colour stays so the sweep still reads as "not a sentence" (SHO-296).
-const NATIVE_SHIMMER_TEXT_STYLE = { color: "#a3a3a3", fontSize: 15 } as const
+// Only the size lives in the style: the dim colour that makes the sweep read as
+// "not a sentence" (SHO-296) comes from `text-muted-foreground` on both rows.
+const SHIMMER_TEXT_STYLE = { fontSize: 12 } as const
+// Phone rows share the 15px activity scale, so only the size moves.
+const NATIVE_SHIMMER_TEXT_STYLE = { fontSize: 15 } as const
 
 // Width of the bright band, as a fraction of the label length.
 const SHIMMER_BAND = 0.18

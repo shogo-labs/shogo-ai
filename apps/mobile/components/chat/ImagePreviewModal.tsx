@@ -10,7 +10,6 @@
 import type React from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  ActivityIndicator,
   Animated,
   Image,
   Platform,
@@ -50,6 +49,7 @@ import {
 import { useAgentImageSource } from "../../lib/agent-image-source"
 import { useSafeAreaInsetsOrZero } from "../../lib/use-safe-area-insets-or-zero"
 import { useEscapeToClose } from "../../lib/use-escape-to-close"
+import { Spinner } from '@/components/ui/spinner'
 
 export interface ImagePreviewModalProps {
   visible: boolean
@@ -419,7 +419,7 @@ export function ImagePreviewModal({
                 )}
               >
                 {copyState === "copying" ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : copyState === "copied" ? (
                   <Check size={16} className="text-green-500" />
                 ) : null}
@@ -475,7 +475,7 @@ export function ImagePreviewModal({
           >
             {loadState === "loading" ? (
               <View className="absolute inset-0 items-center justify-center">
-                <ActivityIndicator size="large" />
+                <Spinner size="large" />
               </View>
             ) : null}
             {loadState === "failed" ? (

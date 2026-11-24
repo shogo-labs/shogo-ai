@@ -253,6 +253,20 @@ Two operational notes from that attempt:
   **cordoned, drained** host (and the super-admin session to cordon it) to
   measure the host rather than the tenants already on it.
 
+### Cold-boot blocker: resolved (SHO-549)
+
+Part of that `FC API socket never appeared` window was not density: from 12:58Z
+the host's golden rootfs had no `/usr/local/bin/fc-init`, so every cold boot
+panicked before userspace, and the boot failures made the host look saturated.
+`runtime.ext4` was rebuilt from the same `718a651` image with the fixed
+`build-runtime-rootfs.sh`; a `POST /assign` cold boot then reached healthy in
+2.3 s, with `[fc-init] workspace drive /dev/vdb mounted at /data` in the guest
+serial log. The build, the agent's build step and activation now all refuse an
+image without its guest init (`docs/runbooks/metal-fleet.md` → "A staged image
+without its guest init is never activated"), so a rebuild cannot silently
+reintroduce it. The host still needs a cordon + drain before the ladder can
+measure density rather than its tenants.
+
 ## Recommendation from the completed run
 
 **Hold prod at `METAL_MAX_VMS_PER_HOST=80`; do not raise it to 120.** Two runs

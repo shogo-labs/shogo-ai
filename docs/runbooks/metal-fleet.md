@@ -130,6 +130,12 @@ p95 for `evicted` against `idle` before lowering any host count.
 | `METAL_EVICT_MAX_PER_ASSIGN` | `3` | Most VMs one assign/resume may evict. |
 | `METAL_EVICT_HEADROOM_SLOTS` | `2` | Slots the reaper keeps free proactively. 0 disables the pass. |
 | `METAL_IDLE_SUSPEND_MS` | `900000` (15m) | Also the evictable threshold. `0` disables idle-suspend **and** eviction. |
+| `METAL_IDLE_RECLAIM` | `0` | Inflate the balloon on a VM idle for `METAL_IDLE_RECLAIM_MS` (5m) so an idle VM — including an always-on one — costs a fraction of its RAM. Deflated on the next request. Off until the staging numbers land: see [metal-idle-memory.md](metal-idle-memory.md). |
+| `METAL_BALLOON_FREE_PAGE_REPORTING` | `0` | Pre-boot balloon flag: the guest reports freed pages continuously so an active VM shrinks too. |
+
+`METAL_KSM` (`0`) is a **host-bootstrap** variable, not an agent one: it
+provisions host KSM behind a security decision. See
+[metal-idle-memory.md](metal-idle-memory.md).
 
 Billing is unchanged: an evictable VM is still metered as the `idle` class and
 charged nothing (`idleBilling: 'none'`), and eviction goes through
@@ -383,6 +389,41 @@ Without it the suite skips its fault tests rather than failing.
 
 ## After a rollout that rebuilds the rootfs
 
+### A staged image without its guest init is never activated
+
+Every rootfs image must carry an executable guest init — `METAL_GUEST_INIT`,
+default `/usr/local/bin/fc-init`, the same path `guestBootArgs` passes as
+`init=`: the kernel execs it as PID 1, and an image without it does not boot
+badly, it does not boot at all — `Kernel panic - not syncing: Requested init /usr/local/bin/fc-init
+failed (error -2)` before userspace. On 2026-11-23 staging activated such an
+image and lost every cold boot on the host until it was rebuilt by hand.
+
+Three gates now stand between a broken build and the fleet, and a failure at any
+of them leaves the live image in service:
+
+1. `build-runtime-rootfs.sh` builds into a private `mktemp -d` (its own
+   `rootfs.tar` and mountpoint, `flock` on `$WORKDIR/.build.lock`), and after the
+   unmount reads the staged file itself with `debugfs` — not the mountpoint —
+   before the rename. `VERIFY_ROOTFS_IMAGE_ONLY=<image> bash
+   build-runtime-rootfs.sh` runs just that check against any image file.
+2. `buildRootfsImage` refuses to rename a build whose guest init is missing.
+3. `maybeActivateRootfs` probes each staged image before the rename — on the
+   control plane's `activateRootfs` and on the self-activate path after 3h. On a
+   bad one it logs `REFUSING to activate rootfs …`, leaves the staged file for
+   inspection, clears the staged marker so the next heartbeat rebuilds, and the
+   host keeps serving its current image.
+
+To check a host by hand:
+
+```bash
+debugfs -R 'stat /usr/local/bin/fc-init' /opt/fc-spike/img/runtime.ext4
+# Inode: … Mode:  0755 …
+```
+
+An image replaced out of band (a manual rebuild over `METAL_ROOTFS`) also needs
+the agent's shared base loop re-attached; the agent re-checks the loop's backing
+path and does that on the next VM, so no restart is needed.
+
 A release that rebuilds the guest rootfs (`metal-agent-deploy` with
 `rebuild_rootfs=true`, or any release that changes the runtime image) makes
 every existing snapshot stale. Without help, each user's next open cold-boots
@@ -565,7 +606,7 @@ multi-GB tar. Triage:
 ssh root@<host>
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -c shogo-runtime   # expect 1-2
 journalctl -u metal-agent | grep image-gc                                    # removals + disk % before/after
-ls -la /opt/fc-spike/build/rootfs.tar                                        # should not exist
+ls -la /opt/fc-spike/build/                                       # no leftover build.* dirs
 ```
 
 Cordon the host until it is back under 80%; the fleet keeps serving from its

@@ -14,7 +14,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   TextInput,
   useWindowDimensions,
 } from 'react-native'
@@ -45,6 +44,7 @@ import { createHttpClient } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { invalidateVisibleModelsCache, useModelPickerList } from '../../../lib/visible-models'
 import { ModelsCard } from '../../../components/admin/ModelsCard'
+import { Spinner } from '@/components/ui/spinner'
 
 // =============================================================================
 // Types
@@ -131,7 +131,7 @@ function CloudModelSettingsPage() {
   if (isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -190,7 +190,7 @@ function AutoSaveIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | '
   return (
     <View className="flex-row items-center gap-1.5">
       {status === 'saving' && (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       )}
       {status === 'saved' && (
         <CheckCircle size={14} className="text-green-500" />
@@ -333,7 +333,7 @@ function LocalSettingsPage() {
   if (isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -1325,7 +1325,7 @@ function CustomProvidersCard({ platform }: { platform: PlatformApi }) {
       <View className="px-5 py-4 gap-3">
         {error && <Text className="text-xs text-red-500">{error}</Text>}
         {isLoading ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <>
             {providers.length === 0 && !showForm && (
@@ -1420,7 +1420,7 @@ function CustomProvidersCard({ platform }: { platform: PlatformApi }) {
                   disabled={!canSubmit || busy}
                   className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
                 >
-                  {busy ? <ActivityIndicator size="small" /> : (
+                  {busy ? <Spinner size="small" /> : (
                     <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
                       {editingId ? 'Save changes' : 'Create provider'}
                     </Text>

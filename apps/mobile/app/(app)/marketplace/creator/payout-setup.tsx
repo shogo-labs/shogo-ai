@@ -16,7 +16,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
@@ -30,6 +29,7 @@ import {
   ConnectCountryPicker,
   type ConnectCountryCode,
 } from '../../../../components/marketplace/ConnectCountryPicker'
+import { Spinner } from '@/components/ui/spinner'
 
 function payoutStatusColor(status: string): string {
   if (status === 'verified') return 'bg-green-500'
@@ -139,7 +139,7 @@ export default observer(function PayoutSetupScreen() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -162,7 +162,7 @@ export default observer(function PayoutSetupScreen() {
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <ArrowLeft size={18} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={18} />
         </Pressable>
         <View className="flex-1">
           <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
@@ -205,14 +205,14 @@ export default observer(function PayoutSetupScreen() {
                 {payoutStatusLabel(payoutStatus)}
               </Text>
             </View>
-            {verified ? <Check size={17} color="#16a34a" /> : <Building2 size={17} color="#e27927" />}
+            {verified ? <Check className="text-primary" size={17} color="#16a34a" /> : <Building2 size={17} />}
           </View>
 
           {/* Trust paragraph */}
           <View className="rounded-2xl border border-border/80 bg-card p-5 mb-5">
             <View className="flex-row gap-3">
               <View className="rounded-xl bg-primary/10 w-10 h-10 items-center justify-center">
-                <ShieldCheck size={18} color="#e27927" />
+                <ShieldCheck className="text-primary" size={18} />
               </View>
               <View className="flex-1">
                 <Text className="text-sm font-semibold text-foreground mb-1">
@@ -270,13 +270,13 @@ export default observer(function PayoutSetupScreen() {
                 )}
               >
                 {working ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <Spinner tone="onPrimary" size="small" />
                 ) : (
                   <>
                     {payoutStatus === 'not_setup' ? (
-                      <Building2 size={16} color="#fff" />
+                      <Building2 className="text-primary-foreground" size={16} />
                     ) : (
-                      <ExternalLink size={16} color="#fff" />
+                      <ExternalLink className="text-primary-foreground" size={16} />
                     )}
                     <Text className="text-sm font-semibold text-primary-foreground">
                       {payoutStatus === 'not_setup'
@@ -307,7 +307,7 @@ function PayoutStep({
     <View className={cn('flex-row items-center gap-3', !last && 'pb-3 border-b border-border/60')}>
       <Text className="w-5 text-[10px] font-semibold text-primary">{index}</Text>
       <Text className="flex-1 text-xs font-medium text-foreground">{label}</Text>
-      <Check size={13} color="#a1a1aa" />
+      <Check className="text-muted-foreground" size={13} />
     </View>
   )
 }

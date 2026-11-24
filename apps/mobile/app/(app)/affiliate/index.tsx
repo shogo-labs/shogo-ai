@@ -17,8 +17,13 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  View, Text, ScrollView, Pressable, ActivityIndicator,
-  RefreshControl, Platform, Share,
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  RefreshControl,
+  Platform,
+  Share,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import * as WebBrowser from 'expo-web-browser'
@@ -35,6 +40,7 @@ import {
   ConnectCountryPicker,
   type ConnectCountryCode,
 } from '../../../components/marketplace/ConnectCountryPicker'
+import { Spinner } from '@/components/ui/spinner'
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -186,7 +192,7 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
         }
       >
         {loading ? (
-          <View className="py-16 items-center"><ActivityIndicator /></View>
+          <View className="py-16 items-center"><Spinner /></View>
         ) : errorMsg ? (
           <Card>
             <CardContent className="flex-row items-start gap-3 p-4">

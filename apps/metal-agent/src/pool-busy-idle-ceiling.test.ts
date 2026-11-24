@@ -482,7 +482,10 @@ describe('busy-idle ceiling', () => {
 
   test('an idle, not-busy VM reaped late is not reported as a busy-idle ceiling suspend', async () => {
     const pool = makePool(dir)
-    const old = Date.now() - 2 * CEILING_MS
+    // Past the ceiling AND past the activity window: vmLiveness reads a request
+    // older than that as history, so this VM is genuinely idle. (A request from a
+    // few seconds ago would count as live, and would rightly hold it.)
+    const old = Date.now() - 2 * CEILING_MS - 3 * 60_000
     pool.seed('plain-idle', {
       assignedAt: old,
       lastTouchedAt: old,

@@ -87,6 +87,20 @@ const prismaApi = {
       if (row) Object.assign(row, data)
       return row ? { ...row } : null
     },
+    // The in-flight lease (SHO-542): one conditional statement, like the real
+    // updateMany. `persistGateFor` also holds the first publish here so the
+    // second one is genuinely concurrent with it.
+    updateMany: async ({ where, data }: any) => {
+      const row = projects.get(where.id)
+      if (!row) return { count: 0 }
+      const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
+      const at = (row as any).publishStatusAt instanceof Date ? (row as any).publishStatusAt.getTime() : 0
+      const stale = !at || Date.now() - at > 30 * 60_000
+      if (inFlight && !stale) return { count: 0 }
+      updateCalls.push({ where, data })
+      Object.assign(row, data)
+      return { count: 1 }
+    },
   },
   customDomain: {
     findMany: async () => [],
@@ -138,7 +152,17 @@ afterEach(() => {
   globalThis.fetch = realFetch
 })
 
-const { publishProject } = await import('../publish')
+const { startPublish } = await import('../publish')
+
+/**
+ * Start a publish and, when it was accepted, wait for the background pipeline
+ * to finish (SHO-542: the route no longer waits for it).
+ */
+async function publishProject(projectId: string, opts: { subdomain: string }) {
+  const started = await startPublish(projectId, opts)
+  if (started.finished) return started.finished
+  return { ok: false, status: started.status, code: started.code, message: started.message }
+}
 
 /** Let queued microtasks/macrotasks run until `done()` is true. */
 async function until(done: () => boolean, label: string): Promise<void> {

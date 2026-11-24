@@ -52,7 +52,7 @@ export function ConnectCountryPicker({ value, onChange, disabled }: ConnectCount
               accessibilityRole="button"
               accessibilityLabel={opt.label}
             >
-              {selected && <Check size={14} color="#e27927" />}
+              {selected && <Check className="text-primary" size={14} />}
               <Text
                 className={cn(
                   'text-xs font-semibold',

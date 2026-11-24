@@ -130,7 +130,7 @@ export function FloatingCreate() {
             accessibilityLabel="Create"
             className="h-14 w-14 items-center justify-center rounded-full bg-primary shadow-lg active:opacity-90"
           >
-            <Plus size={26} color="#fff" style={{ transform: [{ rotate: open ? '45deg' : '0deg' }] }} />
+            <Plus className="text-primary-foreground" size={26} style={{ transform: [{ rotate: open ? '45deg' : '0deg' }] }} />
           </Pressable>
         )}
       </CreateMenu>

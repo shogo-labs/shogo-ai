@@ -10,10 +10,11 @@
  * is nothing to fold away.
  */
 import React, { useCallback, useState } from "react"
-import { ActivityIndicator, Pressable, Text, View } from "react-native"
+import { Pressable, Text, View } from "react-native"
 import { Scissors } from "lucide-react-native"
 import { formatTokenCount } from "./ContextTracker"
 import { requestContextCompaction } from "../../lib/compact-context"
+import { Spinner } from '@/components/ui/spinner'
 
 type Status = { kind: "idle" } | { kind: "working" } | { kind: "done" | "info" | "error"; text: string }
 
@@ -73,7 +74,7 @@ export function ContextSummarySection({
           }`}
         >
           {status.kind === "working" ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Scissors size={12} className="text-foreground" />
           )}

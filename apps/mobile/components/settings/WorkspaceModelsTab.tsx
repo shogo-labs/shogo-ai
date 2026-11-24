@@ -16,7 +16,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, ScrollView, Pressable, ActivityIndicator } from 'react-native'
+import { View, ScrollView, Pressable } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import {
   Boxes as BoxesIcon,
@@ -34,6 +34,7 @@ import {
   Text,
   useAccountSheetIcons,
 } from './account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Candidate {
   id: string
@@ -181,7 +182,7 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
   if (loading) {
     return (
       <View className="bg-card border border-border rounded-xl px-5 py-6 items-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -231,7 +232,7 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
               allowAll ? 'border-primary bg-primary' : 'border-border bg-background',
             )}
           >
-            {allowAll && <Check size={13} color="#fff" />}
+            {allowAll && <Check className="text-primary-foreground" size={13} />}
           </View>
         </Pressable>
 
@@ -268,7 +269,7 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
                         checked ? 'border-primary bg-primary' : 'border-border bg-background',
                       )}
                     >
-                      {checked && <Check size={13} color="#fff" />}
+                      {checked && <Check className="text-primary-foreground" size={13} />}
                     </View>
                     <View className="flex-1">
                       <Text className="text-sm text-foreground">{m.displayName}</Text>
@@ -294,7 +295,7 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
               className={cn('items-center px-4 py-2.5 rounded-md', saving ? 'bg-muted' : 'bg-primary')}
             >
               {saving ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Text className="text-sm font-medium text-primary-foreground">Save changes</Text>
               )}

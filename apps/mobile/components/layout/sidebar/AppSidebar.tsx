@@ -1562,19 +1562,11 @@ export const AppSidebar = observer(function AppSidebar({
                 onNavPress();
               }}
               className={cn(
-                "flex-row items-center rounded-md",
+                "flex-row items-center rounded-md bg-primary/10",
                 isNativeDrawer
                   ? "min-h-[72px] gap-3 px-4 py-3"
                   : "gap-2 px-3 py-2",
               )}
-              style={
-                Platform.OS === "web"
-                  ? ({
-                      backgroundImage:
-                        "linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))",
-                    } as any)
-                  : { backgroundColor: "rgba(59,130,246,0.1)" }
-              }
             >
               <View className="flex-1">
                 <Text

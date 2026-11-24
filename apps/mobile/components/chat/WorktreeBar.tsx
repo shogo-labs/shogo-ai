@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable } from 'react-native'
 import { GitBranch, GitMerge, Check, AlertTriangle, ChevronDown, ChevronRight, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../lib/agent-fetch'
+import { Spinner } from '@/components/ui/spinner'
 
 interface WorktreeStatus {
   chatSessionId: string
@@ -203,7 +204,7 @@ export function WorktreeBarView({ status, siblings, mergeState, error, isStreami
             <Check size={12} className="text-emerald-600" />
           </View>
         ) : mergeState === 'merging' ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : mergeState === 'conflict' ? (
           <AlertTriangle size={13} className="text-amber-600" />
         ) : confirming ? (

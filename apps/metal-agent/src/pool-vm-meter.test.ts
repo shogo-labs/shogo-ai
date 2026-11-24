@@ -66,7 +66,13 @@ class TestPool extends MetalWarmPool {
   }
   klass(projectId: string, now: number): string {
     const a = (this as any).assigned.get(projectId)
-    return (this as any).vmMeterClass(a, now)
+    return (this as any).vmLiveness(a, now)
+  }
+  suspendedIds: string[] = []
+  override async suspend(projectId: string): Promise<any> {
+    this.suspendedIds.push(projectId)
+    ;(this as any).assigned.delete(projectId)
+    return { projectId }
   }
   closedLen(): number {
     return (this as any).closedMeters.length
@@ -254,6 +260,100 @@ describe('closed meters', () => {
       pool.close(`vm${i}`, t0 + 1_000)
     }
     expect(pool.closedLen()).toBe(MAX_CLOSED)
+  })
+})
+
+/**
+ * SHO-533 — the meter and the reaper must never disagree about "idle".
+ *
+ * They did: `vmMeterClass` charged a VM `idle` unless a stream was open or an app
+ * request had arrived within 120s, while the reaper counted a heartbeat run or a
+ * background task as activity (it bumped `lastRealActivityAt` on every busy
+ * poll). So a VM could be billed as idle for hours and simultaneously be
+ * considered too active to suspend. Both now read `vmLiveness`.
+ */
+describe('SHO-533 — one classifier for bill and reaper', () => {
+  let dir: string
+  const realFetch = globalThis.fetch
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-meter-shared-'))
+  })
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const guest = (extra: Record<string, unknown>) => (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          lastRequestAt: 1,
+          activeStreams: 0,
+          busy: false,
+          activeTurns: 0,
+          liveStreams: 0,
+          lastAppRequestAt: null,
+          lastAgentRequestAt: null,
+          ...extra,
+        }),
+        { status: 200 },
+      ),
+    )) as any
+
+  test('an orphan activeStreams with liveStreams: 0 meters idle', () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    const a = pool.seed('orphan', {
+      now: now - 60_000,
+      activeStreams: 3,
+      liveStreams: 0,
+      busy: false,
+      perClassActivity: true,
+    })
+    expect(pool.klass('orphan', now)).toBe('idle')
+
+    // The same interval the reaper counts as idle is the interval the bill does.
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now - 5_000 }
+    pool.advanceMeters(now)
+    expect(a.meter.idleMs).toBe(5_000)
+    expect(a.lastRealActivityAt).toBe(now - 60_000)
+  })
+
+  test('a busy heartbeat poll bills idle and leaves the reaper clock alone', async () => {
+    const pool = makePool(dir)
+    ;(pool as any).cfg.activityPoll = true
+    const now = Date.now()
+    const a = pool.seed('heartbeat', { now: now - 60_000, perClassActivity: true })
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now - 5_000 }
+    const before = a.lastRealActivityAt!
+
+    globalThis.fetch = guest({ busy: true, activeTurns: 1 })
+    await pool.pollActivity()
+    pool.advanceMeters(Date.now())
+
+    expect(pool.klass('heartbeat', Date.now())).toBe('idle')
+    expect(a.meter.idleMs).toBeGreaterThan(0)
+    expect(a.meter.agentMs).toBe(0)
+    // Not "active" for the reaper either: the window keeps running.
+    expect(a.lastRealActivityAt).toBe(before)
+  })
+
+  test('a live stream is agent on both sides', async () => {
+    const pool = makePool(dir)
+    ;(pool as any).cfg.activityPoll = true
+    const now = Date.now()
+    const a = pool.seed('streaming', { now: now - 60_000, perClassActivity: true })
+    const before = a.lastRealActivityAt!
+
+    globalThis.fetch = guest({ busy: true, activeTurns: 1, activeStreams: 1, liveStreams: 1 })
+    await pool.pollActivity()
+
+    expect(pool.klass('streaming', Date.now())).toBe('agent')
+    expect(a.lastRealActivityAt!).toBeGreaterThan(before)
+    a.meter = { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now }
+    pool.advanceMeters(now + 2_000)
+    expect(a.meter.agentMs).toBe(2_000)
+    expect(a.meter.idleMs).toBe(0)
   })
 })
 

@@ -7,10 +7,11 @@
  * the sign-in screen (or root in local mode for auto-re-sign-in).
  */
 import { useEffect } from 'react'
-import { View, ActivityIndicator } from 'react-native'
+import { View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function SignOutScreen() {
   const { signOut } = useAuth()
@@ -27,7 +28,7 @@ export default function SignOutScreen() {
 
   return (
     <View className="flex-1 items-center justify-center bg-background">
-      <ActivityIndicator />
+      <Spinner />
     </View>
   )
 }

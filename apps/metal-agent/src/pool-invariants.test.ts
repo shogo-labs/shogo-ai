@@ -216,7 +216,7 @@ describe('single-project lifecycle invariants (seeded random op sequences)', () 
         await pool.reapDeadAssigned()
       }],
       [1, 'evictLocal', async () => {
-        pool.evictLocal(P)
+        await pool.evictLocal(P)
       }],
       [1, 'foreignWrite', async () => {
         const d = durable()
@@ -303,7 +303,7 @@ describe('ws:proj runtime key mapping', () => {
       if (rand() < 0.5) await pool.saveRepoToStore(a)
       await (pool as any).saveWorkspaceMembersToStore(a)
       await pool.suspend(ANCHOR)
-      if (rand() < 0.5) pool.evictLocal(ANCHOR)
+      if (rand() < 0.5) await pool.evictLocal(ANCHOR)
     }
 
     const bad = s3.writes.filter((k) => {

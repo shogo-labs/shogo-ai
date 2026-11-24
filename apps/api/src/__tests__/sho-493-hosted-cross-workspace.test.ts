@@ -269,7 +269,9 @@ describe('B · forwarding over the host tunnel', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toBe(desktopBody)
 
-    expect(wakeCalls[0]).toEqual({ instanceId: hostInstanceId, staleProbeMs: 25 })
+    // The wake is capped at the interactive window so the forward cannot run
+    // past the edge's budget (SHO-538).
+    expect(wakeCalls[0]).toEqual({ instanceId: hostInstanceId, staleProbeMs: 25, maxWaitMs: 20_000 })
     expect(tunnelCalls).toHaveLength(1)
     const sent = tunnelCalls[0].payload
     // The desktop's local API, same path, same query — not the agent proxy.

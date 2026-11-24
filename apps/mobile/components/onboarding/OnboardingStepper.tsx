@@ -9,7 +9,6 @@
  */
 import { useEffect, useRef, type ReactNode } from 'react'
 import {
-  ActivityIndicator,
   Animated,
   Easing,
   KeyboardAvoidingView,
@@ -23,6 +22,7 @@ import {
 import { ArrowLeft, ArrowRight } from 'lucide-react-native'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { ShogoWordmark } from '../branding/ShogoWordmark'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface StepDef {
   id: string
@@ -245,7 +245,7 @@ export function OnboardingStepper({
                   testID={`onboarding-continue-${step.id}`}
                 >
                   {step.busy ? (
-                    <ActivityIndicator size="small" className="text-primary-foreground" />
+                    <Spinner tone="onPrimary" size="small" />
                   ) : (
                     <View className="flex-row items-center gap-2">
                       <Text className="text-sm font-semibold text-primary-foreground">

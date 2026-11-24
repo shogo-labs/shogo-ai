@@ -269,7 +269,7 @@ async function main() {
     log('push', `suspended + pushed in ${report.steps.push.ms}ms (drive allocated ${(driveAllocated / GiB).toFixed(2)} GiB)`)
 
     const drivePath = snap.workspaceDrive!
-    mgr.releaseRootfs(snap.rootfs)
+    await mgr.releaseRootfs(snap.rootfs)
     mgr.releaseDataDrive(drivePath)
     for (const p of [snap.snapshotPath, snap.memFilePath]) rmSync(p, { force: true })
 
@@ -306,7 +306,7 @@ async function main() {
     if (!listing.includes(marker) || !listing.includes('after-restore')) fail(`rescued marker.txt is wrong: ${listing}`)
     log('rescue', `rescued source archive ${(statSync(rescued.source).size / 1e6).toFixed(1)} MB with the latest marker`)
     rmSync(outDir, { recursive: true, force: true })
-    mgr.releaseRootfs(h.rootfs)
+    await mgr.releaseRootfs(h.rootfs)
     if (h.workspaceDrive) mgr.releaseDataDrive(h.workspaceDrive)
     h = null
 

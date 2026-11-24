@@ -477,4 +477,80 @@ describe('pool writable-state durability', () => {
       expect(a.dataExportRetryAfter).toBeUndefined()
     })
   })
+
+  /**
+   * A database the guest cannot snapshot (SHO-541).
+   *
+   * Samsara's EU VM answered `database disk image is malformed` on every export
+   * for four days and nobody saw it: the host treated it like any other 500,
+   * retried, and moved on. Named, it is a state the VM carries, the fleet
+   * graphs count, and rotation can reason about.
+   */
+  describe('a guest that cannot snapshot its database', () => {
+    const NAMED = {
+      error: 'Could not snapshot the project database: database disk image is malformed',
+      code: 'sqlite_snapshot_failed',
+    }
+
+    function guestAnswersSnapshotFailure(): void {
+      globalThis.fetch = mock(
+        async () => Response.json(NAMED, { status: 500 }),
+      ) as any
+    }
+
+    test('is recorded on the VM and reported once, with the project id and the message', async () => {
+      const pool = makePool(dir)
+      guestAnswersSnapshotFailure()
+      const a = pool.add('samsara')
+
+      const before = metrics.snapshot().counters[M.dataSnapshotFailed] ?? 0
+      await pool.exportAllProjectData()
+      expect(a.dataSnapshotFailure).toMatchObject({
+        code: 'sqlite_snapshot_failed',
+        attempts: 1,
+      })
+      expect(a.dataSnapshotFailure!.message).toContain('database disk image is malformed')
+      expect((metrics.snapshot().counters[M.dataSnapshotFailed] ?? 0) - before).toBe(1)
+
+      // Retries accumulate on the same streak: same `since`, more attempts, and
+      // no second alert.
+      const since = a.dataSnapshotFailure!.since
+      a.dataExportRetryAfter = Date.now() - 1
+      await pool.exportAllProjectData()
+      expect(a.dataSnapshotFailure).toMatchObject({ attempts: 2, since })
+      expect((metrics.snapshot().counters[M.dataSnapshotFailed] ?? 0) - before).toBe(1)
+
+      // And it is on the status the control plane and the UI read.
+      expect(pool.getProjectStatus('samsara').dataSnapshot).toMatchObject({
+        code: 'sqlite_snapshot_failed',
+        attempts: 2,
+      })
+    })
+
+    test('a snapshot that succeeds again clears it', async () => {
+      const pool = makePool(dir)
+      guestAnswersSnapshotFailure()
+      const a = pool.add('recovering')
+      await pool.exportAllProjectData()
+      expect(a.dataSnapshotFailure).toBeDefined()
+
+      guestReturns(new Uint8Array([1]), '"fresh"')
+      a.dataExportRetryAfter = Date.now() - 1
+      await pool.exportAllProjectData()
+
+      expect(a.dataSnapshotFailure).toBeUndefined()
+      expect(pool.getProjectStatus('recovering').dataSnapshot).toBeUndefined()
+    })
+
+    test('a plain 500 is NOT mistaken for a snapshot failure', async () => {
+      // The named code is the only thing that makes this a permanent database
+      // condition; an unlabelled 500 stays an ordinary transient failure.
+      const pool = makePool(dir)
+      globalThis.fetch = mock(async () => new Response('boom', { status: 500 })) as any
+      const a = pool.add('noisy')
+      await pool.exportAllProjectData()
+      expect(a.dataSnapshotFailure).toBeUndefined()
+      expect(a.dataExportFailures).toBe(1)
+    })
+  })
 })

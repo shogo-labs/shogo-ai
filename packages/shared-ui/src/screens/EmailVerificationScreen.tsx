@@ -8,11 +8,12 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react'
-import { View, Text, ActivityIndicator, Platform } from 'react-native'
+import { View, Text, Platform } from 'react-native'
 import { Mail } from 'lucide-react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
 import { BRAND_LANDING_HEX } from '../tokens/brand'
+import { Spinner } from '../primitives/Spinner'
 
 const RESEND_COOLDOWN_SECONDS = 60
 
@@ -120,10 +121,7 @@ export function EmailVerificationScreen({
             disabled={!canResend}
           >
             {isResending ? (
-              <ActivityIndicator
-                size="small"
-                color={colorScheme === 'dark' ? '#e4e4e7' : '#3f3f46'}
-              />
+              <Spinner size="small" tone="muted" />
             ) : cooldown > 0 ? (
               `Resend email (${cooldown}s)`
             ) : resendCount > 0 ? (
