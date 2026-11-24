@@ -28,7 +28,15 @@ export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
 export type VideoProvider = 'higgsfield' | 'google'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
+/**
+ * Every model family, as a runtime array so consumers that *validate* against
+ * it (the super-admin catalog API, the admin form's segmented control) share
+ * one list with the {@link ModelFamily} type instead of hand-copying it. A
+ * hand-copied copy silently loses a member — `gemini` went missing that way
+ * and every Gemini edit was rejected with a 400 (SHO-558).
+ */
+export const MODEL_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'gemini', 'other'] as const
+export type ModelFamily = (typeof MODEL_FAMILIES)[number]
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
