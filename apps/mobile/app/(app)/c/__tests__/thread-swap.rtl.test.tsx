@@ -188,6 +188,7 @@ mock.module(resolve(mobile, 'components/team-chat/UserProfilePane'), () => ({ Us
 mock.module(resolve(mobile, 'components/team-chat/ChannelTabs'), () => ({
   ChannelTabs: stub('tabs'),
   channelSupportsDoc: () => false,
+  channelSupportsTabs: () => false,
   channelTabItems: () => [],
 }))
 mock.module(resolve(mobile, 'components/team-chat/SidePaneResizer'), () => ({
