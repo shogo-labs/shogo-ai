@@ -75,6 +75,41 @@ function isMissingObject(err: any): boolean {
   return name === 'NotFound' || name === 'NoSuchKey'
 }
 
+export type HeadLiveSeedArchiveResult =
+  | { ok: true; exists: boolean; bytes: number }
+  | { ok: false; code: 'live_seed_unreadable'; message: string }
+
+/**
+ * Whether the environment has a live SQLite archive at all, without reading it.
+ *
+ * `data: 'empty'` (§G4) may only start a Postgres environment that has nothing
+ * to lose, and "has an archive" is what tells it the app is already serving:
+ * such a publish is refused by name rather than silently building an empty
+ * database beside the live site's rows. A failed HEAD is reported, never read as
+ * "no archive" — the archive's existence is the whole question here.
+ */
+export async function headLiveSeedArchive(subdomain: string): Promise<HeadLiveSeedArchiveResult> {
+  if (!PUBLISH_DATA_BUCKET || !subdomain) return { ok: true, exists: false, bytes: 0 }
+
+  const key = `${subdomain}/data.tar.gz`
+  try {
+    const head = await publishS3Client.send(
+      new HeadObjectCommand({ Bucket: PUBLISH_DATA_BUCKET, Key: key }),
+    )
+    return { ok: true, exists: true, bytes: Number(head.ContentLength ?? 0) }
+  } catch (err: any) {
+    if (isMissingObject(err)) return { ok: true, exists: false, bytes: 0 }
+    return {
+      ok: false,
+      code: 'live_seed_unreadable',
+      message:
+        `Could not check for the live database archive ${key}: ${err?.message ?? err}. ` +
+        `A 403 or a timeout is not "no archive" — publishing with data: 'empty' cannot tell ` +
+        `whether the app is already live, so nothing was changed. Fix storage access, then publish again.`,
+    }
+  }
+}
+
 /**
  * Read a published environment's live SQLite database out of its durable
  * archive, as a small gzipped tar the project runtime can seed from.

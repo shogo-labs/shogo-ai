@@ -35,7 +35,7 @@ import {
 } from '@shogo/shared-runtime/published-database'
 import { ensureEnvironmentDatabase, type PublishedDatabase } from './published-database.service'
 import { pushPublishedSchema } from './published-schema-push'
-import { readLiveSeedArchive } from './published-live-seed'
+import { headLiveSeedArchive, readLiveSeedArchive } from './published-live-seed'
 import type { SeedOrphan } from '@shogo/shared-runtime/published-schema'
 
 const SCHEMA_TIMEOUT_MS = 180_000
@@ -145,28 +145,6 @@ async function callRuntimeSchema(
 }
 
 /**
- * One chunk of a staged seed (§G4). Same endpoint and auth as the export that
- * produced the token; each answer is a self-contained `BEGIN; … COMMIT;` bounded
- * by the runtime's chunk size, so a 91 MB seed crosses over in a dozen requests
- * instead of being refused as `seed_too_large`.
- */
-async function callRuntimeSeedChunk(
-  projectId: string,
-  seedToken: string,
-  index: number,
-): Promise<{ ok: true; sql: string } | { ok: false; code: string; message: string }> {
-  const answer = await callRuntimeSchema(projectId, { mode: 'seed-chunk', seedToken, seedChunk: index })
-  if (!answer.ok || typeof answer.data?.sql !== 'string') {
-    return {
-      ok: false,
-      code: answer.data?.code ?? 'seed_chunk_failed',
-      message: answer.data?.message ?? `The runtime answered HTTP ${answer.status} for chunk ${index}`,
-    }
-  }
-  return { ok: true, sql: answer.data.sql }
-}
-
-/**
  * Make one published environment's database match the app: provision (or
  * reuse) it, apply the schema, seed it on first deploy, then hand the pod its
  * `DATABASE_URL`.
@@ -178,7 +156,18 @@ async function callRuntimeSeedChunk(
 export async function prepareEnvironmentDatabase(
   projectId: string,
   environment: PublishedEnvironmentName,
-  opts: { allowDataLoss?: boolean; writeFreeze?: import('./published-write-freeze').WriteFreeze } = {},
+  opts: {
+    allowDataLoss?: boolean
+    writeFreeze?: import('./published-write-freeze').WriteFreeze
+    /**
+     * Start a brand-new published database with no rows (`data: 'empty'`, §G4).
+     * Valid only on an environment's FIRST Postgres deploy with nothing to
+     * lose: no schema of its own and no live SQLite archive. The schema is
+     * pushed and nothing is seeded — `prisma/dev.db` is never read, so a builder
+     * database over the seed cap cannot block the switch.
+     */
+    data?: 'empty'
+  } = {},
 ): Promise<PrepareEnvironmentDatabaseResult> {
   const fail = (code: string, message: string, status = 400, details?: Record<string, unknown>) =>
     ({ ok: false, code, message, status, details }) as const
@@ -287,6 +276,41 @@ export async function prepareEnvironmentDatabase(
   }
 
   const unchanged = env?.dbSchemaHash === resolved.hash && env?.dbProvider === 'postgres'
+
+  // §G4: an app whose builder database is too big to seed (Nada App's 91 MB) can
+  // be started empty instead — but only where that cannot cost anything. Both
+  // refusals are named, so the caller acts on them instead of guessing why the
+  // publish stopped.
+  const startEmpty = opts.data === 'empty'
+  if (startEmpty) {
+    if (env?.dbSchema) {
+      return fail(
+        'data_empty_not_allowed',
+        `${environment} already has a Postgres schema. data: 'empty' only starts a database that has never been ` +
+          `seeded — it never wipes one. Publish without the option to apply the schema to the existing database.`,
+        400,
+        { environment },
+      )
+    }
+    const live = env?.subdomain
+      ? await headLiveSeedArchive(env.subdomain)
+      : ({ ok: true, exists: false, bytes: 0 } as const)
+    if (!live.ok) return fail(live.code, live.message, 413, { environment })
+    if (live.exists) {
+      return fail(
+        'data_empty_not_allowed',
+        `${environment} is already live on SQLite (${env?.subdomain}/data.tar.gz, ` +
+          `${(live.bytes / (1024 * 1024)).toFixed(1)} MB), so starting empty would leave everything that site has ` +
+          `written behind. Publish without the option to move its rows to Postgres instead.`,
+        400,
+        { environment, archiveBytes: live.bytes },
+      )
+    }
+    console.log(
+      `[published-schema] ${projectId}/${environment} starting empty (data: 'empty') — schema only, no seed`,
+    )
+  }
+
   // Seed only a database that has never had one: republishing must never
   // overwrite what the live site has written (Q4 seeds staging from dev.db, not
   // from production, and this is the same rule for both environments).
@@ -296,7 +320,7 @@ export async function prepareEnvironmentDatabase(
   // duplicate key — after the destructive push it was meant to rescue has already
   // dropped the column. Accepting data loss accepts the drop; it does not refill
   // the table.
-  const seed = !env?.dbSchema
+  const seed = !env?.dbSchema && !startEmpty
 
   // A first deploy of an environment that is ALREADY LIVE ON SQLITE must seed
   // from what that site is serving, not from the builder's `prisma/dev.db`
@@ -396,37 +420,21 @@ export async function prepareEnvironmentDatabase(
         { environment, seedSource: seedSource ?? null },
       )
     }
-    const seedPayload = (seed ? exported.data?.seed : null) as
-      | { sql?: string; token?: string; chunkCount?: number; rows?: number }
-      | null
-    const seedToken = typeof seedPayload?.token === 'string' ? seedPayload.token : null
-    const seedChunkCount = Number(seedPayload?.chunkCount ?? 1)
+    const seedSql: string | null = seed ? (exported.data?.seed?.sql ?? null) : null
 
     const pushed = await pushPublishedSchema({
       schema: schema.content,
-      seedSql: seedPayload?.sql ?? null,
-      // §G4: a seed bigger than one runtime response is collected chunk by chunk
-      // and loaded one `db execute` at a time — 91 MB (Nada App) fits; it used to
-      // be refused outright as `seed_too_large`.
-      ...(seedToken && seedChunkCount > 1
-        ? {
-            seedChunks: {
-              count: seedChunkCount,
-              fetchChunk: (index: number) => callRuntimeSeedChunk(projectId, seedToken, index),
-            },
-          }
-        : {}),
+      seedSql,
       databaseUrl: provisioned.value.directUrl,
     })
     if (!pushed.ok) {
       return fail(pushed.code, pushed.message, 500, { environment })
     }
     const exportedOrphans: SeedOrphan[] = Array.isArray(exported.data?.orphans) ? exported.data.orphans : []
-    const seededRows = seed ? (seedPayload?.rows ?? 0) : 0
     applied = {
       hash: schema.hash,
       warnings: schema.warnings ?? [],
-      seededRows,
+      seededRows: seedSql ? (exported.data?.seed?.rows ?? 0) : 0,
       orphans: exportedOrphans,
     }
   }

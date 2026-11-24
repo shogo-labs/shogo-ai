@@ -596,6 +596,12 @@ app.post('/projects/:projectId/publish', async (c) => {
     environment?: 'production' | 'staging'
     /** Proceed when the schema change would destroy data (SHO-308 §1). */
     allowDataLoss?: boolean
+    /**
+     * `'empty'`: start this environment's first Postgres database with the
+     * schema and no rows (SHO-551 §G4). Refused with `data_empty_not_allowed`
+     * where rows could be lost.
+     */
+    data?: 'empty'
   }
   try {
     body = (await c.req.json()) as typeof body
@@ -623,6 +629,7 @@ app.post('/projects/:projectId/publish', async (c) => {
       siteDescription: body.siteDescription,
       environment,
       allowDataLoss: body.allowDataLoss === true,
+      data: body.data === 'empty' ? 'empty' : undefined,
     })
     if (!started.ok) {
       return c.json(

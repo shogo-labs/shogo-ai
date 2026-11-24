@@ -15,13 +15,11 @@
 
 import { existsSync, readFileSync } from 'fs'
 import { mkdtemp, rm, writeFile } from 'fs/promises'
-import { randomUUID } from 'crypto'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   buildPublishSchema,
-  buildSeedChunks,
-  SEED_CHUNK_SQL_BYTES,
+  buildSeedSql,
   countSeedRows,
   dropOrphanedSeedRows,
   orderSeedTables,
@@ -139,18 +137,11 @@ function quoteSqliteIdent(name: string): string {
 }
 
 /**
- * Largest seed a publish carries back to the API in ONE response body. The SQL
- * travels as one JSON response, so this bounds a request — not the app's data:
- * a seed bigger than this is handed over in several chunks (§G4, `seed.token`).
+ * Largest seed a publish carries back to the API. The SQL travels as one JSON
+ * response, so a workspace whose `dev.db` holds more than this is refused with a
+ * clear code instead of an out-of-memory somewhere along the way.
  */
 export const MAX_SEED_SQL_BYTES = 64 * 1024 * 1024
-
-/**
- * Largest seed a publish will load at all. A chunked transfer has no per-request
- * problem left, so this is the real bound: beyond it the publish refuses with a
- * named code instead of filling the API's memory and the database's disk.
- */
-export const MAX_SEED_TOTAL_BYTES = 512 * 1024 * 1024
 
 /**
  * Largest live-database archive a publish may hand over, base64. The archive is
@@ -160,98 +151,12 @@ export const MAX_SEED_TOTAL_BYTES = 512 * 1024 * 1024
  */
 export const MAX_SEED_ARCHIVE_BYTES = 64 * 1024 * 1024
 
-/**
- * Seeds too big for one response body, waiting to be collected chunk by chunk.
- *
- * The token is handed to the API, which asks for chunk 0..n-1 in order and then
- * forgets it. The cache holds at most {@link MAX_SEED_CACHE_ENTRIES} seeds: one
- * publish at a time moves a database, and keeping the previous one would double
- * the memory a 500 MB seed already needs. An entry expires after
- * {@link SEED_TOKEN_TTL_MS} so a publish that dies mid-transfer does not pin it.
- */
-export const SEED_TOKEN_TTL_MS = 10 * 60 * 1000
-export const MAX_SEED_CACHE_ENTRIES = 2
-
-interface CachedSeed {
-  chunks: string[]
-  createdAt: number
-}
-
-const seedCache = new Map<string, CachedSeed>()
-
-function pruneSeedCache(now: number): void {
-  for (const [token, entry] of seedCache) {
-    if (now - entry.createdAt > SEED_TOKEN_TTL_MS) seedCache.delete(token)
-  }
-  while (seedCache.size > MAX_SEED_CACHE_ENTRIES) {
-    const oldest = [...seedCache.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0]
-    if (!oldest) break
-    seedCache.delete(oldest[0])
-  }
-}
-
-/** Register a chunked seed and return the token the API collects it with. */
-export function registerSeedChunks(chunks: string[], now = Date.now()): string {
-  pruneSeedCache(now)
-  const token = randomUUID()
-  seedCache.set(token, { chunks, createdAt: now })
-  return token
-}
-
-export type TakeSeedChunkResult =
-  | { ok: true; sql: string; index: number; count: number }
-  | { ok: false; code: 'seed_token_expired' | 'seed_chunk_out_of_range'; message: string }
-
-/**
- * One chunk of a registered seed, by index. The entry is dropped once its last
- * chunk has been collected — the API has the seed in its database by then.
- */
-export function takeSeedChunk(token: string, index: number, now = Date.now()): TakeSeedChunkResult {
-  const entry = seedCache.get(token)
-  if (!entry || now - entry.createdAt > SEED_TOKEN_TTL_MS) {
-    seedCache.delete(token)
-    return {
-      ok: false,
-      code: 'seed_token_expired',
-      message: 'The seed is no longer staged on the runtime (it expired or was collected) — publish again.',
-    }
-  }
-  if (!Number.isInteger(index) || index < 0 || index >= entry.chunks.length) {
-    return {
-      ok: false,
-      code: 'seed_chunk_out_of_range',
-      message: `Chunk ${index} does not exist; this seed has ${entry.chunks.length}.`,
-    }
-  }
-  const sql = entry.chunks[index]
-  if (index === entry.chunks.length - 1) seedCache.delete(token)
-  return { ok: true, sql, index, count: entry.chunks.length }
-}
-
-/** Test seam: forget every staged seed. */
-export function clearSeedCache(): void {
-  seedCache.clear()
-}
-
 export type ExportPublishedSchemaResult =
   | {
       ok: true
       schema: ResolvedPublishSchema
-      /**
-       * Null when no seed was asked for, or the database holds no rows.
-       *
-       * `sql` is present only when the whole seed fits one response body. A
-       * bigger seed is registered under `token` instead and fetched chunk by
-       * chunk with {@link takeSeedChunk}, so the 64 MB bound stays a bound on
-       * one request rather than on what an app may own.
-       */
-      seed: {
-        sql?: string
-        token?: string
-        tables: number
-        rows: number
-        chunkCount: number
-      } | null
+      /** Null when no seed was asked for, or the database holds no rows. */
+      seed: { sql: string; tables: number; rows: number } | null
       /** Where the seed's rows came from, when a seed was produced. */
       seedSource?: 'workspace' | 'archive'
       /**
@@ -283,12 +188,7 @@ export type ExportPublishedSchemaResult =
  */
 export async function exportPublishedSchema(
   projectDir: string,
-  opts: {
-    seed?: boolean
-    seedArchive?: string
-    /** Bytes per seed chunk; the default is {@link SEED_CHUNK_SQL_BYTES}. */
-    seedChunkBytes?: number
-  } = {},
+  opts: { seed?: boolean; seedArchive?: string } = {},
 ): Promise<ExportPublishedSchemaResult> {
   let resolved: ResolvedPublishSchema | null
   try {
@@ -364,33 +264,20 @@ export async function exportPublishedSchema(
     const counted = countSeedRows(tables)
     if (counted.rows === 0 && orphans.length === 0) return { ok: true, schema: resolved, seed: null, orphans: [] }
     if (counted.rows === 0) return { ok: true, schema: resolved, seed: null, orphans }
-    const chunks = buildSeedChunks(tables, opts.seedChunkBytes ?? SEED_CHUNK_SQL_BYTES)
-    const bytes = chunks.reduce((sum, chunk) => sum + Buffer.byteLength(chunk, 'utf-8'), 0)
-    if (bytes > MAX_SEED_TOTAL_BYTES) {
+    const sql = buildSeedSql(tables)
+    const bytes = Buffer.byteLength(sql, 'utf-8')
+    if (bytes > MAX_SEED_SQL_BYTES) {
       return {
         ok: false,
         code: 'seed_too_large',
         message:
-          `The seed database is ${Math.round(bytes / (1024 * 1024))} MB as SQL; a publish loads at most ` +
-          `${MAX_SEED_TOTAL_BYTES / (1024 * 1024)} MB. Remove rows the published app does not need and publish again.`,
+          `The seed database is ${Math.round(bytes / (1024 * 1024))} MB as SQL; a publish seeds at most ` +
+          `${MAX_SEED_SQL_BYTES / (1024 * 1024)} MB. Remove rows the published app does not need and publish again, ` +
+          `or — if this app should start with no rows — publish with {\"data\":\"empty\"} to push the schema alone.`,
         status: 413,
       }
     }
-    if (chunks.length === 1) {
-      return { ok: true, schema: resolved, seed: { sql: chunks[0], chunkCount: 1, ...counted }, seedSource, orphans }
-    }
-    const token = registerSeedChunks(chunks)
-    console.log(
-      `[published-schema] seed is ${(bytes / (1024 * 1024)).toFixed(1)} MB in ${chunks.length} chunks ` +
-        `(over the ${MAX_SEED_SQL_BYTES / (1024 * 1024)} MB single-response limit) — handing it over as ${token}`,
-    )
-    return {
-      ok: true,
-      schema: resolved,
-      seed: { token, chunkCount: chunks.length, ...counted },
-      seedSource,
-      orphans,
-    }
+    return { ok: true, schema: resolved, seed: { sql, ...counted }, seedSource, orphans }
   } catch (err: any) {
     return {
       ok: false,

@@ -152,6 +152,30 @@ fallback:
 the publish log says which one was used. Both are visible in the publish output,
 so a switchover can be confirmed from the run that performed it.
 
+## Starting a database empty (`data: 'empty'`)
+
+A builder database can be too big to seed — Nada App's is 91 MB of SQL, past the
+64 MB cap — and then no amount of retrying gets the app onto Postgres. Publishing
+with `{"data":"empty"}` pushes the app's schema and **no rows**: the export runs
+with `seed: false`, so `prisma/dev.db` is never opened and `seed_too_large` cannot
+happen.
+
+It is deliberately narrow, because "start empty" is one typo away from "throw away
+the live site":
+
+| Environment state | Result |
+|---|---|
+| No Postgres schema, no `{subdomain}/data.tar.gz` | starts empty — schema pushed, `seeded: false` |
+| Already has a Postgres schema | `400 data_empty_not_allowed` — it never wipes an existing database |
+| Live on SQLite (archive present) | `400 data_empty_not_allowed` — starting empty would abandon every row that site wrote |
+| Archive probe fails (403, timeout, 5xx, missing bucket) | `413 live_seed_unreadable` — "we could not find out" is never read as "nothing to lose" |
+
+`data` takes that one value; anything else is `400 invalid_data_option`, so a typo
+fails loudly instead of being read as "no option" and seeding the database the
+caller wanted empty. On an app that is already live, the fix for a
+too-large builder database is the archive path above (`live_seed_too_large`),
+not `data: 'empty'`.
+
 ## Backups gate the switch
 
 No `projects-pg` cluster is trusted with a published app until a backup has been

@@ -1105,6 +1105,25 @@ describe('publish — destructive schema change (SHO-308 §1)', () => {
     expect(publishCalls[0]?.opts.allowDataLoss).toBe(false)
   })
 
+  test("data: 'empty' reaches the publish pipeline, and is absent by default (§G4)", async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 500,
+      code: 'publish_failed',
+      error: 'boom',
+    })
+
+    await run(baseCtx(), { subdomain: 'my-site', data: 'empty' })
+
+    expect(publishCalls[0]?.opts.data).toBe('empty')
+
+    publishCalls = []
+    await run(baseCtx(), { subdomain: 'my-site' })
+
+    // Not coerced into an empty start: a normal publish still seeds.
+    expect(publishCalls[0]?.opts.data).toBeUndefined()
+  })
+
   test('allow_data_loss is forwarded only when the agent passes it', async () => {
     publishProjectImpl = async () => ({
       ok: false,

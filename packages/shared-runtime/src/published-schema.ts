@@ -349,47 +349,9 @@ function quoteBoolean(value: unknown): string {
   return 'TRUE'
 }
 
-/**
- * Largest seed SQL a publish hands over in **one** response body.
- *
- * The SQL travels as JSON, so this bounds a single request, not an app's data.
- * A database whose seed is bigger than this is sent in several chunks (§G4):
- * Nada App's builder `dev.db` is 91 MB, of which one table (`live_session_events`,
- * 267 018 rows) is ~68 MB of SQL on its own — the whole seed used to be refused
- * with `seed_too_large` because it could not fit in one body.
- */
-export const SEED_CHUNK_SQL_BYTES = 8 * 1024 * 1024
-
-/** Rows per `INSERT` at most, so a table of very wide rows still splits. */
-const SEED_INSERT_MAX_ROWS = 500
-
-/** Bytes of one `INSERT` before a new statement starts. */
-const SEED_INSERT_MAX_BYTES = 1024 * 1024
-
 /** Every row as one multi-row `INSERT`, which keeps the load to a few statements. */
 export function buildSeedSql(tables: SeedTableData[]): string {
-  const chunks = buildSeedChunks(tables, Number.MAX_SAFE_INTEGER)
-  return chunks.length > 0 ? chunks.join('\n') : 'BEGIN;\nCOMMIT;'
-}
-
-/**
- * The seed as self-contained transactions of at most `chunkBytes` each (§G4).
- *
- * Each chunk is `BEGIN; … COMMIT;` on its own so a load can be applied one
- * request at a time: a chunk that fails rolls back only itself, and a seed too
- * big for one body is not a seed that cannot be loaded. Order is preserved —
- * `tables` is already in topological order and the chunks follow it — so foreign
- * keys hold across chunk boundaries.
- *
- * Statements are built per table first (`INSERT` in batches bounded by both rows
- * and bytes, then the sequence reset) and only then packed into chunks, so a
- * wide-row table splits before its statement reaches the chunk size.
- */
-export function buildSeedChunks(
-  tables: SeedTableData[],
-  chunkBytes: number = SEED_CHUNK_SQL_BYTES,
-): string[] {
-  const statements: string[] = []
+  const statements: string[] = ['BEGIN;']
   for (const table of tables) {
     if (table.rows.length === 0) continue
     const columns = table.columns.map(quoteIdent).join(', ')
@@ -398,28 +360,17 @@ export function buildSeedChunks(
         .map((column) => table.columns.indexOf(column))
         .filter((index) => index >= 0),
     )
-    const quoteRow = (row: unknown[]) =>
-      `(${row
-        .map((value, index) => (booleanAt.has(index) ? quoteBoolean(value) : quoteLiteral(value)))
-        .join(', ')})`
-
-    let batch: string[] = []
-    let batchBytes = 0
-    const flushBatch = () => {
-      if (batch.length === 0) return
-      statements.push(
-        `INSERT INTO ${quoteIdent(table.table)} (${columns}) VALUES\n  ${batch.join(',\n  ')};`,
+    const values = table.rows
+      .map(
+        (row) =>
+          `(${row
+            .map((value, index) => (booleanAt.has(index) ? quoteBoolean(value) : quoteLiteral(value)))
+            .join(', ')})`,
       )
-      batch = []
-      batchBytes = 0
-    }
-    for (const row of table.rows) {
-      const text = quoteRow(row)
-      batch.push(text)
-      batchBytes += text.length + 3
-      if (batch.length >= SEED_INSERT_MAX_ROWS || batchBytes >= SEED_INSERT_MAX_BYTES) flushBatch()
-    }
-    flushBatch()
+      .join(',\n  ')
+    statements.push(
+      `INSERT INTO ${quoteIdent(table.table)} (${columns}) VALUES\n  ${values};`,
+    )
     if (table.serialIdColumn) {
       // `pg_get_serial_sequence` resolves the sequence behind the identity, so
       // the reset works whether the column is `serial` or `GENERATED ... AS
@@ -439,28 +390,8 @@ export function buildSeedChunks(
       )
     }
   }
-
-  // Pack the statements into chunks that each fit one request body. A chunk
-  // never splits a statement, so a single statement larger than `chunkBytes`
-  // (one enormous row) forms its own chunk and is bounded only by the caller's
-  // per-request limit.
-  const chunks: string[] = []
-  let current: string[] = []
-  let currentBytes = 0
-  const flushChunk = () => {
-    if (current.length === 0) return
-    chunks.push(['BEGIN;', ...current, 'COMMIT;'].join('\n'))
-    current = []
-    currentBytes = 0
-  }
-  for (const statement of statements) {
-    const size = Buffer.byteLength(statement, 'utf-8') + 1
-    if (currentBytes > 0 && currentBytes + size > chunkBytes) flushChunk()
-    current.push(statement)
-    currentBytes += size
-  }
-  flushChunk()
-  return chunks
+  statements.push('COMMIT;')
+  return statements.join('\n')
 }
 
 /**

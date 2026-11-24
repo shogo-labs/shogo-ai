@@ -45,6 +45,8 @@ let runtimeCalls: Array<Record<string, any>>
 let pushCalls: Array<{ schema: string; seedSql: string | null; databaseUrl: string }>
 let liveSeedCalls: string[]
 let liveSeedResult: Awaited<ReturnType<typeof import('../published-live-seed').readLiveSeedArchive>>
+/** The existence probe `data: 'empty'` runs before it starts a database (§G4). */
+let archiveHead: Awaited<ReturnType<typeof import('../published-live-seed').headLiveSeedArchive>>
 /** How the stubbed runtime answers an `export`. A current runtime by default. */
 let runtimeReply: (body: any) => any
 
@@ -65,6 +67,7 @@ function reset() {
   pushCalls = []
   liveSeedCalls = []
   liveSeedResult = { ok: true, value: { archive: LIVE_ARCHIVE, bytes: 4096 } }
+  archiveHead = { ok: true, exists: true, bytes: 4096 }
   runtimeReply = currentRuntimeReply
 }
 
@@ -113,6 +116,7 @@ mock.module('../published-schema-push', () => ({
 
 mock.module('../published-live-seed', () => ({
   MAX_LIVE_SEED_ARCHIVE_BYTES: 64 * 1024 * 1024,
+  headLiveSeedArchive: async () => archiveHead,
   readLiveSeedArchive: async (subdomain: string) => {
     liveSeedCalls.push(subdomain)
     return liveSeedResult
@@ -260,5 +264,79 @@ describe('prepareEnvironmentDatabase on a live SQLite environment', () => {
     if (!res.ok) return
     expect(liveSeedCalls).toHaveLength(0)
     expect(res.value.seededFrom).toBe('dev.db')
+  })
+})
+
+describe("prepareEnvironmentDatabase with data: 'empty' (SHO-551 §G4)", () => {
+  // The one build that cannot be seeded: a builder database over the seed cap
+  // (Nada App's 91 MB). It may start empty ONLY where that costs nothing, so
+  // every refusal below has to hold before the schema is pushed.
+
+  it('starts the first database empty: schema only, no seed, dev.db never read', async () => {
+    archiveHead = { ok: true, exists: false, bytes: 0 }
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production', { data: 'empty' })
+
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.value.seeded).toBe(false)
+    expect(res.value.seededFrom).toBeNull()
+    expect(res.value.seededRows).toBe(0)
+    // Never read the archive, so never read the builder's dev.db either: the
+    // seed is what was too big, and skipping it is the whole point.
+    expect(liveSeedCalls).toHaveLength(0)
+    const exported = runtimeCalls.find((call) => call.mode === 'export')
+    expect(exported?.seed).toBe(false)
+    expect(exported?.seedArchive).toBeUndefined()
+    expect(pushCalls).toHaveLength(1)
+    expect(pushCalls[0].seedSql).toBeNull()
+    // The environment still moves to Postgres, and its schema is recorded.
+    expect(envRow.dbProvider).toBe('postgres')
+    expect(envRow.dbSchema).toBe(POSTGRES_SCHEMA)
+  })
+
+  it('refuses an environment that is already live on SQLite', async () => {
+    archiveHead = { ok: true, exists: true, bytes: 91 * 1024 * 1024 }
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production', { data: 'empty' })
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('data_empty_not_allowed')
+    expect(res.status).toBe(400)
+    expect(res.message).toContain('live on SQLite')
+    // Nothing was exported, pushed or exposed: the SQLite site keeps serving.
+    expect(liveSeedCalls).toHaveLength(0)
+    expect(runtimeCalls.filter((call) => call.mode === 'export')).toHaveLength(0)
+    expect(pushCalls).toHaveLength(0)
+    expect(ensureCalls.every((call) => call.exposeToPod === false)).toBe(true)
+  })
+
+  it('refuses an environment that already has a Postgres schema, before probing storage', async () => {
+    envRow.dbProvider = 'postgres'
+    envRow.dbSchema = POSTGRES_SCHEMA
+    envRow.dbSchemaHash = 'hash-1'
+    // A storage failure here would prove the probe ran; the schema check must win.
+    archiveHead = { ok: false, code: 'live_seed_unreadable', message: 'storage is down' }
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production', { data: 'empty' })
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('data_empty_not_allowed')
+    expect(res.message).toContain('already has a Postgres schema')
+    expect(pushCalls).toHaveLength(0)
+  })
+
+  it('reports a storage failure instead of starting empty', async () => {
+    archiveHead = { ok: false, code: 'live_seed_unreadable', message: 'a 403 is not "no archive"' }
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production', { data: 'empty' })
+
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('live_seed_unreadable')
+    expect(pushCalls).toHaveLength(0)
+    expect(runtimeCalls.filter((call) => call.mode === 'export')).toHaveLength(0)
   })
 })

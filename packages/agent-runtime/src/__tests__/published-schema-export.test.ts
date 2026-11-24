@@ -15,13 +15,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import {
-  clearSeedCache,
-  collectSeedTables,
-  exportPublishedSchema,
-  resolvePublishSchema,
-  takeSeedChunk,
-} from '../published-schema-export'
+import { collectSeedTables, exportPublishedSchema, resolvePublishSchema } from '../published-schema-export'
 
 const dirs: string[] = []
 
@@ -127,7 +121,7 @@ describe('exportPublishedSchema', () => {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
     expect(result.schema.content).toContain('provider = "postgresql"')
     expect(result.seed).toMatchObject({ tables: 2, rows: 2 })
-    const sql = result.seed!.sql as string
+    const sql = result.seed!.sql
     expect(sql.indexOf('INSERT INTO "User"')).toBeLessThan(sql.indexOf('INSERT INTO "Post"'))
     expect(sql).toContain("'it''s'")
   })
@@ -148,86 +142,5 @@ describe('exportPublishedSchema', () => {
     const result = await exportPublishedSchema(projectDir())
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.code).toBe('no_schema')
-  })
-
-  // §G4: a seed too big for one response body is handed over in chunks instead
-  // of being refused. Nada App's `dev.db` is 91 MB, one of its tables ~68 MB.
-  describe('seeds larger than one response', () => {
-    function wideDir(rows: number): string {
-      const dir = projectDir({ schema: SCHEMA, devDb: true })
-      const db = new Database(join(dir, 'prisma', 'dev.db'))
-      db.run('CREATE TABLE "User" (id INTEGER PRIMARY KEY, email TEXT)')
-      db.run('CREATE TABLE "Post" (id INTEGER PRIMARY KEY, title TEXT, authorId INTEGER)')
-      const insert = db.prepare('INSERT INTO "User" (id, email) VALUES (?, ?)')
-      for (let id = 1; id <= rows; id++) insert.run(id, `user-${id}-${'x'.repeat(120)}@example.com`)
-      db.close()
-      return dir
-    }
-
-    // 1,200 rows split into three `INSERT` statements (500/500/200, ~76 KB each)
-    // and a chunk size that holds two of them: the packing decides where the
-    // chunks end, and a chunk never exceeds the size unless a single statement
-    // alone is bigger.
-    const CHUNK_BYTES = 170_000
-
-    it('returns a token and chunk count instead of one oversized blob', async () => {
-      clearSeedCache()
-      const result = await exportPublishedSchema(wideDir(1_200), { seed: true, seedChunkBytes: CHUNK_BYTES })
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
-      expect(result.seed?.sql).toBeUndefined()
-      expect(typeof result.seed?.token).toBe('string')
-      expect(result.seed!.chunkCount).toBeGreaterThan(1)
-      expect(result.seed!.rows).toBe(1_200)
-    })
-
-    it('hands the chunks over in order, each a bounded transaction', async () => {
-      clearSeedCache()
-      const result = await exportPublishedSchema(wideDir(1_200), { seed: true, seedChunkBytes: CHUNK_BYTES })
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
-      const token = result.seed!.token as string
-      const count = result.seed!.chunkCount
-      const emails: string[] = []
-      for (let index = 0; index < count; index++) {
-        const chunk = takeSeedChunk(token, index)
-        if (!chunk.ok) throw new Error(`${chunk.code}: ${chunk.message}`)
-        expect(chunk.sql.startsWith('BEGIN;')).toBe(true)
-        expect(chunk.sql.trimEnd().endsWith('COMMIT;')).toBe(true)
-        expect(Buffer.byteLength(chunk.sql, 'utf-8')).toBeLessThanOrEqual(CHUNK_BYTES)
-        for (const match of chunk.sql.matchAll(/user-(\d+)-/g)) emails.push(match[1])
-      }
-      // Every row crosses exactly once, in id order: a chunk boundary cannot drop
-      // or duplicate a row.
-      expect(emails).toEqual(Array.from({ length: 1_200 }, (_, i) => String(i + 1)))
-    })
-
-    it('drops the staged seed once its last chunk is collected', async () => {
-      clearSeedCache()
-      const result = await exportPublishedSchema(wideDir(1_200), { seed: true, seedChunkBytes: CHUNK_BYTES })
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
-      const token = result.seed!.token as string
-      const count = result.seed!.chunkCount
-      for (let index = 0; index < count; index++) takeSeedChunk(token, index)
-      const after = takeSeedChunk(token, 0)
-      expect(after.ok).toBe(false)
-      if (!after.ok) expect(after.code).toBe('seed_token_expired')
-    })
-
-    it('refuses an index the seed does not have', async () => {
-      clearSeedCache()
-      const result = await exportPublishedSchema(wideDir(1_200), { seed: true, seedChunkBytes: CHUNK_BYTES })
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
-      const outOfRange = takeSeedChunk(result.seed!.token as string, 999)
-      expect(outOfRange.ok).toBe(false)
-      if (!outOfRange.ok) expect(outOfRange.code).toBe('seed_chunk_out_of_range')
-    })
-
-    it('keeps a small seed inline, so nothing changes for the ordinary publish', async () => {
-      clearSeedCache()
-      const result = await exportPublishedSchema(seededDir(), { seed: true })
-      if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
-      expect(result.seed?.token).toBeUndefined()
-      expect(typeof result.seed?.sql).toBe('string')
-      expect(result.seed!.chunkCount).toBe(1)
-    })
   })
 })

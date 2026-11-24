@@ -6804,7 +6804,7 @@ app.post('/agent/published-schema', async (c) => {
   }
 
   let body: {
-    mode?: 'describe' | 'export' | 'seed-chunk'
+    mode?: 'describe' | 'export'
     seed?: boolean
     expectedHash?: string
     /**
@@ -6815,10 +6815,6 @@ app.post('/agent/published-schema', async (c) => {
      * `{subdomain}/data.tar.gz`.
      */
     seedArchive?: string
-    /** `seed-chunk`: the token `export` returned for a seed too big for one body. */
-    seedToken?: string
-    /** `seed-chunk`: which chunk to return, 0-based, fetched in order. */
-    seedChunk?: number
   }
   try {
     body = await c.req.json()
@@ -6826,19 +6822,8 @@ app.post('/agent/published-schema', async (c) => {
     return c.json({ ok: false, code: 'invalid_body', message: 'Expected a JSON body' }, 400)
   }
 
-  const { exportPublishedSchema, resolvePublishSchema, takeSeedChunk } = await import('./published-schema-export')
+  const { exportPublishedSchema, resolvePublishSchema } = await import('./published-schema-export')
   const mode = body.mode ?? 'describe'
-
-  // One chunk of a seed too big for one response body (§G4). The SQL was built
-  // and staged by the `export` that returned the token; this only hands it over.
-  if (mode === 'seed-chunk') {
-    if (typeof body.seedToken !== 'string' || !body.seedToken) {
-      return c.json({ ok: false, code: 'invalid_body', message: 'seedToken is required' }, 400)
-    }
-    const chunk = takeSeedChunk(body.seedToken, Number(body.seedChunk ?? 0))
-    if (!chunk.ok) return c.json({ ok: false, code: chunk.code, message: chunk.message }, 409)
-    return c.json({ ok: true, sql: chunk.sql, index: chunk.index, count: chunk.count })
-  }
 
   if (mode === 'describe') {
     let resolved

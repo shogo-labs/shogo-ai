@@ -1167,6 +1167,8 @@ async function configurePublishedService(
     serverBacked?: boolean
     environment?: "production" | "staging"
     allowDataLoss?: boolean
+    /** §G4: start this environment's first Postgres database with no rows. */
+    data?: "empty"
     /** The caller already ran the app build for this publish. */
     artifactAlreadyBuilt?: boolean
   },
@@ -1263,6 +1265,7 @@ async function configurePublishedService(
       const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
       const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
         allowDataLoss: opts?.allowDataLoss === true,
+        data: opts?.data === "empty" ? "empty" : undefined,
         writeFreeze,
       })
       if (!prepared.ok) {
@@ -1673,6 +1676,17 @@ export interface PublishProjectOptions {
    * `destructive_schema_change` otherwise — AC 2 (SHO-308 §1).
    */
   allowDataLoss?: boolean
+  /**
+   * `'empty'`: start this environment's first Postgres database with the app's
+   * schema and NO rows (§G4). Nothing is seeded and `prisma/dev.db` is never
+   * read, so a builder database over the seed cap can still reach Postgres.
+   *
+   * Only valid where it cannot lose anything: refused with
+   * `data_empty_not_allowed` when the environment already has a Postgres schema
+   * or is live on SQLite (its `{subdomain}/data.tar.gz` holds rows the empty
+   * database would abandon). It never wipes a database.
+   */
+  data?: 'empty'
 }
 
 /**
@@ -1753,6 +1767,26 @@ export interface StartPublishResult {
 type PublishRefusal = { ok: false; status: number; code: string; message: string; details?: Record<string, unknown> }
 type PublishOk = { ok: true }
 
+/**
+ * Read the `data` option off a request body (SHO-551 §G4).
+ *
+ * Its type guarantees nothing off HTTP, and a typo must be refused by name
+ * rather than read as "no option" — that would seed the very database the caller
+ * asked to start empty. Only `'empty'` means anything today.
+ */
+function resolveDataOption(
+  opts: PublishProjectOptions,
+): { ok: true; data?: 'empty' } | PublishRefusal {
+  if (opts.data === undefined) return { ok: true }
+  if (opts.data === 'empty') return { ok: true, data: 'empty' }
+  return {
+    ok: false,
+    status: 400,
+    code: 'invalid_data_option',
+    message: "`data` may only be \"empty\": start an environment's first Postgres database with no rows.",
+  }
+}
+
 /** Everything `preparePublish` resolved; `runPublishPipeline` needs nothing else. */
 interface PreparedPublish {
   projectId: string
@@ -1765,6 +1799,8 @@ interface PreparedPublish {
   siteDescription?: string
   alwaysOn: boolean
   allowDataLoss: boolean
+  /** §G4: start the environment's first Postgres database with no rows. */
+  data?: 'empty'
   fileSource: PublishFileSource
   /** Set when this publish moves the project off an older subdomain. */
   previousSubdomain?: string
@@ -1829,6 +1865,9 @@ async function preparePublish(
   if (!ACCESS_LEVELS.has(accessLevel)) {
     return { ok: false, status: 400, code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` }
   }
+
+  const dataOption = resolveDataOption(opts)
+  if (!dataOption.ok) return dataOption
 
   // Subdomain publishing is gated to Pro+. Only gate a first publish or a
   // subdomain change — republishing the same subdomain stays allowed so a
@@ -1905,6 +1944,7 @@ async function preparePublish(
       siteDescription,
       alwaysOn,
       allowDataLoss: opts.allowDataLoss === true,
+      data: dataOption.data,
       fileSource,
       claimFresh: claim.fresh,
       previousSubdomain:
@@ -2002,6 +2042,7 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
               configurePublishedService(projectId, subdomain, {
                 alwaysOn,
                 allowDataLoss: prepared.allowDataLoss,
+                data: prepared.data,
                 serverBacked,
                 // The publish flow built the app in step 1, so the image build
                 // must not build it a second time.
@@ -2224,6 +2265,8 @@ interface PreparedStagingPublish {
   environmentId: string
   subdomain: string
   allowDataLoss: boolean
+  /** §G4: start this environment's first Postgres database with no rows. */
+  data?: 'empty'
 }
 
 /**
@@ -2235,7 +2278,7 @@ interface PreparedStagingPublish {
  */
 async function prepareStagingPublish(
   projectId: string,
-  opts: { allowDataLoss?: boolean },
+  opts: { allowDataLoss?: boolean; data?: 'empty' },
 ): Promise<{ ok: true; prepared: PreparedStagingPublish } | PublishRefusal> {
   const project = await prisma.project.findUnique({ where: { id: projectId } })
   if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
@@ -2281,6 +2324,7 @@ async function prepareStagingPublish(
       environmentId: staging.id,
       subdomain: staging.subdomain,
       allowDataLoss: opts.allowDataLoss === true,
+      data: opts.data === 'empty' ? 'empty' : undefined,
     },
   }
 }
@@ -2330,6 +2374,7 @@ async function runStagingPipeline(prepared: PreparedStagingPublish): Promise<Pub
             serverBacked,
             environment: "staging",
             allowDataLoss: prepared.allowDataLoss === true,
+            data: prepared.data,
           }),
         upload: async () => {
           await uploadToS3(subdomain, files)
@@ -2374,7 +2419,20 @@ async function startStagingPublish(
   projectId: string,
   opts: PublishProjectOptions,
 ): Promise<StartPublishResult> {
-  const prepared = await prepareStagingPublish(projectId, { allowDataLoss: opts.allowDataLoss })
+  const dataOption = resolveDataOption(opts)
+  if (!dataOption.ok) {
+    return {
+      ok: false,
+      status: dataOption.status,
+      code: dataOption.code,
+      message: dataOption.message,
+      details: dataOption.details,
+    }
+  }
+  const prepared = await prepareStagingPublish(projectId, {
+    allowDataLoss: opts.allowDataLoss,
+    data: dataOption.data,
+  })
   if (!prepared.ok) {
     return { ok: false, status: prepared.status, code: prepared.code, message: prepared.message, details: prepared.details }
   }
