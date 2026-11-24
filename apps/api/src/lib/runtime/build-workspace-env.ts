@@ -36,7 +36,6 @@
 import { generateProxyToken } from '../ai-proxy-token'
 import {
   INSTANCE_SIZES,
-  meetsMinimumInstanceSize,
   accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
@@ -277,16 +276,14 @@ export async function buildWorkspaceEnv(
     // member has to request the docker VM here or it lands on a standard
     // guest with no dockerd. One member that needs docker lifts the whole
     // VM: a standard project can run there, a compose project cannot run
-    // on a standard one.
+    // on a standard one. The platform flag is the only gate — docker is a VM
+    // class, not a compute tier (instance-size purchases were retired in
+    // SHO-424), so any workspace size may run it.
     const dockerStackId = Object.values(techStacks).find((id) => isDockerTechStack(id))
     if (dockerStackId) {
       if (!isDockerClassEnabled()) {
         console.error(
           `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but the platform gate is off — assigning a standard VM`,
-        )
-      } else if (!meetsMinimumInstanceSize(workspaceInstanceSize, dockerStackId)) {
-        console.error(
-          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but instance size '${workspaceInstanceSize}' is below the stack minimum — assigning a standard VM`,
         )
       } else {
         env.SHOGO_RUNTIME_CLASS = 'docker'
@@ -297,7 +294,7 @@ export async function buildWorkspaceEnv(
       Object.assign(
         env,
         metalVmSizeEnv(
-          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks), env.SHOGO_RUNTIME_CLASS === 'docker'),
+          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks)),
         ),
       )
       // Workspace-drive size (SHO-349). A project-anchored runtime gets its own

@@ -2673,7 +2673,6 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         anyErr.code === 'unauthorized' ? 401
         : anyErr.code === 'forbidden' ? 403
         : anyErr.code === 'not_found' ? 404
-        : anyErr.code === 'instance_too_small' ? 402
         : anyErr.code === 'paywall' ? 402
         // Working-mode flips conflict with the project's current state: the
         // repo already has a history we cannot detach, or the direction is

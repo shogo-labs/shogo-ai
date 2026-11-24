@@ -168,7 +168,6 @@ mock.module('../config/instance-sizes', () => ({
     techStackId === 'expo-app' ? 'mobile-floor' : 'small',
   getMobileDiskSizeLimit: (size: string) => `${size}-mobile-disk`,
   isMobileTechStack: (techStackId: string | null) => techStackId === 'expo-app',
-  meetsMinimumInstanceSize: () => true,
 }))
 
 mock.module('../lib/warm-pool-controller', () => ({

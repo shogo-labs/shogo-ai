@@ -16,13 +16,11 @@
 
 import { join, resolve } from 'node:path'
 import { prisma } from '../lib/prisma'
-import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { AUTO_MODEL_ID, isAutoModel } from '@shogo/model-catalog'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getMergedModelEntrySync } from './model-registry.service'
-import { canRunTechStackOnInstanceSize } from './billing-runtime'
 import { HeartbeatConfigError, buildAgentConfigCreateData, updateHeartbeatConfig } from './heartbeat-config.service'
 import { readProjectToolUsage } from './tool-usage.service'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
@@ -35,7 +33,6 @@ export type ProjectLifecycleErrorCode =
   | 'invalid_working_mode'
   | 'working_mode_flip_not_supported'
   | 'durable_repo_external_flip'
-  | 'instance_too_small'
   | 'docker_class_disabled'
   | 'paywall'
 
@@ -126,8 +123,8 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
 
   const ctx = hookCtx(input.actingUserId, draft)
   // Routes through the same `beforeCreate` the generated `POST /api/projects`
-  // route uses (see module doc), so the Docker-class minimum-instance-size
-  // gate applies here too without duplicating the check.
+  // route uses (see module doc), so the Docker-class platform gate applies
+  // here too without duplicating the check.
   const before = await projectHooks.beforeCreate!(draft, ctx)
   if (before && !before.ok) {
     const code = (before.error?.code ?? 'bad_request') as ProjectLifecycleErrorCode
@@ -135,7 +132,7 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
       'unauthorized',
       'forbidden',
       'bad_request',
-      'instance_too_small',
+      'docker_class_disabled',
     ]
     throw new ProjectLifecycleError(
       knownCodes.includes(code) ? code : 'bad_request',
@@ -256,10 +253,10 @@ export async function configureProject(
   if (patch.slackEnabled !== undefined) projectData.slackEnabled = patch.slackEnabled
   if (patch.settings) {
     const current = (normalizeProjectSettings(existing.settings) as Record<string, unknown> | null) ?? {}
-    // Mirror the generated PATCH /api/projects/:id hook's tier gate: a
+    // Mirror the generated PATCH /api/projects/:id hook's Docker gate: a
     // `configureProject` caller (agent runtime) can flip `techStackId` to a
     // Docker-class stack the same way the UI's settings PATCH can, so it
-    // needs the same "does this workspace's instance size afford it?" check.
+    // needs the same platform-flag check.
     const incomingTechStackId = patch.settings.techStackId as string | undefined
     if (incomingTechStackId) {
       const currentTechStackId = current.techStackId as string | undefined
@@ -267,19 +264,6 @@ export async function configureProject(
         const dockerBlocked = dockerClassBlockedMessage(incomingTechStackId)
         if (dockerBlocked) {
           throw new ProjectLifecycleError('docker_class_disabled', dockerBlocked)
-        }
-        if (getMinimumInstanceSize(incomingTechStackId)) {
-          const { allowed, currentSize, requiredSize } = await canRunTechStackOnInstanceSize(
-            existing.workspaceId,
-            incomingTechStackId,
-          )
-          if (!allowed) {
-            throw new ProjectLifecycleError(
-              'instance_too_small',
-              `Switching to this stack requires the ${requiredSize} compute tier or higher ` +
-                `(workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
-            )
-          }
         }
       }
     }

@@ -378,14 +378,18 @@ describe('POST /workspaces/:workspaceId/projects', () => {
     expect(store.createProjectCalledWith).toBeNull()
   })
 
-  test('402 when the lifecycle service rejects with instance_too_small', async () => {
-    store.createProjectThrow = ProjectLifecycleErrorLike('instance_too_small')
+  test('passes docker_class_disabled through (no compute-tier status any more)', async () => {
+    // SHO-578: the instance-size floor is gone with the retired purchase
+    // tiers, so there is no compute-too-small refusal (or 402) any more. The
+    // only Docker refusal is the platform flag.
+    store.createProjectThrow = ProjectLifecycleErrorLike('docker_class_disabled')
     const res = await app.request('/workspaces/ws-1/projects', {
       method: 'POST',
       headers: { ...SA, ...JSON_H },
       body: JSON.stringify({ name: 'X', userId: 'u1' }),
     })
-    expect(res.status).toBe(402)
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('docker_class_disabled')
   })
 })
 
@@ -576,15 +580,16 @@ describe('PATCH /projects/:projectId/config', () => {
     expect(res.status).toBe(402)
   })
 
-  test('402 when configureProject rejects with instance_too_small', async () => {
+  test('passes a docker-stack switch refusal through as docker_class_disabled', async () => {
     store.projects.set('proj-1', { workspaceId: 'ws-1' })
-    store.configureThrow = ProjectLifecycleErrorLike('instance_too_small')
+    store.configureThrow = ProjectLifecycleErrorLike('docker_class_disabled')
     const res = await app.request('/projects/proj-1/config', {
       method: 'PATCH',
       headers: { ...SA, ...JSON_H },
       body: JSON.stringify({ settings: { techStackId: 'docker-compose' } }),
     })
-    expect(res.status).toBe(402)
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('docker_class_disabled')
   })
 
   test('200 forwards workingMode to configureProject', async () => {

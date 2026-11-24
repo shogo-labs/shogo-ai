@@ -14,7 +14,6 @@
  */
 import type * as CloudBillingModule from './billing.service'
 import type { UsageWindowKind, UsageWindowSnapshot } from './billing.service'
-import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { usageLimitErrorPayload as localUsageLimitErrorPayload } from './usage-limits'
 import { recordLocalUsage } from './billing-local'
 
@@ -35,10 +34,7 @@ type BillingSeam = Pick<
   | 'hasBalance'
   | 'hasPaidSubscription'
   | 'resolveBillingWorkspaceId'
-  | 'canRunTechStackOnInstanceSize'
 >
-
-type InstanceSizeName = Awaited<ReturnType<CloudBilling['canRunTechStackOnInstanceSize']>>['currentSize']
 
 let cloudBilling: CloudBilling | null = null
 if (process.env.SHOGO_LOCAL_MODE !== 'true') {
@@ -72,13 +68,6 @@ export const localBilling: BillingSeam = {
   hasPaidSubscription: async () => true,
   // Local workspaces never have a parent to pool billing with.
   resolveBillingWorkspaceId: async (workspaceId) => workspaceId,
-  // Desktop runs every stack on the host; callers only read `currentSize` to
-  // explain a refusal, which never happens here.
-  canRunTechStackOnInstanceSize: async (_workspaceId, techStackId) => ({
-    allowed: true,
-    currentSize: 'micro' as InstanceSizeName,
-    requiredSize: getMinimumInstanceSize(techStackId) as InstanceSizeName | null,
-  }),
   allocateMonthlyIncluded: unavailableLocally('allocateMonthlyIncluded'),
   syncFromStripe: unavailableLocally('syncFromStripe'),
 }
@@ -109,5 +98,3 @@ export const hasPaidSubscription: BillingSeam['hasPaidSubscription'] = (...args)
 // an unresolved id is the same workspace.
 export const resolveBillingWorkspaceId: BillingSeam['resolveBillingWorkspaceId'] = (...args) =>
   (billing().resolveBillingWorkspaceId ?? localBilling.resolveBillingWorkspaceId)(...args)
-export const canRunTechStackOnInstanceSize: BillingSeam['canRunTechStackOnInstanceSize'] = (...args) =>
-  billing().canRunTechStackOnInstanceSize(...args)

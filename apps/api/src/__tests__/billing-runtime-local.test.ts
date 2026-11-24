@@ -50,12 +50,6 @@ describe('billing-runtime (local mode)', () => {
     expect(await billing.hasPaidSubscription('local-workspace')).toBe(true)
   })
 
-  test('any tech stack may run regardless of instance size (project_create / project_configure)', async () => {
-    for (const stack of ['react-app', 'expo-app', null]) {
-      expect((await billing.canRunTechStackOnInstanceSize('local-workspace', stack)).allowed).toBe(true)
-    }
-  })
-
   test('usage windows are uncapped snapshots, not null', async () => {
     const windows = await billing.getUsageWindows('local-workspace')
     expect(windows.fiveHour).toEqual({ kind: 'five_hour', usedUsd: 0, limitUsd: null, utilization: 0, resetsAt: null })

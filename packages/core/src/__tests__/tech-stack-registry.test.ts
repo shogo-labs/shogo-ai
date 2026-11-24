@@ -93,7 +93,6 @@ describe('tech-stack-registry', () => {
     expect(isMobileTechStack('video-editor')).toBe(false)
     expect(usesMetroBundler('video-editor')).toBe(false)
     expect(entry?.vmClass).toBeUndefined()
-    expect(entry?.minimumInstanceSize).toBeUndefined()
   })
 
   test('stackSeedsItself: unknown / nullish ids return false (safe default)', () => {

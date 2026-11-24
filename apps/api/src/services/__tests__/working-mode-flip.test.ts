@@ -44,11 +44,9 @@ import type { LiveProject } from '../../../../../packages/agent-runtime/src/syst
 
 mock.module('@shogo/shared-runtime', () => ({
   // No tech stack in these tests declares a compute floor.
-  getMinimumInstanceSize: () => null,
 }))
 
 mock.module('../billing.service', () => ({
-  canRunTechStackOnInstanceSize: async () => ({ allowed: true, currentSize: 'micro', requiredSize: null }),
   hasPaidSubscription: async () => true,
 }))
 
