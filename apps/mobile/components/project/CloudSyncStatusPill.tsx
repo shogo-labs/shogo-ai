@@ -15,7 +15,7 @@
  * ones, so local-only projects cost a single request and then go quiet.
  */
 import React, { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, View } from 'react-native'
+import { Pressable, View } from 'react-native'
 import {
   Cloud,
   CloudOff,
@@ -30,6 +30,7 @@ import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '../ui/pop
 import { useDomainHttp } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { api, type CloudSyncStatusDTO, type CloudSyncState } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const POLL_MS = 5_000
 
@@ -130,7 +131,7 @@ export function CloudSyncStatusPill({ projectId }: { projectId: string }) {
           className={cn('ml-1 flex-row items-center gap-1 rounded-full px-2 py-0.5', v.bg)}
         >
           {v.spinning ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : v.icon ? (
             <v.icon size={12} className={v.text} />
           ) : null}

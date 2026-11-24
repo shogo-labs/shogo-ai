@@ -14,12 +14,12 @@ import { createReactNativeMock } from "../../../../test/react-native-mock"
 
 mock.module("react-native", () =>
   createReactNativeMock({
-    Pressable: ({ accessibilityLabel, accessibilityRole, children, onPress, ...props }: any) =>
+    Pressable: (({ accessibilityLabel, accessibilityRole, children, onPress, ...props }: any) =>
       createElement(
         "button",
         { ...props, "aria-label": accessibilityLabel, onClick: onPress, role: accessibilityRole },
         children,
-      ),
+      )) as any,
   }),
 )
 

@@ -61,12 +61,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Text, ActivityIndicator, Platform, Pressable } from 'react-native'
+import { View, Text, Platform, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type WorkspaceSummary } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { Spinner } from '@/components/ui/spinner'
 
 interface LocalLinkParams {
   state?: string
@@ -245,7 +246,7 @@ function LocalLinkBridge() {
 
         {status === 'checking-auth' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">Checking your session...</Text>
           </>
         )}
@@ -256,7 +257,7 @@ function LocalLinkBridge() {
 
         {status === 'loading-workspaces' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">Loading your workspaces...</Text>
           </>
         )}
@@ -309,7 +310,7 @@ function LocalLinkBridge() {
 
         {status === 'minting' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">
               Linking this browser session to your Shogo Desktop app...
             </Text>

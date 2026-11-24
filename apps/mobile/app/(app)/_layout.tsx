@@ -21,7 +21,6 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   Text,
@@ -88,6 +87,7 @@ import { useWorkspaceParamAdoption } from "../../hooks/useWorkspaceParamAdoption
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
+import { Spinner } from '@/components/ui/spinner'
 
 csMark("app:layout:module-load");
 
@@ -593,7 +593,7 @@ function AppLayoutInner() {
     if (isIdeEmbed) {
       return (
         <View className="flex-1 items-center justify-center bg-background p-4">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="mt-3 text-sm text-muted-foreground">
             Loading Shogo chat…
           </Text>

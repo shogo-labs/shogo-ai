@@ -11,7 +11,6 @@ import { useState, useMemo, useRef } from 'react'
 import {
   View,
   Pressable,
-  ActivityIndicator,
   Image,
   Modal,
   useWindowDimensions,
@@ -37,6 +36,7 @@ import {
   useAccountSheetChrome,
   useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 const SHARED_ANALYTICS_ICON_MAP = {
   Cpu: CpuIcon,
@@ -1124,7 +1124,7 @@ export function UsageTableSection({
 
       {view === 'summary' ? (
         summaryLoading ? (
-          <View className="items-center py-8"><ActivityIndicator /></View>
+          <View className="items-center py-8"><Spinner /></View>
         ) : summaryData ? (
           <UsageSummaryView
             data={summaryData}
@@ -1137,7 +1137,7 @@ export function UsageTableSection({
           </View>
         )
       ) : logLoading ? (
-        <View className="items-center py-8"><ActivityIndicator /></View>
+        <View className="items-center py-8"><Spinner /></View>
       ) : logData ? (
         <UsageEventLogView data={logData} onPageChange={onLogPageChange} currentPage={logPage} />
       ) : (
@@ -1951,7 +1951,7 @@ export function UsageTimeseriesChart({
       )}
 
       {loading ? (
-        <View style={{ height }} className="items-center justify-center"><ActivityIndicator /></View>
+        <View style={{ height }} className="items-center justify-center"><Spinner /></View>
       ) : chartDays.length === 0 || series.length === 0 ? (
         <View style={{ height }} className="items-center justify-center">
           <Text className="text-sm text-muted-foreground">No usage data for this period</Text>
@@ -2071,7 +2071,7 @@ export function MetricTrendChart({
       </View>
 
       {loading ? (
-        <View style={{ height }} className="items-center justify-center"><ActivityIndicator /></View>
+        <View style={{ height }} className="items-center justify-center"><Spinner /></View>
       ) : days.length === 0 ? (
         <View style={{ height }} className="items-center justify-center">
           <Text className="text-sm text-muted-foreground">No data for this period</Text>

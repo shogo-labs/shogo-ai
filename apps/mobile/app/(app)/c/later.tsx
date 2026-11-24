@@ -4,7 +4,7 @@
  * Later: saved messages, reminders, and scheduled messages in one place.
  */
 import { useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
+import { FlatList, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { AlarmClock, Bookmark, Check, Clock, Hash, Lock, MessageSquare, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -15,6 +15,7 @@ import { useLater } from '../../../hooks/useChatItems'
 import type { ConversationRef } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, scheduleOptions } from '../../../lib/team-chat-state'
 import { openConversationTarget } from '../../../lib/team-chat-nav'
+import { Spinner } from '@/components/ui/spinner'
 
 type Tab = 'saved' | 'reminders' | 'scheduled'
 
@@ -91,7 +92,7 @@ export default function TeamChatLater() {
               </Text>
             </Pressable>
           ))}
-          {later.loading ? <ActivityIndicator size="small" /> : null}
+          {later.loading ? <Spinner size="small" /> : null}
         </View>
         {later.error ? <Text className="mt-3 text-sm text-destructive">{later.error}</Text> : null}
       </View>

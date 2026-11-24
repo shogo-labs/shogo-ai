@@ -20,7 +20,6 @@ import {
   Text,
   Pressable,
   TextInput,
-  ActivityIndicator,
   ScrollView,
 } from 'react-native'
 import {
@@ -36,6 +35,7 @@ import {
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
 import { CostSplitLines } from '../../analytics/SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 interface VoiceConfigResponse {
   phoneNumber?: string | null
@@ -298,7 +298,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
     <View className={embedded ? '' : 'p-4'}>
       {!embedded && (
         <View className="flex-row items-center gap-2 mb-4">
-          <Phone size={20} color="#888" />
+          <Phone className="text-muted-foreground" size={20} />
           <Text className="text-lg font-semibold text-foreground">
             Phone number
           </Text>
@@ -308,7 +308,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
             className="ml-auto flex-row items-center gap-1 p-2"
             accessibilityLabel="Refresh phone config"
           >
-            <RefreshCw size={16} color="#888" />
+            <RefreshCw className="text-muted-foreground" size={16} />
           </Pressable>
         </View>
       )}
@@ -321,7 +321,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
 
       {loading && !usage && (
         <View className="py-8 items-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       )}
 
@@ -345,7 +345,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
             className="mt-3 flex-row items-center gap-2 self-start px-3 py-2 rounded-md bg-red-950/40 border border-red-500/30"
           >
             {busy === 'release' ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Trash2 size={14} color="#f87171" />
             )}
@@ -374,9 +374,9 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
               accessibilityLabel="Search available numbers"
             >
               {busy === 'search' ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
-                <RefreshCw size={14} color="#888" />
+                <RefreshCw className="text-muted-foreground" size={14} />
               )}
               <Text className="text-sm text-foreground">
                 {searchedOnce ? 'Search again' : 'Search numbers'}
@@ -432,9 +432,9 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
             className={`flex-row items-center gap-2 self-start px-3 py-2 rounded-md ${selectedNumber ? 'bg-primary' : 'bg-muted'}`}
           >
             {busy === 'provision' ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
-              <PlusCircle size={14} color="#fff" />
+              <PlusCircle className="text-primary-foreground" size={14} />
             )}
             <Text className="text-sm text-white font-medium">
               {selectedNumber
@@ -495,12 +495,12 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
                   accessibilityLabel={`Call ${call.createdAt}`}
                 >
                   {expanded ? (
-                    <ChevronDown size={14} color="#888" />
+                    <ChevronDown className="text-muted-foreground" size={14} />
                   ) : (
-                    <ChevronRight size={14} color="#888" />
+                    <ChevronRight className="text-muted-foreground" size={14} />
                   )}
                   {call.direction === 'outbound' ? (
-                    <PhoneOutgoing size={14} color="#60a5fa" />
+                    <PhoneOutgoing className="text-primary" size={14} />
                   ) : (
                     <PhoneIncoming size={14} color="#4ade80" />
                   )}
@@ -526,7 +526,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
                     )}
                     {isLoading ? (
                       <View className="py-2">
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       </View>
                     ) : transcript && transcript.length > 0 ? (
                       <ScrollView

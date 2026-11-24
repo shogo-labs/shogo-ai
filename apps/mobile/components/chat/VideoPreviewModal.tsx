@@ -10,7 +10,7 @@
  */
 
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react"
-import { ActivityIndicator, Platform, Text, useWindowDimensions, View } from "react-native"
+import { Platform, Text, useWindowDimensions, View } from "react-native"
 import { VideoIcon, X } from "lucide-react-native"
 import { GestureHandlerRootView } from "react-native-gesture-handler"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -23,6 +23,7 @@ import {
   ModalContent,
   ModalHeader,
 } from "@/components/ui/modal"
+import { Spinner } from '@/components/ui/spinner'
 
 // React Native Web forwards unknown host component names straight to the
 // DOM, so a plain HTML <video> element works at runtime even though it
@@ -110,7 +111,7 @@ export function VideoPreviewModal({
     ) : failed ? (
       renderUnavailable("Could not play this video.")
     ) : (
-      <Suspense fallback={<ActivityIndicator size="large" />}>
+      <Suspense fallback={<Spinner size="large" />}>
         <NativeVideoView url={url} width={w} height={h} onError={handleVideoError} />
       </Suspense>
     )

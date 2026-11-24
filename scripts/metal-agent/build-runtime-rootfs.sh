@@ -38,12 +38,7 @@ verify_rootfs() {
     fail "/etc/gitconfig lacks safe.directory = * (git refuses workspaces owned by another uid)"
   local init="$root/usr/local/bin/fc-init"
   if [ -x "$init" ]; then
-    grep -q 'ulimit -n 1048576' "$init" || fail "fc-init no longer raises RLIMIT_NOFILE (spawns fail with EMFILE)"
-    grep -q '127.0.0.1\\tlocalhost' "$init" || fail "fc-init no longer writes /etc/hosts (in-guest localhost is refused)"
-    grep -q '> /etc/resolv.conf' "$init" || fail "fc-init no longer writes /etc/resolv.conf"
-    grep -q '^exec /entrypoint.sh' "$init" || fail "fc-init does not exec /entrypoint.sh"
-    grep -q 'blkid -L shogo-ws' "$init" || fail "fc-init no longer mounts the workspace drive (projects fill the rootfs)"
-    grep -q 'resize2fs' "$init" || fail "fc-init no longer grows the workspace filesystem to its drive (SHO-349)"
+    check_fc_init "$init" || bad=1
   else
     fail "/usr/local/bin/fc-init missing or not executable"
   fi
@@ -51,8 +46,83 @@ verify_rootfs() {
   return "$bad"
 }
 
+# The guest-init body itself. Takes a path to the file so the same contract can
+# be read from a mounted tree or lifted straight out of the shipped image.
+check_fc_init() {
+  local init="$1" bad=0
+  fail() { log "CONTRACT: $*"; bad=1; }
+  grep -q 'ulimit -n 1048576' "$init" || fail "fc-init no longer raises RLIMIT_NOFILE (spawns fail with EMFILE)"
+  grep -q '127.0.0.1\\tlocalhost' "$init" || fail "fc-init no longer writes /etc/hosts (in-guest localhost is refused)"
+  grep -q '> /etc/resolv.conf' "$init" || fail "fc-init no longer writes /etc/resolv.conf"
+  grep -q '^exec /entrypoint.sh' "$init" || fail "fc-init does not exec /entrypoint.sh"
+  grep -q 'blkid -L shogo-ws' "$init" || fail "fc-init no longer mounts the workspace drive (projects fill the rootfs)"
+  grep -q 'resize2fs' "$init" || fail "fc-init no longer grows the workspace filesystem to its drive (SHO-349)"
+  return "$bad"
+}
+
+# Is the file at $2 inside the ext4 image $1 executable? Read with debugfs, so
+# the answer comes from the image that ships and from nothing mounted anywhere.
+image_has_exec() {
+  local img="$1" path="$2" mode
+  # `|| true` keeps `set -e` out of it: a path that is not there is a contract
+  # failure to report, not a reason to abort the build mid-gate.
+  mode="$( { debugfs -R "stat $path" "$img" 2>/dev/null || true; } |
+    sed -n 's/.*Mode:[[:space:]]*\([0-7][0-7]*\).*/\1/p' | head -1)"
+  [ -n "$mode" ] || return 1
+  [ $(( 0$mode & 0111 )) -ne 0 ]
+}
+
+
+# verify_rootfs reads a mountpoint, and a mountpoint can belong to a different
+# filesystem than the file this script is about to ship. That is not
+# hypothetical: on staging (2026-11-23) a standard image with no fc-init in it
+# passed verify_rootfs, was renamed over the live image, and every cold boot on
+# that host died in the kernel with `Requested init /usr/local/bin/fc-init failed
+# (error -2)` — the tree the check read was not the tree whose bytes went out.
+# This reads $STAGE itself, after the unmount, with nothing mounted anywhere, and
+# it is the last gate before the rename that makes the image live.
+verify_rootfs_image() {
+  local img="$1" bad=0 tmp="$RUN_DIR/image-check"
+  fail() { log "CONTRACT: $*"; bad=1; }
+  command -v debugfs >/dev/null 2>&1 ||
+    { fail "debugfs missing; cannot verify the image that ships (e2fsprogs)"; return 1; }
+  mkdir -p "$tmp"
+  image_has_exec "$img" /entrypoint.sh || fail "/entrypoint.sh missing or not executable in the staged image"
+  image_has_exec "$img" /usr/local/bin/bun || fail "/usr/local/bin/bun missing in the staged image"
+  image_has_exec "$img" /usr/bin/git || fail "/usr/bin/git missing in the staged image"
+  image_has_exec "$img" /usr/local/bin/fc-init ||
+    fail "/usr/local/bin/fc-init missing or not executable in the staged image — every VM built on it panics at boot"
+  # Same shape as verify_rootfs above: -x, because a present-but-not-executable
+  # tool fails exactly like a missing one at the moment the guest needs it.
+  image_has_exec "$img" /sbin/blkid || image_has_exec "$img" /usr/sbin/blkid ||
+    fail "blkid missing or not executable in the staged image (fc-init finds the workspace drive by label)"
+  image_has_exec "$img" /sbin/resize2fs || image_has_exec "$img" /usr/sbin/resize2fs ||
+    fail "resize2fs missing or not executable in the staged image (a grown workspace drive would never be grown on disk)"
+  image_has_exec "$img" /sbin/fsfreeze || image_has_exec "$img" /usr/sbin/fsfreeze ||
+    fail "fsfreeze missing or not executable in the staged image (a live drive grow cannot freeze the guest)"
+  if debugfs -R "cat /etc/gitconfig" "$img" >"$tmp/gitconfig" 2>/dev/null; then
+    grep -Eq '^[[:space:]]*directory[[:space:]]*=[[:space:]]*\*' "$tmp/gitconfig" ||
+      fail "/etc/gitconfig lacks safe.directory = * in the staged image"
+  else
+    fail "/etc/gitconfig missing in the staged image"
+  fi
+  if debugfs -R "cat /usr/local/bin/fc-init" "$img" >"$tmp/fc-init" 2>/dev/null; then
+    check_fc_init "$tmp/fc-init" || bad=1
+  fi
+  return "$bad"
+}
+
 if [ -n "${VERIFY_ROOTFS_ONLY:-}" ]; then
   verify_rootfs "$VERIFY_ROOTFS_ONLY"
+  exit $?
+fi
+
+# VERIFY_ROOTFS_IMAGE_ONLY=<image> runs just the shipped-image gate, against an
+# ext4 file with nothing mounted — how the tests exercise it.
+if [ -n "${VERIFY_ROOTFS_IMAGE_ONLY:-}" ]; then
+  RUN_DIR="$(mktemp -d)"
+  trap 'rm -rf "$RUN_DIR"' EXIT
+  verify_rootfs_image "$VERIFY_ROOTFS_IMAGE_ONLY"
   exit $?
 fi
 
@@ -68,6 +138,29 @@ POOL_ENV_EXTRA="${POOL_ENV_EXTRA:-}"   # optional extra KEY=VAL lines for fc-ini
 
 mkdir -p "$WORKDIR" "$(dirname "$OUT")"
 
+# One build at a time per host, and nothing shared between runs.
+#
+# Both images (standard + docker-class) and every retry used to share
+# $WORKDIR/rootfs.tar and $WORKDIR/mnt. A second build mounting that same
+# mountpoint sat on top of the first, so one build's extract — and its fc-init —
+# could land in the other's image while the first still read a clean contract at
+# $MNT: the image that shipped had no guest init at all, and every cold boot on
+# the host panicked in the kernel (SHO-549, staging, 2026-11-23). The lock
+# serialises builders; the per-run directory means a build can only ever see its
+# own tar and its own mountpoint.
+#
+# flock(1) is util-linux, so it exists on the Linux hosts this runs on and not on
+# the macOS box the contract tests run it from; without it concurrent builds are
+# still safe, they just both pay the disk.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$WORKDIR/.build.lock"
+  if ! flock -w 3600 9; then
+    log "ERROR: another rootfs build holds $WORKDIR/.build.lock; refusing to build alongside it"
+    exit 6
+  fi
+fi
+RUN_DIR="$(mktemp -d "$WORKDIR/build.XXXXXX")"
+
 # --- 1. Ensure docker daemon ------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "installing docker.io..."
@@ -80,6 +173,11 @@ systemctl enable --now docker >/dev/null 2>&1 || service docker start || true
 for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
 docker info >/dev/null 2>&1 || { log "ERROR: docker daemon not reachable"; exit 4; }
 
+# Hard dependencies: mkfs.ext4 formats the image, debugfs is what proves the
+# guest init is inside the file that ships (verify_rootfs_image).
+command -v mkfs.ext4 >/dev/null 2>&1 && command -v debugfs >/dev/null 2>&1 ||
+  { log "ERROR: e2fsprogs (mkfs.ext4, debugfs) is required"; exit 4; }
+
 # --- 2. Pull + export -------------------------------------------------------
 if [ "$PULL" = "true" ]; then
   log "pulling $RUNTIME_IMAGE (DOCKER_CONFIG=$DOCKER_CONFIG)..."
@@ -89,8 +187,8 @@ else
   docker image inspect "$RUNTIME_IMAGE" >/dev/null 2>&1 || { log "ERROR: local image $RUNTIME_IMAGE not found"; exit 4; }
 fi
 
-TAR="$WORKDIR/rootfs.tar"
-MNT="$WORKDIR/mnt"
+TAR="$RUN_DIR/rootfs.tar"
+MNT="$RUN_DIR/mnt"
 # The tar is the biggest single artifact here (several GB) and it is only
 # removed on the success path below. A failed export or extract used to leave it
 # behind, so a host that failed a couple of rebuilds lost its root disk to tars
@@ -99,7 +197,13 @@ STAGE=""
 cleanup() {
   umount "$MNT" 2>/dev/null || true
   [ -n "$STAGE" ] && rm -f "$STAGE"
-  rm -f "$TAR"
+  # Never recurse into a tree that is still mounted: that would delete the
+  # staged image's own files.
+  if grep -q " $MNT " /proc/self/mountinfo 2>/dev/null; then
+    log "WARNING: $MNT still mounted; leaving $RUN_DIR in place"
+  else
+    rm -rf "$RUN_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -130,8 +234,6 @@ SIZE_MB=$(( SIZE_BYTES / 1024 / 1024 ))
 # are unaffected — they migrate at their next boot.
 STAGE="$OUT.new.$$"
 log "creating ${SIZE_MB} MB ext4 at $STAGE (will replace $OUT atomically) ..."
-
-MNT="$WORKDIR/mnt"
 
 rm -f "$STAGE"
 truncate -s "${SIZE_MB}M" "$STAGE"
@@ -240,7 +342,7 @@ if [ -n "\$WS_DEV" ]; then
         || echo "[fc-init] WARNING: overlay for /app/\$d failed; it stays on the rootfs" >&2
     done
     # Multi-gigabyte export tarballs spool here. Beside the workspace, never
-    # inside it, so `packProjectArchive` cannot sweep them into the backup — and
+    # inside it, so \`packProjectArchive\` cannot sweep them into the backup — and
     # on this drive rather than /app, because the rootfs is the 16 GiB disk
     # shared with node_modules (SHO-352).
     mkdir -p /data/.shogo-spool
@@ -282,6 +384,11 @@ verify_rootfs "$MNT" || { log "ERROR: rootfs contract failed; keeping the curren
 sync
 umount "$MNT"
 
+# The gate that matters reads $STAGE itself, not the mountpoint: nothing is
+# mounted any more, and the bytes checked here are the bytes that get renamed
+# into place a few lines down.
+verify_rootfs_image "$STAGE" || { log "ERROR: staged image failed the rootfs contract; keeping the current $OUT"; exit 5; }
+
 # Fully on disk before it becomes the live image: a rename is atomic with
 # respect to readers, but not with respect to losing power midway.
 sync "$STAGE" 2>/dev/null || sync
@@ -289,7 +396,7 @@ mv -f "$STAGE" "$OUT"
 sync
 
 trap - EXIT
-rm -f "$TAR"
+rm -rf "$RUN_DIR"
 
 log "done: $OUT ($(stat -c%s "$OUT" | awk '{printf "%.1f GB", $1/1024/1024/1024}'))"
 log "boot with: METAL_ROOTFS=$OUT METAL_GUEST_INIT=/usr/local/bin/fc-init"

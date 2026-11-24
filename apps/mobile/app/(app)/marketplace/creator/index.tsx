@@ -7,7 +7,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Image,
   Platform,
 } from 'react-native'
@@ -40,6 +39,7 @@ import { useDomainHttp } from '../../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Sparkline, TIER_BG, TIER_COLORS, TIER_LABEL, type CreatorTier } from '../../../../components/marketplace'
 import { FollowCreatorButton } from '../../../../components/marketplace/FollowCreatorButton'
+import { Spinner } from '@/components/ui/spinner'
 
 interface CreatorProfile {
   id: string
@@ -314,7 +314,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
         {!embedded ? (
           <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
             <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-              <ArrowLeft size={20} color="#71717a" />
+              <ArrowLeft className="text-muted-foreground" size={20} />
             </Pressable>
             <Text className="text-base font-semibold text-foreground flex-1">
               Publishing
@@ -329,7 +329,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
           <View className="mx-auto w-full max-w-2xl">
             <View className="items-center mt-2 mb-9">
               <View className="w-16 h-16 rounded-2xl bg-primary/10 items-center justify-center mb-5">
-                <Award size={28} color="#e27927" />
+                <Award className="text-primary" size={28} />
               </View>
               <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary mb-2">
                 Creator studio
@@ -378,7 +378,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
               )}
             >
               {creating ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner tone="onPrimary" size="small" />
               ) : (
                 <Text className="text-sm font-semibold text-primary-foreground">
                   Create creator profile
@@ -397,7 +397,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -418,7 +418,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
             className="mt-1 w-9 h-9 items-center justify-center rounded-full border border-border bg-card"
             accessibilityLabel="Go back"
           >
-            <ArrowLeft size={18} color="#71717a" />
+            <ArrowLeft className="text-muted-foreground" size={18} />
           </Pressable>
         ) : null}
         <View className="flex-1">
@@ -435,7 +435,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
             className="mt-1 flex-row items-center gap-1 px-3 py-2 rounded-full border border-border bg-card active:opacity-70"
           >
             <Text className="text-xs font-medium text-foreground">View public</Text>
-            <ChevronRight size={12} color="#71717a" />
+            <ChevronRight className="text-muted-foreground" size={12} />
           </Pressable>
         )}
       </View>
@@ -512,9 +512,9 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
                   {followingTotal}
                 </Text>
                 {showFollowing ? (
-                  <ChevronUp size={14} color="#71717a" />
+                  <ChevronUp className="text-muted-foreground" size={14} />
                 ) : (
-                  <ChevronDown size={14} color="#71717a" />
+                  <ChevronDown className="text-muted-foreground" size={14} />
                 )}
               </View>
               <Text className="text-[11px] text-muted-foreground">Following</Text>
@@ -697,7 +697,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
           }
           className="flex-row items-center gap-1.5 px-3 py-2 rounded-full bg-primary"
         >
-          <Plus size={14} color="#fff" />
+          <Plus className="text-primary-foreground" size={14} />
           <Text className="text-xs font-semibold text-primary-foreground">New listing</Text>
         </Pressable>
       </View>
@@ -726,7 +726,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
         </View>
       ) : (
         <View className="items-center py-12 rounded-2xl border border-dashed border-border bg-card/60">
-          <Plus size={32} color="#a1a1aa" />
+          <Plus className="text-muted-foreground" size={32} />
           <Text className="text-sm font-medium text-foreground mt-3 mb-1">
             No listings yet
           </Text>
@@ -754,7 +754,7 @@ function ValueProp({
   return (
     <View className="rounded-2xl border border-border/80 bg-card p-4 flex-row gap-3 shadow-sm">
       <View className="rounded-xl bg-primary/15 w-10 h-10 items-center justify-center mt-0.5">
-        <Icon size={18} color="#e27927" />
+        <Icon className="text-primary" size={18} />
       </View>
       <View className="flex-1">
         <Text className="text-sm font-semibold text-foreground mb-1">{title}</Text>
@@ -789,7 +789,7 @@ function ChecklistItem({
       ) : pending ? (
         <Clock size={18} color="#ca8a04" />
       ) : (
-        <Circle size={18} color="#a1a1aa" />
+        <Circle className="text-muted-foreground" size={18} />
       )}
       <Text
         className={cn(
@@ -799,7 +799,7 @@ function ChecklistItem({
       >
         {label}
       </Text>
-      {onPress && !done && <ChevronRight size={14} color="#71717a" />}
+      {onPress && !done && <ChevronRight className="text-muted-foreground" size={14} />}
     </View>
   )
   if (onPress) {
@@ -890,7 +890,7 @@ function ListingRow({
       </View>
       <View className="flex-row items-center gap-4">
         <View className="flex-row items-center gap-1">
-          <Download size={12} color="#71717a" />
+          <Download className="text-muted-foreground" size={12} />
           <Text className="text-xs text-muted-foreground">
             {listing.installCount.toLocaleString()}
           </Text>
@@ -909,7 +909,7 @@ function ListingRow({
             className="ml-auto flex-row items-center gap-1 active:opacity-70"
           >
             <Text className="text-xs font-medium text-primary">View public</Text>
-            <ChevronRight size={11} color="#e27927" />
+            <ChevronRight className="text-primary" size={11} />
           </Pressable>
         )}
         <View className={onViewPublic ? '' : 'ml-auto'}>
@@ -930,7 +930,7 @@ function TransactionRow({ transaction }: { transaction: Transaction }) {
   return (
     <View className="flex-row items-center gap-3">
       <View className="rounded-full bg-muted w-8 h-8 items-center justify-center">
-        <Icon size={14} color="#71717a" />
+        <Icon className="text-muted-foreground" size={14} />
       </View>
       <View className="flex-1 min-w-0">
         <Text className="text-xs font-medium text-foreground capitalize">
@@ -996,7 +996,7 @@ function FollowingCreatorCard({
             <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
               {creator.displayName}
             </Text>
-            {creator.verified && <ShieldCheck size={12} color="#3b82f6" />}
+            {creator.verified && <ShieldCheck className="text-primary" size={12} />}
           </View>
           <Text className="text-[11px] text-muted-foreground capitalize">
             {TIER_LABEL[creator.creatorTier] ?? 'Creator'} · {(creator.followerCount ?? 0).toLocaleString()} followers

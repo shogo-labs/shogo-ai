@@ -126,6 +126,61 @@ export function readImageRevision(image: string): string | null {
 
 const revisionCache = new Map<string, { key: string; revision: string | null }>()
 
+/** Where the guest's PID 1 lives in every rootfs image (METAL_GUEST_INIT). */
+export const DEFAULT_GUEST_INIT = '/usr/local/bin/fc-init'
+
+/**
+ * Where the guest's PID 1 lives: `METAL_GUEST_INIT` when the host sets it, else
+ * the path the build script installs. The VM is booted with
+ * `init=${config.guestInit}`, so a gate that checked a different path would
+ * refuse a perfectly good image — and, because a refusal clears the staged
+ * marker, rebuild the same version on every heartbeat (QA round 1 on SHO-549).
+ */
+export function guestInitPath(cfg: { guestInit?: string } = config): string {
+  return cfg.guestInit || DEFAULT_GUEST_INIT
+}
+
+/**
+ * Why `image` cannot boot, or null when it can: does it hold an executable
+ * `initPath`? Read with debugfs like `readImageRevision`, so nothing is mounted
+ * and the answer is about the file that will actually be booted.
+ *
+ * A rootfs without its guest init does not boot badly, it does not boot at all —
+ * the kernel execs the init and panics with `error -2` before userspace. Staging
+ * shipped one of those on 2026-11-23 (SHO-549).
+ */
+export function guestInitProblem(image: string, initPath: string = DEFAULT_GUEST_INIT): string | null {
+  const r = spawnSync('debugfs', ['-R', `stat ${initPath}`, image], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  })
+  // debugfs exits non-zero for "File not found" on some builds and 0 on others,
+  // so the mode line is the real answer either way.
+  const mode = /Mode:\s*([0-7]+)/.exec(r.stdout ?? '')?.[1]
+  if (r.error) return `${image}: debugfs failed (${r.error.message}) — cannot prove ${initPath} is present`
+  if (!mode) return `${initPath} is not in ${image} — every VM built on it panics at boot`
+  if ((parseInt(mode, 8) & 0o111) === 0) return `${initPath} in ${image} is not executable (mode ${mode})`
+  return null
+}
+
+/**
+ * The probe a real host uses: the configured guest init, read at call time so it
+ * always matches the `init=` the next VM will boot with.
+ */
+export function defaultGuestInitProbe(): (image: string) => string | null {
+  return (image) => guestInitProblem(image, guestInitPath())
+}
+
+/**
+ * The probe every gate uses, replaceable for tests: e2fsprogs is not on a dev
+ * box, and `stageRootfs` builds through this without a deps argument.
+ */
+let guestInitProbe: (image: string) => string | null = defaultGuestInitProbe()
+
+export function _setGuestInitProbe(fn: ((image: string) => string | null) | null): void {
+  guestInitProbe = fn ?? defaultGuestInitProbe()
+}
+
 /**
  * The commit the host's golden rootfs was built from, as recorded inside the
  * image itself. Unlike `getRootfsSha` (the release that asked for the rebuild),
@@ -318,9 +373,11 @@ function clearStagedMarker(): void {
 /** Pool callbacks the staging lifecycle needs; kept as hooks so this module never imports the pool. */
 export interface RootfsHooks {
   /** A new staged image replaced the old one: drop staged snapshots that are not for `identities`. */
-  onStaged?(identities: StagedRootfs['identities']): void
+  onStaged?(identities: StagedRootfs['identities']): void | Promise<unknown>
   /** About to switch: move pre-warmed snapshots for `identities` into the current cache. */
-  promote?(identities: StagedRootfs['identities']): number
+  promote?(identities: StagedRootfs['identities']): number | Promise<number>
+  /** Why a staged image cannot boot, or null. Defaults to the debugfs probe. */
+  guestInitProblem?(image: string): string | null
 }
 
 export type ActivationDecision = 'activate' | 'self-activate' | 'wait' | 'refuse'
@@ -393,14 +450,42 @@ export async function maybeActivateRootfs(
     }
     // Rename first: promoted snapshots on a host whose rename then failed would
     // look stale to the current image and be reclaimed.
+    //
+    // Unless a staged image cannot boot. Renaming one of those over the live image
+    // is exactly how staging lost every cold boot (SHO-549), and `activateRootfs`
+    // can name a file an older build left behind. Clear the staged marker so the
+    // next heartbeat rebuilds, leave the live image alone, and tell the log — the
+    // host keeps serving the image it has.
+    const probe = hooks.guestInitProblem ?? guestInitProbe
+    const unusable = [config.baseRootfs, config.dockerClass.baseRootfs]
+      .filter((base): base is string => !!base)
+      .map((base) => stagedRootfsPath(base))
+      .filter((image) => existsSync(image))
+      .map((image) => ({ image, problem: probe(image) }))
+      .find((s) => s.problem)
+    if (unusable) {
+      console.error(
+        `[self-update] REFUSING to activate rootfs ${s.version}: ${unusable.problem}. ` +
+          `${unusable.image} left in place for inspection, live image untouched; ` +
+          `the staged marker is cleared so the next heartbeat rebuilds`,
+      )
+      clearStagedMarker()
+      return false
+    }
     activateStagedImages(config.baseRootfs, config.dockerClass.baseRootfs || undefined)
-    const promoted = hooks.promote?.(s.identities) ?? 0
+    const promoted = (await hooks.promote?.(s.identities)) ?? 0
     writeRootfsMarker(s.version)
     clearStagedMarker()
     console.log(
       `[self-update] activated rootfs ${s.version} (${promoted} pre-warmed snapshot(s) promoted) — restarting metal-agent...`,
     )
-    spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' }).unref()
+    // Without an 'error' listener a missing systemctl is an uncaught exception in
+    // the middle of an activation, not a failed restart.
+    const restart = spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' })
+    restart.on('error', (err) =>
+      console.error('[self-update] activated the rootfs but could not restart metal-agent:', err.message),
+    )
+    restart.unref()
     return true
   } catch (err: any) {
     console.error('[self-update] rootfs activation failed (will retry):', err?.message ?? err)
@@ -437,7 +522,7 @@ export async function maybeRebuildRootfs(desired?: DesiredAgent | null, hooks: R
         `from ${desired!.runtimeImage ?? '$RUNTIME_IMAGE'}`,
     )
     const staged = await stageRootfs(config.agentDir, desired!)
-    hooks.onStaged?.(staged.identities)
+    await hooks.onStaged?.(staged.identities)
     console.log(
       `[self-update] rootfs for ${staged.version} staged (identity ${staged.identities.standard}) — ` +
         'serving on the current image until activateRootfs',
@@ -654,18 +739,22 @@ export interface BuildRootfsOptions {
 export interface BuildRootfsDeps {
   run: (cmd: string, args: string[], cwd?: string, extraEnv?: Record<string, string>) => Promise<void>
   readRevision: (image: string) => string | null
+  /** Why the built image cannot boot, or null. Defaults to the debugfs probe. */
+  guestInitProblem?: (image: string) => string | null
 }
 
 /**
  * Build the rootfs into `<out>.new` and rename it over `out` only once it is
- * proven to hold the requested commit. A pinned image tag that isn't published
- * yet fails the pull, and a build whose stamped revision differs is discarded;
+ * proven to hold the requested commit and a bootable guest init. A pinned image
+ * tag that isn't published yet fails the pull, a build whose stamped revision
+ * differs is discarded, and a build that lost `/usr/local/bin/fc-init` — the one
+ * defect that makes every VM on the host panic at boot — is discarded too;
  * either way `out` is untouched and the caller leaves the marker unset, so the
  * next heartbeat retries.
  */
 export async function buildRootfsImage(
   opts: BuildRootfsOptions,
-  deps: BuildRootfsDeps = { run, readRevision: readImageRevision },
+  deps: BuildRootfsDeps = { run, readRevision: readImageRevision, guestInitProblem: guestInitProbe },
 ): Promise<void> {
   const tmp = `${opts.out}.new`
   const env: Record<string, string> = { OUT: tmp, ...(opts.extraEnv ?? {}) }
@@ -682,6 +771,12 @@ export async function buildRootfsImage(
             `want ${want}; keeping the current image`,
         )
       }
+    }
+    // Belt and braces with the build script's own gate: a host whose bundle still
+    // carries an older script must not ship an image it cannot boot.
+    const initProblem = (deps.guestInitProblem ?? guestInitProbe)(tmp)
+    if (initProblem) {
+      throw new Error(`rootfs built without its guest init (${initProblem}); keeping the current image`)
     }
     renameSync(tmp, opts.out)
   } catch (err) {

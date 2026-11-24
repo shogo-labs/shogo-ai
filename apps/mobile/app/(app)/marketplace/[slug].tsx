@@ -8,7 +8,6 @@ import {
   Pressable,
   ScrollView,
   Image,
-  ActivityIndicator,
   Alert,
   TextInput,
   Modal,
@@ -64,6 +63,7 @@ import {
   categoryLabel,
 } from '@shogo/shared-app'
 import { openExternalLink } from '../../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 interface CreatorFromAPI {
   id: string
@@ -592,7 +592,7 @@ export default observer(function MarketplaceDetailScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back to marketplace"
         >
-          <ArrowLeft size={20} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={20} />
         </Pressable>
         <View className="flex-1 min-w-0">
           {isWide && (
@@ -613,7 +613,7 @@ export default observer(function MarketplaceDetailScreen() {
           accessibilityRole="button"
           accessibilityLabel={`Share ${listing.title}`}
         >
-          <Share2 size={18} color="#71717a" />
+          <Share2 className="text-muted-foreground" size={18} />
         </Pressable>
       </View>
 
@@ -687,14 +687,14 @@ export default observer(function MarketplaceDetailScreen() {
                   </Text>
                 </View>
                 <View className="flex-row items-center gap-1">
-                  <Download size={12} color="#71717a" />
+                  <Download className="text-muted-foreground" size={12} />
                   <Text className="text-xs text-foreground/80">
                     {listing.installCount.toLocaleString()} installs
                   </Text>
                 </View>
                 {listing.updatedAt && (
                   <View className="flex-row items-center gap-1">
-                    <Clock size={12} color="#71717a" />
+                    <Clock className="text-muted-foreground" size={12} />
                     <Text className="text-xs text-foreground/80">
                       Updated {timeAgo(listing.updatedAt)}
                     </Text>
@@ -711,10 +711,10 @@ export default observer(function MarketplaceDetailScreen() {
                   style={{ minWidth: 200 }}
                 >
                   {installing ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <Spinner tone="onPrimary" size="small" />
                   ) : (
                     <>
-                      {isPaid && <ExternalLink size={14} color="#fff" />}
+                      {isPaid && <ExternalLink className="text-primary-foreground" size={14} />}
                       <Text className="text-sm font-semibold text-primary-foreground">
                         {ctaLabel}
                       </Text>
@@ -821,7 +821,7 @@ export default observer(function MarketplaceDetailScreen() {
               {(showAllPermissions ? permissions : permissions.slice(0, 4)).map((p) => (
                 <View key={p.tag} className="flex-row items-start gap-2.5">
                   <View className="rounded-full bg-primary/15 mt-0.5 p-1">
-                    <Check size={10} color="#e27927" />
+                    <Check className="text-primary" size={10} />
                   </View>
                   <Text className="text-sm text-foreground/85 flex-1 leading-5">
                     {p.copy}
@@ -836,7 +836,7 @@ export default observer(function MarketplaceDetailScreen() {
                   <Text className="text-xs font-medium text-primary">
                     Show all {permissions.length}
                   </Text>
-                  <ChevronDown size={12} color="#e27927" />
+                  <ChevronDown className="text-primary" size={12} />
                 </Pressable>
               )}
             </View>
@@ -886,7 +886,7 @@ export default observer(function MarketplaceDetailScreen() {
                   followerCount={0}
                   size="sm"
                 />
-                <ChevronRight size={16} color="#71717a" />
+                <ChevronRight className="text-muted-foreground" size={16} />
               </View>
             </View>
             <View className="flex-row items-center gap-5 mb-2">
@@ -925,7 +925,7 @@ export default observer(function MarketplaceDetailScreen() {
                 onPress={() => setShowReviewForm(true)}
                 className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary"
               >
-                <MessageSquarePlus size={13} color="#fff" />
+                <MessageSquarePlus className="text-primary-foreground" size={13} />
                 <Text className="text-xs font-semibold text-primary-foreground">
                   Write review
                 </Text>
@@ -939,7 +939,7 @@ export default observer(function MarketplaceDetailScreen() {
               <View className="flex-row items-center justify-between">
                 <Text className="text-sm font-semibold text-foreground">Your review</Text>
                 <Pressable onPress={() => setShowReviewForm(false)} hitSlop={6}>
-                  <X size={16} color="#71717a" />
+                  <X className="text-muted-foreground" size={16} />
                 </Pressable>
               </View>
               <View>
@@ -985,7 +985,7 @@ export default observer(function MarketplaceDetailScreen() {
                 }`}
               >
                 {submittingReview ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <Spinner tone="onPrimary" size="small" />
                 ) : (
                   <Text className="text-sm font-semibold text-primary-foreground">
                     Submit review
@@ -997,7 +997,7 @@ export default observer(function MarketplaceDetailScreen() {
 
           {!userInstall && !showReviewForm && (
             <View className="flex-row items-start gap-2 mb-4 px-3 py-2.5 rounded-lg bg-muted/50">
-              <Info size={14} color="#71717a" />
+              <Info className="text-muted-foreground" size={14} />
               <Text className="text-xs text-muted-foreground flex-1">
                 Install this agent to leave a review.
               </Text>
@@ -1210,10 +1210,10 @@ export default observer(function MarketplaceDetailScreen() {
             }`}
           >
             {installing ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <View className="flex-row items-center gap-2">
-                {isPaid && <ExternalLink size={16} color="#fff" />}
+                {isPaid && <ExternalLink className="text-primary-foreground" size={16} />}
                 <Text className="text-primary-foreground font-semibold text-base">
                   {ctaLabel}
                 </Text>
@@ -1339,7 +1339,7 @@ function ReviewSortPill({
       className="flex-row items-center gap-1 rounded-full h-7 px-3 border border-border bg-card"
     >
       <Text className="text-[11px] font-medium text-foreground">{labels[value]}</Text>
-      <ChevronDown size={11} color="#71717a" />
+      <ChevronDown className="text-muted-foreground" size={11} />
     </Pressable>
   )
 }

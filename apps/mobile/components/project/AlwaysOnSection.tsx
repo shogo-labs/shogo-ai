@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, Pressable, ScrollView } from 'react-native'
 import { Zap, ExternalLink } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
 import type { HttpClient } from '@shogo-ai/sdk'
@@ -31,6 +31,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
 import { api } from '../../lib/api'
 import { UPGRADE_PLAN_NAME } from '../../lib/billing-config'
+import { Spinner } from '@/components/ui/spinner'
 
 interface AlwaysOnSectionProps {
   projectId: string
@@ -152,7 +153,7 @@ export function AlwaysOnSection({
           </Text>
         </View>
         {isToggling ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <Switch value={alwaysOn} onValueChange={handleToggle} disabled={!canToggle} />
         )}
@@ -197,7 +198,7 @@ export function AlwaysOnSection({
   if (loading) {
     body = (
       <View className="flex-1 items-center justify-center py-6">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   } else if (!isPublished) {

@@ -8,7 +8,7 @@
  * and summary live on Details so the other three get the pane's full height.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Archive, Bell, BellOff, Bot, ExternalLink, MessageSquare, Pencil, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -34,6 +34,7 @@ import { PullRequestSection } from './PullRequestChip'
 import { openConversationTarget } from '../../lib/team-chat-nav'
 import { GlassButton } from '../team-chat/FloatingChrome'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 const chat = teamChatApi()
@@ -95,7 +96,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
           className="flex-1 items-center justify-center p-6"
           style={floating ? { paddingTop: header.height } : undefined}
         >
-          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <ActivityIndicator />}
+          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <Spinner />}
         </View>
       </View>
     )
@@ -422,7 +423,7 @@ function CardThread({ detail, workspaceId, me, mentionables, conversation, visib
     if (!channel) {
       return (
         <View className="flex-1 items-center justify-center p-6">
-          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <ActivityIndicator />}
+          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <Spinner />}
         </View>
       )
     }
@@ -563,7 +564,7 @@ function CardHistory({ itemId, mentionables }: { itemId: string; mentionables: M
             </Pressable>
           )
         })}
-        {loading ? <ActivityIndicator /> : null}
+        {loading ? <Spinner /> : null}
         {!loading && !entries.length ? <Text className="py-4 text-center text-sm text-muted-foreground">Nothing here yet.</Text> : null}
         {!loading && next ? (
           <Pressable accessibilityRole="button" onPress={() => void load(next)} className="self-center rounded-md bg-muted px-3 py-1.5">

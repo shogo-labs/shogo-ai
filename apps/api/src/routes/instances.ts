@@ -53,8 +53,9 @@ import {
   relayWorkspaceDownload,
   tunnelResponseBody,
 } from '../lib/tunnel-body'
-import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
-import { isAgentStreamPath } from '../lib/agent-stream-paths'
+import { HOST_RETRY_AFTER_S, PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { hostOfWorkspace } from '../lib/host-tunnel'
+import { isAgentStreamPath, isAgentStreamTunnelPath, stripAgentProxyWrapper } from '../lib/agent-stream-paths'
 import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
@@ -95,6 +96,22 @@ const VIEWER_ACTIVE_TTL_MS = 2 * 60 * 1000
 const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000
 const STREAM_IDLE_TIMEOUT_MS = 120_000
 const STREAM_MAX_TIMEOUT_MS = 600_000
+/**
+ * The stream timeouts, read per request so a test can shrink them
+ * (`SHOGO_TUNNEL_STREAM_*`) instead of waiting fifteen real minutes to prove a
+ * live stream is never cut (SHO-546). Production never sets them.
+ */
+function streamTimeouts(): { firstChunk: number; idle: number; max: number } {
+  const envMs = (name: string, fallback: number) => {
+    const value = Number(process.env[name])
+    return Number.isFinite(value) && value > 0 ? value : fallback
+  }
+  return {
+    firstChunk: envMs('SHOGO_TUNNEL_STREAM_FIRST_CHUNK_TIMEOUT_MS', STREAM_FIRST_CHUNK_TIMEOUT_MS),
+    idle: envMs('SHOGO_TUNNEL_STREAM_IDLE_TIMEOUT_MS', STREAM_IDLE_TIMEOUT_MS),
+    max: envMs('SHOGO_TUNNEL_STREAM_MAX_TIMEOUT_MS', STREAM_MAX_TIMEOUT_MS),
+  }
+}
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
@@ -110,7 +127,7 @@ const WAKE_MIN_WAIT_MS = 5_000
 const WAKE_MAX_WAIT_MS = 75_000
 const WAKE_HEARTBEAT_MARGIN_MS = 15_000
 /** Suggested client retry, in seconds, for a host that is connecting (not offline). */
-const WAKE_RETRY_AFTER_S = 15
+const WAKE_RETRY_AFTER_S = HOST_RETRY_AFTER_S
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -276,18 +293,7 @@ function isWsRequested(wsRequestedAt: Date | null): boolean {
  * IMPORTANT: only strips query-free path segments. Callers must handle
  * query strings separately (append after normalization).
  */
-export function normalizeTransparentProxyPath(path: string): string {
-  const pathWithoutQuery = path.split('?')[0] || path
-  const wrapped = pathWithoutQuery.match(
-    /^\/api\/(?:projects|workspaces)\/[^/]+\/agent-proxy(\/.*)?$/,
-  )
-  if (wrapped) {
-    // group 1 is undefined when the path ends exactly at /agent-proxy —
-    // forward to /agent (the runtime's root) rather than "/" which 404s.
-    return wrapped[1] || '/agent'
-  }
-  return pathWithoutQuery
-}
+export const normalizeTransparentProxyPath = stripAgentProxyWrapper
 
 /**
  * Decide whether a request should use the streaming tunnel pipeline.
@@ -596,14 +602,21 @@ function sendLocalTunnelStreamRequest(
 
   const c = conn
   let gotFirstChunk = false
+  // An agent turn streams for as long as the model and its tools take, and the
+  // runtime sends a `data-turn-seq` heartbeat every 250 ms while it works, so a
+  // wall-clock cap can only ever cut a live turn (SHO-546: every desktop stream
+  // died at 10 min however busy it was). Liveness for those is the idle timer,
+  // which resets on every chunk. Every other stream keeps the hard cap.
+  const agentStream = isAgentStreamTunnelPath(req.method, req.path)
+  const timeouts = streamTimeouts()
   // Use a generous timeout for the first chunk — the local agent may need
   // to cold-start the runtime AND wait for the first LLM token.
-  let idleTimer = setTimeout(() => kill('idle'), STREAM_FIRST_CHUNK_TIMEOUT_MS)
-  const maxTimer = setTimeout(() => kill('max'), STREAM_MAX_TIMEOUT_MS)
+  let idleTimer = setTimeout(() => kill('idle'), timeouts.firstChunk)
+  const maxTimer = agentStream ? null : setTimeout(() => kill('max'), timeouts.max)
 
   function kill(reason: string) {
     clearTimeout(idleTimer)
-    clearTimeout(maxTimer)
+    if (maxTimer) clearTimeout(maxTimer)
     c.streamHandlers.delete(req.requestId)
     onChunk({ type: 'stream-error', requestId: req.requestId, error: `Stream timed out (${reason})` })
   }
@@ -613,11 +626,11 @@ function sendLocalTunnelStreamRequest(
     if (chunk.type === 'stream-chunk') {
       gotFirstChunk = true
       // After the first chunk, switch to the tighter inter-chunk timeout.
-      idleTimer = setTimeout(() => kill('idle'), STREAM_IDLE_TIMEOUT_MS)
+      idleTimer = setTimeout(() => kill('idle'), timeouts.idle)
     }
     if (chunk.type === 'stream-end' || chunk.type === 'stream-error') {
       clearTimeout(idleTimer)
-      clearTimeout(maxTimer)
+      if (maxTimer) clearTimeout(maxTimer)
     }
     onChunk(chunk)
   })
@@ -627,7 +640,7 @@ function sendLocalTunnelStreamRequest(
   return {
     cancel: () => {
       clearTimeout(idleTimer)
-      clearTimeout(maxTimer)
+      if (maxTimer) clearTimeout(maxTimer)
       c.streamHandlers.delete(req.requestId)
       try {
         c.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
@@ -671,6 +684,51 @@ export function sendTunnelStreamRequest(
     onChunk({ type: 'stream-error', requestId: req.requestId, error: (err as Error).message })
   })
   return { cancel: () => cancelRef.cancel() }
+}
+
+/**
+ * A tunneled GET handed back as a `Response`, so a caller that reads a runtime
+ * stream through `fetch`-shaped code can also reach a desktop-hosted runtime
+ * (SHO-546). `trackUsageFromStream`'s resume hook is the caller: it re-attaches
+ * to `/agent/chat/:id/stream?fromSeq=0` over the same tunnel the turn ran on.
+ *
+ * The streaming tunnel carries no response headers, so a resume cannot report
+ * `X-Turn-Id` here — the replay's own `data-turn-start` frame is what tells the
+ * tracker whether the buffer still holds its turn.
+ */
+export function tunnelStreamResponse(instanceId: string, req: TunnelRequest): Response {
+  const encoder = new TextEncoder()
+  let cancel: (() => void) | null = null
+  let settled = false
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const handle = sendTunnelStreamRequest(instanceId, req, (chunk) => {
+        if (settled) return
+        if (chunk.type === 'stream-chunk' && chunk.data) {
+          try {
+            controller.enqueue(encoder.encode(chunk.data))
+          } catch {
+            settled = true
+          }
+        } else if (chunk.type === 'stream-end') {
+          settled = true
+          try { controller.close() } catch { /* already closed */ }
+        } else if (chunk.type === 'stream-error') {
+          settled = true
+          try { controller.error(new Error(chunk.error || 'Stream error')) } catch { /* already closed */ }
+        }
+      })
+      cancel = handle.cancel
+    },
+    cancel() {
+      settled = true
+      cancel?.()
+    },
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+  })
 }
 
 // ─── REST routes ────────────────────────────────────────────────────────────
@@ -809,6 +867,17 @@ export function instanceRoutes() {
     }
 
     const id = c.req.param('id')
+    // A hosted workspace's viewer names the workspace it is opening (SHO-538):
+    // that workspace's runtime lives on this machine, so waking it is part of
+    // opening it.
+    // Only a JSON body is read: the federated fallback below forwards the raw
+    // bytes, so a request without one must reach it untouched.
+    const requestedWorkspaceId = /application\/json/i.test(c.req.header('content-type') ?? '')
+      ? await c.req
+          .json<{ workspaceId?: string }>()
+          .then((body) => (typeof body?.workspaceId === 'string' ? body.workspaceId : null))
+          .catch(() => null)
+      : null
     const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
       if (await isFederatedEnabled()) {
@@ -821,14 +890,27 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
+    // Legacy rows with no recorded owner (userId null) fall back to the
+    // membership check below, as they always have.
+    const ownsMachine = !instance.userId || instance.userId === auth.userId
+
+    // A machine serves two kinds of caller: the person it belongs to, and anyone
+    // who may open a workspace it hosts (SHO-285) — that workspace's runtime runs
+    // on this machine, so opening it has to be able to wake it (SHO-538). It is
+    // still only that one workspace, and only when it is this machine's.
+    const wakesHostedWorkspace =
+      !ownsMachine &&
+      !!requestedWorkspaceId &&
+      (await can(c, 'workspace:read', { workspaceId: requestedWorkspaceId })) &&
+      (await hostOfWorkspace(requestedWorkspaceId)) === instance.id
+
+    if (!wakesHostedWorkspace && !(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
     // Machines are scoped to the user who paired them. A workspace member
-    // may not view or drive another member's machine. Legacy rows with no
-    // recorded owner (userId null) fall back to the membership check above.
-    if (instance.userId && instance.userId !== auth.userId) {
+    // may not view or drive another member's machine.
+    if (!ownsMachine && !wakesHostedWorkspace) {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
@@ -1583,8 +1665,28 @@ export function instanceRoutes() {
           if (body) {
             try { parsedBodyForTracker = JSON.parse(body) } catch { /* not JSON, leave empty */ }
           }
+          // EOF without `data-turn-complete` means the tunnel cut the stream,
+          // not that the turn ended: the desktop runtime keeps buffering it.
+          // Re-attach over the same tunnel so a long turn still lands in the
+          // database (SHO-546). Without this hook the tracker could only
+          // persist what the cut leg had, and logged `partial (no-resume-hook)`.
+          const chatSessionForResume = transparentChatSessionId
+          const resumeBasePath = `/agent/chat/${encodeURIComponent(chatSessionForResume || '')}/stream`
           trackUsageFromStream(trackerStream, parsedBodyForTracker, tunnelProject, {
             chatSessionId: transparentChatSessionId,
+            resume: chatSessionForResume
+              ? async (fromSeq) =>
+                  tunnelStreamResponse(instanceId, {
+                    type: 'request',
+                    requestId: generateRequestId(),
+                    method: 'GET',
+                    path: `${resumeBasePath}?fromSeq=${fromSeq}`,
+                    projectId: tunnelProjectId,
+                    workspaceId: tunnelWorkspaceId,
+                    acceptBodyEncoding: ['base64'],
+                    headers: { ...forwardHeaders, accept: 'text/event-stream' },
+                  })
+              : undefined,
           }).catch((err) =>
             console.error(`[InstanceTunnel] Usage tracking error for project ${tunnelProjectId}:`, err),
           )
@@ -2082,6 +2184,7 @@ export const _testing = {
   getActiveControllers,
   sendLocalTunnelRequest,
   sendLocalTunnelStreamRequest,
+  tunnelStreamResponse,
   planHostWake,
   POLL_INTERVAL_IDLE_S,
   POLL_INTERVAL_VIEWER_S,

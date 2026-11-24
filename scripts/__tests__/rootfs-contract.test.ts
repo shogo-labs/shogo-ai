@@ -64,4 +64,47 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(verifyAt).toBeGreaterThan(source.indexOf('chmod 0755 "$MNT/usr/local/bin/fc-init"'))
     expect(verifyAt).toBeLessThan(source.indexOf('mv -f "$STAGE" "$OUT"'))
   })
+
+  it('verifies the image that ships, not just the mountpoint, before the rename', () => {
+    // A mountpoint can belong to another filesystem than the file about to be
+    // renamed into place. On staging a standard image with no fc-init in it
+    // passed `verify_rootfs "$MNT"`, went live, and every cold boot on the host
+    // died with `Requested init /usr/local/bin/fc-init failed (error -2)`
+    // (SHO-549, 2026-11-23). The last gate must read $STAGE itself with debugfs,
+    // after the unmount.
+    expect(source).toContain('verify_rootfs_image() {')
+    expect(source).toContain('debugfs -R "stat $path"')
+    const gateAt = source.indexOf('verify_rootfs_image "$STAGE"')
+    expect(gateAt).toBeGreaterThan(source.indexOf('umount "$MNT"'))
+    expect(gateAt).toBeLessThan(source.indexOf('mv -f "$STAGE" "$OUT"'))
+  })
+
+  it('checks the image with the same strictness as the mount it replaces', () => {
+    // QA round 1: the image gate used presence checks for the tools the mount
+    // gate demanded -x for, and skipped fsfreeze — a 0644 or missing tool would
+    // have passed in exactly the overlap case the gate exists for.
+    const gate = source.slice(source.indexOf('verify_rootfs_image() {'), source.indexOf('if [ -n "${VERIFY_ROOTFS_ONLY'))
+    for (const tool of ['/sbin/blkid', '/sbin/resize2fs', '/sbin/fsfreeze']) {
+      expect(gate).toContain(`image_has_exec "$img" ${tool}`)
+    }
+    expect(gate).not.toContain('image_has_file')
+    expect(source).not.toContain('image_has_file()')
+  })
+
+  it('gives every run its own tar and its own mountpoint', () => {
+    // Both images (and every retry) shared $WORKDIR/rootfs.tar and
+    // $WORKDIR/mnt. A second build mounted on top of the first, one build's
+    // extract and fc-init landed in the other's image, and both read a clean
+    // contract at the shared mountpoint.
+    expect(source).toContain('RUN_DIR="$(mktemp -d "$WORKDIR/build.XXXXXX")"')
+    expect(source).toContain('TAR="$RUN_DIR/rootfs.tar"')
+    expect(source).toContain('MNT="$RUN_DIR/mnt"')
+    expect(source).not.toContain('MNT="$WORKDIR/mnt"')
+    expect(source).not.toContain('TAR="$WORKDIR/rootfs.tar"')
+    // Serialised where flock(1) exists, i.e. on every host this runs on.
+    expect(source).toContain('flock -w 3600 9')
+    // And the EXIT trap must never recurse into a tree that is still mounted:
+    // that would delete the staged image's own files.
+    expect(source).toContain('grep -q " $MNT " /proc/self/mountinfo')
+  })
 })

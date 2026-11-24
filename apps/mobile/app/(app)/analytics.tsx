@@ -7,7 +7,7 @@
  * `?view=usage|channels|heartbeats|costs` selects the segment on open.
  */
 import { useState } from "react";
-import { ActivityIndicator, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { BarChart3 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
@@ -23,6 +23,7 @@ import { WorkspaceUsagePanel } from "../../components/analytics/WorkspaceUsagePa
 import { WorkspaceChannelsPanel } from "../../components/analytics/WorkspaceChannelsPanel";
 import { WorkspaceHeartbeatsPanel } from "../../components/analytics/WorkspaceHeartbeatsPanel";
 import { WorkspaceCostPanel } from "../../components/analytics/WorkspaceCostPanel";
+import { Spinner } from '@/components/ui/spinner'
 
 type AnalyticsView = "usage" | "channels" | "heartbeats" | "costs";
 
@@ -55,7 +56,7 @@ export default function AnalyticsScreen() {
     return (
       <TabScreen title="Analytics" back testID="analytics-screen">
         <View className="flex-1 items-center justify-center" testID="analytics-loading">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       </TabScreen>
     );

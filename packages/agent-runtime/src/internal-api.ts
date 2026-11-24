@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
+import { publishFailureMessage } from '@shogo/shared-runtime/publish-status'
 import { resolveApiUrl } from '@shogo/shared-runtime/standalone'
 import { requesterTicketHeaders } from './credential-scope'
 import { crossWorkspaceHeaders } from './cross-workspace-scope'
@@ -710,6 +711,19 @@ export interface PublishState {
   accessLevel: string | null
   hasPassword: boolean
   publishStatus: string | null
+  /** The code the last publish failed with (`null` when it did not fail). */
+  publishError?: string | null
+  /**
+   * Why the failing step failed, when the API recorded a reason (a configure
+   * refusal names the substrate's). `publishError` stays the machine code.
+   */
+  publishErrorMessage?: string | null
+  /**
+   * A refused publish's machine-actionable context, rebuilt on demand by the
+   * API for `destructive_schema_change` (the one code whose caller — the tool —
+   * has to quote what would be lost).
+   */
+  publishErrorDetails?: { environment?: string; changes?: Array<{ kind?: string; name?: string; message?: string }> } | null
 }
 
 export interface PublishResult {
@@ -785,8 +799,15 @@ async function publishFetch<T>(
   }
 }
 
-export async function getPublishState(projectId: string): Promise<CheckpointCallResult<PublishState>> {
-  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
+export async function getPublishState(
+  projectId: string,
+  environment?: 'production' | 'staging',
+): Promise<CheckpointCallResult<PublishState>> {
+  // The environment names the row being watched: a staging deploy writes only
+  // the staging environment, so reading the project would answer production's
+  // `live` (SHO-542 QA round 1).
+  const query = environment === 'staging' ? '?environment=staging' : ''
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish${query}`, {
     method: 'GET',
     parse: (j) => j as PublishState,
   })
@@ -831,15 +852,137 @@ export async function postWorkspaceNotification(input: {
   }
 }
 
+/**
+ * Poll cadence while following an accepted publish. Only tests set this: they
+ * cannot spend the real 2 s → 5 s ramp per assertion.
+ */
+export interface PublishPollTiming {
+  startDelayMs?: number
+  maxDelayMs?: number
+}
+
+/**
+ * Re-shape another publish call's failure envelope into this call's result type.
+ *
+ * The envelope's fields do not depend on `T`, but `CheckpointCallResult<A>` is
+ * not assignable to `CheckpointCallResult<B>` when `A` is narrower, so a plain
+ * `return failed` does not typecheck.
+ */
+function publishFailure<T>(failed: CheckpointCallResult<unknown>): CheckpointCallResult<T> {
+  return {
+    ok: false,
+    status: failed.status,
+    ...(failed.error !== undefined ? { error: failed.error } : {}),
+    ...(failed.code !== undefined ? { code: failed.code } : {}),
+    ...(failed.details ? { details: failed.details } : {}),
+  }
+}
+
 export async function publishProject(
   projectId: string,
   opts: PublishOptions,
+  pollTiming?: PublishPollTiming,
 ): Promise<CheckpointCallResult<PublishResult>> {
-  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
-    method: 'POST',
-    body: JSON.stringify(opts),
-    parse: (j) => j as PublishResult,
-  }, publishRequestTimeoutMs())
+  // The API accepts the publish and runs the pipeline in the background
+  // (SHO-542), so a long publish is a 202 plus a status to follow — not one
+  // request held open (which the edge turns into a 524). Poll the internal GET
+  // until it settles, so the tool's result stays exactly what it was.
+  const started = await publishFetch<{
+    accepted?: boolean
+    status?: string
+    subdomain?: string
+    url?: string
+    environment?: 'production' | 'staging'
+  }>(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/publish`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j,
+    },
+    publishRequestTimeoutMs(),
+  )
+  if (!started.ok) return publishFailure(started)
+
+  const accepted = started.data
+  // An API that still runs the pipeline inline answers 200 with the final
+  // result; a version-skewed desktop must keep working, so pass it through.
+  if (!accepted?.accepted) {
+    return { ok: true, status: started.status, data: accepted as unknown as PublishResult }
+  }
+
+  return waitForPublish(projectId, accepted, publishRequestTimeoutMs(), pollTiming)
+}
+
+/**
+ * Follow an accepted publish until it is `live` or `failed`.
+ *
+ * Backs off 2 s → 5 s: the first seconds of a publish are the build, so polling
+ * hard then only costs requests. The budget is the same one the old
+ * request-scoped POST used, so a publish that used to time out now reports its
+ * own step's error instead of a gateway's.
+ */
+async function waitForPublish(
+  projectId: string,
+  accepted: { subdomain?: string; url?: string; environment?: 'production' | 'staging' },
+  budgetMs: number,
+  timing?: PublishPollTiming,
+): Promise<CheckpointCallResult<PublishResult>> {
+  const deadline = Date.now() + budgetMs
+  const maxDelayMs = timing?.maxDelayMs ?? 5_000
+  let delayMs = timing?.startDelayMs ?? 2_000
+  let lastStatus: string | null = null
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))))
+    delayMs = Math.min(maxDelayMs, delayMs + 1_000)
+
+    // Follow the environment that was accepted. A staging deploy writes only
+    // the staging row, so polling production would report its `live` as the
+    // staging outcome before the staging build had even finished.
+    const state = await getPublishState(projectId, accepted.environment)
+    if (!state.ok) return publishFailure(state)
+    lastStatus = state.data?.publishStatus ?? null
+
+    if (lastStatus === 'failed') {
+      const code = state.data?.publishError ?? 'publish_failed'
+      const details = state.data?.publishErrorDetails ?? undefined
+      return {
+        ok: false,
+        status: 500,
+        code,
+        // The step's own reason beats the generic sentence for this code: it is
+        // what tells the agent whether the app or the hosting side failed.
+        error: state.data?.publishErrorMessage ?? publishFailureMessage(code),
+        ...(details ? { details: details as Record<string, any> } : {}),
+      }
+    }
+    if (lastStatus === 'live') {
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          url: accepted.url ?? `https://${state.data?.subdomain ?? accepted.subdomain}.shogo.one`,
+          subdomain: state.data?.subdomain ?? accepted.subdomain ?? '',
+          publishedAt: state.data?.publishedAt ?? undefined,
+          accessLevel: state.data?.accessLevel ?? undefined,
+          hasPassword: state.data?.hasPassword,
+        },
+      }
+    }
+  }
+
+  // Still running when the budget ran out: report the step it is stuck on
+  // rather than pretending it failed, and do not tell the agent to retry — a
+  // retry is refused with `publish_in_progress` while it really is running.
+  return {
+    ok: false,
+    status: 504,
+    code: 'publish_timeout',
+    error:
+      `Publishing did not finish within ${Math.round(budgetMs / 1000)}s ` +
+      `(last status: ${lastStatus ?? 'unknown'}). It may still be running server-side — ` +
+      'check the publish state before starting another one, and do not retry blindly.',
+  }
 }
 
 export interface PublishOpsOptions {

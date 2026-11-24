@@ -423,14 +423,10 @@ function DocumentThumbnail({
           <View
             className={cn(
               "h-7 w-7 items-center justify-center rounded-md flex-shrink-0",
-              onUserBubble ? "bg-[#3b82f6]/25" : "bg-primary/15",
+              onUserBubble ? "bg-white/20" : "bg-primary/15",
             )}
           >
-            <FileText
-              size={14}
-              className={onUserBubble ? "text-[#60a5fa]" : "text-primary"}
-              color={onUserBubble ? "#60a5fa" : undefined}
-            />
+            <FileText size={14} className={onUserBubble ? "text-white" : "text-primary"} />
           </View>
           <View className="flex-1 min-w-0">
             <Text

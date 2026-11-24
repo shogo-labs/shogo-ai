@@ -8,7 +8,6 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
   useWindowDimensions,
   TextInput,
   Modal,
@@ -37,6 +36,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { getAvailableModels, MODEL_ALIASES } from '@shogo/model-catalog'
 import { API_URL } from '../../../lib/api'
 import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin/evals`
 
@@ -459,7 +459,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
             )}
           >
             {submitting ? (
-              <ActivityIndicator size="small" color="white" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <Play size={14} className="text-primary-foreground" />
             )}
@@ -546,7 +546,7 @@ function ActiveRunBanner({ data, onCancel }: { data: ActiveRunData; onCancel: ()
     >
       <View className="flex-row items-center justify-between mb-2">
         <View className="flex-row items-center gap-2">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <Text className="text-sm font-semibold text-foreground">Eval Run In Progress</Text>
           {data.track && (
             <View className="px-2 py-0.5 rounded-md bg-muted">
@@ -1117,7 +1117,7 @@ export default function EvalsPage() {
 
       {loading ? (
         <View className="items-center justify-center py-20">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="text-sm text-muted-foreground mt-3">Loading eval runs...</Text>
         </View>
       ) : runs.length === 0 ? (

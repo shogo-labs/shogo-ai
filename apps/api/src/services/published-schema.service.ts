@@ -75,6 +75,39 @@ function isKubernetes(): boolean {
 }
 
 /**
+ * The destructive changes a pending publish would make, without applying any of
+ * them.
+ *
+ * `prepareEnvironmentDatabase` learns this mid-pipeline — it needs the app's
+ * schema as the runtime resolves it — so a refusal only reaches the caller as a
+ * code (`destructive_schema_change`). Publishing is a background job now
+ * (SHO-542), so the agent's `publish` tool reads the outcome from the publish
+ * status and asks for the details with this: same describe call, same
+ * classifier, no provision, no push, no seed.
+ */
+export async function describePendingDestructiveChanges(
+  projectId: string,
+  environment: PublishedEnvironmentName,
+): Promise<{ message: string; changes: Array<{ kind: string; name: string; message: string }> } | null> {
+  const env = await prisma.publishedEnvironment.findUnique({
+    where: { projectId_name: { projectId, name: environment } },
+    select: { dbSchema: true, dbSchemaHash: true },
+  })
+  if (!env?.dbSchema) return null
+
+  const described = await callRuntimeSchema(projectId, { mode: 'describe' })
+  const resolved = described.ok ? (described.data?.schema as { content: string; hash: string } | null) : null
+  if (!resolved || env.dbSchemaHash === resolved.hash) return null
+
+  const destructive = classifySchemaChange(env.dbSchema, resolved.content)
+  if (destructive.length === 0) return null
+  return {
+    message: describeDestructiveChanges(destructive),
+    changes: destructive.map((change) => ({ kind: change.kind, name: change.name, message: change.message })),
+  }
+}
+
+/**
  * Call the project's runtime publish-schema endpoint.
  *
  * Same auth and namespace as `/agent/dist-files`: `x-runtime-token` derived for
@@ -294,6 +327,28 @@ export async function prepareEnvironmentDatabase(
     const schema = exported.data?.schema as { content: string; hash: string; warnings: string[] } | undefined
     if (!schema?.content) {
       return fail('schema_unavailable', 'The runtime returned no schema to apply', 502, { environment })
+    }
+
+    // The runtime must PROVE it seeded from the archive we sent (SHO-541). A
+    // runtime older than SHO-514's second half accepts `seedArchive` and
+    // ignores it: it reads the builder's `prisma/dev.db` instead, which on a
+    // SQLite→Postgres switchover means Postgres gets the BUILDER's rows while
+    // the API reports a successful seed — the live site's sign-ups and uploads
+    // orphaned, silently. Samsara's EU VM did exactly this four times on 23 Nov,
+    // and only survived because the builder's own `dev.db` happened to be
+    // unreadable.
+    //
+    // A reply with no seed at all is fine: nothing is pushed, so nothing can be
+    // wrong. It is a seed WITH rows from somewhere else that must stop here.
+    const seedSource = exported.data?.seedSource
+    if (liveSeed && exported.data?.seed && seedSource !== 'archive') {
+      return fail(
+        'runtime_outdated',
+        'The editing runtime is older than this publish needs: it would seed Postgres from the ' +
+          "builder's database, not the live site's. Its runtime has to be recycled onto the current build before this publish can go through.",
+        409,
+        { environment, seedSource: seedSource ?? null },
+      )
     }
     const seedSql: string | null = seed ? (exported.data?.seed?.sql ?? null) : null
 

@@ -97,7 +97,11 @@ mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: async () => ({ sent: false }),
   sendPushToUser: async () => ({ sent: false }),
 }))
+// The real module first, so a new export (SHO-538's budgets) does not break it.
+const realTunnelTimeouts = await import('../lib/tunnel-timeouts')
+
 mock.module('../lib/tunnel-timeouts', () => ({
+  ...realTunnelTimeouts,
   PROXY_TIMEOUT_MS: 20_000,
   RELAY_TIMEOUT_MS: 20_000,
 }))

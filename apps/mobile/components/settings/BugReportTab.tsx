@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, ScrollView, ActivityIndicator, Pressable, Platform } from 'react-native'
+import { View, ScrollView, Pressable, Platform } from 'react-native'
 import {
   Download as DownloadIcon,
   CheckCircle as CheckCircleIcon,
@@ -22,6 +22,7 @@ import {
   TextInput,
   useAccountSheetIcons,
 } from './account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 interface SystemInfo {
   appVersion: string
@@ -213,7 +214,7 @@ export function BugReportTab() {
               onPress={handleAttach}
               className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border border-input"
             >
-              <Paperclip size={14} color="#6b7280" />
+              <Paperclip className="text-muted-foreground" size={14} />
               <Text className="text-xs text-muted-foreground">Add screenshots or videos</Text>
             </Pressable>
           </View>
@@ -233,7 +234,7 @@ export function BugReportTab() {
                     {formatFileSize(file.size)}
                   </Text>
                   <Pressable onPress={() => removeAttachment(index)} className="p-1">
-                    <X size={12} color="#6b7280" />
+                    <X className="text-muted-foreground" size={12} />
                   </Pressable>
                 </View>
               ))}
@@ -296,9 +297,9 @@ export function BugReportTab() {
         disabled={isDisabled}
       >
         {isExporting ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
-          <Download size={16} color="#6b7280" />
+          <Download className="text-muted-foreground" size={16} />
         )}
         <Text className={cn('text-sm font-medium', isDisabled ? 'text-muted-foreground' : 'text-foreground')}>
           Export as .zip

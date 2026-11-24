@@ -740,7 +740,7 @@ export async function ensureLfsRepoSetup(
     // `git lfs install --system --skip-smudge`; it makes local dev (no system
     // install) behave identically to production.
     await runGit(['lfs', 'install', '--local', '--skip-smudge'], workspaceDir)
-    writeManagedGitAttributes(workspaceDir)
+    writeManagedGitAttributes(workspaceDir, { pathRules: readManagedAttributePaths(workspaceDir) })
     return true
   } catch (err: any) {
     logger.warn(`[lfs] repo setup failed: ${err?.message ?? err}`)
@@ -790,8 +790,8 @@ async function autoTrackLargeFilesUnlocked(
   // tracking in this same pass — the gate exists to stop tracking into a store
   // that can never shrink, not to stop tracking forever.
   if (lfsOverBudget(workspaceDir, { logger })) {
-    const eviction = await evictLfsOverBudgetUnlocked(workspaceDir, cfg, logger)
-    if (!eviction.ran && lfsOverBudget(workspaceDir, { logger })) return 0
+    await evictLfsOverBudgetUnlocked(workspaceDir, cfg, logger)
+    if (lfsOverBudget(workspaceDir, { logger })) return 0
   }
 
   const candidates: string[] = []

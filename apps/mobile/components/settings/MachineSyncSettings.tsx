@@ -14,11 +14,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Alert, Platform, Pressable, Switch, View } from 'react-native'
+import { Alert, Platform, Pressable, Switch, View } from 'react-native'
 import { CloudOff, Cloud as CloudIcon } from 'lucide-react-native'
 import { Text } from './account-sheet-chrome'
 import { API_URL } from '../../lib/api'
 import { authClient } from '../../lib/auth-client'
+import { Spinner } from '@/components/ui/spinner'
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === 'web') return {}
@@ -134,7 +135,7 @@ export function MachineSyncSettings() {
   if (loading) {
     return (
       <View className="flex-row items-center gap-2 py-3">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
         <Text className="text-sm text-muted-foreground">Checking your machines…</Text>
       </View>
     )
@@ -193,7 +194,7 @@ export function MachineSyncSettings() {
                 ) : null}
               </View>
               {busyId === row.id ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Pressable
                   accessibilityRole="switch"

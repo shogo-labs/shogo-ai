@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 import { useRouter } from "expo-router";
 import {
   AlertTriangle,
@@ -37,6 +37,7 @@ import { api, type RemoteDirectoryEntry, type RemoteHost } from "../../lib/api";
 import { openInWorkspace } from "../../lib/switch-workspace";
 import { TransferModalHeader } from "./transfer-modal-parts";
 import { getRemoteParentPath } from "./remote-host-picker-utils";
+import { Spinner } from '@/components/ui/spinner'
 
 export { getRemoteParentPath } from "./remote-host-picker-utils";
 
@@ -631,7 +632,7 @@ export function RemoteHostPickerModal({
                 disabled={busy || !label.trim() || !sshTarget.trim()}
               >
                 {busy ? (
-                  <ButtonSpinner className="text-typography-0" />
+                  <ButtonSpinner />
                 ) : (
                   <ButtonIcon as={Plus} className="text-typography-0" />
                 )}
@@ -651,7 +652,7 @@ export function RemoteHostPickerModal({
                 disabled={busy || !selectedHost}
               >
                 {busy ? (
-                  <ButtonSpinner className="text-typography-0" />
+                  <ButtonSpinner />
                 ) : (
                   <ButtonIcon as={Folder} className="text-typography-0" />
                 )}
@@ -727,7 +728,7 @@ function HostRow({
         </Pressable>
       )}
       {disabled ? (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       ) : (
         <ChevronRight size={15} className="text-typography-400" />
       )}
@@ -738,7 +739,7 @@ function HostRow({
 function LoadingState({ label }: { label: string }) {
   return (
     <View className="items-center justify-center gap-3 py-10">
-      <ActivityIndicator size="small" />
+      <Spinner size="small" />
       <Text className="text-xs text-typography-500">{label}</Text>
     </View>
   );

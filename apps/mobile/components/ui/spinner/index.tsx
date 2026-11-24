@@ -1,42 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-'use client';
-import { ActivityIndicator } from 'react-native';
-import React from 'react';
-import { tva } from '@gluestack-ui/utils/nativewind-utils';
-import { cssInterop } from 'nativewind';
-
-cssInterop(ActivityIndicator, {
-  className: { target: 'style', nativeStyleToProp: { color: true } },
-});
-
-const spinnerStyle = tva({});
-
-const Spinner = React.forwardRef<
-  React.ComponentRef<typeof ActivityIndicator>,
-  React.ComponentProps<typeof ActivityIndicator>
->(function Spinner(
-  {
-    className,
-    color,
-    focusable = false,
-    'aria-label': ariaLabel = 'loading',
-    ...props
-  },
-  ref
-) {
-  return (
-    <ActivityIndicator
-      ref={ref}
-      focusable={focusable}
-      aria-label={ariaLabel}
-      {...props}
-      color={color}
-      className={spinnerStyle({ class: className })}
-    />
-  );
-});
-
-Spinner.displayName = 'Spinner';
-
-export { Spinner };
+/**
+ * The app's spinner. One implementation lives in @shogo/shared-ui so the mobile
+ * app and the shared screens cannot drift apart; it paints from theme tokens so
+ * the accent and light/dark mode always apply.
+ *
+ * Imported through its own `@shogo/shared-ui/spinner` subpath (not the
+ * primitives barrel) so RTL suites that stub `@shogo/shared-ui/primitives` down
+ * to `cn` still get a real spinner instead of a missing export.
+ */
+export { Spinner, type SpinnerProps, type SpinnerTone } from '@shogo/shared-ui/spinner'

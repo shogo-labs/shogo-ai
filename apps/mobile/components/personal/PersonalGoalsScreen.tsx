@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { CheckCircle2, ChevronRight, CircleDot, PauseCircle, Repeat2, Target } from 'lucide-react-native'
@@ -11,6 +11,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type PersonalGoal, type PersonalWorkspaceActivity } from '../../lib/api'
 import { isApprovalPending } from '@shogo/shared-app'
 import { NeedsYourOkSection } from './NeedsYourOkSection'
+import { Spinner } from '@/components/ui/spinner'
 
 function GoalStatusIcon({ status }: { status: PersonalGoal['status'] }) {
   if (status === 'done') return <CheckCircle2 size={19} className="text-emerald-500" />
@@ -84,7 +85,7 @@ export const PersonalGoalsScreen = observer(function PersonalGoalsScreen() {
       </View>
 
       {loading ? (
-        <View className="items-center py-14"><ActivityIndicator /></View>
+        <View className="items-center py-14"><Spinner /></View>
       ) : error ? (
         <Text className="mt-8 text-center text-sm text-destructive">{error}</Text>
       ) : goals.length === 0 && pendingApprovals.length === 0 ? (

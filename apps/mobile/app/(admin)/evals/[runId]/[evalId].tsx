@@ -8,7 +8,6 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
   TextInput,
   Platform,
   useWindowDimensions,
@@ -33,6 +32,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import * as Clipboard from 'expo-clipboard'
 import { API_URL } from '../../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin/evals`
 
@@ -680,7 +680,7 @@ export default function EvalDetailPage() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="text-sm text-muted-foreground mt-3">
           Loading eval detail...
         </Text>
@@ -971,7 +971,7 @@ export default function EvalDetailPage() {
       {/* Log viewer */}
       {logLoading ? (
         <View className="rounded-xl border border-border bg-card p-8 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <Text className="text-xs text-muted-foreground mt-2">
             Loading log...
           </Text>

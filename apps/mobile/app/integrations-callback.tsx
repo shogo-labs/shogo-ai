@@ -10,9 +10,10 @@
  * and send the confirmation message to the agent.
  */
 import { useEffect } from "react"
-import { ActivityIndicator, Text, View } from "react-native"
+import { Text, View } from "react-native"
 import { useRouter, useLocalSearchParams } from "expo-router"
 import { SafeAreaView } from "react-native-safe-area-context"
+import { Spinner } from '@/components/ui/spinner'
 
 export default function IntegrationsCallback() {
   const router = useRouter()
@@ -30,7 +31,7 @@ export default function IntegrationsCallback() {
       <View className="flex-1 items-center justify-center px-6">
         <View className="w-full max-w-sm rounded-2xl border border-border/80 bg-card p-6">
           <View className="mb-5 h-11 w-11 items-center justify-center rounded-xl bg-primary/10">
-            <ActivityIndicator color="#e27927" />
+            <Spinner />
           </View>
           <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">
             Integration

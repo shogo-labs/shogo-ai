@@ -30,6 +30,8 @@ import {
 } from "react-native";
 import { GlassView } from "expo-glass-effect";
 import { cn } from "@shogo/shared-ui/primitives";
+import { useAccentColors } from "../../contexts/accent-theme";
+import { withAlpha } from "../../lib/accent-themes";
 import { LiquidGlassBackdrop, nativeLiquidGlass } from "../ui/LiquidGlassBackdrop";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { haptics } from "../../lib/haptics";
@@ -72,7 +74,6 @@ interface GlassTabRowProps {
 }
 
 const ICON = {
-  selected: { dark: "#F09050", light: "#E27927" },
   idle: { dark: "#a1a1aa", light: "#6b7280" },
 } as const;
 // Light enough that the glass, not the tint, carries the surface: a heavy white
@@ -94,10 +95,12 @@ const ICON_MAGNIFY = 1.22;
 const STRETCH_FULL_SPEED = 2600;
 /** Extra width the capsule gains at full stretch (0.3 = 30%). */
 const STRETCH_AMOUNT = 0.3;
-const CAPSULE_TINT = {
-  dark: "rgba(240,144,80,0.32)",
-  light: "rgba(226,121,39,0.22)",
-} as const;
+/**
+ * How strongly the selection capsule is tinted with the accent. The tint is
+ * built from the live accent (`useAccentColors`) so the capsule and the icon
+ * under it follow the preset like the rest of the chrome.
+ */
+const CAPSULE_ALPHA = { dark: 0.3, light: 0.14 } as const;
 /** Fingertip samples kept to estimate the release velocity. */
 const SAMPLE_COUNT = 6;
 /** How long after a drag ends a button press is ignored. */
@@ -120,6 +123,8 @@ export function GlassTabRow({
 }: GlassTabRowProps) {
   const reducedMotion = useReducedMotion();
   const scheme = isDark ? "dark" : "light";
+  const accent = useAccentColors();
+  const capsuleTint = withAlpha(accent.primary, CAPSULE_ALPHA[scheme]);
   const itemHeight = height - itemInset * 2;
 
   const rowRef = useRef<View>(null);
@@ -384,7 +389,7 @@ export function GlassTabRow({
                 animationDuration: 0.25,
               }}
               colorScheme={scheme}
-              tintColor={pressed ? undefined : CAPSULE_TINT[scheme]}
+              tintColor={pressed ? undefined : capsuleTint}
               style={[StyleSheet.absoluteFill, { borderRadius: capsuleRadius }]}
             />
           ) : (
@@ -394,7 +399,7 @@ export function GlassTabRow({
                 borderRadius: capsuleRadius,
                 backgroundColor: pressed
                   ? isDark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.55)"
-                  : isDark ? "rgba(240,144,80,0.3)" : "rgba(226,121,39,0.14)",
+                  : capsuleTint,
                 borderWidth: pressed ? StyleSheet.hairlineWidth * 2 : 0,
                 borderColor: isDark ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.9)",
               }}
@@ -430,7 +435,7 @@ export function GlassTabRow({
                 <Animated.View style={{ transform: [{ scale: iconScales[index] }] }}>
                   <Icon
                     size={23}
-                    color={selected ? ICON.selected[scheme] : ICON.idle[scheme]}
+                    color={selected ? accent.primary : ICON.idle[scheme]}
                     strokeWidth={selected ? 2.2 : 1.9}
                   />
                 </Animated.View>

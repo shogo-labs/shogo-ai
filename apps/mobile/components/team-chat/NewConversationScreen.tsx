@@ -5,7 +5,7 @@
  * a modal. Wide screens keep `NewConversationModal`; both render the same
  * `NewMessagePicker` / `NewChannelForm`.
  */
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Text, View } from 'react-native'
+import { KeyboardAvoidingView, Platform, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -17,6 +17,7 @@ import { NewChannelForm } from './NewChannelForm'
 import { NEW_CONVERSATION_TITLES, type NewConversationMode } from './NewConversationModal'
 import { NewMessagePicker } from './NewMessagePicker'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 export function parseNewConversationMode(value: string | string[] | undefined): NewConversationMode {
   const mode = Array.isArray(value) ? value[0] : value
@@ -63,7 +64,7 @@ export function NewConversationScreen({ mode }: { mode: NewConversationMode }) {
           experience.resolved ? (
             <Text className="mt-8 text-center text-sm text-muted-foreground">Team chat is available in team workspaces.</Text>
           ) : (
-            <ActivityIndicator className="mt-8" />
+            <Spinner className="mt-8" />
           )
         ) : mode === 'channel' ? (
           <NewChannelForm workspaceId={workspaceId} autoFocus onCreated={created} />

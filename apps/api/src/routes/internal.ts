@@ -376,6 +376,12 @@ app.get('/projects/:projectId/publish', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  // A staging deploy writes the staging environment row, never the project
+  // (SHO-308 §8), so a caller following one has to name the row it is watching.
+  // Without this the tool polled production's `live` and reported a staging
+  // build that was still running — or had failed — as a success.
+  const environment: 'production' | 'staging' = c.req.query('environment') === 'staging' ? 'staging' : 'production'
+
   try {
     const { prisma } = await import('../lib/prisma')
     const project = (await prisma.project.findUnique({
@@ -386,24 +392,102 @@ app.get('/projects/:projectId/publish', async (c) => {
         accessLevel: true,
         sitePasswordHash: true,
         publishStatus: true,
+        publishError: true,
+        publishStatusAt: true,
       } as any,
     })) as Record<string, any> | null
     if (!project) return c.json({ error: 'Project not found' }, 404)
 
+    // Access settings belong to the project; only the deploy state differs.
+    const access = {
+      accessLevel: project.accessLevel ?? null,
+      hasPassword: !!project.sitePasswordHash,
+    }
+
+    // Publishing runs in the background (SHO-542), so this GET is how the
+    // agent's publish tool learns the outcome. An in-flight status past its
+    // lease is a dead publish, not a running one.
+    const { resolveReportedPublishStatus, markPublishInterrupted, markEnvironmentPublishInterrupted, splitPublishError } =
+      await import('./publish')
+
+    if (environment === 'staging') {
+      const { getEnvironment } = await import('../services/published-environments.service')
+      const staging = (await getEnvironment(projectId, 'staging')) as Record<string, any> | null
+      if (!staging) return c.json({ error: 'Staging environment not found' }, 404)
+      const reported = resolveReportedPublishStatus(staging)
+      if (reported.interrupted) await markEnvironmentPublishInterrupted(staging.id)
+      const storedError = reported.interrupted ? reported.error : (staging.publishError ?? null)
+      const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
+      return c.json({
+        ok: true,
+        environment,
+        published: reported.status === 'live',
+        subdomain: staging.subdomain ?? null,
+        // The environment has no publishedAt; a staging deploy is described by
+        // its status, and callers that need a timestamp use `publishStatusAt`.
+        publishedAt: null,
+        publishStatusAt: staging.publishStatusAt ? new Date(staging.publishStatusAt).getTime() : null,
+        ...access,
+        publishStatus: reported.status,
+        publishError,
+        publishErrorMessage: publishErrorDetail,
+        publishErrorDetails:
+          publishError === 'destructive_schema_change'
+            ? await describeDestructivePublish(projectId, environment)
+            : null,
+      })
+    }
+
+    const reported = resolveReportedPublishStatus(project)
+    if (reported.interrupted) await markPublishInterrupted(projectId)
+    const storedError = reported.interrupted ? reported.error : (project.publishError ?? null)
+    const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
+
     return c.json({
       ok: true,
+      environment,
       published: !!project.publishedSubdomain,
       subdomain: project.publishedSubdomain ?? null,
       publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : null,
-      accessLevel: project.accessLevel ?? null,
-      hasPassword: !!project.sitePasswordHash,
-      publishStatus: project.publishStatus ?? null,
+      ...access,
+      publishStatus: reported.status,
+      publishError,
+      /** Why the failing step failed, when it said (`publishError` is the code). */
+      publishErrorMessage: publishErrorDetail,
+      // A refused publish's machine-actionable context is not on the row (no
+      // schema change), so it is rebuilt on demand for the one code whose
+      // caller needs it: the agent has to tell the user exactly what a
+      // destructive schema change would drop.
+      publishErrorDetails:
+        publishError === 'destructive_schema_change'
+          ? await describeDestructivePublish(projectId, environment)
+          : null,
     })
   } catch (err: any) {
     console.error(`[Internal] publish state for ${projectId} failed:`, err.message)
     return c.json({ error: 'Failed to get publish state' }, 500)
   }
 })
+
+/**
+ * The changes a refused publish would have destroyed, for the tool to quote.
+ * Best-effort: a diff that cannot be computed must not turn a clear
+ * `destructive_schema_change` into a 500.
+ */
+async function describeDestructivePublish(
+  projectId: string,
+  environment: 'production' | 'staging',
+): Promise<Record<string, unknown> | null> {
+  try {
+    const { describePendingDestructiveChanges } = await import('../services/published-schema.service')
+    const described = await describePendingDestructiveChanges(projectId, environment)
+    if (!described) return null
+    return { environment, changes: described.changes }
+  } catch (err: any) {
+    console.warn(`[Internal] could not describe destructive changes for ${projectId}:`, err?.message ?? err)
+    return null
+  }
+}
 
 /**
  * POST /api/internal/projects/:projectId/publish — publish/republish a project.
@@ -442,8 +526,13 @@ app.post('/projects/:projectId/publish', async (c) => {
   }
 
   try {
-    const { publishProject } = await import('./publish')
-    const result = await publishProject(projectId, {
+    const { startPublish } = await import('./publish')
+    // Same runner as the session route: validate synchronously, record
+    // `building`, then let the pipeline run in the background and answer 202.
+    // The tool polls the GET above for the outcome (SHO-542) — the metal
+    // runtime reaches this API through the public URL, which has the same
+    // ~100 s edge limit.
+    const started = await startPublish(projectId, {
       subdomain: body.subdomain ?? '',
       accessLevel: body.accessLevel,
       password: body.password,
@@ -452,20 +541,23 @@ app.post('/projects/:projectId/publish', async (c) => {
       environment,
       allowDataLoss: body.allowDataLoss === true,
     })
-    if (!result.ok) {
+    if (!started.ok) {
       return c.json(
-        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
-        result.status as any,
+        { error: { code: started.code, message: started.message, ...(started.details ? { details: started.details } : {}) } },
+        started.status as any,
       )
     }
-    return c.json({
-      ok: true,
-      url: result.url,
-      subdomain: result.subdomain,
-      publishedAt: result.publishedAt,
-      accessLevel: result.accessLevel,
-      hasPassword: result.hasPassword,
-    })
+    return c.json(
+      {
+        ok: true,
+        accepted: true,
+        status: started.publishStatus ?? 'building',
+        subdomain: started.subdomain,
+        url: started.url,
+        environment: started.environment,
+      },
+      202,
+    )
   } catch (err: any) {
     console.error(`[Internal] publish for ${projectId} failed:`, err.message)
     return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)

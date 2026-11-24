@@ -30,7 +30,6 @@ import {
   Pressable,
   Text,
   Platform,
-  ActivityIndicator,
   ActionSheetIOS,
   Alert,
 } from "react-native"
@@ -63,6 +62,7 @@ import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
 import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
+import { Spinner } from '@/components/ui/spinner'
 
 function showNativeUserMessageActions(opts: {
   canEdit: boolean
@@ -563,7 +563,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
         ) : null}
         {busy ? (
           <View className="mt-1 pr-2">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         ) : null}
         {revertedNote ? (
@@ -695,7 +695,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
                   className={actionButtonClass}
                 >
                   {busy ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <RotateCcw
                       className="h-3.5 w-3.5 text-muted-foreground"

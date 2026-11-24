@@ -365,6 +365,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       if (respContentType) responseHeaders.set('content-type', respContentType)
       const respContentLength = response.headers.get('content-length')
       if (respContentLength) responseHeaders.set('content-length', respContentLength)
+      // A waking host's refusal says when to come back here as well as in the
+      // body, and the client's retry reads both (SHO-538).
+      const respRetryAfter = response.headers.get('retry-after')
+      if (respRetryAfter) responseHeaders.set('retry-after', respRetryAfter)
       return new Response(response.body, { status: response.status, headers: responseHeaders })
     } catch (err: any) {
       console.warn(`[WorkspaceAgentProxy] proxy error for ${workspaceId}${path}:`, err?.message || err)
