@@ -117,8 +117,42 @@ function publishedPods(projectId: string): string[] {
   }
 }
 
+let runtimeTarget: { container: string; appRoot: string } | null = null
+
+/**
+ * A *published* pod is not the editing pod. Knative adds `queue-proxy`, and the
+ * app is served by `runtime` — a `user-container` exec simply fails. The app
+ * root differs too: a per-commit image unpacks at `/app`, while the shared
+ * runtime hydrates the git tag at `/app/workspace`. Resolving both once is what
+ * makes the assertions below read the artifact instead of erroring out.
+ */
+function publishedTarget(pod: string): { container: string; appRoot: string } {
+  if (runtimeTarget) return runtimeTarget
+  const containers = (
+    JSON.parse(kubectl(["get", "pod", pod, "-o", "json"])) as {
+      spec: { containers: Array<{ name: string }> }
+    }
+  ).spec.containers.map((c) => c.name)
+  const container = containers.includes("runtime")
+    ? "runtime"
+    : containers.includes("user-container")
+      ? "user-container"
+      : (containers[0] ?? "runtime")
+  const has = (dir: string) =>
+    kubectl(["exec", pod, "-c", container, "--", "sh", "-lc", `[ -f ${dir}/prisma/schema.prisma ] && echo yes || echo no`]).trim() === "yes"
+  const appRoot = has("/app") ? "/app" : has("/app/workspace") ? "/app/workspace" : "/app"
+  runtimeTarget = { container, appRoot }
+  console.log(`[qa-sho551] pod target: container=${container} appRoot=${appRoot}`)
+  return runtimeTarget
+}
+
 function podExec(pod: string, cmd: string[]): string {
-  return kubectl(["exec", pod, "-c", "user-container", "--", ...cmd])
+  return kubectl(["exec", pod, "-c", publishedTarget(pod).container, "--", ...cmd])
+}
+
+/** Absolute path to a file inside the published app, wherever this image put it. */
+function appPath(pod: string, rel: string): string {
+  return `${publishedTarget(pod).appRoot}/${rel}`
 }
 
 /** `User` → `users`, `GuestEntry` → `guest-entries` (same rule as the SDK generator). */
@@ -228,7 +262,11 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
         )
         if (!row.trim()) return null
         const [provider, , status] = row.split("|").map((part) => part.trim())
-        return status === "failed" || provider === "postgres" ? row : null
+        // The row is already `postgres` while the publish is still `switching`,
+        // so the provider alone is not "done" — waiting for a terminal status is
+        // what keeps the pod lookup below from running before the ksvc exists.
+        if (status === "failed") return row
+        return status === "live" && provider === "postgres" ? row : null
       },
       900_000,
     )
@@ -248,11 +286,12 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
       420_000,
     )
 
-    const pod = publishedPods(projectId)[0]
-    evidence.publishedPod = pod ?? null
+    // The ksvc exists now, but its first pod takes a few seconds to appear —
+    // reading once here is how run 1 called `podExec` with `undefined`.
+    const pod = await poll("a Running published pod", async () => publishedPods(projectId)[0] ?? null, 180_000, 3_000)
+    evidence.publishedPod = pod
     saveEvidence()
-    expect(pod, "expected a Running published pod").toBeTruthy()
-    const schema = podExec(pod!, ["cat", "/app/prisma/schema.prisma"])
+    const schema = podExec(pod, ["cat", appPath(pod, "prisma/schema.prisma")])
     evidence.podSchemaHead = schema.slice(0, 1200)
     const models = [...schema.matchAll(/^model\s+(\w+)/gm)].map((m) => m[1])
     evidence.models = models
@@ -269,7 +308,7 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     // every generated CRUD route 500'd. The row is not the proof; the artifact is.
     expect(schema, "the deployed schema must be Postgres-native").toContain('provider = "postgresql"')
     expect(schema, "the deployed schema must not still say sqlite").not.toMatch(/provider\s*=\s*"sqlite"/)
-    const dbModule = podExec(pod!, ["sh", "-lc", "cat /app/src/lib/db.ts /app/src/lib/db.tsx 2>/dev/null || true"])
+    const dbModule = podExec(pod, ["sh", "-lc", `cat ${appPath(pod, "src/lib/db.ts")} ${appPath(pod, "src/lib/db.tsx")} 2>/dev/null || true`])
     evidence.podDbModuleHead = dbModule.slice(0, 800)
     if (!dbModule.startsWith("<kubectl failed") && dbModule.trim().length > 0) {
       expect(dbModule, "the pod's Prisma client must be the pg adapter").toContain("PrismaPg")
@@ -281,11 +320,11 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     // a SQLite schema, a LibSQL client, and a `prisma/dev.db` that absorbs every
     // write while `projects-pg` stays empty. The schema/db.ts assertions above
     // catch the symptom; these catch the cause, so a regression names it.
-    const image = kubectl(["get", "pod", pod!, "-o", "jsonpath={.spec.containers[0].image}"]).trim()
+    const image = kubectl(["get", "pod", pod, "-o", "jsonpath={.spec.containers[0].image}"]).trim()
     evidence.podImage = image
     saveEvidence()
     expect(image, "a Postgres environment must run its own per-commit build").toContain("/published/")
-    const devDb = podExec(pod!, [
+    const devDb = podExec(pod, [
       "sh",
       "-lc",
       'for p in /app/prisma/dev.db /app/workspace/prisma/dev.db; do [ -e "$p" ] && echo "EXISTS $p"; done; echo checked',
@@ -580,9 +619,8 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
   })
 
   test("6 — the pod's DATABASE_URL carries a per-replica connection_limit", async () => {
-    test.setTimeout(120_000)
-    const pod = publishedPods(projectId)[0]
-    expect(pod).toBeTruthy()
+    test.setTimeout(180_000)
+    const pod = await poll("a Running published pod", async () => publishedPods(projectId)[0] ?? null, 120_000, 3_000)
     const url = podExec(pod, ["sh", "-lc", "printenv DATABASE_URL | sed 's/:[^:@]*@/:***@/'"]).trim()
     evidence.podDatabaseUrl = url
     saveEvidence()
