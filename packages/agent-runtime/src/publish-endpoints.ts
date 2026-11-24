@@ -232,21 +232,40 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
 
     // SHO-551 B: when the API requests a Postgres build context, one helper
-    // rewrites the copy — schema, db.tsx and the adapter dependency. The
+    // rewrites the copy — schema, db module and the adapter dependency. The
     // editor's own files are never touched, and there is exactly one
-    // implementation: the inline copy that used to live here shipped db.tsx
+    // implementation: the inline copy that used to live here shipped db.ts
     // without promoting @prisma/adapter-pg, so the image booted into
     // `Cannot find module '@prisma/adapter-pg'` (QA round 1).
+    //
+    // A context that could not be converted is refused here rather than tarred:
+    // staging proved that a SQLite `db.ts` under a Postgres `DATABASE_URL` keeps
+    // writing to a per-pod LibSQL file, so a cross-pod read loses the row while
+    // projects-pg stays empty (SHO-551, QA round 5).
+    let dbContext: 'sqlite' | 'postgres' = 'sqlite'
     if ((c.req.query('db') || '').trim() === 'postgres') {
       const { applyPostgresBuildContext } = await import('./published-build-db')
-      const result = applyPostgresBuildContext(contextDir)
-      for (const warning of result.warnings) {
+      const converted = applyPostgresBuildContext(contextDir)
+      for (const warning of converted.warnings) {
         console.warn('[agent-runtime] publish-artifact: postgres context:', warning)
       }
+      if (!converted.ok) {
+        return c.json(
+          {
+            error: 'postgres_context_failed',
+            message:
+              'The build context could not be made a Postgres one, so this publish would run a ' +
+              `SQLite client against a Postgres database: ${converted.errors.join(' ')}`,
+            errors: converted.errors,
+          },
+          422,
+        )
+      }
+      dbContext = 'postgres'
       console.log(
-        result.applied
-          ? '[agent-runtime] publish-artifact: Postgres schema, db.tsx and adapter written into build context'
-          : '[agent-runtime] publish-artifact: build context already Postgres — left unchanged',
+        `[agent-runtime] publish-artifact: Postgres build context ready — provider ` +
+          `${converted.schemaProvider}, db module ${converted.dbModule}` +
+          (converted.applied ? ' (rewritten)' : ' (already Postgres)'),
       )
     }
     // Media out before the tar, so neither the tar nor the upload carries it.
@@ -321,7 +340,7 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
           502,
         )
       }
-      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, dbContext, offloaded, ...(offload ? { offload } : {}) })
     }
 
     if (targetBucket && targetKey && store) {
@@ -349,7 +368,7 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
         }
         return c.json({ error: 'artifact_upload_failed', message: err?.message ?? String(err) }, 502)
       }
-      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, dbContext, offloaded, ...(offload ? { offload } : {}) })
     }
 
     // Last resort: the old base64 body, for an API that named no target and
@@ -369,7 +388,7 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
       )
     }
     const buf = await readFile(archivePath)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length, offloaded, ...(offload ? { offload } : {}) })
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length, dbContext, offloaded, ...(offload ? { offload } : {}) })
   } catch (err: any) {
     return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
   } finally {

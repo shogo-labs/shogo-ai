@@ -30,7 +30,21 @@ import { generateDbModule } from '@shogo-ai/sdk/generators'
 import { buildPublishSchema } from '@shogo/shared-runtime/published-schema'
 
 export interface ApplyPostgresBuildContextResult {
+  /**
+   * False when the context cannot be made Postgres at all: no schema, a schema
+   * that will not convert, or no db module to rewrite. The caller must fail the
+   * publish instead of tarring it — a pod with a SQLite `db.ts` and a Postgres
+   * `DATABASE_URL` writes to a per-pod LibSQL file and loses every row on the
+   * next request that lands elsewhere (SHO-551, QA round 5 on staging).
+   */
+  ok: boolean
   applied: boolean
+  /** The db module that was found (and rewritten when it was a SQLite one). */
+  dbModule: 'src/lib/db.ts' | 'src/lib/db.tsx' | null
+  /** The datasource provider the context ends up with. */
+  schemaProvider: 'postgresql' | 'sqlite' | null
+  /** Reasons the context is unusable. Any entry means `ok: false`. */
+  errors: string[]
   warnings: string[]
 }
 
@@ -55,12 +69,27 @@ const REQUIRED_RUNTIME_PACKAGES = ['@prisma/adapter-pg', 'pg'] as const
  */
 export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuildContextResult {
   const warnings: string[] = []
+  const errors: string[] = []
   let applied = false
+  let dbModule: ApplyPostgresBuildContextResult['dbModule'] = null
+  let schemaProvider: ApplyPostgresBuildContextResult['schemaProvider'] = null
+  const result = (): ApplyPostgresBuildContextResult => ({
+    ok: errors.length === 0,
+    applied,
+    dbModule,
+    schemaProvider,
+    errors,
+    warnings,
+  })
 
   // 1. The converted schema. The editor's own schema is a SQLite one; the image
   // must not generate a SQLite client (the pod talks to projects-pg).
   const schemaPath = join(contextDir, 'prisma', 'schema.prisma')
-  if (existsSync(schemaPath)) {
+  if (!existsSync(schemaPath)) {
+    errors.push(
+      'prisma/schema.prisma is missing from the build context, so the image cannot generate a Postgres client.',
+    )
+  } else {
     try {
       const raw = readFileSync(schemaPath, 'utf-8')
       const published = buildPublishSchema(raw)
@@ -69,23 +98,37 @@ export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuil
         applied = true
         for (const warning of published.warnings) warnings.push(warning)
       }
+      // Read the provider back out of the file the image will generate from.
+      // "transformed" only says the helper ran; a schema it could not convert
+      // (or one already left on sqlite) is what shipped a LibSQL client into a
+      // Postgres pod on staging (SHO-551, QA round 5).
+      const reread = buildPublishSchema(readFileSync(schemaPath, 'utf-8'))
+      schemaProvider = reread.transformed ? 'sqlite' : 'postgresql'
+      if (schemaProvider !== 'postgresql') {
+        errors.push(
+          `prisma/schema.prisma still says provider = "sqlite" after conversion — ` +
+            'the image would generate a SQLite client while the pod is handed the Postgres URL.',
+        )
+      }
     } catch (err: any) {
-      warnings.push(`Could not convert prisma/schema.prisma to Postgres: ${err?.message ?? err}`)
+      errors.push(`Could not convert prisma/schema.prisma to Postgres: ${err?.message ?? err}`)
     }
-  } else {
-    warnings.push(
-      'prisma/schema.prisma not found in the build context — the image cannot generate a Postgres client.',
-    )
   }
 
-  // 2. The client module.
-  const dbPath = join(contextDir, 'src', 'lib', 'db.tsx')
-  if (!existsSync(dbPath)) {
-    warnings.push(
-      `src/lib/db.tsx not found in the build context — the image will not have a Postgres db client. ` +
-        `Create src/lib/db.tsx that imports PrismaPg and re-publish.`,
+  // 2. The client module. Current projects have `src/lib/db.ts` (the runtime
+  // template's file); older ones have `db.tsx`, which the LibSQL rewrite in
+  // `server.ts` still targets. Looking only for `db.tsx` left every current
+  // project on `PrismaLibSql` — the SQLite client QA found inside a Postgres
+  // pod on staging (SHO-551, QA round 5).
+  const dbCandidates = ['src/lib/db.ts', 'src/lib/db.tsx'] as const
+  const dbRel = dbCandidates.find((rel) => existsSync(join(contextDir, rel))) ?? null
+  if (!dbRel) {
+    errors.push(
+      'No src/lib/db.ts (or db.tsx) in the build context — there is no db module to point at Postgres.',
     )
   } else {
+    dbModule = dbRel
+    const dbPath = join(contextDir, dbRel)
     const existing = readFileSync(dbPath, 'utf-8')
     if (!existing.includes('@prisma/adapter-pg')) {
       // Keep the app's own import path rather than assuming the template layout.
@@ -99,6 +142,11 @@ export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuil
       writeFileSync(dbPath, content, 'utf-8')
       applied = true
     }
+    // Read it back: this file is the only thing that makes the pod's queries
+    // reach projects-pg, so "we wrote something" is not enough.
+    if (!readFileSync(dbPath, 'utf-8').includes('@prisma/adapter-pg')) {
+      errors.push(`${dbRel} still does not import @prisma/adapter-pg after the rewrite.`)
+    }
   }
 
   // 3. Runtime dependencies. `bun install --production` in the published
@@ -107,8 +155,8 @@ export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuil
   // written here.
   const pkgPath = join(contextDir, 'package.json')
   if (!existsSync(pkgPath)) {
-    warnings.push('package.json not found in the build context — the Postgres adapter cannot be installed.')
-    return { applied, warnings }
+    errors.push('package.json is missing from the build context, so @prisma/adapter-pg cannot be installed.')
+    return result()
   }
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
@@ -127,8 +175,8 @@ export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuil
       applied = true
     }
   } catch (err: any) {
-    warnings.push(`Could not add the Postgres adapter to dependencies: ${err?.message ?? err}`)
+    errors.push(`Could not add the Postgres adapter to dependencies: ${err?.message ?? err}`)
   }
 
-  return { applied, warnings }
+  return result()
 }

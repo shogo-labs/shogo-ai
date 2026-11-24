@@ -185,6 +185,52 @@ describe('publish-artifact upload target', () => {
     expect(typeof body.archive).toBe('string')
     expect(puts.length).toBe(0)
   })
+
+  // SHO-551 QA round 5: staging published an environment whose database was
+  // Postgres and whose pod still ran `PrismaLibSql`, so a write on one pod was
+  // lost on every other pod. The artifact is the only place the build context
+  // can be converted, so a context that cannot be converted must not upload.
+  it('rewrites the build context for Postgres and says so in the response', async () => {
+    const { store, puts } = fakeStore()
+    mkdirSync(join(workspace, 'src', 'lib'), { recursive: true })
+    writeFileSync(
+      join(workspace, 'src', 'lib', 'db.ts'),
+      "import { PrismaLibSql } from '@prisma/adapter-libsql'\n" +
+        "import { PrismaClient } from '../generated/prisma/client'\n" +
+        'export const prisma = new PrismaClient({ adapter: new PrismaLibSql({}) })\n',
+    )
+    mkdirSync(join(workspace, 'prisma'), { recursive: true })
+    writeFileSync(
+      join(workspace, 'prisma', 'schema.prisma'),
+      'datasource db {\n  provider = "sqlite"\n}\n\ngenerator client {\n  provider = "prisma-client"\n' +
+        '  output   = "../src/generated/prisma"\n}\n\nmodel Todo {\n  id    String @id\n  title String\n}\n',
+    )
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc-pg.tar.gz&db=postgres'),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { dbContext?: string }
+    expect(body.dbContext).toBe('postgres')
+    // The tar the Job builds from carries the Postgres client, not the SQLite one.
+    const tarBytes = Buffer.from(Bun.gunzipSync(new Uint8Array(puts[0].body))).toString('utf8')
+    expect(tarBytes).toContain('@prisma/adapter-pg')
+    expect(tarBytes).toContain('provider = "postgresql"')
+    expect(tarBytes).not.toContain('@prisma/adapter-libsql')
+  })
+
+  it('refuses to upload a context it cannot make Postgres', async () => {
+    const { store, puts } = fakeStore()
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc-pg.tar.gz&db=postgres'),
+    )
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body.error).toBe('postgres_context_failed')
+    expect(body.message).toContain('No src/lib/db.ts')
+    expect(puts.length).toBe(0)
+  })
 })
 
 // ---------------------------------------------------------------------------

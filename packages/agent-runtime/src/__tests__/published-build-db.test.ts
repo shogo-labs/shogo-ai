@@ -12,9 +12,14 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { applyPostgresBuildContext } from '../published-build-db'
 
-function makeContext(opts: { dbTsx?: string; packageJson?: object; schema?: string } = {}): string {
+function makeContext(
+  opts: { dbTs?: string; dbTsx?: string; packageJson?: object; schema?: string } = {},
+): string {
   const dir = mkdtempSync(join(tmpdir(), 'shogo-build-ctx-'))
   mkdirSync(join(dir, 'src', 'lib'), { recursive: true })
+  if (opts.dbTs !== undefined) {
+    writeFileSync(join(dir, 'src', 'lib', 'db.ts'), opts.dbTs, 'utf-8')
+  }
   if (opts.dbTsx !== undefined) {
     writeFileSync(join(dir, 'src', 'lib', 'db.tsx'), opts.dbTsx, 'utf-8')
   }
@@ -38,6 +43,21 @@ import { PrismaClient } from '../generated/prisma/client'
 
 const adapter = new PrismaLibSql({ url: process.env.DATABASE_URL ?? 'file:./prisma/dev.db' })
 export const prisma = new PrismaClient({ adapter })
+`
+
+const SQLITE_SCHEMA = `datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+model Todo {
+  id    String @id
+  title String
+}
 `
 
 const POSTGRES_DB_TSX = `import { PrismaPg } from '@prisma/adapter-pg'
@@ -118,11 +138,48 @@ describe('applyPostgresBuildContext', () => {
     expect(readFileSync(join(dir, 'package.json'), 'utf-8')).toBe(before)
   })
 
-  it('warns instead of inventing a db module for an app that has none', () => {
-    const dir = makeContext({}) // no db.tsx
+  // QA round 5: this used to warn and carry on. A context with no db module
+  // ships the app's own SQLite client to a Postgres database, which on staging
+  // wrote to a per-pod LibSQL file and lost every cross-pod read.
+  it('refuses a context with no db module instead of warning', () => {
+    const dir = makeContext({ schema: SQLITE_SCHEMA }) // no db.ts / db.tsx
     dirs.push(dir)
     const result = applyPostgresBuildContext(dir)
-    expect(result.applied).toBe(false)
-    expect(result.warnings.some((w) => w.includes('src/lib/db.tsx not found'))).toBe(true)
+    expect(result.ok).toBe(false)
+    expect(result.dbModule).toBeNull()
+    expect(result.errors.some((e) => e.includes('No src/lib/db.ts'))).toBe(true)
+  })
+
+  it('refuses a context whose schema could not be converted to Postgres', () => {
+    const dir = makeContext({ dbTs: SQLITE_DB_TSX }) // no prisma/schema.prisma
+    dirs.push(dir)
+    const result = applyPostgresBuildContext(dir)
+    expect(result.ok).toBe(false)
+    expect(result.schemaProvider).toBeNull()
+    expect(result.errors.some((e) => e.includes('prisma/schema.prisma is missing'))).toBe(true)
+  })
+
+  // The runtime template writes `src/lib/db.ts`; only older projects have
+  // `db.tsx`. Looking for `db.tsx` alone left every current project on
+  // `PrismaLibSql` — the client QA found inside the Postgres pod.
+  it('rewrites the current template db module, src/lib/db.ts', () => {
+    const dir = makeContext({ dbTs: SQLITE_DB_TSX, schema: SQLITE_SCHEMA, packageJson: { name: 'my-app' } })
+    dirs.push(dir)
+    const result = applyPostgresBuildContext(dir)
+    expect(result.ok).toBe(true)
+    expect(result.applied).toBe(true)
+    expect(result.dbModule).toBe('src/lib/db.ts')
+    expect(result.schemaProvider).toBe('postgresql')
+    const written = readFileSync(join(dir, 'src', 'lib', 'db.ts'), 'utf-8')
+    expect(written).toContain('@prisma/adapter-pg')
+    expect(written).not.toContain('@prisma/adapter-libsql')
+  })
+
+  it('prefers db.ts and leaves a stray db.tsx alone', () => {
+    const dir = makeContext({ dbTs: SQLITE_DB_TSX, dbTsx: SQLITE_DB_TSX, schema: SQLITE_SCHEMA })
+    dirs.push(dir)
+    const result = applyPostgresBuildContext(dir)
+    expect(result.dbModule).toBe('src/lib/db.ts')
+    expect(readFileSync(join(dir, 'src', 'lib', 'db.ts'), 'utf-8')).toContain('@prisma/adapter-pg')
   })
 })

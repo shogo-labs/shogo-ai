@@ -144,4 +144,45 @@ describe('uploadPublishedArtifact', () => {
       { bucket: 'test-publish-bucket', key: 'acme/artifacts/abc123def4567890.tar.gz', size: archive.length },
     ])
   })
+
+  // SHO-551 QA round 5: staging published a Postgres environment whose pod ran
+  // `PrismaLibSql` against the Postgres URL, so a write on one pod was never
+  // visible on another. The build input has to be the Postgres one, and the key
+  // has to say so — a SQLite tar for the same commit must never be reused.
+  it('asks for and stores the Postgres build context under its own key', async () => {
+    await listen((req, res) => {
+      requests.push(String(req.url))
+      respondJson({
+        bucket: 'test-publish-bucket',
+        key: 'acme/artifacts/abc123def4567890-pg.tar.gz',
+        bytes: 4096,
+        dbContext: 'postgres',
+      })(req, res)
+    })
+
+    const result = await uploadPublishedArtifact({ ...input, dbProvider: 'postgres' })
+
+    if ('error' in result) throw new Error(result.error)
+    const query = new URLSearchParams(requests[0].split('?')[1])
+    expect(query.get('db')).toBe('postgres')
+    expect(presignedUrls[0].key).toBe('acme/artifacts/abc123def4567890-pg.tar.gz')
+    expect(result.url).toContain('acme/artifacts/abc123def4567890-pg.tar.gz')
+  })
+
+  it('refuses a runtime that answers with a SQLite context for a Postgres environment', async () => {
+    // An older runtime ignores `db=postgres` and hands back a plain artifact.
+    await listen(
+      respondJson({
+        bucket: 'test-publish-bucket',
+        key: 'acme/artifacts/abc123def4567890-pg.tar.gz',
+        bytes: 4096,
+      }),
+    )
+
+    const result = await uploadPublishedArtifact({ ...input, dbProvider: 'postgres' })
+
+    if (!('error' in result)) throw new Error('expected a refusal')
+    expect(result.code).toBe('postgres_context_failed')
+    expect(result.error).toContain('did not produce a Postgres build context')
+  })
 })

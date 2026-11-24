@@ -58,6 +58,8 @@ export type PublishedBuildFailureCode =
   | 'build_failed'
   | 'build_timeout'
   | 'build_digest_missing'
+  /** The runtime handed back a SQLite build context for a Postgres environment. */
+  | 'postgres_context_failed'
 
 export interface PublishedImageReady {
   ok: true
@@ -494,7 +496,12 @@ export async function uploadPublishedArtifact(input: {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const { getS3Client } = await import('../lib/s3')
     const podUrl = await getProjectPodUrl(input.projectId)
-    const key = `${input.subdomain}/artifacts/${input.commitSha}.tar.gz`
+    // The variant is part of the key: a SQLite context and a Postgres one are
+    // different build inputs for the same commit, and reusing the SQLite tar in
+    // a Postgres environment is how a LibSQL client ended up talking to
+    // projects-pg on staging (SHO-551, QA round 5).
+    const artifactVariant = input.dbProvider === 'postgres' ? '-pg' : ''
+    const key = `${input.subdomain}/artifacts/${input.commitSha}${artifactVariant}.tar.gz`
 
     // The runtime may have no object store of its own (a runtime whose env never
     // got `S3_LFS_BUCKET`/`S3_WORKSPACES_BUCKET`), and base64 cannot carry a
@@ -524,7 +531,22 @@ export async function uploadPublishedArtifact(input: {
         bytes?: number
         archive?: string
         message?: string
+        dbContext?: string
         offload?: { skipped?: string }
+      }
+      if (input.dbProvider === 'postgres' && body.dbContext !== 'postgres') {
+        // The runtime tarred a SQLite context for a Postgres environment — an
+        // older runtime that ignores `db=postgres`. The API rolls out before the
+        // runtimes, so this has to be caught on this side as well: shipping it
+        // loses every write made on another pod (SHO-551, QA round 5).
+        return {
+          ok: false as const,
+          status: 502,
+          body:
+            'the runtime did not produce a Postgres build context for this environment' +
+            (body.dbContext ? ` (it reported "${body.dbContext}")` : ' (it reported none)') +
+            ' — the published pod would run a SQLite client against the Postgres database',
+        }
       }
       if (body.offload?.skipped === 'no_object_store') {
         console.warn(
@@ -586,9 +608,11 @@ export async function uploadPublishedArtifact(input: {
     )
     if ('error' in artifact) {
       const tooLarge = artifact.error.includes('artifact_too_large')
+      const wrongDb = artifact.error.includes('Postgres build context')
       return {
         error: artifact.error,
         ...(tooLarge ? { code: 'artifact_too_large' as const } : {}),
+        ...(wrongDb ? { code: 'postgres_context_failed' as const } : {}),
       }
     }
     if (artifact.ref.bytes === 0) return { error: 'artifact tarball was empty' }
