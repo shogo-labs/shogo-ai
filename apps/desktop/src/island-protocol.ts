@@ -300,7 +300,7 @@ export function parseIslandFileRefs(value: unknown): IslandFileRef[] | null {
 }
 
 /** In-app paths only: no scheme, no protocol-relative URLs. */
-function parseAppPath(value: unknown): string | null {
+export function parseAppPath(value: unknown): string | null {
   const path = nonEmpty(value)
   if (!path || !path.startsWith('/') || path.startsWith('//')) return null
   return path

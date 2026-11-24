@@ -43,6 +43,7 @@ type CrossWindowChatSessionChange = ChatSessionChange & {
 const changeListeners = new Set<ChangeListener>()
 const selectListeners = new Set<SelectListener>()
 const newChatListeners = new Set<NewChatListener>()
+const clearCompletionListeners = new Set<() => void>()
 
 const CROSS_WINDOW_CHANGE_CHANNEL = 'shogo:chat-session-change'
 const CROSS_WINDOW_STORAGE_KEY = 'shogo:last-chat-session-change'
@@ -205,6 +206,23 @@ export const chatSessionEvents = {
 
   requestNewChat(event: ChatSessionNewChatRequest) {
     newChatListeners.forEach((fn) => fn(event))
+  },
+
+  /**
+   * "Clear all notifications" (the menu-bar dropdown). One event, so every
+   * owner of an unopened-reply set drops its dots together: whoever clears its
+   * own set one by one leaves the tray and the island showing dots nobody can
+   * open.
+   */
+  subscribeClearCompletions(fn: () => void) {
+    clearCompletionListeners.add(fn)
+    return () => {
+      clearCompletionListeners.delete(fn)
+    }
+  },
+
+  clearChatCompletions() {
+    clearCompletionListeners.forEach((fn) => fn())
   },
 }
 

@@ -47,6 +47,11 @@ const OPTIONAL_RESOURCES = [
   './resources/templates',
   './resources/runtime-template',
   './resources/canvas-runtime',
+  // Menu-bar artwork (the tray icon and its row dots). Committed, regenerated
+  // by scripts/make-tray-icons.mjs, but only the packaged app needs it on disk:
+  // `tray.ts` resolves it from process.resourcesPath, and in dev from
+  // apps/desktop/resources.
+  './resources/tray',
   // agent-runtime static assets (canvas-bridge.js served at /agent/canvas/bridge.js).
   // Without this, the workspace iframe never installs the SSE listener and the
   // "Update available — Refresh" toast never shows on Desktop.

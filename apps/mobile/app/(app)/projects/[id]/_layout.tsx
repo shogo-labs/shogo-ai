@@ -2259,6 +2259,10 @@ export default observer(function ProjectLayout() {
     },
     []
   );
+  // "Clear all notifications" from the menu-bar dropdown drops every project
+  // tab's dot with one event, the same one the sidebar and the island listen to.
+  useEffect(() => chatSessionEvents.subscribeClearCompletions(() => setCompletedTabIds(new Set())), [])
+
   // Clear the "new activity" dot once the user opens that tab.
   useEffect(() => {
     if (!chatSessionId) return;

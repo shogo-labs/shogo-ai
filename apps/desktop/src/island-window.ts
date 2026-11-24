@@ -24,6 +24,7 @@ import { PendingNotifier } from './island-pending-notification'
 import {
   EMPTY_ISLAND_MEETING_STATE,
   EMPTY_ISLAND_SNAPSHOT,
+  ISLAND_WORKSPACE_AGENT_PROJECT_ID,
   isIslandMode,
   mergeIslandSnapshots,
   parseIslandAction,
@@ -431,6 +432,20 @@ export class IslandWindow {
     const action = parseIslandAction(raw)
     if (!action) return { ok: false, error: 'Invalid island action' }
     return this.performAction(action)
+  }
+
+  /**
+   * Opens a chat from outside the island — the menu-bar dropdown. `open` when a
+   * window already has that session (it switches to it in place), otherwise a
+   * navigate to the row's own in-app route. One open-a-chat path for both.
+   */
+  openChat = (input: { projectId: string | null; sessionId: string; path: string }): Promise<IslandActionResult> => {
+    const projectId = input.projectId ?? ISLAND_WORKSPACE_AGENT_PROJECT_ID
+    const windowId = this.findSessionWindow(projectId, input.sessionId)
+    if (windowId !== null) {
+      return this.performAction({ type: 'open', projectId, sessionId: input.sessionId })
+    }
+    return this.performAction({ type: 'navigate', path: input.path })
   }
 
   /** Runs an island action. The island's IPC and the OS notification buttons
