@@ -20,6 +20,10 @@
 
 import type { HttpClient } from '../http/client.js'
 import type { ShogoResponse } from '../types.js'
+// The one `ModelFamily` definition — the catalog's — so an admin-surface type
+// can never list a family the API rejects (SHO-558: `gemini` was missing here
+// too). Type-only, so nothing is pulled into a browser bundle.
+import type { ModelFamily } from '@shogo-ai/agent/model-catalog'
 
 /** Convert an unknown boundary error into a user-facing message. */
 export function toErrorMessage(error: unknown, fallback = ''): string {
@@ -413,7 +417,7 @@ export interface ModelDefinition {
   displayName: string
   shortDisplayName: string
   tier: 'economy' | 'standard' | 'premium'
-  family: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  family: ModelFamily
   generation: 'current' | 'legacy'
   maxOutputTokens: number
   enabled: boolean
@@ -457,7 +461,7 @@ export interface ModelDefinitionInput {
   displayName?: string
   shortDisplayName?: string
   tier?: 'economy' | 'standard' | 'premium'
-  family?: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  family?: ModelFamily
   generation?: 'current' | 'legacy'
   maxOutputTokens?: number
   enabled?: boolean

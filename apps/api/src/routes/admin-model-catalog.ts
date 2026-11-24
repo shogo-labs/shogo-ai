@@ -46,12 +46,16 @@ import {
   getPricingRefreshedAt,
   isPricingStale,
 } from '../services/model-pricing-catalog.service'
+import { MODEL_FAMILIES as MODEL_FAMILIES_VALUES } from '@shogo/model-catalog'
 
 const MODEL_PROVIDER_PROTOCOLS = new Set(['openai', 'anthropic'])
 const MODEL_PROVIDER_AUTH_STYLES = new Set(['bearer', 'api-key-header'])
 const MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'openrouter', 'local', 'custom'])
 const MODEL_TIERS = new Set(['economy', 'standard', 'premium'])
-const MODEL_FAMILIES = new Set(['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'other'])
+// Taken from the catalog's `ModelFamily` source, never hand-copied: a copy that
+// lost `gemini` rejected every save of a Gemini model with `400 invalid family`
+// (SHO-558).
+const MODEL_FAMILIES = new Set<string>(MODEL_FAMILIES_VALUES)
 const MODEL_GENERATIONS = new Set(['current', 'legacy'])
 const MODEL_REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
