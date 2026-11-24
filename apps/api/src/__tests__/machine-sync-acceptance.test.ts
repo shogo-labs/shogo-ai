@@ -551,3 +551,111 @@ describeIfPg('AC6 — a NUL byte in a page does not stop the sync (SHO-562)', ()
     expect(state!.lastIngestAt!.getTime()).toBeGreaterThanOrEqual(startedAt.getTime())
   }, 60_000)
 })
+
+/**
+ * SHO-562 AC3, end to end.
+ *
+ * Stripping NULs is the fix for this incident, but the *safety net* is what has
+ * to hold for the next value SQLite allows and Postgres refuses — and that net
+ * only exists if `dataException()` reads the shape the pg adapter actually
+ * throws. A fake transaction cannot prove that. Here Postgres itself refuses one
+ * row: a `varchar(5)` is put on `ChatMessage.imageData` in this throwaway
+ * database, so a longer value is `22001 value too long for type character
+ * varying(5)` — a real SQLSTATE-class-22 error through the real route, the same
+ * class as the incident's `22021`. The page must still answer 200, store the
+ * clean row beside it and move the cursor, and the warn must name the model, the
+ * id and the SQLSTATE without any of the row's contents.
+ */
+describeIfPg('AC7 — a row Postgres refuses as bad data is skipped, not fatal (SHO-562 AC3)', () => {
+  test('the rest of the page applies, the row is logged and the cursor advances', async () => {
+    const tag = crypto.randomUUID().slice(0, 8)
+    const user = await db.user.create({ data: { name: tag, email: `skip-${tag}@example.com` } })
+    const ws = await db.workspace.create({
+      data: { name: `${tag} team`, slug: `skip-${tag}`, kind: 'team', hostInstanceId: INSTANCE },
+    })
+
+    const epoch = `e-skip-${tag}`
+    const startedAt = new Date()
+    await db.machineSyncState.upsert({
+      where: { instanceId: INSTANCE },
+      create: { instanceId: INSTANCE, epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+      update: { epoch, cursor: 1387815, lastIngestAt: new Date(), enabled: true },
+    })
+
+    const now = new Date().toISOString()
+    const sessionId = crypto.randomUUID()
+    const refusedId = crypto.randomUUID()
+    const cleanId = crypto.randomUUID()
+    const SECRET = 'data:image/png;base64,QQQQQQQQQQQQQQQQQQQQ'
+
+    const warns: string[] = []
+    const realWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map((arg) => String(arg)).join(' '))
+    }
+
+    let res: Response
+    try {
+      await db.$executeRawUnsafe('ALTER TABLE "chat_messages" ALTER COLUMN "imageData" TYPE varchar(5)')
+      const seen: Seen = { sizes: [], batches: [], statuses: [] }
+      res = await cloud(seen)(`http://cloud.test/api/machines/${INSTANCE}/sync`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          epoch,
+          mode: 'changes',
+          cursor: 1387900,
+          models: [
+            {
+              model: 'ChatSession',
+              rows: [
+                {
+                  id: sessionId,
+                  inferredName: `${tag} chat`,
+                  contextType: 'workspace',
+                  workspaceId: ws.id,
+                  createdByUserId: user.id,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ],
+            },
+            {
+              model: 'ChatMessage',
+              rows: [
+                // Postgres refuses this one (22001); it must not take the page with it.
+                { id: refusedId, sessionId, role: 'user', content: 'bad', imageData: SECRET, createdAt: now, updatedAt: now },
+                { id: cleanId, sessionId, role: 'assistant', content: 'clean', createdAt: now, updatedAt: now },
+              ],
+            },
+          ],
+        }),
+      })
+    } finally {
+      await db.$executeRawUnsafe('ALTER TABLE "chat_messages" ALTER COLUMN "imageData" TYPE text')
+      console.warn = realWarn
+    }
+
+    expect(res!.status).toBe(200)
+    const body = (await res!.json()) as any
+    expect(body.error).toBeUndefined()
+    expect(body.ok).toBe(true)
+    expect(body.applied).toBeGreaterThanOrEqual(2)
+    expect(body.skipped).toBe(1)
+
+    expect(await db.chatMessage.findUnique({ where: { id: refusedId } })).toBeNull()
+    expect((await db.chatMessage.findUnique({ where: { id: cleanId } }))?.content).toBe('clean')
+
+    const state = await db.machineSyncState.findFirst({ where: { instanceId: INSTANCE } })
+    expect(Number(state?.cursor)).toBe(1387900)
+    expect(state!.lastIngestAt!.getTime()).toBeGreaterThanOrEqual(startedAt.getTime())
+
+    const skipLine = warns.find((line) => line.includes('SQLSTATE'))
+    expect(skipLine).toBeDefined()
+    expect(skipLine).toContain('ChatMessage')
+    expect(skipLine).toContain(refusedId)
+    expect(skipLine).toContain('22001')
+    // The row can hold a person's text, so the log names it and never quotes it.
+    expect(warns.join('\n')).not.toContain(SECRET)
+  }, 60_000)
+})
