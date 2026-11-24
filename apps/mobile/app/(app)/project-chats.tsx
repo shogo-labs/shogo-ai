@@ -37,6 +37,8 @@ import {
   visibleProjectChatItems,
   type ProjectChatListItem,
 } from '../../lib/project-chat-sessions'
+import { projectSurfaceRoute, type ProjectSurface } from '../../lib/project-surface-route'
+import { ProjectSurfaceQuickButtons } from '../../components/project/ProjectSurfaceQuickButtons'
 import { Spinner } from '@/components/ui/spinner'
 
 export default observer(function ProjectChatsPage() {
@@ -118,6 +120,15 @@ export default observer(function ProjectChatsPage() {
     } as any)
   }, [projectId, router])
 
+  // Push, not replace: Back from the surface comes back to this chat list.
+  const openSurface = useCallback(
+    (surface: ProjectSurface) => {
+      if (!projectId) return
+      router.push(projectSurfaceRoute(projectId, surface) as any)
+    },
+    [projectId, router],
+  )
+
   const loadMore = useCallback(() => {
     if (hasMore && !loadingMore) void load(sessions.length + PROJECT_CHAT_PAGE_SIZE)
   }, [hasMore, load, loadingMore, sessions.length])
@@ -164,7 +175,11 @@ export default observer(function ProjectChatsPage() {
             <Plus size={20} className="text-foreground" />
           </GlassButton>
         }
-      />
+      >
+        {projectId ? (
+          <ProjectSurfaceQuickButtons projectName={title} onOpen={openSurface} />
+        ) : null}
+      </PhoneScreenHeader>
 
       <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
       {loading && sessions.length === 0 ? (

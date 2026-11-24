@@ -20,10 +20,11 @@ import {
   resolveCanvasGate,
 } from "../../lib/preview-gate";
 import { usePreviewGateTimers, usePreviewPhase } from "../../lib/use-preview-phase";
+import type { ProjectSurface } from "../../lib/project-surface-route";
 import { useWorkspaceBudgetToast } from "./WorkspaceBudgetNotice";
 import { Spinner } from '@/components/ui/spinner'
 
-export type ProjectSurface = "canvas" | "files" | "plans" | "settings";
+export type { ProjectSurface };
 
 function GateMessage({
   title,
