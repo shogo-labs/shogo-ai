@@ -104,6 +104,7 @@ import {
   isExpectedClientError,
   isNoiseEvent,
   isVirtualAndroidDevice,
+  transientTransportMessage,
 } from "../lib/sentry-noise-filter";
 
 Sentry.init({
@@ -146,7 +147,20 @@ Sentry.init({
   beforeSend(event, hint) {
     // Drop high-volume non-actionable noise (preview iframe, transient
     // backend/network, browser-extension DOM races). See triage plan Tier 2.
-    if (isNoiseEvent(event)) return null;
+    if (isNoiseEvent(event)) {
+      // A dropped connection is not a defect, but it is the context a later
+      // real failure needs: keep it as a breadcrumb the way the 4xx path below
+      // does, so the next event from this session carries the trail (SHO-566).
+      const dropped = transientTransportMessage(event);
+      if (dropped) {
+        Sentry.addBreadcrumb({
+          category: "network",
+          level: "warning",
+          message: `connection dropped: ${dropped}`,
+        });
+      }
+      return null;
+    }
 
     // A virtual Android device — Play's pre-launch report robot, or an x86_64
     // emulator — is not a person using the app. Its events (a sheet it backs

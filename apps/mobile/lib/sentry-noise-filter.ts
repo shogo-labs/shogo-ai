@@ -112,6 +112,39 @@ export function isExpectedClientError(error: unknown): boolean {
   return typeof e.status === 'number' && e.status >= 400 && e.status < 500
 }
 
+/**
+ * Transport-level messages for a connection that dropped, not a request the
+ * server answered. These are the biggest issues by volume on both mobile
+ * platforms (`SHOGO-ANDROID-5` "Software caused connection abort",
+ * `SHOGO-IOS-4` "The network connection was lost.", `SHOGO-ANDROID-7` /
+ * `-1F` "Unable to resolve host studio.shogo.ai"): the phone changed networks,
+ * a relay recycled, DNS did not answer — the retry path recovers and the person
+ * sees a reconnect. Filed as errors they bury real defects, so they become a
+ * breadcrumb on the next real failure instead (SHO-566).
+ *
+ * Matched on the exception's value, and only on these whole messages: a
+ * `TypeError` that merely mentions "network" is a bug and must still report.
+ */
+const TRANSIENT_TRANSPORT_PATTERNS: readonly RegExp[] = [
+  /Software caused connection abort/i,
+  /The network connection was lost\.?$/i,
+  /Unable to resolve host\b/i,
+  /Network request failed$/i,
+  /The Internet connection appears to be offline\.?$/i,
+  /Connection reset by peer/i,
+]
+
+/** The exception value when it is one of the transport drops above. */
+export function transientTransportMessage(event: NoiseFilterEvent): string | null {
+  const values = event.exception?.values ?? []
+  for (const v of values) {
+    const value = typeof v.value === 'string' ? v.value.trim() : ''
+    if (!value) continue
+    if (TRANSIENT_TRANSPORT_PATTERNS.some((re) => re.test(value))) return value
+  }
+  return null
+}
+
 export function isNoiseEvent(event: NoiseFilterEvent): boolean {
   // Never drop an intentional Shogo capture. These carry a marker tag and rich
   // context precisely BECAUSE the raw message (e.g. "Failed to fetch",
@@ -153,6 +186,10 @@ export function isNoiseEvent(event: NoiseFilterEvent): boolean {
       /NetworkError when attempting to fetch/i.test(m),
   )
   if (isTransientBackend) return true
+
+  // 2b. A connection that dropped (see TRANSIENT_TRANSPORT_PATTERNS). Same
+  //     reasoning as 2: the transport failed, the server never answered.
+  if (transientTransportMessage(event)) return true
 
   // 3. Browser-extension DOM races (e.g. Google Translate mutates the
   //    React-owned DOM, then React's insertBefore/removeChild can't find the
