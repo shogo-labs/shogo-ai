@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Filter, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Filter, Hash, Lock, LogOut, MoreHorizontal, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -45,7 +45,7 @@ const HEADER_FIXED = 24 + 8 + 120 + 8 + 28 + 8
 /** Narrower than this, the desktop header shows only the title, the huddle button and "More". */
 const HEADER_COMPACT = 260
 /** Actions that stay inline first, in this order. Anything else goes under "More" when space runs out. */
-const INLINE_PRIORITY = ['catchup', 'notify', 'star', 'pins', 'files', 'members']
+const INLINE_PRIORITY = ['catchup', 'notify', 'star', 'pins', 'members']
 
 /**
  * Splits the desktop header actions into the ones that fit inline and the rest,
@@ -80,7 +80,6 @@ export interface ConversationHeaderProps {
   /** Phone: the channel's tabs, listed in the details panel instead of a strip under the header. */
   tabsMenu?: { items: ChannelTabItem[]; onAddBoard?: () => void }
   onBack?: () => void
-  onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
   /** Filter the channel timeline to one member's messages. When `memberFilter` is set,
@@ -102,7 +101,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onFilterByMember, onClearMemberFilter, memberFilter, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenDoc, onFilterByMember, onClearMemberFilter, memberFilter, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -230,9 +229,6 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
       icon: (s) => <Pin size={s} className="text-muted-foreground" />,
       onPress: () => void api.pins(conversation.id).then(setPins).catch((err) => setError(err?.message ?? 'Could not load pins')),
     })
-  }
-  if (onOpenFiles && conversation.kind !== 'activity') {
-    actions.push({ key: 'files', label: 'Files', icon: (s) => <Paperclip size={s} className="text-muted-foreground" />, onPress: onOpenFiles })
   }
   // "Filter by member" opens the pane on you when you are in the channel, so
   // the switcher is already showing a list; otherwise on the first member.

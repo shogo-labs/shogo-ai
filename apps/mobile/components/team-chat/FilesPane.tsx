@@ -50,12 +50,15 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
     kind: kind === 'all' ? undefined : kind,
   })
   const filtered = !!q.trim() || kind !== 'all'
+  // What is loaded so far, with a `+` while more pages exist — there is no
+  // server-side total, so the header says what it actually has.
+  const count = files.length ? ` · ${files.length}${hasMore ? '+' : ''}` : ''
 
   return (
     <View className="flex-1 bg-background" testID="files-pane">
       {floating ? (
         <PhoneScreenHeader
-          title={`Files in ${title}`}
+          title={`Files in ${title}${count}`}
           closeLabel="Close files"
           closeTestID="files-close"
           onClose={onClose}
@@ -64,8 +67,8 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
       ) : (
         <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
           <Paperclip size={16} className="text-muted-foreground" />
-          <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-            Files in {title}
+          <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1} testID="files-pane-title">
+            Files in {title}{count}
           </Text>
           <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close files" className="rounded-md p-1 active:bg-muted">
             <X size={16} className="text-muted-foreground" />
