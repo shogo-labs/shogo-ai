@@ -178,3 +178,73 @@ describe('PreviewManager.sync — phase restore', () => {
     expect(watcherStarted).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// SHO-551 D: the additive schema push on the published path.
+//
+// QA round 1 reproduced the opposite defect: a published Postgres pod pushed
+// `file:…/dev.db` against a `provider = "postgresql"` schema, which exits P1013,
+// and since SHO-551 made a failed push fatal the revision never became ready.
+// The API owns the Postgres schema, so the pod must never push in that case.
+// ---------------------------------------------------------------------------
+describe('PreviewManager.runPrismaIfNeeded — published mode', () => {
+  const saved = { DATABASE_URL: process.env.DATABASE_URL, SHOGO_PUBLISHED_MODE: process.env.SHOGO_PUBLISHED_MODE }
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete (process.env as any)[key]
+      else (process.env as any)[key] = value
+    }
+  })
+
+  function publishedManager() {
+    return mk() as any
+  }
+
+  it('skips the push entirely on a Postgres pod, where the API owns the schema', async () => {
+    const projectDir = projectWithSchema()
+    // The client is already generated, so no `prisma generate` is attempted.
+    mkdirSync(join(projectDir, 'src', 'generated', 'prisma'), { recursive: true })
+    process.env.SHOGO_PUBLISHED_MODE = 'true'
+    process.env.DATABASE_URL = 'postgres://project_x:pw@projects-pg:5432/project_x?pgbouncer=true'
+
+    let pushes = 0
+    prismaDbPushImpl = async () => {
+      pushes++
+    }
+
+    await publishedManager().runPrismaIfNeeded({})
+
+    expect(pushes).toBe(0)
+  })
+
+  it('still pushes the additive schema on a SQLite published pod', async () => {
+    const projectDir = projectWithSchema()
+    mkdirSync(join(projectDir, 'src', 'generated', 'prisma'), { recursive: true })
+    // An existing dev.db is what the old code treated as "nothing to do".
+    writeFileSync(join(projectDir, 'prisma', 'dev.db'), '')
+    process.env.SHOGO_PUBLISHED_MODE = 'true'
+    process.env.DATABASE_URL = `file:${join(projectDir, 'prisma', 'dev.db')}`
+
+    let pushes = 0
+    prismaDbPushImpl = async () => {
+      pushes++
+    }
+
+    await publishedManager().runPrismaIfNeeded({})
+
+    expect(pushes).toBe(1)
+  })
+
+  it('fails the boot when the SQLite push cannot be applied, so the revision never serves', async () => {
+    const projectDir = projectWithSchema()
+    mkdirSync(join(projectDir, 'src', 'generated', 'prisma'), { recursive: true })
+    delete process.env.DATABASE_URL
+    process.env.SHOGO_PUBLISHED_MODE = 'true'
+    prismaDbPushImpl = async () => {
+      throw new Error('P3006: migration failed')
+    }
+
+    await expect(publishedManager().runPrismaIfNeeded({})).rejects.toThrow(/additive schema sync/)
+  })
+})

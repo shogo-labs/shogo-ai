@@ -3,11 +3,13 @@
 
 import { describe, expect, it } from 'bun:test'
 import {
+  POSTGRES_DEFAULT_MAX_REPLICAS,
   PUBLISHED_TARGET_CONCURRENCY,
   baseSubdomainOf,
   buildPublishedScaleAnnotations,
   isReservedEnvironmentSubdomain,
   normalizePublishedSize,
+  postgresScaleTarget,
   publishedContainerResources,
   publishedLocalStateReason,
   publishedServiceName,
@@ -150,6 +152,48 @@ describe('published-scale', () => {
           uploadsShared: true,
         }),
       ).toBeNull()
+    })
+  })
+
+  // SHO-551 §F / AC 7 — "1 replica normally, scale out under load and during
+  // deploys". Postgres gets a max-scale above 1; SQLite stays pinned to 1.
+  describe('postgresScaleTarget', () => {
+    const base = { minReplicas: 0, maxReplicas: 1, size: 's' as const }
+
+    it('lifts max-scale above 1 for a Postgres environment', () => {
+      const target = postgresScaleTarget(base, { dbProvider: 'postgres', alwaysOn: false })
+      expect(target.maxReplicas).toBe(POSTGRES_DEFAULT_MAX_REPLICAS)
+      expect(target.maxReplicas).toBeGreaterThan(1)
+    })
+
+    it('keeps the plan scale-to-zero for a Postgres app that is not always-on', () => {
+      expect(postgresScaleTarget(base, { dbProvider: 'postgres', alwaysOn: false }).minReplicas).toBe(0)
+    })
+
+    it('runs 1 replica at rest for an always-on Postgres app', () => {
+      expect(postgresScaleTarget(base, { dbProvider: 'postgres', alwaysOn: true }).minReplicas).toBe(1)
+    })
+
+    it('never lowers a max-scale that is already above 1', () => {
+      const target = postgresScaleTarget(
+        { minReplicas: 0, maxReplicas: 2, size: 's' },
+        { dbProvider: 'postgres', alwaysOn: false },
+      )
+      expect(target.maxReplicas).toBe(2)
+    })
+
+    // The old code forced `min 1` on every Postgres env, which killed the plan's
+    // scale-to-zero, and derived max from raw rather than the plan cap.
+    it('leaves a SQLite environment exactly as it is', () => {
+      const target = postgresScaleTarget(base, { dbProvider: 'sqlite', alwaysOn: true })
+      expect(target).toEqual(base)
+    })
+
+    it('does not rewrite a published ksvc into a single-replica ceiling', () => {
+      const target = postgresScaleTarget({ minReplicas: 1, maxReplicas: 1, size: 'm' }, { dbProvider: 'postgres', alwaysOn: true })
+      const annotations = buildPublishedScaleAnnotations(target)
+      expect(annotations['autoscaling.knative.dev/min-scale']).toBe('1')
+      expect(Number(annotations['autoscaling.knative.dev/max-scale'])).toBeGreaterThan(1)
     })
   })
 })

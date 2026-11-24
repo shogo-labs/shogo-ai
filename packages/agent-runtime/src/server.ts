@@ -4498,9 +4498,13 @@ app.post('/templates/copy', async (c) => {
     console.log(`[templates/copy] Prisma schema left as-is (Prisma 7.x adapter mode)`)
 
     // Rewrite db.tsx to use @prisma/adapter-libsql for SQLite
-    // (templates ship with PrismaPg adapter but run on SQLite in the runtime)
+    // (templates ship with PrismaPg adapter but run on SQLite in the runtime),
+    // but only when the project is NOT already on Postgres: a published pod whose
+    // DATABASE_URL points at projects-pg must keep its Postgres adapter (SHO-551 B).
+    const projectDatabaseUrl = (process.env.DATABASE_URL ?? '').trim()
+    const isPostgresDatabaseUrl = /^postgres(ql)?:\/\//.test(projectDatabaseUrl)
     const dbTsxPath = join(projectDir, 'src', 'lib', 'db.tsx')
-    if (existsSync(dbTsxPath)) {
+    if (existsSync(dbTsxPath) && !isPostgresDatabaseUrl) {
       const SQLITE_DB_TSX = `import { PrismaLibSql } from '@prisma/adapter-libsql'
 import { PrismaClient } from '../generated/prisma/client'
 

@@ -1170,7 +1170,7 @@ async function configurePublishedService(
     /** The caller already ran the app build for this publish. */
     artifactAlreadyBuilt?: boolean
   },
-): Promise<{ serverBacked: boolean }> {
+): Promise<{ serverBacked: boolean; notice?: string }> {
   // An uploaded bundle (desktop publish) is static by construction: there is no
   // project pod to probe, and the caller already refused server-backed
   // projects. Trust the caller instead of probing a runtime that isn't there.
@@ -1187,6 +1187,7 @@ async function configurePublishedService(
   const { ensureProductionEnvironment, getEnvironment, scaleSettingsOf } = await import(
     "../services/published-environments.service"
   )
+  const { postgresScaleTarget } = await import("../lib/published-scale")
   const environmentName = opts?.environment ?? "production"
   const environment =
     environmentName === "production"
@@ -1195,7 +1196,7 @@ async function configurePublishedService(
   if (!environment) {
     throw new Error("staging environment does not exist — create it before deploying")
   }
-  const scale = scaleSettingsOf(environment)
+  // scale is computed after the Postgres step (SHO-551 F) — see below
 
   // Published apps run on Knative (getPublishSubstrate). `PUBLISH_SUBSTRATE=metal`
   // is the escape hatch. unpublishProjectEverywhere covers the other substrate on
@@ -1224,6 +1225,8 @@ async function configurePublishedService(
         `(substrate=${substrate.kind}${missing.length ? `, projects-pg missing ${missing.join(", ")}` : ""})`,
     )
   }
+  let currentDbProvider: "sqlite" | "postgres" = "sqlite"
+  let seedNotice: string | undefined
   if (usePostgres) {
     const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
     const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
@@ -1241,6 +1244,52 @@ async function configurePublishedService(
         `[Publish] Seeded ${environmentName} database for ${projectId} from ${source} ` +
           `(${prepared.value.seededRows} rows)`,
       )
+    }
+    currentDbProvider = "postgres"
+    if (prepared.value.orphans.length > 0) {
+      const totalOrphaned = prepared.value.orphans.reduce((sum, o) => sum + o.count, 0)
+      const tableList = prepared.value.orphans
+        .map((o) => `${o.table} (${o.count})`)
+        .join(', ')
+      seedNotice =
+        `${totalOrphaned} row(s) referencing deleted records were not copied to Postgres ` +
+        `(${tableList}). They are still in the SQLite archive and can be recovered.`
+      console.log(`[Publish] ${seedNotice}`)
+    }
+  }
+
+  // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest
+  // (the autoscaler's floor), max-scale above 1 so a traffic spike — or a
+  // deploy, where the new revision must be ready while the old one still
+  // serves — can get a second pod. SQLite environments stay at max 1: two pods
+  // would serve two different `prisma/dev.db` files.
+  //
+  // The result is persisted through `setEnvironmentScale`, the same path the
+  // Publishing dashboard uses, so the plan's cap and the local-state guard
+  // decide and the row agrees with the ksvc. A value computed here and thrown
+  // away was what let a later cutover/rollback re-apply one replica.
+  const rawScale = scaleSettingsOf(environment)
+  let scale = postgresScaleTarget(rawScale, {
+    alwaysOn: opts?.alwaysOn === true,
+    dbProvider: currentDbProvider,
+  })
+  if (scale.minReplicas !== rawScale.minReplicas || scale.maxReplicas !== rawScale.maxReplicas) {
+    const { setEnvironmentScale } = await import("../services/published-environments.service")
+    const applied = await setEnvironmentScale(projectId, environmentName, scale)
+    if (applied.ok) {
+      scale = applied.value.settings
+      console.log(
+        `[Publish] ${environmentName} scale for ${projectId}: min-scale ${scale.minReplicas}, ` +
+          `max-scale ${scale.maxReplicas} (was ${rawScale.minReplicas}/${rawScale.maxReplicas})`,
+      )
+    } else {
+      // The plan cap or the local-state guard refused it: keep what is stored
+      // rather than bypassing either.
+      console.log(
+        `[Publish] Keeping ${environmentName} at min-scale ${rawScale.minReplicas} / ` +
+          `max-scale ${rawScale.maxReplicas}: ${applied.message}`,
+      )
+      scale = rawScale
     }
   }
 
@@ -1262,6 +1311,7 @@ async function configurePublishedService(
         subdomain,
         commitSha,
         alreadyBuilt: opts?.artifactAlreadyBuilt === true,
+        dbProvider: currentDbProvider,
       })
       if (!image.ok) {
         // A publish must never ship a runtime it could not build: the ksvc
@@ -1338,7 +1388,7 @@ async function configurePublishedService(
   }
   await markPublishedDeploymentReady(deployment.id)
 
-  return { serverBacked: result.serverBacked }
+  return { serverBacked: result.serverBacked, notice: seedNotice }
 }
 
 /** The commit the publish is shipping, for the deployment record. */
@@ -1579,6 +1629,12 @@ export interface PublishProjectResult {
   message?: string
   /** Machine-actionable context for a refusal (`destructive_schema_change`). */
   details?: Record<string, unknown>
+  /**
+   * Human-readable notice about rows left out of the Postgres seed because
+   * their FK target was deleted. Non-null only on a successful Postgres publish
+   * where orphaned rows were detected.
+   */
+  notice?: string
 }
 
 /**
@@ -1784,6 +1840,7 @@ async function preparePublish(
  */
 async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishProjectResult> {
   const { projectId, project, subdomain, accessLevel, sitePasswordHash, alwaysOn, fileSource } = prepared
+  let configureNotice: string | undefined
   try {
     // Move the project off its old prefix only once this publish is really
     // starting (the caller has accepted it), and before anything is uploaded.
@@ -1852,8 +1909,8 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
         const live = await takePublishedSiteLive({
           serverBacked,
           onStage: (stage) => setPublishStatus(projectId, stage),
-          configure: () =>
-            withTimeout(
+          configure: async () => {
+            const r = await withTimeout(
               configurePublishedService(projectId, subdomain, {
                 alwaysOn,
                 allowDataLoss: prepared.allowDataLoss,
@@ -1864,7 +1921,9 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
               }),
               configureTimeoutMs,
               'Publish configure',
-            ),
+            )
+            if (r && typeof r === 'object' && 'notice' in r) configureNotice = (r as any).notice
+          },
           upload: async () => {
             await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
             await purgePublishedCache(subdomain)
@@ -1973,6 +2032,7 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
       publishedAt: publishedAt.getTime(),
       accessLevel,
       hasPassword: !!sitePasswordHash,
+      ...(configureNotice ? { notice: configureNotice } : {}),
     }
   } catch (error: any) {
     console.error("[Publish] Publish error:", error)

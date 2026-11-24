@@ -21,12 +21,14 @@ import {
   buildPublishSchema,
   buildSeedSql,
   countSeedRows,
+  dropOrphanedSeedRows,
   orderSeedTables,
   parseBooleanColumns,
   parseModelTables,
   parseSeedRelations,
   parseSerialIdColumns,
   PublishSchemaError,
+  type SeedOrphan,
   type SeedTableData,
 } from '@shogo/shared-runtime/published-schema'
 
@@ -157,6 +159,12 @@ export type ExportPublishedSchemaResult =
       seed: { sql: string; tables: number; rows: number } | null
       /** Where the seed's rows came from, when a seed was produced. */
       seedSource?: 'workspace' | 'archive'
+      /**
+       * Rows that were left out of the seed because their FK target was deleted.
+       * Non-empty only when a seed was produced. The rows remain in the SQLite
+       * archive, which is never deleted, so they can be recovered.
+       */
+      orphans?: SeedOrphan[]
     }
   | { ok: false; code: string; message: string; status: number }
 
@@ -240,9 +248,22 @@ export async function exportPublishedSchema(
       seedSource = 'archive'
     }
 
-    tables = await collectSeedTables(projectDir, resolved.content, dbPath ? { dbPath } : {})
+    const rawTables = await collectSeedTables(projectDir, resolved.content, dbPath ? { dbPath } : {})
+    const { tables: cleanTables, orphans } = dropOrphanedSeedRows(
+      rawTables,
+      parseSeedRelations(resolved.content),
+      parseModelTables(resolved.content),
+    )
+    if (orphans.length > 0) {
+      console.warn(
+        `[published-schema] dropping ${orphans.map((o) => `${o.count} orphaned row(s) from ${o.table}`).join(', ')} ` +
+          `(FK targets deleted; rows stay in the SQLite archive)`,
+      )
+    }
+    tables = cleanTables
     const counted = countSeedRows(tables)
-    if (counted.rows === 0) return { ok: true, schema: resolved, seed: null }
+    if (counted.rows === 0 && orphans.length === 0) return { ok: true, schema: resolved, seed: null, orphans: [] }
+    if (counted.rows === 0) return { ok: true, schema: resolved, seed: null, orphans }
     const sql = buildSeedSql(tables)
     const bytes = Buffer.byteLength(sql, 'utf-8')
     if (bytes > MAX_SEED_SQL_BYTES) {
@@ -255,7 +276,7 @@ export async function exportPublishedSchema(
         status: 413,
       }
     }
-    return { ok: true, schema: resolved, seed: { sql, ...counted }, seedSource }
+    return { ok: true, schema: resolved, seed: { sql, ...counted }, seedSource, orphans }
   } catch (err: any) {
     return {
       ok: false,

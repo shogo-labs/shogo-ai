@@ -36,6 +36,7 @@ import {
 import { ensureEnvironmentDatabase, type PublishedDatabase } from './published-database.service'
 import { pushPublishedSchema } from './published-schema-push'
 import { readLiveSeedArchive } from './published-live-seed'
+import type { SeedOrphan } from '@shogo/shared-runtime/published-schema'
 
 const SCHEMA_TIMEOUT_MS = 180_000
 
@@ -58,6 +59,12 @@ export interface PreparedEnvironmentDatabase {
   seededRows: number
   schemaHash: string | null
   warnings: string[]
+  /**
+   * Rows that were silently left out of the seed because their FK target was
+   * deleted. The rows stay in the SQLite archive, which is never deleted, so
+   * they can be recovered.
+   */
+  orphans: SeedOrphan[]
 }
 
 export type PrepareEnvironmentDatabaseResult =
@@ -168,6 +175,7 @@ export async function prepareEnvironmentDatabase(
         seededRows: 0,
         schemaHash: null,
         warnings: [],
+        orphans: [],
       },
     }
   }
@@ -217,6 +225,7 @@ export async function prepareEnvironmentDatabase(
         seededRows: 0,
         schemaHash: null,
         warnings: [],
+        orphans: [],
       },
     }
   }
@@ -292,7 +301,7 @@ export async function prepareEnvironmentDatabase(
   }
   const seededFrom = seed ? (liveSeed ? ('live-archive' as const) : ('dev.db' as const)) : null
 
-  let applied: { hash: string; warnings: string[]; seededRows: number } | null = null
+  let applied: { hash: string; warnings: string[]; seededRows: number; orphans: SeedOrphan[] } | null = null
   if (!unchanged) {
     // The runtime exports the schema (and, on a first deploy, a database as
     // SQL); the push itself runs here, inside the cluster, where projects-pg is
@@ -360,10 +369,12 @@ export async function prepareEnvironmentDatabase(
     if (!pushed.ok) {
       return fail(pushed.code, pushed.message, 500, { environment })
     }
+    const exportedOrphans: SeedOrphan[] = Array.isArray(exported.data?.orphans) ? exported.data.orphans : []
     applied = {
       hash: schema.hash,
       warnings: schema.warnings ?? [],
       seededRows: seedSql ? (exported.data?.seed?.rows ?? 0) : 0,
+      orphans: exportedOrphans,
     }
   }
 
@@ -397,6 +408,7 @@ export async function prepareEnvironmentDatabase(
       seededRows: applied?.seededRows ?? 0,
       schemaHash: hash,
       warnings: applied?.warnings ?? resolved.warnings ?? [],
+      orphans: applied?.orphans ?? [],
     },
   }
 }

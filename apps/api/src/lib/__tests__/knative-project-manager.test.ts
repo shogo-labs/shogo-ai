@@ -326,6 +326,67 @@ describe('createPublishedServerService — republish', () => {
     expect(apiCalls.filter((c) => c.method === 'create')).toHaveLength(1)
   })
 
+  // -------------------------------------------------------------------------
+  // SHO-551 §F / AC 7: the generated ksvc must not pin a Postgres environment to
+  // one replica. The scale the publish route computes is what lands here, so
+  // assert on the ksvc spec the manager actually sends.
+  // -------------------------------------------------------------------------
+  describe('scale annotations for a Postgres environment', () => {
+    const annotationsOf = (call: ApiCall) =>
+      call.args.body.spec.template.metadata.annotations as Record<string, string>
+
+    it('writes min-scale 1 and max-scale > 1 for an always-on Postgres app', async () => {
+      const { postgresScaleTarget } = await import('../published-scale')
+      const scale = postgresScaleTarget(
+        { minReplicas: 0, maxReplicas: 1, size: 's' },
+        { dbProvider: 'postgres', alwaysOn: true },
+      )
+      const m = km.getKnativeProjectManager()
+      await m.createPublishedServerService('p-pg', 'pg', {
+        minScale: scale.minReplicas,
+        maxScale: scale.maxReplicas,
+        size: scale.size,
+      })
+      const created = apiCalls.find((c) => c.method === 'create')!
+      const annotations = annotationsOf(created)
+      expect(annotations['autoscaling.knative.dev/min-scale']).toBe('1')
+      expect(Number(annotations['autoscaling.knative.dev/max-scale'])).toBeGreaterThan(1)
+    })
+
+    it('lets a non-always-on Postgres app scale to zero but still scale out', async () => {
+      const { postgresScaleTarget } = await import('../published-scale')
+      const scale = postgresScaleTarget(
+        { minReplicas: 0, maxReplicas: 1, size: 's' },
+        { dbProvider: 'postgres', alwaysOn: false },
+      )
+      const m = km.getKnativeProjectManager()
+      await m.createPublishedServerService('p-pg-idle', 'pg-idle', {
+        minScale: scale.minReplicas,
+        maxScale: scale.maxReplicas,
+        size: scale.size,
+      })
+      const annotations = annotationsOf(apiCalls.find((c) => c.method === 'create')!)
+      expect(annotations['autoscaling.knative.dev/min-scale']).toBe('0')
+      expect(Number(annotations['autoscaling.knative.dev/max-scale'])).toBeGreaterThan(1)
+    })
+
+    it('keeps a SQLite environment pinned to one pod', async () => {
+      const { postgresScaleTarget } = await import('../published-scale')
+      const scale = postgresScaleTarget(
+        { minReplicas: 0, maxReplicas: 1, size: 's' },
+        { dbProvider: 'sqlite', alwaysOn: true },
+      )
+      const m = km.getKnativeProjectManager()
+      await m.createPublishedServerService('p-lite', 'lite', {
+        minScale: scale.minReplicas,
+        maxScale: scale.maxReplicas,
+        size: scale.size,
+      })
+      const annotations = annotationsOf(apiCalls.find((c) => c.method === 'create')!)
+      expect(annotations['autoscaling.knative.dev/max-scale']).toBe('1')
+    })
+  })
+
   it('rethrows when the merge-patch itself fails', async () => {
     createErrors = [apiException(409, 'AlreadyExists')]
     fetchResponses = [{ ok: false, status: 422, body: 'invalid patch' }]

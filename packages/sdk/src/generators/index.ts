@@ -82,6 +82,7 @@ export {
   generateServer,
   generateDbModule,
   generateSqliteDbModule,
+  databaseUrlGuard,
   type ServerGeneratorConfig,
 } from './server-generator'
 

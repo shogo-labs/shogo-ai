@@ -187,6 +187,98 @@ describe('publish-artifact upload target', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// A metal host with a bucket but no credentials (SHO-551 §C, AC 4)
+//
+// Prod built zero images in three days because `/agent/publish-artifact`
+// answered 500 `artifact_failed: Could not load credentials from any providers`:
+// `S3_LFS_BUCKET` is set on a metal host, so `objectStore()` is non-null, but the
+// host has no access key, so writing through it throws. The API's presigned
+// `putUrl` is minted with credentials that are known to work, so it must win.
+// ---------------------------------------------------------------------------
+describe('publish-artifact with an object store that has no credentials', () => {
+  /** What the AWS SDK throws on a metal host with `S3_LFS_BUCKET` and no keys. */
+  function credentialsError(): Error {
+    const err = new Error('Could not load credentials from any providers')
+    err.name = 'CredentialsProviderError'
+    return err
+  }
+
+  function mountWithBrokenStore(workspaceDir: string): Hono {
+    const deps: PublishEndpointDeps = {
+      projectDir: () => workspaceDir,
+      outputRoot: (_projectId, projectDir) => projectDir,
+      objectStore: () => ({
+        bucket: 'workspaces',
+        client: {
+          async send() {
+            throw credentialsError()
+          },
+        },
+      }),
+    }
+    const hono = new Hono()
+    hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+    return hono
+  }
+
+  it('uploads through the API presigned putUrl and returns 200, media kept in the tar', async () => {
+    // An offload candidate (>= 5 MB dist asset) is what makes the media offload
+    // touch the broken store at all — without one the store is never called and
+    // the credentials failure never happens.
+    writeFileSync(join(workspace, PUBLISH_STAGING_DIR, 'assets', 'big.png'), Buffer.alloc(5 * 1024 * 1024))
+    let received: Buffer | null = null
+    const receiver = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        received = Buffer.from(await req.arrayBuffer())
+        return new Response('', { status: 200 })
+      },
+    })
+    try {
+      const hono = mountWithBrokenStore(workspace)
+      const putUrl = `http://127.0.0.1:${receiver.port}/upload`
+      const res = await hono.fetch(
+        new Request(
+          'http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish' +
+            `&key=acme/artifacts/abc.tar.gz&putUrl=${encodeURIComponent(putUrl)}`,
+        ),
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        bucket: string
+        key: string
+        bytes: number
+        archive?: string
+        offload?: { skipped?: string }
+      }
+      expect(body.key).toBe('acme/artifacts/abc.tar.gz')
+      expect(body.archive).toBeUndefined()
+      // The tar went through the API's PUT, not the runtime's dead store.
+      expect(received).toBeTruthy()
+      expect(received!.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]))
+      expect(body.bytes).toBe(received!.length)
+      // Media could not be offloaded, so it stayed inside the archive rather
+      // than failing the publish — and the response says why.
+      expect(body.offload?.skipped).toBe('credentials')
+    } finally {
+      receiver.stop(true)
+    }
+  })
+
+  it('names the credential problem when there is no putUrl, instead of artifact_failed', async () => {
+    const hono = mountWithBrokenStore(workspace)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc.tar.gz'),
+    )
+    expect(res.status).toBe(502)
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body.error).toBe('object_store_credentials_unavailable')
+    expect(body.error).not.toBe('artifact_failed')
+    expect(body.message).toContain('presigned putUrl')
+  })
+})
+
 describe('publish-artifact size guard', () => {
   it('refuses a context over the named limit instead of letting the Job evict', async () => {
     const previous = process.env.PUBLISH_ARTIFACT_MAX_BYTES

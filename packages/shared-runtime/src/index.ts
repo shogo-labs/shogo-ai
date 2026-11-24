@@ -479,8 +479,10 @@ export {
   quoteLiteral,
   buildSeedSql,
   countSeedRows,
+  dropOrphanedSeedRows,
   PublishSchemaError,
   type PublishSchema,
+  type SeedOrphan,
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
@@ -497,6 +499,7 @@ export {
   publishedImageRepository,
   publishedImageRepositoryOf,
   publishedImageTag,
+  publishedImageCommitTag,
   publishedImageTagRef,
   publishedImageDigestRef,
   isDigestPinnedImageRef,
