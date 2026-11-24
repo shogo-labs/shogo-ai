@@ -335,6 +335,17 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     evidence.podImage = image
     saveEvidence()
     expect(image, "a Postgres environment must run its own per-commit build").toContain("/published/")
+
+    // `prisma/dev.db` being PRESENT is by design, not a defect: the published
+    // source tree is hydrated from the git repo at the published commit, and that
+    // commit carries the seed DB the builder created (`published-data-sync.ts`),
+    // which is exactly what seeds Postgres on a first deploy. Asserting its
+    // absence fails on a correct system — measured 2026-11-24 against
+    // `api-02943`: the env was `postgres | … | live`, the pod ran its `/published/`
+    // image, `schema.prisma` said `postgresql` and the client was `PrismaPg`,
+    // yet `/app/prisma/dev.db` still existed and failed the run.
+    // The risk is the app WRITING to it, so record the file for the evidence set
+    // and assert the connection string instead.
     const devDb = podExec(pod, [
       "sh",
       "-lc",
@@ -342,10 +353,14 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     ])
     evidence.podDevDb = devDb.slice(0, 400)
     saveEvidence()
-    expect(
-      devDb,
-      "a Postgres pod must not carry a SQLite database — that is the per-pod file writes were landing in",
-    ).not.toContain("EXISTS")
+
+    const databaseUrl = podExec(pod, ["sh", "-lc", 'printf "%s" "${DATABASE_URL:-}"']).trim()
+    evidence.podDatabaseUrl = databaseUrl.replace(/:\/\/[^@]*@/, "://***@")
+    saveEvidence()
+    expect(databaseUrl, "the pod's DATABASE_URL must be the Postgres URL, not a file").toMatch(
+      /^postgres(ql)?:\/\//,
+    )
+    expect(databaseUrl, "the pod must not point Prisma at a SQLite file").not.toContain("file:")
 
     for (const m of models.filter((m) => m === "User").concat(models.filter((m) => m !== "User"))) {
       const candidate = routePathFor(m)
