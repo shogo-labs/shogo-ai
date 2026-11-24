@@ -470,3 +470,56 @@ describe('startTokenRefreshLoop — metal (runtime token) auth', () => {
     }
   })
 })
+
+/**
+ * A workspace runtime names itself a workspace key, not a project id, and its
+ * refresh used to be impossible: the key resolved no project, so every tick
+ * 401'd and the runtime's AI_PROXY_TOKEN expired for good — turns then ended
+ * with 0 tokens (SHO-560). The API side of the fix is covered in
+ * `apps/api`; here we pin the runtime half: the key reaches the API intact and
+ * the rotated token lands in the env the model clients read.
+ */
+describe('startTokenRefreshLoop — workspace runtime key', () => {
+  test('rotates AI_PROXY_TOKEN for a `ws:` key and percent-encodes it', async () => {
+    process.env.RUNTIME_AUTH_SECRET = 'ws-rt-secret'
+    const urls: string[] = []
+    const fresh = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7 * 86400 })
+    globalThis.fetch = mock(async (url: string) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify({ projectId: 'ws:ws-1', env: { AI_PROXY_TOKEN: fresh } }), { status: 200 })
+    }) as any
+
+    const handle = startTokenRefreshLoop({ getProjectId: () => 'ws:ws-1', intervalMs: 60 * 60_000, jitterMs: 0 })
+    try {
+      expect(await handle.refreshNow()).toEqual({ AI_PROXY_TOKEN: fresh })
+    } finally {
+      handle.stop()
+    }
+
+    expect(urls).toEqual(['http://api.test.svc.cluster.local/api/internal/pod-config/ws%3Aws-1'])
+    expect(process.env.AI_PROXY_TOKEN).toBe(fresh)
+  })
+
+  test('an expired local token on a workspace runtime starts that refresh on 401', async () => {
+    process.env.AI_PROXY_TOKEN = makeJwt({ exp: Math.floor(Date.now() / 1000) - 60 })
+    process.env.RUNTIME_AUTH_SECRET = 'ws-rt-secret'
+    const fresh = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7 * 86400 })
+    let fetches = 0
+    globalThis.fetch = mock(async () => {
+      fetches++
+      return new Response(JSON.stringify({ projectId: 'ws:ws-1', env: { AI_PROXY_TOKEN: fresh } }), { status: 200 })
+    }) as any
+
+    __resetTokenRefreshGlobals()
+    const handle = startTokenRefreshLoop({ getProjectId: () => 'ws:ws-1', intervalMs: 60 * 60_000, jitterMs: 0 })
+    try {
+      expect(notifyProxyAuthFailure()).toBe(true)
+      await handle.refreshNow()
+      expect(fetches).toBe(1)
+      expect(process.env.AI_PROXY_TOKEN).toBe(fresh)
+    } finally {
+      handle.stop()
+      __resetTokenRefreshGlobals()
+    }
+  })
+})

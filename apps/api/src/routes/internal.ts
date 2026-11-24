@@ -7,13 +7,15 @@
  * These are NOT exposed via external ingress — only reachable within the K8s cluster.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { NativeReleaseError as NativeReleaseHttpError } from '../services/native-release/client'
 import { timingSafeEqual } from 'node:crypto'
 import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
+import { parseWorkspaceRuntimeKey, type WorkspaceRuntimeKey } from './internal-runtime-auth'
+import { buildWorkspaceRuntimeRefreshEnv } from '../lib/runtime/workspace-runtime-refresh-env'
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
 import { abilityDenial, type Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
@@ -59,13 +61,89 @@ function checkRateLimit(projectId: string): boolean {
 }
 
 /**
+ * `GET /pod-config/ws:…` — the AI-proxy credentials for a workspace runtime.
+ *
+ * A merged-root runtime calls itself `ws:<workspaceId>` (or `ws:proj:<anchor>`
+ * for a project canvas), never a real project id, so `buildProjectEnv` cannot
+ * answer for it: the key resolved no project and every refresh tick 401'd with
+ * `workspace_token_mismatch`, which is how the AI proxy token of every
+ * workspace runtime in prod went stale and its turns ended with 0 tokens
+ * (SHO-560).
+ *
+ * Authorisation comes from the token's own scope, never from the key: an SA is
+ * cluster-scoped, and a workspace token may only refresh its OWN workspace. A
+ * project token is refused outright — it is minted for a single-project runtime,
+ * and honouring it here would hand that runtime every token in the workspace.
+ *
+ * Only `AI_PROXY_*` keys are returned: the refresh applies env additively and
+ * never unsets, so shipping the boot env wholesale would overwrite the live
+ * runtime's topology (`WORKSPACE_PROJECT_IDS`, DB urls, …).
+ */
+async function workspacePodConfig(
+  c: Context,
+  key: string,
+  parsed: Extract<WorkspaceRuntimeKey, { kind: 'workspace' }>,
+) {
+  // `ws:<id>` names the workspace outright; `ws:proj:<anchor>` names a project,
+  // whose workspace is the only one such a key may ever be answered for.
+  let workspaceId = parsed.workspaceId
+  if (!workspaceId && parsed.anchorProjectId) {
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    workspaceId = await resolveProjectWorkspaceId(parsed.anchorProjectId)
+  }
+  if (!workspaceId) {
+    return c.json({ error: `Unknown project ${parsed.anchorProjectId}` }, 404)
+  }
+
+  // No projectId here on purpose: a workspace key names no project, and passing
+  // one is exactly what made a workspace token unresolvable.
+  const identity = await authenticate(c)
+  if (!identity) {
+    return c.json({ error: `Missing or invalid credentials for ${key}` }, 401)
+  }
+  if (identity.kind === 'project') {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenProject=${identity.projectId} key=${key}` },
+      401,
+    )
+  }
+  if (identity.kind === 'workspace' && identity.workspaceId !== workspaceId) {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenWorkspace=${identity.workspaceId} key=${key}` },
+      401,
+    )
+  }
+
+  try {
+    const { members, forMetal, env } = await buildWorkspaceRuntimeRefreshEnv({
+      workspaceId,
+      anchorProjectId: parsed.anchorProjectId,
+    })
+    console.log(
+      `[Internal] Pod config for workspace runtime ${key} (members=${members.length}, metal=${forMetal})`,
+    )
+    return c.json({ projectId: key, env })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to build pod config for ${key}:`, err?.message ?? err)
+    return c.json({ error: 'Failed to build pod configuration' }, 500)
+  }
+}
+
+/**
  * GET /api/internal/pod-config/:projectId
  *
- * Called by runtime pods on boot (self-assign path) to fetch project-specific
- * environment variables. Authenticated via K8s ServiceAccount token.
+ * Called by runtime pods on boot (self-assign path) and by their ~12 h AI-proxy
+ * token refresh. The key is either a real project id (a single-project runtime)
+ * or a workspace runtime key, which takes the `workspacePodConfig` path.
+ * Authenticated via K8s ServiceAccount token, or the runtime's own token.
  */
 app.get('/pod-config/:projectId', async (c) => {
   const projectId = c.req.param('projectId')
+  const workspaceKey = parseWorkspaceRuntimeKey(projectId)
+
+  if (workspaceKey?.kind === 'invalid') {
+    return c.json({ error: `Invalid runtime key: ${workspaceKey.reason}` }, 400)
+  }
 
   if (!checkRateLimit(projectId)) {
     return c.json({ error: 'Rate limit exceeded' }, 429)
@@ -80,6 +158,10 @@ app.get('/pod-config/:projectId', async (c) => {
   const hasBearer = authHeader?.startsWith('Bearer ') ?? false
   if (!hasBearer && !c.req.header('x-runtime-token')) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+
+  if (workspaceKey) {
+    return workspacePodConfig(c, projectId, workspaceKey)
   }
 
   if (hasBearer) {

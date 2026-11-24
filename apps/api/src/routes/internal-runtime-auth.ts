@@ -54,6 +54,43 @@ export function projectIdFromRef(ref: string): string | null {
 }
 
 /**
+ * A runtime key that names a workspace runtime rather than a project.
+ *
+ * `parseWorkspaceRuntimeKey` is the one definition of those two shapes; the
+ * boot path (`buildWorkspaceEnv`) and the `/pod-config/:key` refresh path both
+ * read a key through it instead of re-splitting the string.
+ */
+export type WorkspaceRuntimeKey =
+  /**
+   * `ws:<workspaceId>` — a workspace-session runtime; mounts no anchor.
+   * `ws:proj:<anchorProjectId>` — a project-canvas runtime; the workspace is
+   * NOT in the key, so the caller resolves it from the anchor. That way the key
+   * can never name a project in a different workspace than the token's.
+   */
+  | { kind: 'workspace'; workspaceId: string | null; anchorProjectId?: string }
+  /** A key that starts `ws:` but names nothing — a bug, not a project id. */
+  | { kind: 'invalid'; reason: string }
+
+const WORKSPACE_ANCHOR_KEY_PREFIX = 'ws:proj:'
+
+/**
+ * Parse a runtime key. Returns null when the key is not a workspace key at all,
+ * so a project id takes the existing project path untouched.
+ */
+export function parseWorkspaceRuntimeKey(ref: string): WorkspaceRuntimeKey | null {
+  const key = ref.trim()
+  if (!key.startsWith(WORKSPACE_RUNTIME_KEY_PREFIX)) return null
+  if (key.startsWith(WORKSPACE_ANCHOR_KEY_PREFIX)) {
+    const anchor = key.slice(WORKSPACE_ANCHOR_KEY_PREFIX.length).trim()
+    if (!anchor) return { kind: 'invalid', reason: 'ws:proj: names no project' }
+    return { kind: 'workspace', workspaceId: null, anchorProjectId: anchor }
+  }
+  const workspaceId = key.slice(WORKSPACE_RUNTIME_KEY_PREFIX.length).trim()
+  if (!workspaceId) return { kind: 'invalid', reason: 'ws: names no workspace' }
+  return { kind: 'workspace', workspaceId }
+}
+
+/**
  * Who authenticated an internal request.
  *
  * `sa` is cluster-scoped (a real K8s ServiceAccount, only obtainable inside

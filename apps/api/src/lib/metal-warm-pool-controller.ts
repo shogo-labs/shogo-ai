@@ -26,6 +26,7 @@
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
 import { buildWorkspaceEnv } from './runtime/build-workspace-env'
+import { workspaceRuntimeMembers } from './runtime/workspace-runtime-members'
 import {
   getMetalPlacementRegistry,
   type HostScalars,
@@ -1042,8 +1043,12 @@ export class MetalWarmPoolController {
     // share the workspace-session VM/cache/placement key.
     const key = workspaceRuntimeKey(workspaceId, opts.anchorProjectId)
     // A project is online only in its own runtime: the member set is the
-    // anchor alone (or nothing for a workspace-session runtime).
-    const members = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    // anchor alone (or nothing for a workspace-session runtime). Shared with the
+    // `/pod-config` token refresh so both agree (SHO-560).
+    const members = workspaceRuntimeMembers({
+      anchorProjectId: opts.anchorProjectId,
+      forMetal: true,
+    })
     if (attachedProjectIds.some((id) => !members.includes(id))) {
       console.warn(`[MetalPool] ${key}: ignoring foreign members ${attachedProjectIds.filter((id) => !members.includes(id)).join(',')}`)
     }
