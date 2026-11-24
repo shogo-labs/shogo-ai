@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { installSyncTriggers, triggerStatements } from '../machine-sync/triggers.ts'
 import { MachineSyncPusher, type SyncBatchRequest } from '../machine-sync/pusher.ts'
 import { HostSyncPuller } from '../machine-sync/puller.ts'
-import { applyBatch, normaliseRow, releaseHostedWorkspaces } from '../machine-sync/ingest.ts'
+import { applyBatch, dataException, normaliseRow, releaseHostedWorkspaces, stripNul, upsertHostRow } from '../machine-sync/ingest.ts'
 import { applyRewrites } from '../machine-sync/models.ts'
 
 // ─── Triggers, on a real SQLite database ────────────────────────────────────
@@ -1063,6 +1063,183 @@ describe('the ingest', () => {
   test('a row with no id is refused', () => {
     const meta = { columns: new Set(['id']), required: [], model: { fields: [] } } as any
     expect(normaliseRow('Workspace', { name: 'x' }, meta)).toBeNull()
+  })
+
+  // A NUL byte is what a desktop's SQLite happily stores and Postgres refuses
+  // in `text` (22021) and in a `jsonb` escape (22P05). Left in, one row failed
+  // the whole page forever, because a failed page is resent unchanged (SHO-562).
+  function metaFor(fields: Array<{ name: string; typeName: string; isList?: boolean }>): any {
+    return {
+      model: {
+        name: 'ChatMessage',
+        table: 'chat_messages',
+        fields: fields.map((field) => ({
+          name: field.name,
+          typeName: field.typeName,
+          isScalar: true,
+          isRelation: false,
+          isEnum: false,
+          isList: Boolean(field.isList),
+          isOptional: true,
+          hasDefault: false,
+          isUpdatedAt: false,
+          isId: field.name === 'id',
+          isUnique: false,
+          relationFields: [],
+          relationReferences: [],
+        })),
+        compoundUniques: [],
+        compoundId: [],
+        indexes: [],
+      },
+      columns: new Set(fields.map((field) => field.name)),
+      required: [],
+      hasWorkspaceId: false,
+      order: 0,
+    }
+  }
+
+  test('a NUL byte is stripped from a String, a nested Json value and key, and a String[] element', () => {
+    const meta = metaFor([
+      { name: 'id', typeName: 'String' },
+      { name: 'content', typeName: 'String' },
+      { name: 'fields', typeName: 'Json' },
+      { name: 'schemas', typeName: 'String', isList: true },
+    ])
+    const row = normaliseRow(
+      'ChatMessage',
+      {
+        id: 'm1',
+        content: 'before\u0000after',
+        fields: { step: 'a\u0000b', 'k\u0000ey': ['c\u0000d', 1, null] },
+        schemas: ['s\u0000chema', 'plain'],
+      },
+      meta,
+    )
+
+    expect(row).toEqual({
+      id: 'm1',
+      content: 'beforeafter',
+      fields: { step: 'ab', key: ['cd', 1, null] },
+      schemas: ['schema', 'plain'],
+    })
+  })
+
+  test('a String[] that arrived as a JSON string is stripped after it is decoded', () => {
+    const meta = metaFor([
+      { name: 'id', typeName: 'String' },
+      { name: 'schemas', typeName: 'String', isList: true },
+    ])
+    const row = normaliseRow('Project', { id: 'p1', schemas: '["s\\u0000chema"]' }, meta)
+    expect(row).toEqual({ id: 'p1', schemas: ['schema'] })
+  })
+
+  test('a Bytes column keeps its NUL byte', () => {
+    const meta = metaFor([
+      { name: 'id', typeName: 'String' },
+      { name: 'blob', typeName: 'Bytes' },
+    ])
+    const blob = new Uint8Array([0x00, 0x41, 0x00])
+    const row = normaliseRow('ChatMessage', { id: 'm1', blob }, meta)
+    expect(row?.blob).toBe(blob)
+    expect([...(row?.blob as Uint8Array)]).toEqual([0x00, 0x41, 0x00])
+  })
+
+  test('a row without a NUL comes out exactly as it did before', () => {
+    const meta = metaFor([
+      { name: 'id', typeName: 'String' },
+      { name: 'content', typeName: 'String' },
+      { name: 'fields', typeName: 'Json' },
+      { name: 'schemas', typeName: 'String', isList: true },
+      { name: 'createdAt', typeName: 'DateTime' },
+    ])
+    const createdAt = new Date()
+    const row = normaliseRow(
+      'ChatMessage',
+      { id: 'm1', content: 'plain', fields: { a: ['b', 2] }, schemas: ['x'], createdAt },
+      meta,
+    )
+    expect(row).toEqual({ id: 'm1', content: 'plain', fields: { a: ['b', 2] }, schemas: ['x'], createdAt })
+    expect(row?.createdAt).toBe(createdAt)
+  })
+
+  test('stripNul leaves dates, numbers and bytes alone and copies only what it cleans', () => {
+    const untouched = { plain: 'text' }
+    expect(stripNul(untouched)).toBe(untouched)
+    const when = new Date(0)
+    expect(stripNul(when)).toBe(when)
+    expect(stripNul(new Uint8Array([0x00]))).toEqual(new Uint8Array([0x00]))
+    expect(stripNul('\u0000')).toBe('')
+    expect(stripNul(['a\u0000', 5, null])).toEqual(['a', 5, null])
+  })
+
+  // SQLite stores what Postgres refuses. One bad row skipped keeps the page —
+  // and the machine's cursor — moving (SHO-562).
+  function fakeTx(failure: unknown) {
+    const sql: string[] = []
+    return {
+      sql,
+      tx: {
+        $executeRawUnsafe: async (statement: string) => {
+          sql.push(statement)
+        },
+        chatMessage: {
+          upsert: async () => {
+            throw failure
+          },
+        },
+      },
+    }
+  }
+
+  const meta = metaFor([{ name: 'id', typeName: 'String' }])
+
+  test('a row Postgres rejects with a data exception is skipped, not rethrown', async () => {
+    // Exactly what the pg adapter throws inside the ingest transaction: the
+    // SQLSTATE is on the error's `cause`.
+    const refused = Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), {
+      name: 'DriverAdapterError',
+      cause: {
+        originalCode: '22021',
+        originalMessage: 'invalid byte sequence for encoding "UTF8": 0x00',
+        kind: 'postgres',
+        code: '22021',
+        severity: 'ERROR',
+        message: 'invalid byte sequence for encoding "UTF8": 0x00',
+      },
+    })
+    const { tx, sql } = fakeTx(refused)
+
+    expect(await upsertHostRow(tx, 'ChatMessage', meta, 'm1', { id: 'm1' }, async () => true)).toBe('invalid_row')
+    expect(sql).toEqual(['SAVEPOINT host_row', 'ROLLBACK TO SAVEPOINT host_row'])
+  })
+
+  test('every other error still fails the page', async () => {
+    const outage = Object.assign(new Error('connect ECONNREFUSED'), {
+      name: 'DriverAdapterError',
+      cause: { kind: 'DatabaseNotReachable', host: 'db', port: 5432 },
+    })
+    const { tx } = fakeTx(outage)
+
+    await expect(upsertHostRow(tx, 'ChatMessage', meta, 'm1', { id: 'm1' }, async () => true)).rejects.toThrow(
+      'ECONNREFUSED',
+    )
+  })
+
+  test('the SQLSTATE is read from either shape the client hands it over in', () => {
+    expect(dataException(Object.assign(new Error('x'), { cause: { code: '22P05' } }))).toBe('22P05')
+    expect(
+      dataException({
+        code: 'P2010',
+        meta: { code: '22021', message: 'invalid byte sequence for encoding "UTF8": 0x00' },
+      }),
+    ).toBe('22021')
+    expect(
+      dataException({ code: 'P2010', meta: { driverAdapterError: { cause: { originalCode: '22001' } } } }),
+    ).toBe('22001')
+    // Prisma's own codes and a plain outage are not data exceptions.
+    expect(dataException(Object.assign(new Error('x'), { code: 'P2002' }))).toBeNull()
+    expect(dataException(new Error('connect ECONNREFUSED'))).toBeNull()
   })
 
   test('rewrites the two globals and makes the desktop the workspace host', () => {
