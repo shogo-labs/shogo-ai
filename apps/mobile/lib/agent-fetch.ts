@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import { authClient } from './auth-client'
+import { fetchWithWakeRetry, isWakeRetryable } from './agent-retry'
 
 /**
  * The headers a native request to an authenticated URL needs, for a caller that
@@ -24,6 +25,10 @@ export function nativeAuthHeaders(): Record<string, string> {
  * On native: reads the session cookie from Expo SecureStore via Better Auth's
  * `getCookie()` and passes it as a `Cookie` header (native `fetch` doesn't
  * send cookies automatically).
+ *
+ * A GET or HEAD that arrives while a hosted workspace's desktop is still waking
+ * is retried once the host says it is up (SHO-538) — this is the one place every
+ * agent-proxy loader goes through, so no caller has to know about the wake.
  */
 export function agentFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const isWeb = Platform.OS === 'web'
@@ -34,9 +39,12 @@ export function agentFetch(input: RequestInfo | URL, init?: RequestInit): Promis
     if (cookie) extraHeaders['Cookie'] = cookie
   }
 
-  return fetch(input, {
-    ...init,
-    headers: { ...extraHeaders, ...(init?.headers as Record<string, string>) },
-    credentials: isWeb ? 'include' : 'omit',
-  })
+  const send = () =>
+    fetch(input, {
+      ...init,
+      headers: { ...extraHeaders, ...(init?.headers as Record<string, string>) },
+      credentials: isWeb ? 'include' : 'omit',
+    })
+
+  return isWakeRetryable(init?.method) ? fetchWithWakeRetry(send) : send()
 }

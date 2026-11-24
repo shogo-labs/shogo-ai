@@ -25,6 +25,7 @@ import {
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../../lib/agent-fetch"
+import { agentErrorMessage } from "../../../lib/agent-retry"
 import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
@@ -206,7 +207,12 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       const list = await agentClient.listPlans()
       setPlans(list)
     } catch (err) {
-      const message = err instanceof Error && err.message ? err.message : "Unable to load plans right now"
+      // The cloud's own refusal ("<Mac> is online but its connection is still
+      // opening") is what a person can act on; a generic failure or a raw edge
+      // page is not (SHO-538).
+      const message =
+        agentErrorMessage(err) ??
+        errorMessage(err, "Unable to load plans right now")
       setPlansError(message)
       console.error("[PlansPanel] Failed to fetch plans:", err)
     } finally {
