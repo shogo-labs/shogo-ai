@@ -14,7 +14,7 @@
  * were created and never used, which is what lets the landing screen reuse an
  * empty chat instead of minting another one.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it, setSystemTime } from 'bun:test'
 
 const { setupChannelsTestDb } = await import('../../__tests__/helpers/channels-test-db')
 const testDb = setupChannelsTestDb()
@@ -54,10 +54,15 @@ async function addMessages(sessionId: string, count: number) {
 }
 
 beforeAll(async () => {
+  // The seeds below are dated 2026-11-24T09:00Z and the list is ordered by
+  // `lastActiveAt`; pin "now" to the same day so no later assertion can start
+  // comparing these fixtures against a wall clock that has moved on.
+  setSystemTime(new Date('2026-11-24T12:00:00Z'))
   seeded = await seedWorkspace(prisma)
 })
 
 afterAll(async () => {
+  setSystemTime()
   await prisma.$disconnect().catch(() => {})
   // The database file lives in a temp dir created by the helper.
   void testDb
