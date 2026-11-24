@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Drag handle and remembered width for the team-chat side panes (thread and
- * project). The handle is web-only — the desktop app loads the same build —
- * and the width persists through `safe-storage`, which uses localStorage
- * when it is available.
+ * Drag handle and remembered width for a side pane that sits to the right of a
+ * chat column (team chat's thread/project/card/file/doc panes, the workspace
+ * agent chat's plan/file/project panes and the task-thread pane). The handle is
+ * web-only — the desktop app loads the same build — and the width persists
+ * through `safe-storage`, which uses localStorage when it is available.
  */
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Platform, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../../lib/safe-storage'
+
+/**
+ * Narrowest the chat column may get before a right-hand pane stops growing.
+ * The pane's max width is the row minus this (and minus any sibling pane), so
+ * dragging a pane wider can never squeeze the conversation off the screen.
+ */
+export const SIDE_PANE_CHAT_MIN_WIDTH = 480
 
 export function clampSidePaneWidth(value: number, minWidth: number, maxWidth: number): number {
   const upper = Math.max(minWidth, maxWidth)

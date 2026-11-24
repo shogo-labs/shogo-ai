@@ -66,10 +66,33 @@ const pressable = forwardRef(function Pressable(props: any, ref: any) {
 })
 
 const host = (tag: string) => (props: any) => {
-  const { testID, accessibilityLabel, children, className } = props
+  const {
+    testID,
+    accessibilityLabel,
+    children,
+    className,
+    style,
+    onPointerDown,
+    onDoubleClick,
+    onPointerEnter,
+    onPointerLeave,
+  } = props
+  // The right-hand panes carry their width in `style`, which a DOM host would
+  // otherwise drop — publish it so a test can read the pane's width. The
+  // resize handle's drag and reset handlers are plain web events on a View.
+  const width = Array.isArray(style) ? undefined : style?.width
   return createElement(
     tag,
-    { "data-testid": testID, "aria-label": accessibilityLabel, className },
+    {
+      "data-testid": testID,
+      "aria-label": accessibilityLabel,
+      className,
+      "data-width": typeof width === "number" ? String(width) : undefined,
+      onPointerDown,
+      onDoubleClick,
+      onPointerEnter,
+      onPointerLeave,
+    },
     children,
   )
 }
@@ -304,10 +327,13 @@ mock.module("../use-file-link-arrival", () => ({
   }),
 }))
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import(
+const { cleanup, fireEvent, render, screen, waitFor, within } = await import(
   "@testing-library/react"
 )
 const { WorkspaceAgentChatScreen } = await import("../WorkspaceAgentChatScreen")
+const { safeGetItem, safeRemoveItem, safeSetItem } = await import(
+  "../../../lib/safe-storage"
+)
 
 beforeEach(() => {
   push.mockClear()
@@ -475,4 +501,64 @@ test("on a phone the scope sheet and its Open route still work", async () => {
   expect(paneShown()).toBeNull()
 })
 
-afterEach(() => cleanup())
+/** The wrapper the screen puts around the project pane — its width lives here. */
+const paneHost = () => screen.getByTestId("workspace-project-pane")
+
+const openProjectPaneFor = async (name = "Alpha") => {
+  await openScreen()
+  expandPanel()
+  fireEvent.click(chip(name))
+  await waitFor(() => expect(paneShown()).not.toBeNull())
+}
+
+test("the project pane offers a resize handle and takes its width from storage", async () => {
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "560")
+  await openProjectPaneFor()
+
+  expect(paneHost().getAttribute("data-width")).toBe("560")
+  expect(within(paneHost()).getByLabelText("Resize panel")).toBeInTheDocument()
+})
+
+test("with nothing saved the pane keeps 45% of the row", async () => {
+  await openProjectPaneFor()
+
+  // happy-dom reports no row layout, so the pane measures the window: 45% of 1440.
+  expect(paneHost().getAttribute("data-width")).toBe("648")
+})
+
+test("dragging the handle widens the pane live and remembers it", async () => {
+  await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
+
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerMove(document, { clientX: 700 })
+  expect(paneHost().getAttribute("data-width")).toBe("848")
+
+  fireEvent.pointerUp(document)
+  expect(safeGetItem("shogo.workspaceChat.projectPaneWidth")).toBe("848")
+})
+
+test("a saved width never squeezes the chat below 480px", async () => {
+  // 1440 - 480 leaves the pane at most 960, however wide it was dragged.
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "1400")
+  await openProjectPaneFor()
+
+  expect(paneHost().getAttribute("data-width")).toBe("960")
+})
+
+test("double-clicking the handle restores the 45% default", async () => {
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "560")
+  await openProjectPaneFor()
+
+  fireEvent.doubleClick(within(paneHost()).getByLabelText("Resize panel"))
+
+  expect(paneHost().getAttribute("data-width")).toBe("648")
+  expect(safeGetItem("shogo.workspaceChat.projectPaneWidth")).toBeNull()
+})
+
+afterEach(() => {
+  cleanup()
+  safeRemoveItem("shogo.workspaceChat.projectPaneWidth")
+  safeRemoveItem("shogo.workspaceChat.planPaneWidth")
+  safeRemoveItem("shogo.workspaceChat.filePaneWidth")
+})

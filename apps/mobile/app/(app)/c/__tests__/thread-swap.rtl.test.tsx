@@ -190,7 +190,7 @@ mock.module(resolve(mobile, 'components/team-chat/ChannelTabs'), () => ({
   channelSupportsDoc: () => false,
   channelTabItems: () => [],
 }))
-mock.module(resolve(mobile, 'components/team-chat/SidePaneResizer'), () => ({
+mock.module(resolve(mobile, 'components/layout/SidePaneResizer'), () => ({
   SidePaneResizeHandle: stub('resizer'),
   useSidePaneWidth: () => ({ width: 420, setWidth: () => {}, commit: () => {}, reset: () => {} }),
 }))
