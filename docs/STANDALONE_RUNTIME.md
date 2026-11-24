@@ -144,7 +144,7 @@ the table does not list, or the table lists one the code no longer reads.
 
 <!-- BEGIN GENERATED ENV TABLE -->
 
-The runtime reads 178 environment variables. This table is generated from the source by
+The runtime reads 179 environment variables. This table is generated from the source by
 `scripts/gen-runtime-env-doc.ts`; a test fails when the code and the table disagree.
 
 | Variable | Standalone | Default | Purpose |
@@ -187,7 +187,7 @@ The runtime reads 178 environment variables. This table is generated from the so
 | `COMPOSIO_MAX_RESULT_CHARS` | ignored | — | — |
 | `COMPOSIO_NOTFOUND_RETRY_DELAY_MS` | ignored | — | — |
 | `COMPOSIO_USER_SCOPE` | ignored | — | — |
-| `DATABASE_URL` | optional | `file:./prisma/dev.db` | — |
+| `DATABASE_URL` | optional | `` | — |
 | `DEBUG_SCREENCAST` | optional | — | — |
 | `ELEVENLABS_API_KEY` | optional | — | — |
 | `GITHUB_TOKEN` | optional | — | — |
@@ -285,6 +285,7 @@ The runtime reads 178 environment variables. This table is generated from the so
 | `SHOGO_POOL_SENTINEL` | ignored | — | — |
 | `SHOGO_POOL_SKIP_PRESEED` | ignored | — | — |
 | `SHOGO_POOL_STATE_DIR` | ignored | — | — |
+| `SHOGO_PREBUILT_IMAGE` | optional | — | — |
 | `SHOGO_PREFIX_LOG` | optional | — | — |
 | `SHOGO_PUBLIC_API_URL` | ignored | — | — |
 | `SHOGO_PUBLISHED_MODE` | optional | — | — |
