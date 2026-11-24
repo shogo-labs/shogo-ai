@@ -478,9 +478,19 @@ systemctl start metal-agent
 **Bad list.** `ROOTFS_BAD` (`/opt/metal-agent/ROOTFS_BAD`) is a JSON list of
 versions and revisions proven not to boot, capped at the last 20. `shouldRebuildRootfs`
 and `maybeActivateRootfs` skip anything on it. The heartbeat reports the most
-recent entry as `rootfsRejected` on `/api/internal/metal/fleet`. To read it:
+recent entry as `rootfsRejected` on `/api/internal/metal/fleet`, which is how a
+host stuck on an older image explains itself. To read it, from any replica or
+from a host:
 
 ```bash
+# Fleet view — the same field the release gate and the promote script can read.
+curl -s -H "Authorization: Bearer $METAL_REGISTER_TOKEN" \
+  http://api:3000/api/internal/metal/fleet \
+  | jq -r '.hosts[] | "\(.hostId)  \(.rootfsRevision // "-")  \(.rootfsRejected // "-")"'
+# dal-1  718a651b...  {"version":"v1.2.3","revision":"abc123","reason":"boot probe failed: standard image: VM never became healthy","at":1748000000000}
+# dal-2  50be8578...  -
+
+# On the host itself:
 cat /opt/metal-agent/ROOTFS_BAD | jq .
 # [{"version":"v1.2.3","revision":"abc123","reason":"boot probe failed: standard image: VM never became healthy","at":1748000000000}]
 ```

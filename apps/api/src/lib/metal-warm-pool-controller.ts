@@ -31,6 +31,7 @@ import {
   type HostScalars,
   type MetalPlacementRegistry,
   type RootDiskScalars,
+  type RootfsRejectedReport,
   type StagedRootfsReport,
 } from './metal-placement-registry'
 import type { ResizeOutcome } from './substrate/types'
@@ -483,6 +484,8 @@ export interface MetalHostRegistration {
   idle?: { tier: IdleTier; idleMs: number; reason: string; directiveTier?: IdleTier }
   /** See HostScalars.stagedRootfs. */
   stagedRootfs?: StagedRootfsReport
+  /** See HostScalars.rootfsRejected. */
+  rootfsRejected?: RootfsRejectedReport
   /** See HostScalars.restarting. */
   restarting?: boolean
 }
@@ -879,6 +882,7 @@ export class MetalWarmPoolController {
       disk: reg.disk,
       rootDisk: reg.rootDisk,
       stagedRootfs: reg.stagedRootfs,
+      rootfsRejected: reg.rootfsRejected,
       restarting: reg.restarting,
       lastSeenAt: entry.lastSeenAt,
     }
@@ -2225,6 +2229,9 @@ export class MetalWarmPoolController {
           load: h.load,
           disk: h.disk,
           rootDisk: h.rootDisk,
+          stagedRootfs: h.stagedRootfs,
+          rootfsRejected: h.rootfsRejected,
+          restarting: h.restarting,
           live: h.lastSeenAt >= this.now() - HOST_TTL_MS,
           overWatermark: overWatermark(h),
           cordoned: this.cordoned.has(h.hostId),
@@ -2272,6 +2279,7 @@ export class MetalWarmPoolController {
           disk: h.disk,
           rootDisk: h.rootDisk,
           stagedRootfs: h.stagedRootfs,
+          rootfsRejected: h.rootfsRejected,
           restarting: h.restarting,
           live: true,
           overWatermark: overWatermark(h),
