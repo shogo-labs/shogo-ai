@@ -107,6 +107,9 @@ export function dockTabForPathname(pathname: string, conversations: TabConversat
   // phone. The dock should highlight DMs; the desktop rail still shows Home
   // (handled by tabForPathname returning 'home').
   if (/^\/chats(\/|$)/.test(pathname)) return 'dms'
+  // The Projects list is reached from More on a phone, so it belongs to More
+  // there. A project's own page stays the Home drill-down it has always been.
+  if (strip(pathname) === '/projects') return 'more'
   switch (tabForPathname(pathname, conversations)) {
     case 'dms':
       return 'dms'

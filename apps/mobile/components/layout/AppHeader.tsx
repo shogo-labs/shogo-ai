@@ -9,9 +9,9 @@
  */
 
 import { Platform, View, Text, Pressable, useWindowDimensions } from 'react-native'
-import { usePathname } from 'expo-router'
+import { usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Menu } from 'lucide-react-native'
+import { ChevronLeft, Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
 import { NATIVE_PHONE_HEADER_ICON_SIZE,
   WEB_WIDE_MIN_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
@@ -51,9 +51,12 @@ const overlayControlClass =
 interface AppHeaderProps {
   onMenuPress?: () => void
   menuOpen?: boolean
+  /** The header sits above a pushed screen: Back leaves it instead of opening the menu. */
+  back?: boolean
 }
 
-export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
+export function AppHeader({ onMenuPress, menuOpen = false, back = false }: AppHeaderProps) {
+  const router = useRouter()
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
@@ -91,13 +94,25 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
         }
       >
         <Pressable
-          onPress={onMenuPress}
+          onPress={
+            back
+              ? () => {
+                  if (router.canGoBack()) router.back()
+                  else router.replace('/(app)/more' as any)
+                }
+              : onMenuPress
+          }
           accessibilityRole="button"
-          accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
+          accessibilityLabel={back ? 'Back' : menuOpen ? 'Close menu' : 'Open menu'}
+          testID={back ? 'app-header-back' : undefined}
           hitSlop={4}
           className={overlayControlClass}
         >
-          <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
+          {back ? (
+            <ChevronLeft size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
+          ) : (
+            <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
+          )}
         </Pressable>
         {useFloatingChrome ? (
           <View className="flex-1" pointerEvents="none" />
