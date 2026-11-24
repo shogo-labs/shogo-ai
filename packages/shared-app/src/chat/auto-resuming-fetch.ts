@@ -351,15 +351,19 @@ export function createAutoResumingFetch(
     const chatSessionId = resumeMatch
       ? decodeURIComponent(resumeMatch[1])
       : initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
-    if (!turnId || !chatSessionId) {
+    // A stream relayed through a machine's tunnel carries no response headers,
+    // so a remote machine's turn arrives without `X-Turn-Id`. The runtime's own
+    // `data-turn-start` frame names the turn and session, so an event stream is
+    // still resumable: the durable body learns both from that frame.
+    const isEventStream = (initialResponse.headers.get('content-type') ?? '').includes('text/event-stream')
+    if ((!turnId || !chatSessionId) && !isEventStream) {
       // Server didn't tag this response with durable turn metadata —
       // not a chat stream we can resume. Pass through.
       return initialResponse
     }
 
-    const resumeUrl = resumeMatch
-      ? requestUrl.replace(/[?#].*$/, '')
-      : opts.buildResumeUrl(requestUrl, chatSessionId)
+    const resolveResumeUrl = (sessionId: string) =>
+      resumeMatch ? requestUrl.replace(/[?#].*$/, '') : opts.buildResumeUrl(requestUrl, sessionId)
     const initialSeq = resumeMatch
       ? Math.max(0, Number(new URL(requestUrl, 'http://x').searchParams.get('fromSeq')) || 0)
       : 0
@@ -367,7 +371,8 @@ export function createAutoResumingFetch(
 
     const wrappedBody = createDurableBody({
       initialBody: initialResponse.body,
-      resumeUrl,
+      resolveResumeUrl,
+      chatSessionId: chatSessionId || requestChatSessionId(input, init),
       initialSeq,
       fetcher: baseFetch,
       maxResumeAttempts: opts.maxResumeAttempts,
@@ -393,9 +398,25 @@ export function createAutoResumingFetch(
   return wrapped
 }
 
+/** The chat session the caller sent, for a response that did not echo it. */
+function requestChatSessionId(input: unknown, init: RequestInit | undefined): string | null {
+  try {
+    const fromInit = init?.headers ? new Headers(init.headers).get(TURN_HEADER.CHAT_SESSION_ID) : null
+    if (fromInit) return fromInit
+    return typeof Request !== 'undefined' && input instanceof Request
+      ? input.headers.get(TURN_HEADER.CHAT_SESSION_ID)
+      : null
+  } catch {
+    return null
+  }
+}
+
 interface DurableBodyOpts {
   initialBody: ReadableStream<Uint8Array>
-  resumeUrl: string
+  /** The resume endpoint for a session (`…/<chatSessionId>/stream`). */
+  resolveResumeUrl: (chatSessionId: string) => string
+  /** From the response or request headers; else learned from `data-turn-start`. */
+  chatSessionId: string | null
   /** Seq the initial body starts after (a resume GET's `fromSeq`). */
   initialSeq?: number
   fetcher: typeof globalThis.fetch
@@ -403,7 +424,8 @@ interface DurableBodyOpts {
   initialBackoffMs: number
   maxBackoffMs: number
   logger: { warn: (...args: any[]) => void; log: (...args: any[]) => void } | null
-  turnId: string
+  /** From `X-Turn-Id`; null when the response had no headers (a tunnel relay). */
+  turnId: string | null
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
   /**
    * Credentials mode forwarded from the original chat POST to the internal
@@ -416,17 +438,18 @@ interface DurableBodyOpts {
 function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
   const {
     initialBody,
-    resumeUrl,
+    resolveResumeUrl,
     initialSeq = 0,
     fetcher,
     maxResumeAttempts,
     initialBackoffMs,
     maxBackoffMs,
     logger,
-    turnId,
     onChunk,
     credentials,
   } = opts
+  let turnId = opts.turnId
+  let chatSessionId = opts.chatSessionId
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -438,6 +461,9 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let lastSeq = initialSeq
       let turnCompleted = false
       let cancelled = false
+      // A resumed body that starts a different turn (the session moved on)
+      // must not be appended to this one.
+      let foreignTurn = false
       let resumeAttempts = 0
       const encoder = new TextEncoder()
       // A fresh decoder is minted per underlying body (initial + each resume)
@@ -452,10 +478,10 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let pending = ''
 
       const log = (msg: string) => {
-        if (logger) logger.log(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
+        if (logger) logger.log(`[AutoResume:${(turnId ?? 'unknown').slice(0, 8)}] ${msg}`)
       }
       const warn = (msg: string) => {
-        if (logger) logger.warn(`[AutoResume:${turnId.slice(0, 8)}] ${msg}`)
+        if (logger) logger.warn(`[AutoResume:${(turnId ?? 'unknown').slice(0, 8)}] ${msg}`)
       }
 
       // Enqueue every COMPLETE SSE frame currently buffered in `pending`
@@ -476,19 +502,23 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         if (idx === -1) return true
         let out = ''
         while (idx !== -1) {
-          parseFrame(pending.slice(0, idx))
+          if (!parseFrame(pending.slice(0, idx))) {
+            foreignTurn = true
+            pending = ''
+            break
+          }
           out += pending.slice(0, idx + 2)
           pending = pending.slice(idx + 2)
           idx = pending.indexOf('\n\n')
         }
         try {
-          controller.enqueue(encoder.encode(out))
+          if (out) controller.enqueue(encoder.encode(out))
         } catch {
           // Downstream (AI SDK) cancelled — stop pumping.
           cancelled = true
           return false
         }
-        return true
+        return !foreignTurn
       }
 
       // Drop any buffered partial frame and reset the streaming decoder before
@@ -500,7 +530,8 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         decoder = new TextDecoder()
       }
 
-      const parseFrame = (frame: string) => {
+      // Returns false for a frame that starts a different turn than this one.
+      const parseFrame = (frame: string): boolean => {
         // AI SDK / SSE frame: lines like `data: {...}` joined by \n. We
         // only care about `data:` lines whose payload looks like one of
         // our durable-turn marker events.
@@ -511,13 +542,24 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // Cheap pre-filter to avoid JSON.parse on every text-delta.
           if (
             !payload.includes('data-turn-seq') &&
-            !payload.includes('data-turn-complete')
+            !payload.includes('data-turn-complete') &&
+            !payload.includes('data-turn-start')
           ) {
             continue
           }
           try {
             const evt = JSON.parse(payload)
-            if (evt?.type === 'data-turn-seq' && typeof evt?.data?.seq === 'number') {
+            if (evt?.type === 'data-turn-start') {
+              const startedTurn = typeof evt?.data?.turnId === 'string' ? evt.data.turnId : null
+              if (startedTurn && turnId && startedTurn !== turnId) {
+                warn(`resume returned a different turn (${startedTurn}); stopping`)
+                return false
+              }
+              if (startedTurn && !turnId) turnId = startedTurn
+              if (!chatSessionId && typeof evt?.data?.chatSessionId === 'string') {
+                chatSessionId = evt.data.chatSessionId
+              }
+            } else if (evt?.type === 'data-turn-seq' && typeof evt?.data?.seq === 'number') {
               if (evt.data.seq > lastSeq) lastSeq = evt.data.seq
             } else if (evt?.type === 'data-turn-complete') {
               turnCompleted = true
@@ -526,6 +568,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
             /* ignore — wasn't actually one of our markers */
           }
         }
+        return true
       }
 
       const pumpBody = async (
@@ -598,7 +641,16 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         const firstPump = await pumpBody(initialBody, /* resumed */ false)
         lastTransportError = firstPump.error ?? null
 
-        while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
+        // Without a turn and session there is nothing to reattach to: such a
+        // body ends (or errors) exactly as the underlying response did.
+        while (
+          !turnCompleted &&
+          !cancelled &&
+          !foreignTurn &&
+          turnId &&
+          chatSessionId &&
+          resumeAttempts < maxResumeAttempts
+        ) {
           resumeAttempts++
           const backoff = Math.min(
             initialBackoffMs * Math.pow(2, resumeAttempts - 1),
@@ -615,7 +667,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
           let resumeRes: Response
           try {
-            const url = `${resumeUrl}?fromSeq=${lastSeq}`
+            const url = `${resolveResumeUrl(chatSessionId)}?fromSeq=${lastSeq}`
             resumeRes = await fetcher(url, { method: 'GET', credentials })
           } catch (err: any) {
             lastTransportError = err
@@ -659,6 +711,10 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // completed buffer merely replaying its tail.
           const seqBeforeResume = lastSeq
           const { bytes, error } = await pumpBody(resumeRes.body, /* resumed */ true)
+          if (foreignTurn) {
+            try { await resumeRes.body.cancel() } catch { /* noop */ }
+            break
+          }
           // A resume that ended on a clean EOF clears any pending transport
           // error; one that threw again keeps it set for the (bounded) loop.
           lastTransportError = error ?? null
@@ -678,7 +734,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         }
 
         if (!turnCompleted && !cancelled) {
-          warn(`gave up after ${resumeAttempts} resume attempts; closing stream`)
+          if (turnId) warn(`gave up after ${resumeAttempts} resume attempts; closing stream`)
           // If we bailed with an unrecovered transport error still pending,
           // propagate it so the AI SDK's `onError` fires (interrupted banner +
           // stuck-tool cleanup) and the stall watchdog can probe/reattach. A

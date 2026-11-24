@@ -368,14 +368,26 @@ export async function registerTunnelOwnership(instanceId: string): Promise<void>
   await r.set(`tunnel:${instanceId}:pod`, POD_ID, 'EX', TUNNEL_OWNERSHIP_TTL)
 }
 
-export async function unregisterTunnelOwnership(instanceId: string): Promise<void> {
+/**
+ * Drop this pod's ownership of a tunnel, if it still holds it.
+ *
+ * Returns whether this pod was the owner. That answer is what tells a closing
+ * socket apart from a *rotated* one (SHO-565): when a desktop opens a
+ * replacement on another pod and then closes this socket, the key already names
+ * that pod, so this returns false and the caller must not mark the machine
+ * offline — the tunnel is alive, just not here.
+ *
+ * No Redis at all (local mode, a single-process API) counts as ownership: there
+ * is no other pod that could own the machine, so the caller's cleanup is right.
+ */
+export async function unregisterTunnelOwnership(instanceId: string): Promise<boolean> {
   await whenReady()
   const r = getPublisher()
-  if (!r) return
+  if (!r) return true
   const owner = await r.get(`tunnel:${instanceId}:pod`)
-  if (owner === POD_ID) {
-    await r.del(`tunnel:${instanceId}:pod`)
-  }
+  if (owner && owner !== POD_ID) return false
+  await r.del(`tunnel:${instanceId}:pod`)
+  return true
 }
 
 /**

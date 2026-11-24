@@ -322,6 +322,7 @@ const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () =>
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
 const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
+const drainInstanceTunnels: any = cloud.drainInstanceTunnels ?? (() => 0)
 const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
 const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
 const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
@@ -11094,6 +11095,17 @@ async function gracefulShutdown(signal: string) {
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Tell desktops to move their tunnel to another pod before this one goes
+  // away (SHO-565). Each one opens a replacement first and only then closes the
+  // socket here, so a turn being streamed over it is never cut — and, because
+  // the tunnel no longer arrives through queue-proxy, it is not a request this
+  // pod has to wait out either.
+  try {
+    drainInstanceTunnels()
+  } catch (err: any) {
+    console.error('[Server] Tunnel drain failed:', err?.message ?? err)
+  }
 
   // Hand chat turns this pod is following to another replica's reattach job
   // before the trackers die with the process.

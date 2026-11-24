@@ -11,9 +11,11 @@
 #
 # Workaround: a non-DomainMapping public route, `tunnel.shogo.ai`, whose
 # KIngress points directly at a label-selector Service tracking the live
-# api ksvc revision pods on their queue-proxy port (8012). No rewriteHost,
+# api ksvc revision pods on their app container port (8002). No rewriteHost,
 # no ExternalName — Kourier emits a normal Envoy upstream cluster that
-# happily passes the WS Upgrade.
+# happily passes the WS Upgrade, and the app port keeps Knative's queue-proxy
+# out of the tunnel's path entirely (no response-start deadline cutting the
+# socket every 300 s, and no concurrency count for a tunnel that is idle).
 #
 # Routing chain:
 #   Cloudflare (TLS, shogo.ai cert)
@@ -21,7 +23,11 @@
 #     → Kourier external listener
 #     → Knative Ingress `api-tunnel`     (no DomainMapping, no rewriteHost)
 #     → Service `api-tunnel-direct`      (selector: serving.knative.dev/service=api)
-#     → api revision Pod  port 8012      (queue-proxy, then user container)
+#     → api revision Pod  port 8002      (the app container itself)
+#
+# A tunnel is disposable: the desktop replaces its socket before one can be
+# taken away, on a `drain` frame from a SIGTERMing pod or on its own max-age
+# timer (SHO-565). `min-scale` keeps pods warm — an open tunnel no longer does.
 #
 # Heartbeat / HTTP traffic is unchanged — it still flows through the
 # studio.shogo.ai DomainMapping.
@@ -44,7 +50,10 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8012
+      # The app container port, not queue-proxy's 8012: this route must bypass
+      # Knative's proxy so no response-start/request deadline can cut the tunnel
+      # WS, and so open tunnels do not count as revision concurrency (SHO-565).
+      targetPort: 8002
       protocol: TCP
 ---
 apiVersion: networking.internal.knative.dev/v1alpha1
