@@ -493,6 +493,12 @@ cat /opt/metal-agent/ROOTFS_BAD | jq 'map(select(.version != "v1.2.3"))' \
   | sudo tee /opt/metal-agent/ROOTFS_BAD
 ```
 
+**Stale `*.bak` files.** Hosts that were manually recovered before SHO-552 may
+still have `runtime.ext4.bak` or similar files from July 2026. These are not
+managed by the agent and are not counted in space budgets. Remove them by hand
+when disk pressure appears: `rm /opt/metal-agent/runtime.ext4.bak`. The `.prev`
+files from the new mechanism are distinct and are managed automatically.
+
 An image replaced out of band (a manual rebuild over `METAL_ROOTFS`) also needs
 the agent's shared base loop re-attached; the agent re-checks the loop's backing
 path and does that on the next VM, so no restart is needed.
