@@ -144,7 +144,7 @@ the table does not list, or the table lists one the code no longer reads.
 
 <!-- BEGIN GENERATED ENV TABLE -->
 
-The runtime reads 179 environment variables. This table is generated from the source by
+The runtime reads 180 environment variables. This table is generated from the source by
 `scripts/gen-runtime-env-doc.ts`; a test fails when the code and the table disagree.
 
 | Variable | Standalone | Default | Purpose |
@@ -214,6 +214,7 @@ The runtime reads 179 environment variables. This table is generated from the so
 | `PATH` | optional | `` | — |
 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` | optional | `` | — |
 | `PLAYWRIGHT_MCP_EXTENSION_TOKEN` | optional | — | — |
+| `POOL_BOOTSTRAP_SECRET` | ignored | `` | — |
 | `PORT` | optional | `8080` | HTTP port. Defaults to `8080`. |
 | `POSTGRES_BACKUP_INTERVAL` | optional | `60000` | — |
 | `POSTGRES_DB` | optional | `project` | — |
