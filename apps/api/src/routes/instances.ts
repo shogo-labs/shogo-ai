@@ -356,14 +356,32 @@ export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
     return
   }
 
+  // A replacement socket that lands on the pod already serving this machine is
+  // a rotation, not a reconnect: the old socket is still open and still
+  // carrying requests whose frames arrive with the same request ids. Handing
+  // those maps over is what lets a turn finish where it started — rebuilding a
+  // fresh conn here dropped every in-flight stream handler on the floor, and
+  // the turn then sat until the idle timeout (SHO-565 QA). A socket that
+  // replaces a dead one (an abnormal close, a flap) starts empty, exactly as
+  // before: its predecessor's close already rejected that work.
+  const previous = tunnels.get(instanceId)
+  const rotatingInPlace = previous !== undefined && previous.ws !== ws && previous.ws.readyState === WebSocket.OPEN
+
   const conn: TunnelConnection = {
     ws,
     instanceId,
     workspaceId,
-    pendingRequests: new Map(),
-    streamHandlers: new Map(),
+    pendingRequests: rotatingInPlace ? previous.pendingRequests : new Map(),
+    streamHandlers: rotatingInPlace ? previous.streamHandlers : new Map(),
   }
   tunnels.set(instanceId, conn)
+
+  if (rotatingInPlace) {
+    console.log(
+      `[RemoteControl] Instance ${instanceId} rotated onto this pod — carrying ` +
+        `${conn.pendingRequests.size} pending request(s) and ${conn.streamHandlers.size} stream(s) over`,
+    )
+  }
 
   // Await ownership registration BEFORE marking the instance 'online' in
   // Postgres. Otherwise another pod seeing the DB row flip to online can
@@ -711,8 +729,12 @@ function sendLocalTunnelStreamRequest(
       clearTimeout(idleTimer)
       if (maxTimer) clearTimeout(maxTimer)
       c.streamHandlers.delete(req.requestId)
+      // A rotation replaces the connection object but carries its maps over, so
+      // the handler above is still the one to drop — only the socket to tell is
+      // whichever one the cloud routes to now (SHO-565).
+      const live = tunnels.get(instanceId) ?? c
       try {
-        c.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
+        live.ws.send(JSON.stringify({ type: 'cancel', requestId: req.requestId }))
       } catch {}
     },
   }

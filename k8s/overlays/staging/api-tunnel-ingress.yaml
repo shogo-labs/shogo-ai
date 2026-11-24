@@ -36,8 +36,10 @@
 # request, so idle desktops held revisions busy and delayed a rollout's drain.
 # Dialling the container port directly takes Knative's proxy out of the path
 # entirely: no response-start deadline, and no concurrency count. The trade is
-# that queue-proxy's metrics no longer cover this route (the app exports its own
-# open-tunnel count), and a tunnel no longer keeps a pod warm — `min-scale` does.
+# that queue-proxy's metrics and tracing no longer cover this route: the app
+# logs each tunnel connect/close and the count it drains on SIGTERM, but there
+# is no metric for open tunnels yet, and a tunnel no longer keeps a pod warm —
+# `min-scale` does.
 #
 # A tunnel is disposable because the desktop replaces it before it can be
 # closed: on a `drain` frame from a SIGTERMing pod, or on its own max-age timer,

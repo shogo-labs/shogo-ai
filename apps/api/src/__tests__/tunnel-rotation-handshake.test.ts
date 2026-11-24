@@ -90,14 +90,21 @@ mock.module('../routes/remote-audit', () => ({
   classifyAction: () => 'other',
 }))
 
-const { _testing, drainInstanceTunnels, handleInstanceWsClose, handleInstanceWsOpen } =
-  await import('../routes/instances')
+const {
+  _testing,
+  drainInstanceTunnels,
+  handleInstanceWsClose,
+  handleInstanceWsMessage,
+  handleInstanceWsOpen,
+  sendTunnelStreamRequest,
+} = await import('../routes/instances')
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-function fakeWs(data: Record<string, unknown> = {}) {
+function fakeWs(data: Record<string, unknown> = {}, readyState = 1 /* WebSocket.OPEN */) {
   return {
     data,
+    readyState,
     close: mock(() => {}),
     send: mock(() => {}),
   } as any
@@ -210,5 +217,81 @@ describe('close after a rotation', () => {
     // stale-instance sweep owns that case. Silence is the safe half of the
     // trade — the alternative is 503ing a live machine.
     expect(instanceUpdates).toEqual([])
+  })
+})
+
+describe('a replacement socket that lands on the same pod', () => {
+  test('keeps the turn in flight streaming instead of dropping its frames', async () => {
+    const old = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(old)
+
+    const chunks: any[] = []
+    sendTunnelStreamRequest(
+      'inst-1',
+      { requestId: 'turn-1', method: 'POST', path: '/agent/chat/1/stream' } as any,
+      (chunk) => chunks.push(chunk),
+    )
+    expect(framesSent(old).find((f) => f.requestId === 'turn-1')).toMatchObject({ stream: true })
+
+    // The desktop opened its replacement and the load balancer put it on this
+    // very pod. The old socket is still open and still carrying turn-1.
+    const replacement = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(replacement)
+    expect(_testing.tunnels.get('inst-1')!.ws).toBe(replacement)
+
+    // Frames for the turn keep arriving on the socket that carried it — this is
+    // what used to be dropped, stalling the turn until the idle timeout.
+    handleInstanceWsMessage(old, JSON.stringify({ type: 'stream-chunk', requestId: 'turn-1', data: 'still here' }))
+    handleInstanceWsMessage(old, JSON.stringify({ type: 'stream-end', requestId: 'turn-1' }))
+
+    expect(chunks.map((c) => c.type)).toEqual(['stream-chunk', 'stream-end'])
+    expect(chunks[0]).toMatchObject({ requestId: 'turn-1', data: 'still here' })
+
+    // A new turn goes to the socket the cloud now routes to, not the old one.
+    old.send.mockClear()
+    replacement.send.mockClear()
+    sendTunnelStreamRequest(
+      'inst-1',
+      { requestId: 'turn-2', method: 'POST', path: '/agent/chat/2/stream' } as any,
+      () => {},
+    ).cancel()
+    expect(replacement.send.mock.calls.map((call: any[]) => JSON.parse(call[0]).requestId)).toEqual(['turn-2', 'turn-2'])
+    expect(old.send).not.toHaveBeenCalled()
+  })
+
+  test('carries the pending non-stream requests too', async () => {
+    const old = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(old)
+
+    const previous = _testing.tunnels.get('inst-1')!
+    const resolved: any[] = []
+    previous.pendingRequests.set('req-9', {
+      resolve: (value) => resolved.push(value),
+      reject: () => {},
+      timeout: setTimeout(() => {}, 10_000),
+    })
+
+    const replacement = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(replacement)
+
+    handleInstanceWsMessage(old, JSON.stringify({ type: 'response', requestId: 'req-9', status: 200, body: 'ok' }))
+    expect(resolved).toHaveLength(1)
+    expect(_testing.tunnels.get('inst-1')!.pendingRequests.size).toBe(0)
+  })
+
+  test('a socket replacing a dead one starts empty, exactly as before', async () => {
+    const dead = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' }, 3 /* CLOSED */)
+    await handleInstanceWsOpen(dead)
+    // Whatever work the dead socket still had registered will be rejected by its
+    // own close handler; the new socket must not inherit it.
+    _testing.tunnels.get('inst-1')!.streamHandlers.set('stale-1', () => {})
+
+    const fresh = fakeWs({ instanceId: 'inst-1', workspaceId: 'ws-1' })
+    await handleInstanceWsOpen(fresh)
+
+    const conn = _testing.tunnels.get('inst-1')!
+    expect(conn.ws).toBe(fresh)
+    expect(conn.streamHandlers.size).toBe(0)
+    expect(conn.pendingRequests.size).toBe(0)
   })
 })
