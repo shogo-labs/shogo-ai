@@ -43,6 +43,19 @@ describe('release SDK pin wiring (SHO-522)', () => {
     expect(wf).toContain('release-docker-multiarch-${SHA}')
   })
 
+  test('the tag smoke test may read the GHCR package it just published', () => {
+    // The workflow default is `contents: read`, and `publish` overrides it to
+    // `packages: write` — but `smoke` inherits the default, so its GITHUB_TOKEN
+    // login cannot pull the (private) package. Every tag failed here with
+    // "could not be pulled" (v2.6.3, v2.6.4) while the manifest itself was
+    // published and verified.
+    const wf = read('.github', 'workflows', 'runtime-multiarch.yml')
+    const smokeStart = wf.indexOf('\n  smoke:')
+    expect(smokeStart).toBeGreaterThan(-1)
+    const smokeBlock = wf.slice(smokeStart, wf.indexOf('\n  docker-class:', smokeStart))
+    expect(smokeBlock).toContain('packages: read')
+  })
+
   test('deploy.yml rebuilds the runtime chain for the release pin instead of promoting it', () => {
     const wf = read('.github', 'workflows', 'deploy.yml')
     expect(wf).toContain('rebuild-release-runtime:')
