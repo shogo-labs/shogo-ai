@@ -294,6 +294,18 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "kourier_origins" {
+  description = "Forwarded to `publish-hosting-oci`: map of short region code → Kourier origin URL, for region-stamped (`knative:<code>`) server-backed apps. The publish zone's `kourier_origin` stays the default for bare `knative` and unknown codes. Empty when the env publishes in one region."
+  type        = map(string)
+  default     = {}
+}
+
+variable "custom_domains_kourier_origins" {
+  description = "Forwarded to `publish-hosting-oci`: map of short region code → Kourier origin URL in the custom-domains (SaaS) zone, for region-stamped Knative apps reached on a custom domain."
+  type        = map(string)
+  default     = {}
+}
+
 variable "api_published_origin" {
   description = "Forwarded to `publish-hosting-oci`: public Shogo API base URL the subdomain-router Worker proxies METAL-backed published `/api/*` to (→ /api/published/{subdomain}/...). The API resolves the project's `published:{id}` microVM placement and forwards over the mesh (Workers can't fetch a raw IP:port). Must be a proxied hostname CF can fetch. Null disables metal-backed publishing at the edge (falls back to static serving)."
   type        = string

@@ -55,6 +55,12 @@
  *   --limit <n>          Cap the number of projects processed.
  *   --to metal|knative   Target backend for the flag (default metal). `knative`
  *                        is the rollback direction.
+ *   --region <us|eu>     Home region to stamp into a `--to knative` value
+ *                        (`knative:<code>`, SHO-588). The ksvc lives in the
+ *                        workspace's home region's cluster, so this must be the
+ *                        region it was created in. Defaults to this pod's own
+ *                        REGION_ID; a bare `knative` is written when neither is
+ *                        known.
  *   --teardown-knative   Also delete the dormant published ksvc + DomainMapping
  *                        (irreversible for that site's Knative runtime).
  *
@@ -70,12 +76,14 @@ import {
   type ServerBackedBackend,
 } from '../src/lib/cloudflare-server-backed-kv'
 import { isPublishMetalAuthoritative } from '../src/lib/publish-substrate-config'
+import { REGION_CODE_BY_ID } from '../src/lib/region'
 
 interface Cli {
   apply: boolean
   projectIds: string[]
   limit?: number
   to: ServerBackedBackend
+  region: string | null
   teardownKnative: boolean
 }
 
@@ -85,6 +93,7 @@ function parseArgs(argv: string[]): Cli {
   const projectIds: string[] = []
   let limit: number | undefined
   let to: ServerBackedBackend = 'metal'
+  let region: string | null = null
   let teardownKnative = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -96,11 +105,15 @@ function parseArgs(argv: string[]): Cli {
       const next = (argv[++i] || '').toLowerCase()
       if (next !== 'metal' && next !== 'knative') throw new Error('--to must be metal|knative')
       to = next
+    } else if (a === '--region') {
+      const next = (argv[++i] || '').toLowerCase()
+      if (!REGION_CODE_BY_ID[next]) throw new Error('--region must be one of: ' + Object.keys(REGION_CODE_BY_ID).join(', '))
+      region = next
     } else if (a === '--teardown-knative') teardownKnative = true
     else if (a === '--help' || a === '-h') {
       console.log(
         'Usage: migrate-publishing-to-metal.ts [--dry-run|--yes] [--project-id <uuid>]... ' +
-          '[--limit <n>] [--to metal|knative] [--teardown-knative]',
+          '[--limit <n>] [--to metal|knative] [--region <code>] [--teardown-knative]',
       )
       process.exit(0)
     } else {
@@ -110,7 +123,7 @@ function parseArgs(argv: string[]): Cli {
   // Default to a dry run unless the operator explicitly opts in with --yes, so a
   // bare invocation can never mutate routing by accident.
   if (dryRun) apply = false
-  return { apply, projectIds, limit, to, teardownKnative }
+  return { apply, projectIds, limit, to, region, teardownKnative }
 }
 
 // Tiny colorized loggers (match validate-custom-domains.ts style).
@@ -255,7 +268,10 @@ async function main() {
     }
 
     try {
-      const set = await setServerBackedFlag(subdomain, cli.to)
+      // A rollback to Knative must say WHICH cluster owns the ksvc, or the
+      // Worker's single default Kourier 404s it (SHO-588). `--region` first,
+      // then this pod's own region, then a bare `knative`.
+      const set = await setServerBackedFlag(subdomain, cli.to, cli.region ?? undefined)
       if (!set) throw new Error('KV write returned false')
       counts.flipped++
       ok(`flipped SERVER_BACKED ${current} → ${cli.to}`)

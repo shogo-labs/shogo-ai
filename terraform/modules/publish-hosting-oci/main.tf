@@ -103,6 +103,26 @@ variable "kourier_origin" {
   default     = null
 }
 
+# The DEFAULT Kourier above only knows ONE cluster. A Knative app's ksvc and
+# DomainMappings live in its workspace's home region, so the API stamps the
+# region into the KV value (`knative:eu`) and the Worker resolves that code
+# here. Keys are the short region codes from `REGION_CODE_BY_ID`
+# (apps/api/src/lib/region.ts). A code missing from the map — including the
+# bare `knative` every pre-SHO-588 entry still holds — falls back to
+# `kourier_origin` / `custom_domains_kourier_origin`, so an un-swept app keeps
+# exactly today's behaviour instead of going dark.
+variable "kourier_origins" {
+  description = "Per-region Kourier origins for region-stamped server-backed apps (`knative:<code>`): map of short region code (`us` | `eu` | `staging`) → origin URL, same shape/constraints as `kourier_origin`. Bound as the JSON binding KOURIER_ORIGINS. Leave empty when the cluster is single-region: every app then uses `kourier_origin`."
+  type        = map(string)
+  default     = {}
+}
+
+variable "custom_domains_kourier_origins" {
+  description = "Per-region Kourier origins in the `custom_domains_zone` for region-stamped Knative apps reached on a custom domain: map of short region code → origin URL, same shape/constraints as `custom_domains_kourier_origin`. Bound as the JSON binding CUSTOM_DOMAINS_KOURIER_ORIGINS."
+  type        = map(string)
+  default     = {}
+}
+
 variable "project_bucket_origin" {
   description = "Read-only origin for project buckets (SHO-491): the `access_uri` base of the pre-authenticated request the object-storage module creates for `shogo-project-buckets-<env>`. The subdomain-router Worker serves `cdn.<publish_domain>/<projectId>/<key>` from it, reading ONLY `p/<projectId>/public/<key>` — a private object is unreachable through the CDN. Empty disables the CDN route (it answers 404), which is the correct state for an env that has not provisioned the bucket yet."
   type        = string
@@ -417,6 +437,25 @@ resource "cloudflare_worker_script" "subdomain_router" {
     }
   }
 
+  # Per-region Kourier maps (SHO-588). Bound as JSON text the Worker parses: a
+  # region-stamped `knative:<code>` picks its own cluster's Kourier from here,
+  # and a code that isn't present falls back to KOURIER_ORIGIN above.
+  dynamic "plain_text_binding" {
+    for_each = length(var.kourier_origins) > 0 ? [1] : []
+    content {
+      name = "KOURIER_ORIGINS"
+      text = jsonencode(var.kourier_origins)
+    }
+  }
+
+  dynamic "plain_text_binding" {
+    for_each = length(var.custom_domains_kourier_origins) > 0 ? [1] : []
+    content {
+      name = "CUSTOM_DOMAINS_KOURIER_ORIGINS"
+      text = jsonencode(var.custom_domains_kourier_origins)
+    }
+  }
+
   # The Shogo API origin for METAL-backed server-backed `/api/*`. Only bound
   # when configured; the Worker guards on `env.API_PUBLISHED_ORIGIN` presence
   # and only uses it when a subdomain's SERVER_BACKED value is `metal`.
@@ -686,9 +725,13 @@ resource "cloudflare_worker_script" "subdomain_router" {
     // -----------------------------------------------------------------------
     const WAKE_PATHS = ['/__shogo/wake', '/__shogo/ready'];
 
-    // Resolve a subdomain's SERVER_BACKED value to its backend:
-    //   - `metal`   → the Shogo API published endpoint.
-    //   - `knative` → the Kourier ingress (the explicit rollback marker).
+    // Resolve a subdomain's SERVER_BACKED value to `{ backend, region }`:
+    //   - `metal` / `metal:<code>` → the Shogo API published endpoint (the code
+    //     is ignored; metal apps are routed by the API, not by a cluster).
+    //   - `knative` / `knative:<code>` → Kourier. `<code>` is the home region
+    //     of the cluster that owns the ksvc (`us` | `eu`), so the request goes
+    //     to the Kourier that actually has the DomainMapping (SHO-588). A bare
+    //     `knative` (every pre-stamp entry) means "the default Kourier".
     //   - any other truthy value (the pre-cutover `1`) → metal when
     //     API_PUBLISHED_ORIGIN is bound, else Kourier. Those sites' Knative
     //     services are pinned to a runtime image that is no longer cached on
@@ -700,8 +743,12 @@ resource "cloudflare_worker_script" "subdomain_router" {
       try { raw = (await env.SERVER_BACKED.get(subdomain)) || null; } catch (e) { return null; }
       if (!raw) return null;
       const val = String(raw).trim().toLowerCase();
-      if (val === 'metal' || val === 'knative') return val;
-      return env.API_PUBLISHED_ORIGIN ? 'metal' : 'knative';
+      const colon = val.indexOf(':');
+      const base = colon === -1 ? val : val.slice(0, colon);
+      const region = colon === -1 ? null : (val.slice(colon + 1).trim() || null);
+      if (base === 'metal') return { backend: 'metal', region: null };
+      if (base === 'knative') return { backend: 'knative', region };
+      return { backend: env.API_PUBLISHED_ORIGIN ? 'metal' : 'knative', region: null };
     }
 
     async function isServerBacked(env, subdomain) {
@@ -740,25 +787,38 @@ resource "cloudflare_worker_script" "subdomain_router" {
     // placeholder). Keep the custom host in the URL and override DNS to a
     // Kourier record in the SaaS zone; Kourier routes it through a DomainMapping
     // for the custom hostname (created by the API).
-    function customDomainKourierHost(env) {
-      return (env.CUSTOM_DOMAINS_KOURIER_ORIGIN || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    //
+    // region: the home region a `knative:<code>` value stamped. Each region has
+    // its own Kourier (the ksvc + DomainMapping only exist there), so pick that
+    // region's origin from the map; an un-stamped value or a code the map does
+    // not know uses the single default origin, which is exactly the pre-SHO-588
+    // behaviour for every entry that has not been swept yet.
+    function kourierHostsFor(env, customHost) {
+      var raw = customHost ? env.CUSTOM_DOMAINS_KOURIER_ORIGINS : env.KOURIER_ORIGINS;
+      if (!raw) return {};
+      try {
+        var parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (e) {
+        return {};
+      }
     }
 
-    async function probePublishedReady(env, subdomain, url, timeoutMs, backend, customHost) {
+    function kourierHostFor(env, region, customHost) {
+      var fallback = customHost ? env.CUSTOM_DOMAINS_KOURIER_ORIGIN : env.KOURIER_ORIGIN;
+      var picked = fallback;
+      if (region) {
+        var map = kourierHostsFor(env, customHost);
+        if (map[region]) picked = map[region];
+      }
+      return (picked || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    }
+
+    async function probePublishedReady(env, subdomain, url, timeoutMs, flag, customHost) {
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
       try {
-        if (backend === 'knative' && customHost) {
-          const override = customDomainKourierHost(env);
-          if (!override) return false;
-          const resp = await fetch(url.protocol + '//' + customHost + '/ready', {
-            cf: { resolveOverride: override },
-            signal: ctrl.signal,
-            headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
-          });
-          return resp.ok;
-        }
-        if (backend === 'metal') {
+        if (flag.backend === 'metal') {
           const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
           if (!API) return false;
           const wakeUrl = API + '/api/published/' + subdomain + '/wake';
@@ -770,10 +830,9 @@ resource "cloudflare_worker_script" "subdomain_router" {
           const body = await resp.json().catch(function () { return { ready: false }; });
           return !!(body && body.ready);
         }
-        const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
-        if (!KOURIER_ORIGIN) return false;
-        const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-        const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
+        const kourierHost = kourierHostFor(env, flag.region, customHost);
+        if (!kourierHost) return false;
+        const publishedHost = customHost || (subdomain + '.' + PUBLISH_DOMAIN);
         const probeUrl = url.protocol + '//' + publishedHost + '/ready';
         const resp = await fetch(probeUrl, {
           cf: { resolveOverride: kourierHost },
@@ -1007,18 +1066,19 @@ resource "cloudflare_worker_script" "subdomain_router" {
         const gated = await siteAuthGate(request, env, url, subdomain);
         if (gated) return gated;
 
-        // Resolve the server-backed backend once (metal | knative | null) and
+        // Resolve the server-backed flag once ({ backend, region } | null) and
         // reuse it across wake, /api/* proxy, and the cold-navigation check.
-        const backend = await serverBackedFlag(env, subdomain);
-        const isMetal = backend === 'metal';
+        const flag = await serverBackedFlag(env, subdomain);
+        const isMetal = !!flag && flag.backend === 'metal';
 
         // Wake control endpoint, polled by the loading page below. For
         // server-backed apps this wakes the backend (metal: API /wake; knative:
-        // published-{id}/ready via the activator) and reports readiness; static
-        // apps are always "ready" (served from the edge).
+        // published-{id}/ready via the activator of the app's own region) and
+        // reports readiness; static apps are always "ready" (served from the
+        // edge).
         if (WAKE_PATHS.indexOf(url.pathname) !== -1) {
-          if (!backend) return wakeJsonResponse(true);
-          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend, customHost));
+          if (!flag) return wakeJsonResponse(true);
+          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, flag, customHost));
         }
 
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
@@ -1034,7 +1094,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // Static assets keep serving from OCI below. Falls through to static when
         // the app isn't server-backed, the origin is unconfigured, or the path
         // isn't dynamic.
-        if (backend && isDynamicPath(url.pathname)) {
+        if (flag && isDynamicPath(url.pathname)) {
           if (isMetal) {
             const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
             if (API) {
@@ -1046,23 +1106,16 @@ resource "cloudflare_worker_script" "subdomain_router" {
               backendReq.headers.set('X-Forwarded-Proto', 'https');
               return fetch(backendReq);
             }
-          } else if (customHost) {
-            // Same-zone Kourier hop from the SaaS zone (see probePublishedReady).
-            const override = customDomainKourierHost(env);
-            if (override) {
-              const backendReq = new Request(url.protocol + '//' + customHost + url.pathname + url.search, request);
-              backendReq.headers.set('X-Forwarded-Host', customHost);
-              backendReq.headers.set('X-Forwarded-Proto', 'https');
-              return fetch(backendReq, { cf: { resolveOverride: override } });
-            }
           } else {
-            const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
-            if (KOURIER_ORIGIN) {
-              const publishedHost = subdomain + '.' + PUBLISH_DOMAIN;
-              const kourierHost = KOURIER_ORIGIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-              const backendUrl = url.protocol + '//' + publishedHost + url.pathname + url.search;
+            // Knative: keep the host the visitor used (the publish-zone name or
+            // their custom domain — its DomainMapping resolves off that) and
+            // override DNS to the Kourier of the cluster the app lives in.
+            const kourierHost = kourierHostFor(env, flag.region, customHost);
+            if (kourierHost) {
+              const requestHost = customHost || (subdomain + '.' + PUBLISH_DOMAIN);
+              const backendUrl = url.protocol + '//' + requestHost + url.pathname + url.search;
               const backendReq = new Request(backendUrl, request);
-              backendReq.headers.set('X-Forwarded-Host', publishedHost);
+              backendReq.headers.set('X-Forwarded-Host', requestHost);
               backendReq.headers.set('X-Forwarded-Proto', 'https');
               return fetch(backendReq, { cf: { resolveOverride: kourierHost } });
             }
@@ -1074,8 +1127,8 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // /api/* calls would fail against a scaled-to-zero / suspended backend).
         // The probe nudges the backend so it is already starting while the
         // visitor waits. Skipped for static apps (no backend to wake).
-        if (backend && isDocumentRequest(request, url)) {
-          const ready = await probePublishedReady(env, subdomain, url, 3000, backend, customHost);
+        if (flag && isDocumentRequest(request, url)) {
+          const ready = await probePublishedReady(env, subdomain, url, 3000, flag, customHost);
           if (!ready) return shogoLoadingResponse(subdomain + '.' + PUBLISH_DOMAIN);
         }
 

@@ -34,26 +34,17 @@
  * fallback covers it.
  */
 
+import { getRegionCode } from './region'
+
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
 /**
- * Map a cluster REGION_ID to the short code the preview-router Worker expects.
- * Keep in sync with `anchorFor()` in terraform/modules/preview-router/main.tf.
+ * Resolve this pod's preview region code (`us` | `eu` | `staging`) or null.
+ * The map lives in lib/region.ts — one REGION_CODE_BY_ID shared with the
+ * SERVER_BACKED `knative:<code>` write path (SHO-588).
  */
-const REGION_CODE_BY_ID: Record<string, string> = {
-  'us-ashburn-1': 'us',
-  'eu-frankfurt-1': 'eu',
-  // Staging is single-region but sets REGION_ID=staging; its preview-router
-  // instance uses a matching `staging` anchor (see terraform/environments/
-  // staging). This lets the KV write path be exercised in staging.
-  staging: 'staging',
-}
-
-/** Resolve this pod's preview region code (`us` | `eu` | `in`) or null. */
 export function getPreviewRegionCode(): string | null {
-  const regionId = process.env.REGION_ID
-  if (!regionId) return null
-  return REGION_CODE_BY_ID[regionId] ?? null
+  return getRegionCode()
 }
 
 interface PreviewRegionKvConfig {
