@@ -1150,7 +1150,11 @@ export type ExpoExportResult = {
   signal: string | null
   /** Last lines of the run's stderr (its stdout when it wrote no stderr). */
   stderrTail: string
-  /** The kernel killed the export for running out of memory. */
+  /**
+   * The run really ran out of memory — the kernel's counter moved, or V8 said it
+   * exhausted its heap. A kill signal alone is not enough (see
+   * {@link expoExportRanOutOfMemory}).
+   */
   oom: boolean
 }
 
@@ -1187,6 +1191,26 @@ function readCgroupOomKillCount(): number | null {
 }
 
 /**
+ * Whether an `expo export` run actually died of memory pressure.
+ *
+ * A kill signal on its own is not evidence. Samsara's export exited 7 from
+ * `EACCES: permission denied, mkdir '/app/.expo'` — telemetry writing into a
+ * root-owned `HOME` — with the cgroup's `oom_kill` still at 0, on a 4 GiB
+ * instance that was only close to its limit (SHO-587). Reporting that as an
+ * out-of-memory build sends whoever reads it after the wrong thing, so only the
+ * kernel's own counter moving or V8 saying it exhausted its heap decides it.
+ */
+export function expoExportRanOutOfMemory(input: {
+  /** `oom_kill` delta across the run, or `null` where the kernel doesn't report it. */
+  oomKillDelta: number | null
+  /** The run's stderr (or stdout when it wrote no stderr). */
+  output: string
+}): boolean {
+  if (input.oomKillDelta !== null && input.oomKillDelta > 0) return true
+  return OOM_OUTPUT_PATTERN.test(input.output)
+}
+
+/**
  * One line naming why a publish export failed, for `publishError`'s detail.
  *
  * It reaches the desktop panel and the agent, so it has to carry the cause
@@ -1200,10 +1224,13 @@ function describeExpoExportFailure(result: ExpoExportResult): string {
       : result.signal
         ? `expo export was killed (${result.signal})`
         : 'expo export could not start'
-  if (result.oom) return `${how} — out of memory on the editing runtime`
   const tail = result.stderrTail.trim()
-  if (!tail) return how
-  return `${how}: ${tail.split('\n').slice(-12).join('\n')}`
+    ? result.stderrTail.trim().split('\n').slice(-12).join('\n')
+    : ''
+  if (result.oom) {
+    return tail ? `${how} — out of memory: ${tail}` : `${how} — the process ran out of memory`
+  }
+  return tail ? `${how}: ${tail}` : how
 }
 
 type OneShotBuildOptions = {
@@ -5114,6 +5141,24 @@ export class PreviewManager {
     // expo export (it expects a clean output dir or none). Drop it
     // before spawning.
     cleanupStagingOutput(cwd, stagingDir)
+    // Expo writes its home directory (`~/.expo`, telemetry's anonymous id) on
+    // every CLI run. A published pod's `HOME` is the image's root-owned `/app`
+    // while the runtime runs as `appuser`, so that write died with `EACCES:
+    // permission denied, mkdir '/app/.expo'` — and node then exited 7 inside its
+    // own error handler, which is the code Samsara's republish reported
+    // (SHO-587). Telemetry buys a build nothing; and in a published pod the
+    // directory Expo would have used points at the workspace instead, so any
+    // other `~/.` write stays inside a tree this process owns. The editing
+    // preview keeps its own `HOME`: it is writable there.
+    const expoHome = join(this.workspaceDir, '.shogo', 'expo-home')
+    const published = publishedMetroBootPlan().published
+    if (published) {
+      try {
+        mkdirSync(expoHome, { recursive: true })
+      } catch (err: any) {
+        console.warn(`[${LOG_PREFIX}] Could not create ${expoHome} for the expo export: ${err?.message ?? err}`)
+      }
+    }
     const exportEnv = await this.projectProcessEnv({
       NODE_ENV: 'development',
       // Expo Router reads this when a project's dynamic config opts
@@ -5122,6 +5167,8 @@ export class PreviewManager {
       ...(basePath ? { EXPO_BASE_URL: normalizeExpoBasePath(basePath) } : {}),
       // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
       CI: '1',
+      EXPO_NO_TELEMETRY: '1',
+      ...(published ? { HOME: expoHome, __UNSAFE_EXPO_HOME_DIRECTORY: expoHome } : {}),
     })
 
     const t0 = Date.now()
@@ -5280,18 +5327,15 @@ export class PreviewManager {
     // its reason on stdout.
     const tail = stderrTail.length > 0 ? stderrTail : stdoutTail
     const oomKillsAfter = readCgroupOomKillCount()
-    const oom =
-      (oomKillsAfter !== null && oomKillsBefore !== null && oomKillsAfter > oomKillsBefore) ||
-      exitSignal === 'SIGKILL' ||
-      exitCode === 137 ||
-      OOM_OUTPUT_PATTERN.test(tail.join('\n'))
+    const oomKillDelta =
+      oomKillsAfter !== null && oomKillsBefore !== null ? oomKillsAfter - oomKillsBefore : null
 
     return {
       ok: exitCode === 0 && producedIndex,
       exitCode,
       signal: exitSignal,
       stderrTail: tail.join('\n'),
-      oom,
+      oom: expoExportRanOutOfMemory({ oomKillDelta, output: tail.join('\n') }),
     }
   }
 

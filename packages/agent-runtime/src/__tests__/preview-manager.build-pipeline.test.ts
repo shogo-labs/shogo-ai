@@ -247,6 +247,29 @@ describe('PreviewManager publish Expo export', () => {
     expect(result.error).toContain('out of memory')
   })
 
+  it('reports the EACCES exit 7 Samsara hit as build_failed, with its own stderr', async () => {
+    // code=7 was a permission error, not memory (SHO-587): the publish must not
+    // claim the build ran out of memory, and it must show the line that says so.
+    const cwd = projectDir()
+    writeFileSync(join(cwd, 'package.json'), '{}')
+    const m = mk() as any
+    m.resolveDevServer = () => 'metro'
+    m.installDepsIfNeeded = async () => {}
+    m.runPrismaIfNeeded = async () => {}
+    m.runExpoExportWeb = async () => ({
+      ok: false,
+      exitCode: 7,
+      signal: null,
+      stderrTail: "EACCES: permission denied, mkdir '/app/.expo'",
+      oom: false,
+    })
+
+    const result = await m._buildForPublish()
+
+    expect(result.code).toBe('build_failed')
+    expect(result.error).toBe("expo export failed (exit 7): EACCES: permission denied, mkdir '/app/.expo'")
+  })
+
   it('accepts a publish export that lands index.html in the staging dir', async () => {
     const cwd = projectDir()
     writeFileSync(join(cwd, 'package.json'), '{}')

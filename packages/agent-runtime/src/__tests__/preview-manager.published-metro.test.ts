@@ -14,7 +14,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { PreviewManager, publishedMetroBootPlan } from '../preview-manager'
+import {
+  PreviewManager,
+  expoExportRanOutOfMemory,
+  publishedMetroBootPlan,
+} from '../preview-manager'
 
 let dir: string
 const savedEnv: Record<string, string | undefined> = {}
@@ -147,7 +151,8 @@ describe('published metro boot', () => {
 })
 
 describe('_runExpoExportWebImpl — failure report', () => {
-  function mkExporter() {
+  function mkExporter(published = false) {
+    if (published) process.env.SHOGO_PUBLISHED_MODE = 'true'
     const pm = new PreviewManager({ workspaceDir: dir, runtimePort: 38311 })
     ;(pm as any).projectProcessEnv = async () => ({})
     return pm
@@ -168,14 +173,30 @@ describe('_runExpoExportWebImpl — failure report', () => {
     expect(result.oom).toBe(false)
   })
 
-  it('reports an out-of-memory kill from the exit signal', async () => {
+  it('does not call a signal death out of memory: the EACCES exit 7 Samsara hit', async () => {
+    // The real prod failure: Expo telemetry writing into a root-owned HOME.
+    // code=7 is not memory pressure — the cgroup's oom_kill stayed at 0.
+    installFakeExpo(
+      dir,
+      ['echo "EACCES: permission denied, mkdir \'/app/.expo\'" >&2', 'exit 7'].join('\n'),
+    )
+
+    const result = await (mkExporter() as any)._runExpoExportWebImpl({}, dir, { promote: false })
+
+    expect(result.ok).toBe(false)
+    expect(result.exitCode).toBe(7)
+    expect(result.stderrTail).toContain("EACCES: permission denied, mkdir '/app/.expo'")
+    expect(result.oom).toBe(false)
+  })
+
+  it('does not infer memory pressure from SIGKILL alone', async () => {
     installFakeExpo(dir, 'kill -9 $$')
 
     const result = await (mkExporter() as any)._runExpoExportWebImpl({}, dir, { promote: false })
 
     expect(result.ok).toBe(false)
     expect(result.signal).toBe('SIGKILL')
-    expect(result.oom).toBe(true)
+    expect(result.oom).toBe(false)
   })
 
   it('reports heap exhaustion from the build output', async () => {
@@ -192,5 +213,59 @@ describe('_runExpoExportWebImpl — failure report', () => {
     expect(result.exitCode).toBe(134)
     expect(result.stderrTail).toContain('Reached heap limit')
     expect(result.oom).toBe(true)
+  })
+
+  it('keeps Expo out of a root-owned HOME in a published pod', async () => {
+    let exportEnv: Record<string, string> | undefined
+    const pm = mkExporter(true)
+    ;(pm as any).projectProcessEnv = async (extra: Record<string, string>) => {
+      exportEnv = extra
+      return {}
+    }
+    installFakeExpo(dir, 'exit 1')
+
+    await (pm as any)._runExpoExportWebImpl({}, dir, { promote: false })
+
+    const expoHome = join(dir, '.shogo', 'expo-home')
+    expect(exportEnv?.EXPO_NO_TELEMETRY).toBe('1')
+    expect(exportEnv?.HOME).toBe(expoHome)
+    expect(exportEnv?.__UNSAFE_EXPO_HOME_DIRECTORY).toBe(expoHome)
+    expect(existsSync(expoHome)).toBe(true)
+  })
+
+  it('leaves the editing preview on its own writable HOME', async () => {
+    let exportEnv: Record<string, string> | undefined
+    const pm = mkExporter()
+    ;(pm as any).projectProcessEnv = async (extra: Record<string, string>) => {
+      exportEnv = extra
+      return {}
+    }
+    installFakeExpo(dir, 'exit 1')
+
+    await (pm as any)._runExpoExportWebImpl({}, dir, { promote: false })
+
+    expect(exportEnv?.EXPO_NO_TELEMETRY).toBe('1')
+    expect(exportEnv?.HOME).toBeUndefined()
+  })
+})
+
+describe('expoExportRanOutOfMemory', () => {
+  it('trusts the kernel counter', () => {
+    expect(expoExportRanOutOfMemory({ oomKillDelta: 1, output: '' })).toBe(true)
+    expect(expoExportRanOutOfMemory({ oomKillDelta: 0, output: '' })).toBe(false)
+  })
+
+  it('trusts V8 when the kernel does not report it', () => {
+    const v8 = 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory'
+    expect(expoExportRanOutOfMemory({ oomKillDelta: null, output: v8 })).toBe(true)
+  })
+
+  it('treats a permission error as an ordinary build failure', () => {
+    expect(
+      expoExportRanOutOfMemory({
+        oomKillDelta: 0,
+        output: "EACCES: permission denied, mkdir '/app/.expo'",
+      }),
+    ).toBe(false)
   })
 })
