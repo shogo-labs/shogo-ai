@@ -41,7 +41,7 @@ import {
   isNativePlatform,
 } from '../../lib/native-phone-layout'
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter";
-import { AppVersionsPanel, type InstallSegment } from '../../components/analytics/AppVersionsPanel'
+import { AppVersionsPanel, type InstallSegment, type AppVersionAdoptionPoint } from '../../components/analytics/AppVersionsPanel'
 import {
   ActiveDevicesPanel,
   type ActiveDevicesData,
@@ -54,6 +54,7 @@ import {
   type SpendTimeseriesData,
   type SpendGroupBy,
   type SpendMetric,
+  type DeviceActivityTimeseries,
 } from '../../components/analytics/SharedAnalytics'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -100,6 +101,15 @@ interface AppInstallsData {
     newLast30d: number
     distinctUsers: number
   }
+}
+
+interface AppVersionsData {
+  generatedAt: string
+  deployedVersion: string | null
+  windowDays: number
+  desktop: InstallSegment
+  cli: InstallSegment
+  adoption: AppVersionAdoptionPoint[]
 }
 
 interface GrowthDataPoint {
@@ -193,6 +203,22 @@ async function fetchAdminJson<T>(path: string, params?: Record<string, string>):
   } catch {
     return null
   }
+}
+
+/**
+ * Like `fetchAdminJson`, but a failed request throws instead of resolving to
+ * `null`. A chart that renders its empty state on failure reads as "no data",
+ * which is why the two panels added in SHO-477 use this and show a notice.
+ */
+async function fetchAdminJsonStrict<T>(
+  path: string,
+  params?: Record<string, string>,
+): Promise<T | null> {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+  const res = await fetch(`${API_BASE}${path}${qs}`, { credentials: 'include' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const json = await res.json()
+  return json.data ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +409,7 @@ function InstallSegmentCard({
   )
 }
 
-function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; loading: boolean }) {
+function AppInstallsCard({ data, loading, adoption, versionsError }: { data: AppInstallsData | null; loading: boolean; adoption: AppVersionAdoptionPoint[]; versionsError?: string | null }) {
   const { width } = useWindowDimensions()
   const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
 
@@ -447,7 +473,7 @@ function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; load
           </>
         )}
       </View>
-      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} /></View>}
+      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} adoption={adoption} error={versionsError} /></View>}
       {data && (
         <Text className="text-xs text-muted-foreground mt-3">
           {data.totals.newLast30d.toLocaleString()} new in 30d · {data.totals.distinctUsers.toLocaleString()} users
@@ -805,6 +831,16 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [deviceTrend, setDeviceTrend] = useState<{ data: DeviceActivityTimeseries | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
+  const [appVersions, setAppVersions] = useState<{ data: AppVersionsData | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
+  const [versionsError, setVersionsError] = useState<string | null>(null)
+  const [trendError, setTrendError] = useState<string | null>(null)
   const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({
     data: null,
     loading: true,
@@ -886,6 +922,34 @@ export default function AdminDashboard() {
     setAppDevices({ data, loading: false })
   }, [trackAppDevices])
 
+  const trackDeviceTrend = usePanelSequence()
+  const loadDeviceTrend = useCallback(async () => {
+    setDeviceTrend((s) => ({ ...s, loading: true }))
+    try {
+      const data = await trackDeviceTrend(() => fetchAdminJsonStrict<DeviceActivityTimeseries>('/analytics/devices-timeseries', { days: '30' }))
+      if (data === SUPERSEDED) return
+      setTrendError(null)
+      setDeviceTrend({ data, loading: false })
+    } catch (err) {
+      setTrendError(err instanceof Error ? err.message : 'Request failed')
+      setDeviceTrend({ data: null, loading: false })
+    }
+  }, [trackDeviceTrend])
+
+  const trackAppVersions = usePanelSequence()
+  const loadAppVersions = useCallback(async () => {
+    setAppVersions((s) => ({ ...s, loading: true }))
+    try {
+      const data = await trackAppVersions(() => fetchAdminJsonStrict<AppVersionsData>('/analytics/app-versions', { days: '30' }))
+      if (data === SUPERSEDED) return
+      setVersionsError(null)
+      setAppVersions({ data, loading: false })
+    } catch (err) {
+      setVersionsError(err instanceof Error ? err.message : 'Request failed')
+      setAppVersions({ data: null, loading: false })
+    }
+  }, [trackAppVersions])
+
   const trackGrowth = usePanelSequence()
   const loadGrowth = useCallback(async () => {
     setGrowth((s) => ({ ...s, loading: true }))
@@ -952,6 +1016,8 @@ export default function AdminDashboard() {
       loadActiveUsers(),
       loadAppInstalls(),
       loadAppDevices(),
+      loadDeviceTrend(),
+      loadAppVersions(),
       loadGrowth(),
       loadUsage(),
       loadActiveUsersTs(),
@@ -964,6 +1030,8 @@ export default function AdminDashboard() {
     loadActiveUsers,
     loadAppInstalls,
     loadAppDevices,
+    loadDeviceTrend,
+    loadAppVersions,
     loadGrowth,
     loadUsage,
     loadActiveUsersTs,
@@ -987,6 +1055,14 @@ export default function AdminDashboard() {
   useEffect(() => {
     void loadAppDevices()
   }, [loadAppDevices])
+
+  useEffect(() => {
+    void loadDeviceTrend()
+  }, [loadDeviceTrend])
+
+  useEffect(() => {
+    void loadAppVersions()
+  }, [loadAppVersions])
 
   useEffect(() => {
     void loadGrowth()
@@ -1157,12 +1233,23 @@ export default function AdminDashboard() {
 
       {/* Row 3: Signed-in app install and activity metrics */}
       <View className="mb-6">
-        <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} />
+        <AppInstallsCard
+          data={appInstalls.data}
+          loading={appInstalls.loading}
+          adoption={appVersions.data?.adoption ?? []}
+          versionsError={versionsError}
+        />
       </View>
 
       {/* Row 3b: Which devices are actually alive */}
       <View className="mb-6">
-        <ActiveDevicesPanel data={appDevices.data} loading={appDevices.loading} />
+        <ActiveDevicesPanel
+          data={appDevices.data}
+          loading={appDevices.loading}
+          trend={deviceTrend.data}
+          trendLoading={deviceTrend.loading}
+          trendError={trendError}
+        />
       </View>
 
       {/* Row 4: Growth over time (Daily / Cumulative) */}

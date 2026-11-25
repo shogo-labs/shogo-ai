@@ -17,6 +17,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (id: string) => ({ id }),
   resolveAgentModeDefault: () => 'sonnet',
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
 }))
 
 mock.module('../../lib/prisma', () => ({

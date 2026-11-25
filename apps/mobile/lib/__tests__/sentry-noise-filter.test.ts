@@ -11,13 +11,32 @@
  * backend) so the extraction from `_layout.tsx` didn't regress them, and that
  * genuine app errors are NOT dropped.
  */
-import { describe, test, expect } from 'bun:test'
-import {
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { createReactNativeMock } from '../../test/react-native-mock'
+
+// The virtual-device rule (SHO-527) reads this device through `expo-device`, so
+// both are mocked and mutated per test before the filter is imported.
+mock.module('react-native', () => createReactNativeMock())
+const { Platform: platform } = (await import('react-native')) as unknown as { Platform: { OS: string } }
+// The mocked device is Play's pre-launch robot: an x86_64 Android phone.
+mock.module('expo-device', () => ({
+  supportedCpuArchitectures: ['x86_64', 'arm64-v8a', 'x86', 'armeabi-v7a'],
+  deviceType: 1,
+}))
+
+const {
+  currentDeviceProfile,
   isDeliberateTelemetry,
   isExpectedClientError,
   isNoiseEvent,
-  type NoiseFilterEvent,
-} from '../sentry-noise-filter'
+  isVirtualAndroidDevice,
+  transientTransportMessage,
+} = await import('../sentry-noise-filter')
+type NoiseFilterEvent = import('../sentry-noise-filter').NoiseFilterEvent
+
+beforeEach(() => {
+  platform.OS = 'web'
+})
 
 const exc = (type: string, value: string, frames: { filename?: string }[] = []): NoiseFilterEvent => ({
   exception: { values: [{ type, value, stacktrace: { frames } }] },
@@ -111,6 +130,41 @@ describe('isNoiseEvent — intentional Shogo captures bypass the filter', () => 
   })
 })
 
+describe('isNoiseEvent — dropped connections are transport noise, not defects (SHO-566)', () => {
+  test('drops the exact messages from the 14-day mobile review', () => {
+    // SHOGO-ANDROID-5 (515 events / 119 users) and SHOGO-ANDROID-7 / -1F.
+    expect(isNoiseEvent(exc('Error', 'Software caused connection abort'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'Unable to resolve host "studio.shogo.ai": No address associated with hostname'))).toBe(true)
+    // SHOGO-IOS-4 (255 events), straight from NSURLErrorDomain via FetchResponse.
+    expect(isNoiseEvent(exc('Error', 'The network connection was lost.'))).toBe(true)
+    // RN's own fetch rejection and the two other transport phrasings.
+    expect(isNoiseEvent(exc('TypeError', 'Network request failed'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'The Internet connection appears to be offline.'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'Connection reset by peer'))).toBe(true)
+  })
+
+  test('a real error that merely mentions "network" still reports', () => {
+    expect(isNoiseEvent(exc('TypeError', "Cannot read property 'network' of undefined"))).toBe(false)
+    expect(isNoiseEvent(exc('Error', 'Network request failed because the response body was not JSON'))).toBe(false)
+    expect(isNoiseEvent(exc('TypeError', 'networkState.get is not a function'))).toBe(false)
+  })
+
+  test('a 5xx ShogoError still reports', () => {
+    // A server that answers 5xx is the server failing — never transport noise.
+    expect(
+      isNoiseEvent({ exception: { values: [{ type: 'ShogoError', value: 'Request failed with status 500' }] } }),
+    ).toBe(false)
+  })
+
+  test('reports which message was dropped, so beforeSend can leave a breadcrumb', () => {
+    expect(transientTransportMessage(exc('Error', 'The network connection was lost.'))).toBe(
+      'The network connection was lost.',
+    )
+    expect(transientTransportMessage(exc('TypeError', 'Cannot read property x of undefined'))).toBe(null)
+    expect(transientTransportMessage({})).toBe(null)
+  })
+})
+
 describe('isNoiseEvent — genuine app errors are NOT dropped', () => {
   test('a real TypeError from app code passes through', () => {
     expect(
@@ -166,5 +220,57 @@ describe('isExpectedClientError — 4xx outcomes are not errors (SHO-437)', () =
     expect(isDeliberateTelemetry({ tags: { shogo_telemetry: 'chat_stream_error' } })).toBe(true)
     expect(isDeliberateTelemetry({ tags: {} })).toBe(false)
     expect(isDeliberateTelemetry({})).toBe(false)
+  })
+})
+
+/**
+ * SHO-527: every Android auth event in Sentry came from one profile — Play's
+ * pre-launch report robot, a Firebase Test Lab `OnePlus8Pro` whose primary ABI is
+ * `x86_64` (a real OnePlus 8 Pro is arm64-only). `beforeSend` drops its events
+ * before any message filter sees them.
+ */
+describe('isVirtualAndroidDevice — x86 Android devices are not people (SHO-527)', () => {
+  const ROBOT = {
+    platform: 'android',
+    architectures: ['x86_64', 'arm64-v8a', 'x86', 'armeabi-v7a'],
+    deviceType: 1,
+  }
+
+  test('drops the Play pre-launch robot / an x86_64 emulator', () => {
+    expect(isVirtualAndroidDevice(ROBOT)).toBe(true)
+    expect(isVirtualAndroidDevice({ ...ROBOT, architectures: ['x86'] })).toBe(true)
+  })
+
+  test('keeps a real Android phone', () => {
+    expect(
+      isVirtualAndroidDevice({ platform: 'android', architectures: ['arm64-v8a', 'armeabi-v7a'], deviceType: 1 }),
+    ).toBe(false)
+  })
+
+  test('keeps x86 ChromeOS/ARC, which is a real device', () => {
+    expect(
+      isVirtualAndroidDevice({ platform: 'android', architectures: ['x86_64'], deviceType: 3 }),
+    ).toBe(false)
+  })
+
+  test('keeps every non-Android platform, and a device that cannot say', () => {
+    expect(isVirtualAndroidDevice({ platform: 'ios', architectures: ['arm64'], deviceType: 1 })).toBe(false)
+    expect(isVirtualAndroidDevice({ platform: 'web', architectures: ['x86_64'], deviceType: 1 })).toBe(false)
+    expect(isVirtualAndroidDevice({ platform: 'android', architectures: null, deviceType: 1 })).toBe(false)
+    expect(isVirtualAndroidDevice({ platform: 'android', architectures: [], deviceType: 1 })).toBe(false)
+  })
+
+  test('reads this device from expo-device', () => {
+    platform.OS = 'android'
+    expect(currentDeviceProfile()).toEqual({
+      platform: 'android',
+      architectures: ROBOT.architectures,
+      deviceType: 1,
+    })
+    expect(isVirtualAndroidDevice(currentDeviceProfile())).toBe(true)
+
+    platform.OS = 'ios'
+    expect(currentDeviceProfile().platform).toBe('ios')
+    expect(isVirtualAndroidDevice(currentDeviceProfile())).toBe(false)
   })
 })

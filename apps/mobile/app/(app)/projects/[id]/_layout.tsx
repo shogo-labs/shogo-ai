@@ -26,7 +26,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
   ScrollView,
   Platform,
   BackHandler,
@@ -39,9 +38,11 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { useRouter, Stack } from "expo-router";
+import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { removeStorageItem, setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
@@ -78,7 +79,10 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
-import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
+import {
+  inactiveChatTabStyle,
+  useProjectChatTabs,
+} from "../../../../lib/project-chat-tabs";
 import {
   hasChatUrlOneShotParams,
   isChatSessionOfProject,
@@ -119,6 +123,7 @@ import {
   previewTabUserPickKey,
 } from "../../../../lib/preview-auto-open";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { ChatPanelResizeHandle } from "../../../../components/layout/ChatPanelResizeHandle";
 import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
@@ -127,6 +132,7 @@ import {
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
 import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
+import { resolvePickerModel } from "../../../../lib/chat-composer-memory";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -244,6 +250,7 @@ import {
   markRuntimeReadyAndFlush,
   setOpenAttemptId,
 } from "../../../../lib/cold-start-timing";
+import { Spinner } from '@/components/ui/spinner'
 
 csMark("project:layout:module-load");
 
@@ -273,7 +280,7 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
-  const params = useLocalSearchParams<{
+  const { params, preserved: preservedParams, rejectParam } = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;
     fromConversation?: string;
@@ -343,11 +350,7 @@ export default observer(function ProjectLayout() {
     csMark("project:open-attempt", { projectId, openAttemptId });
     return () => clearOpenAttemptId(openAttemptId);
   }, [openAttemptId, projectId]);
-  const isIdeChatEmbed =
-    params.embed === "ide" ||
-    (Platform.OS === "web" &&
-      typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("embed") === "ide");
+  const isIdeChatEmbed = params.embed === "ide";
   const { width, height, isPhone: nativePhone } = useNativePhoneWindow();
   const isWide = width >= WIDE_BREAKPOINT;
   const insets = useSafeAreaInsets();
@@ -477,6 +480,10 @@ export default observer(function ProjectLayout() {
     chatScope: capturedChatScope,
     initialPropsSessionId,
     oneShotPresent: hasChatUrlOneShotParams(params),
+    // Keys a cold load restored (SHO-174). This hook is the only writer of the
+    // query, so it carries them: a second writer would be undone by this one on
+    // its next write, and `router.setParams` drops keys it does not pass.
+    preserved: preservedParams,
     enabled: Platform.OS === "web" && !isIdeChatEmbed,
     setParams: (next) => router.setParams(next as any),
   });
@@ -1261,16 +1268,39 @@ export default observer(function ProjectLayout() {
   // model-stamped message yet. Updated only on explicit user picks / cold load,
   // NOT when we apply a per-chat model on switch (so the fallback is preserved).
   const globalModelPrefRef = useRef<string | null>(null);
+  // The active chat's own model, as last reported by its ChatPanel (`null` when
+  // the chat has no pick of its own). It outranks the persisted preference: the
+  // read below re-runs when the catalog or the runtime URL arrives, and a late
+  // read must not replace the model the open chat already claimed (SHO-497).
+  const activeChatModelRef = useRef<string | null>(null);
   // Dedups the runtime PATCH when applying a chat's model on switch.
   const sessionModelSyncedRef = useRef<string | null>(null);
+  // A claim only lives as long as a chat is open: with no chat on screen the
+  // picker follows the preference again (a switch keeps its claim, so the
+  // picker does not flash between chats).
+  useEffect(() => {
+    if (!chatSessionId) activeChatModelRef.current = null;
+  }, [chatSessionId]);
   useEffect(() => {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
       const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
-      setSelectedModel(next);
       setModelPrefLoaded(true);
+      // The chat's own model wins. Re-applying the preference here is what put
+      // a reloaded chat back on the last model picked anywhere, even though the
+      // chat's own pick was in the device cache and the panel had already
+      // reported it (SHO-497).
+      const resolved = resolvePickerModel({
+        chatModel: activeChatModelRef.current,
+        preference: next,
+        defaultModel: DEFAULT_MODEL,
+      });
+      setSelectedModel(resolved.model);
+      // A chat's model is synced by its own report; do not point the runtime at
+      // the preference behind its back.
+      if (resolved.fromChat) return;
       if (!agentUrl) return;
       const syncKey = `${projectId}:${next}`;
       if (modelPrefSyncedRef.current === syncKey) return;
@@ -1345,7 +1375,15 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
+      // The claim, recorded before any early return: this is the chat's own
+      // answer (including "this chat has none"), and a preference read that
+      // lands later must not overwrite it.
+      activeChatModelRef.current = modelId;
+      const { model: next } = resolvePickerModel({
+        chatModel: modelId,
+        preference: globalModelPrefRef.current,
+        defaultModel: DEFAULT_MODEL,
+      });
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;
@@ -1388,6 +1426,9 @@ export default observer(function ProjectLayout() {
   );
 
   const splitRowRef = useRef<View>(null);
+  // Measured width of that row — the task-thread pane sizes itself against it,
+  // so its remembered width survives a window change (SHO-569).
+  const [splitRowWidth, setSplitRowWidth] = useState(0);
 
   // Connection state for the canvas. The canvas iframe owns its own data
   // (SSE / HMR / API calls happen inside the workspace SPA); the parent
@@ -1527,7 +1568,7 @@ export default observer(function ProjectLayout() {
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `shogo:lastChatSession:${projectId}`,
         chatSessionId
       ).catch((e) =>
@@ -1847,6 +1888,13 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null);
   const effectiveTab = attentionTab ?? previewTab;
+  // `router.setParams` drops every key it is not handed, so a write that only
+  // carries its own param erases what the arrival URL restored (SHO-174): the
+  // `navTab` write below is what used to leave a reloaded `?tab=settings` URL
+  // holding `?navTab=settings` and nothing else. Read through a ref so the
+  // effect keeps its two dependencies.
+  const preservedParamsRef = useRef(preservedParams);
+  preservedParamsRef.current = preservedParams;
   // Mirror the visible pane into a dedicated (non-consumed) route param so
   // MobileBottomNav can highlight the right tab even when the pane changed
   // via in-page controls rather than a bottom-nav tap. Deliberately a
@@ -1855,7 +1903,10 @@ export default observer(function ProjectLayout() {
   // logic — nothing else reads `navTab`.
   useEffect(() => {
     if (!projectId) return;
-    router.setParams({ navTab: effectiveTab } as any);
+    router.setParams({
+      ...preservedParamsRef.current,
+      navTab: effectiveTab,
+    } as any);
   }, [projectId, effectiveTab]);
   // Set when the user (or Agent Type switch) explicitly asks for canvas this
   // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
@@ -1905,7 +1956,7 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!projectId) return;
     if (showChatSessionsHydratedRef.current !== projectId) return;
-    AsyncStorage.setItem(
+    setStorageItem(
       `shogo:showChatHistory:${projectId}`,
       showChatSessions ? "1" : "0"
     ).catch(() => {});
@@ -1935,9 +1986,16 @@ export default observer(function ProjectLayout() {
 
   const persistChatPanelWidth = useCallback((w: number) => {
     setChatPanelWidth(w);
-    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
+    setStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
       () => {}
     );
+  }, []);
+
+  // Double-clicking the splitter drops the saved width, so the panel goes back
+  // to the default now and on every later load.
+  const resetChatPanelWidth = useCallback(() => {
+    setChatPanelWidth(DEFAULT_CHAT_PANEL_WIDTH);
+    removeStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY).catch(() => {});
   }, []);
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(
@@ -2030,7 +2088,7 @@ export default observer(function ProjectLayout() {
     // A landing-tab deep link is an explicit choice of surface; it also means
     // the folder-project Preview auto-open must never override it.
     previewTabUserPickedRef.current.add(projectId);
-    AsyncStorage.setItem(previewTabUserPickKey(projectId), requested).catch(
+    setStorageItem(previewTabUserPickKey(projectId), requested).catch(
       () => {}
     );
     const nativePhoneChat = nativePhone;
@@ -2150,7 +2208,7 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`,
         previewTab
       ).catch(() => {});
@@ -2213,6 +2271,10 @@ export default observer(function ProjectLayout() {
     },
     []
   );
+  // "Clear all notifications" from the menu-bar dropdown drops every project
+  // tab's dot with one event, the same one the sidebar and the island listen to.
+  useEffect(() => chatSessionEvents.subscribeClearCompletions(() => setCompletedTabIds(new Set())), [])
+
   // Clear the "new activity" dot once the user opens that tab.
   useEffect(() => {
     if (!chatSessionId) return;
@@ -2344,7 +2406,7 @@ export default observer(function ProjectLayout() {
       // for this project — this session and every later one (SHO-200).
       if (projectId) {
         previewTabUserPickedRef.current.add(projectId);
-        AsyncStorage.setItem(previewTabUserPickKey(projectId), tabId).catch(
+        setStorageItem(previewTabUserPickKey(projectId), tabId).catch(
           () => {}
         );
       }
@@ -2776,6 +2838,10 @@ export default observer(function ProjectLayout() {
     validatedDeepLinkIdsRef.current.add(key);
 
     const fallBackToProjectChat = () => {
+      // Stop the dead id speaking: it reached the router as well as the
+      // arrival URL, so without retracting both it is re-applied on the next
+      // render and the screen stays pinned to a chat that cannot open.
+      rejectParam("chatSessionId", incoming);
       // Let the pinned/default promotion own selection again.
       pinnedSessionAppliedRef.current = false;
       setOpenChatTabIds((prev) =>
@@ -2806,6 +2872,7 @@ export default observer(function ProjectLayout() {
     store,
     setOpenChatTabIds,
     capturedChatScope,
+    rejectParam,
   ]);
 
   const handleCreateNewSession = useCallback(async () => {
@@ -3643,14 +3710,7 @@ export default observer(function ProjectLayout() {
             className="flex-1"
             style={
               !isActive
-                ? {
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    opacity: 0,
-                  }
+                ? inactiveChatTabStyle(Platform.OS)
                 : nativePhone
                 ? {
                     flex: 1,
@@ -3662,6 +3722,7 @@ export default observer(function ProjectLayout() {
                 : undefined
             }
             pointerEvents={isActive ? "auto" : "none"}
+            aria-hidden={!isActive}
           >
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
@@ -3920,15 +3981,11 @@ export default observer(function ProjectLayout() {
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so keep the way back and
             the name on screen while it loads instead of a bare spinner. */}
-        {Platform.OS !== "web" ? (
-          <View className="bg-background" style={{ paddingTop: insets.top }}>
-            <ProjectSurfaceHeader projectId={projectId} />
-          </View>
-        ) : null}
+        <ProjectSurfaceHeader projectId={projectId} />
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>
-              <ActivityIndicator size="large" />
+              <Spinner size="large" />
               <Text className="text-muted-foreground mt-3 text-sm">
                 {stillBootingRuntime
                   ? "Starting your project…"
@@ -3947,7 +4004,7 @@ export default observer(function ProjectLayout() {
           )}
           {showStalledRecovery && !runtimeCapacity && (
             <View className="w-full max-w-sm gap-3 items-center">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
               <Text className="text-foreground text-base font-semibold text-center">
                 This is taking longer than expected
               </Text>
@@ -4169,7 +4226,7 @@ export default observer(function ProjectLayout() {
                 <PanelErrorBoundary panelName="Shogo IDE Chat">
                   {workspaceChatLoading ? (
                     <View className="flex-1 items-center justify-center bg-background">
-                      <ActivityIndicator size="large" />
+                      <Spinner size="large" />
                       <Text className="mt-3 text-sm text-muted-foreground">
                         Loading project chat…
                       </Text>
@@ -4273,6 +4330,13 @@ export default observer(function ProjectLayout() {
                     return current === rounded ? current : rounded;
                   });
                 }
+                const nextWidth = event.nativeEvent?.layout?.width;
+                if (typeof nextWidth === "number" && nextWidth > 0) {
+                  setSplitRowWidth((current) => {
+                    const rounded = Math.round(nextWidth);
+                    return current === rounded ? current : rounded;
+                  });
+                }
               }}
             >
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
@@ -4367,7 +4431,7 @@ export default observer(function ProjectLayout() {
                           testID="workspace-chat-loading"
                           className="absolute inset-0 bg-background items-center justify-center"
                         >
-                          <ActivityIndicator size="large" />
+                          <Spinner size="large" />
                           <Text className="text-sm text-muted-foreground mt-3 text-center">
                             Starting workspace…
                           </Text>
@@ -4494,7 +4558,7 @@ export default observer(function ProjectLayout() {
                             maxWidth={maxChatPanelWidth}
                             onResize={setChatPanelWidth}
                             onResizeEnd={persistChatPanelWidth}
-                            defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                            onReset={resetChatPanelWidth}
                             leftOffset={showChatSessions ? 280 : 0}
                             rightOffset={12}
                           />
@@ -4506,7 +4570,7 @@ export default observer(function ProjectLayout() {
 
               {/* The thread a pressed background task runs in: a pane beside the
                   canvas (wide) or a sheet (phone). The chat column stays put. */}
-              <TaskThreadPaneHost />
+              <TaskThreadPaneHost containerWidth={splitRowWidth || undefined} />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View
@@ -5189,145 +5253,6 @@ function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
-// ChatPanelResizeHandle — web-only drag handle between chat column and canvas
-// ---------------------------------------------------------------------------
-
-function ChatPanelResizeHandle({
-  splitRowRef,
-  chatPanelWidth,
-  minWidth,
-  maxWidth,
-  onResize,
-  onResizeEnd,
-  defaultWidth,
-  leftOffset = 0,
-  rightOffset = 0,
-  hitWidth = 20,
-}: {
-  splitRowRef: React.RefObject<View | null>;
-  chatPanelWidth: number;
-  minWidth: number;
-  maxWidth: number;
-  onResize: (w: number) => void;
-  onResizeEnd: (w: number) => void;
-  defaultWidth: number;
-  /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
-  leftOffset?: number;
-  /** Pixels from the chat panel's right edge where the *visible* bar is drawn.
-   *  The grabbable hit zone always extends all the way to the right edge so
-   *  the (thin) scrollbar area is also a valid drag target. */
-  rightOffset?: number;
-  /** Total width of the (transparent) grab zone, measured from the chat
-   *  panel's right edge. Should be larger than `rightOffset` so the bar
-   *  itself is comfortably inside the hit area. */
-  hitWidth?: number;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const latestWidthRef = useRef(chatPanelWidth);
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      setDragging(true);
-
-      const container = splitRowRef.current as unknown as HTMLElement | null;
-      if (!container) return;
-      const containerRect = container.getBoundingClientRect();
-
-      // Distance from the cursor at pointerdown to the chat panel's right
-      // edge. We hold this constant during the drag so that grabbing the
-      // handle off-center doesn't snap the panel to the cursor position
-      // (the handle is now inset from the right edge by `rightOffset`, so
-      // the cursor is meaningfully to the left of the actual edge).
-      const currentRightEdgeX =
-        containerRect.left + leftOffset + chatPanelWidth;
-      const grabDx = currentRightEdgeX - e.clientX;
-
-      // Transparent fixed overlay over the whole viewport. Without this,
-      // any iframe under the cursor (canvas / preview) swallows the
-      // pointermove events and the resize freezes the moment the cursor
-      // crosses into the iframe. The overlay's high z-index keeps it on
-      // top of every iframe; pointer-events stays default ("auto") so
-      // pointermove fires on `document` as expected.
-      const overlay = document.createElement("div");
-      overlay.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;";
-      document.body.appendChild(overlay);
-
-      const onPointerMove = (ev: PointerEvent) => {
-        const newWidth = Math.max(
-          minWidth,
-          Math.min(
-            maxWidth,
-            ev.clientX + grabDx - containerRect.left - leftOffset
-          )
-        );
-        latestWidthRef.current = newWidth;
-        onResize(newWidth);
-      };
-
-      const onPointerUp = () => {
-        document.removeEventListener("pointermove", onPointerMove);
-        document.removeEventListener("pointerup", onPointerUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        overlay.remove();
-        setDragging(false);
-        onResizeEnd(latestWidthRef.current);
-      };
-
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("pointermove", onPointerMove);
-      document.addEventListener("pointerup", onPointerUp);
-    },
-    [
-      splitRowRef,
-      minWidth,
-      maxWidth,
-      onResize,
-      onResizeEnd,
-      leftOffset,
-      chatPanelWidth,
-    ]
-  );
-
-  const handleDoubleClick = useCallback(() => {
-    onResizeEnd(defaultWidth);
-  }, [defaultWidth, onResizeEnd]);
-
-  const active = dragging || hovered;
-
-  return (
-    <View
-      // @ts-expect-error web-only event handlers
-      onPointerDown={handlePointerDown}
-      onDoubleClick={handleDoubleClick}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      style={{
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        right: 0,
-        width: hitWidth,
-        cursor: "col-resize" as any,
-        zIndex: 21,
-      }}
-    >
-      <View
-        className={cn(
-          "absolute top-0 bottom-0 transition-all duration-150",
-          active ? "bg-primary/40" : "bg-transparent"
-        )}
-        style={{ right: rightOffset, width: active ? 3 : 1 }}
-      />
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Canvas Panel — renders the v2 canvas iframe (Vite-built workspace SPA)
 // ---------------------------------------------------------------------------
 
@@ -5669,7 +5594,7 @@ function CanvasPanel({
           </>
         ) : (
           <>
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text
               className={cn(
                 "text-foreground font-medium mb-1",
@@ -5757,7 +5682,7 @@ function AppPreviewPanel({
   if (!previewUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" className="mb-4" />
+        <Spinner size="large" className="mb-4" />
         <Text className="text-muted-foreground text-center">
           Connecting to preview server...
         </Text>
@@ -5780,7 +5705,7 @@ function AppPreviewPanel({
 
         {!previewReady && (
           <View className="absolute inset-0 z-[5] items-center justify-center bg-background/90">
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text className="text-foreground font-medium text-base mb-1">
               {PHASE_LABELS[phase] || "Preparing preview..."}
             </Text>

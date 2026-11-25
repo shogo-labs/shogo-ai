@@ -317,8 +317,9 @@ export function periodToWindow(
   period?: AnalyticsPeriod,
   fromIso?: string,
   toIso?: string,
+  clock?: Date,
 ): { from: Date; to: Date } {
-  const now = new Date()
+  const now = clock ?? new Date()
   if (fromIso && toIso) {
     const from = new Date(fromIso)
     const to = new Date(toIso)
@@ -355,14 +356,20 @@ interface TimeSeriesPoint {
 // Helpers
 // ============================================================================
 
-function periodToDate(period: AnalyticsPeriod): Date {
-  return periodToWindow(period).from
+function periodToDate(period: AnalyticsPeriod, clock?: Date): Date {
+  return periodToWindow(period, undefined, undefined, clock).from
 }
 
-/** Start of a rolling `period` window that ends at `asOf` instead of now. */
+/**
+ * Start of a rolling `period` window that ends at `asOf` instead of now.
+ *
+ * The clock is read once: resolving the window from `asOf` and then subtracting
+ * the gap to "now" would read the wall clock twice, and the two reads drift by
+ * however long the caller takes — a window that shifts under a pinned clock is
+ * how SHO-505 turned a passing suite into a main-red time bomb.
+ */
 function periodStartAsOf(period: AnalyticsPeriod, asOf?: Date): Date {
-  const from = periodToDate(period)
-  return asOf ? new Date(from.getTime() - (Date.now() - asOf.getTime())) : from
+  return periodToDate(period, asOf ?? new Date())
 }
 
 /**
@@ -2544,6 +2551,8 @@ export interface AppVersionAdoptionPoint {
   date: string
   version: string
   channel: ReleaseChannel
+  client: DeviceClient
+  os: DeviceOs
   devices: number
 }
 
@@ -2588,6 +2597,8 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
         deviceId: true,
         version: true,
         channel: true,
+        client: true,
+        os: true,
         firstSeenAt: true,
         lastSeenAt: true,
       },
@@ -2600,7 +2611,10 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
   const partitioned = partitionRowsByClient(toInstallRows(keys), currentVersions)
   const deployedVersion = deployedAppVersion()
 
-  const byDay = new Map<string, { version: string; channel: ReleaseChannel; devices: Set<string> }>()
+  const byDay = new Map<
+    string,
+    { version: string; channel: ReleaseChannel; client: DeviceClient; os: DeviceOs; devices: Set<string> }
+  >()
   for (const event of events) {
     let cursor = new Date(event.firstSeenAt)
     cursor.setUTCHours(0, 0, 0, 0)
@@ -2611,14 +2625,18 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
     // last week should not keep inflating 2.3.5 today.
     const lastDay = new Date(event.lastSeenAt)
     lastDay.setUTCHours(0, 0, 0, 0)
+    const eventClient = (event.client as DeviceClient) || 'desktop'
+    const eventOs = (event.os as DeviceOs) || 'unknown'
     while (cursor <= lastDay) {
       const day = isoDay(cursor)
-      const key = `${day}\u0000${event.version}`
+      const key = `${day}\u0000${eventClient}\u0000${eventOs}\u0000${event.version}`
       let bucket = byDay.get(key)
       if (!bucket) {
         bucket = {
           version: event.version,
           channel: (event.channel as ReleaseChannel) || parseChannel(event.version),
+          client: eventClient,
+          os: eventOs,
           devices: new Set<string>(),
         }
         byDay.set(key, bucket)
@@ -2633,6 +2651,8 @@ export async function getAppVersions(options: { days?: number } = {}): Promise<A
       date: key.slice(0, key.indexOf('\u0000')),
       version: bucket.version,
       channel: bucket.channel,
+      client: bucket.client,
+      os: bucket.os,
       devices: bucket.devices.size,
     }))
     .sort((a, b) => b.date.localeCompare(a.date) || b.devices - a.devices)
@@ -2861,6 +2881,106 @@ export async function getActiveUsersTimeseries(
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
   return days
+}
+
+// ============================================================================
+// Active devices per day
+// ============================================================================
+
+export interface DeviceActivityPoint {
+  date: string
+  /** Distinct devices active that UTC day. */
+  daily: number
+  /** Distinct devices active in the rolling 7 days ending that day. */
+  weekly: number
+  /** Distinct devices active in the rolling 30 days ending that day. */
+  monthly: number
+  byOs: { macos: number; windows: number; linux: number; unknown: number }
+  byClient: { desktop: number; cli: number }
+}
+
+export interface DeviceActivityTimeseries {
+  /** Earliest `day` in the table, or null before the first device is seen. */
+  trackingSince: string | null
+  points: DeviceActivityPoint[]
+}
+
+/**
+ * Devices active per day from `device_active_days`.
+ *
+ * The per-device list only knows each machine's *last* heartbeat, so it can
+ * answer "how many are alive now" but not "how many were alive on 3 November".
+ * This series comes from the day rows the touch path writes (SHO-477).
+ *
+ * Rolling windows read 29 days before the window so the first day it reports
+ * is a full 30-day count, not a partial one. Days with no rows are zero-filled,
+ * so the chart never jumps a gap; only days before the table's first row are
+ * meaningless, and `trackingSince` lets the caller drop them.
+ */
+export async function getDeviceActivityTimeseries(
+  options: { days?: number } = {},
+): Promise<DeviceActivityTimeseries> {
+  const days = Math.min(Math.max(Math.trunc(options.days ?? 30) || 30, 1), 365)
+  const dayMs = 24 * 60 * 60 * 1000
+  const to = new Date()
+  to.setUTCHours(0, 0, 0, 0)
+  const from = new Date(to.getTime() - (days - 1) * dayMs)
+  const lookbackStart = new Date(from.getTime() - 29 * dayMs)
+
+  const [rows, earliest] = await Promise.all([
+    prisma.deviceActiveDay.findMany({
+      where: { day: { gte: isoDay(lookbackStart), lte: isoDay(to) } },
+      select: { deviceId: true, day: true, os: true, client: true, lastSeenAt: true },
+    }),
+    prisma.deviceActiveDay.findFirst({ orderBy: { day: 'asc' }, select: { day: true } }),
+  ])
+
+  // One count per device per day. Two regions can each tag the same
+  // (device, day), so collapse on the newest sighting here rather than in the
+  // query — that keeps `byOs` and `byClient` summing to `daily` by
+  // construction instead of double-counting a device tagged twice.
+  const perDay = new Map<string, Map<string, { os: string; client: string; at: number }>>()
+  for (const row of rows) {
+    const day = String(row.day).slice(0, 10)
+    let devices = perDay.get(day)
+    if (!devices) {
+      devices = new Map()
+      perDay.set(day, devices)
+    }
+    const at = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0
+    const seen = devices.get(row.deviceId)
+    if (seen && seen.at > at) continue
+    devices.set(row.deviceId, { os: row.os ?? 'unknown', client: row.client ?? 'desktop', at })
+  }
+
+  const byDay = new Map<string, Set<string>>()
+  for (const [day, devices] of perDay) byDay.set(day, new Set(devices.keys()))
+
+  const points: DeviceActivityPoint[] = []
+  const cursor = new Date(from)
+  while (cursor <= to) {
+    const date = isoDay(cursor)
+    const devices = perDay.get(date)
+    const byOs = { macos: 0, windows: 0, linux: 0, unknown: 0 }
+    const byClient = { desktop: 0, cli: 0 }
+    for (const device of devices?.values() ?? []) {
+      if (device.os === 'macos' || device.os === 'windows' || device.os === 'linux') byOs[device.os] += 1
+      else byOs.unknown += 1
+      if (device.client === 'cli') byClient.cli += 1
+      else byClient.desktop += 1
+    }
+    points.push({
+      date,
+      daily: devices?.size ?? 0,
+      weekly: rollingUnionSize(byDay, cursor, 7),
+      monthly: rollingUnionSize(byDay, cursor, 30),
+      byOs,
+      byClient,
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return { trackingSince: earliest?.day ?? null, points }
 }
 
 // ============================================================================

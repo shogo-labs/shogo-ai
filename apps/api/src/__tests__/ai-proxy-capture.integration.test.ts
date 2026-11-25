@@ -74,11 +74,6 @@ mock.module('../services/billing.service', () => ({
   allocateMonthlyIncluded: async () => {},
   hasPaidSubscription: async () => true,
   resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
-  canRunTechStackOnInstanceSize: async () => ({
-    allowed: true,
-    currentSize: 'micro',
-    requiredSize: null,
-  }),
 }))
 
 mock.module('../lib/proxy-billing-session', () => ({

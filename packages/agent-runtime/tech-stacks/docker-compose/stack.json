@@ -8,7 +8,6 @@
   "runtime": {
     "devServer": "compose",
     "vmClass": "docker",
-    "minimumInstanceSize": "large",
     "installCommand": "docker compose pull",
     "templateApiPort": 3001,
     "ports": [

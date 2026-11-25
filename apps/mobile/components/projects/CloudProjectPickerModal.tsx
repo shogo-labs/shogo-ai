@@ -18,7 +18,7 @@
  * ModalFooter) so the two read as one consistent surface.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native'
+import { Pressable, ScrollView, View } from 'react-native'
 import {
   Modal,
   ModalBackdrop,
@@ -42,6 +42,7 @@ import {
   useOpenCloudProject,
   type CloudProjectListItem,
 } from '../project/useOpenCloudProject'
+import { Spinner } from '@/components/ui/spinner'
 
 interface CloudProjectPickerModalProps {
   open: boolean
@@ -231,7 +232,7 @@ function ProjectRow({
       </View>
 
       {busy ? (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       ) : item.cloudLinked ? (
         <View className="flex-row items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5">
           <Check size={12} className="text-emerald-500" />
@@ -247,7 +248,7 @@ function ProjectRow({
 function LoadingState() {
   return (
     <View className="items-center justify-center gap-3 py-10">
-      <ActivityIndicator size="small" />
+      <Spinner size="small" />
       <Text className="text-xs text-typography-500">Loading cloud projects…</Text>
     </View>
   )

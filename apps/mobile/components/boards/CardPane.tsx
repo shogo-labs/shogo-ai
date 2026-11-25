@@ -8,7 +8,7 @@
  * and summary live on Details so the other three get the pane's full height.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Archive, Bell, BellOff, Bot, ExternalLink, MessageSquare, Pencil, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -28,9 +28,13 @@ import { useWorkItem } from '../../hooks/useWorkBoards'
 import { MarkdownText } from '../chat/MarkdownText'
 import { TimelinePane } from '../team-chat/TimelinePane'
 import { OptionSheet } from './OptionSheet'
+import { errorMessage } from '../../lib/error-message'
 import { PRIORITY_DOT } from './priority'
 import { PullRequestSection } from './PullRequestChip'
 import { openConversationTarget } from '../../lib/team-chat-nav'
+import { GlassButton } from '../team-chat/FloatingChrome'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 const chat = teamChatApi()
@@ -47,9 +51,12 @@ export interface CardPaneProps {
   conversation?: ConversationDetail | null
   visible: boolean
   onClose: () => void
+  /** Phone: the card opens full-screen under the DM's floating glass header. */
+  floating?: boolean
 }
 
-export function CardPane({ itemId, workspaceId, me, mentionables, conversation, visible, onClose }: CardPaneProps) {
+export function CardPane({ itemId, workspaceId, me, mentionables, conversation, visible, onClose, floating }: CardPaneProps) {
+  const header = usePhoneScreenHeaderInset()
   const { detail, error, reload, setDetail } = useWorkItem(itemId, workspaceId)
   const [tab, setTab] = useState<Tab>('thread')
   const [sheet, setSheet] = useState<Sheet>(null)
@@ -80,9 +87,16 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   if (!detail) {
     return (
       <View className="flex-1 bg-background">
-        <PaneHeader title="Card" onClose={onClose} />
-        <View className="flex-1 items-center justify-center p-6">
-          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <ActivityIndicator />}
+        {floating ? (
+          <PhoneScreenHeader title="Card" closeLabel="Close card" onClose={onClose} onLayout={header.onLayout} />
+        ) : (
+          <PaneHeader title="Card" onClose={onClose} />
+        )}
+        <View
+          className="flex-1 items-center justify-center p-6"
+          style={floating ? { paddingTop: header.height } : undefined}
+        >
+          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <Spinner />}
         </View>
       </View>
     )
@@ -90,39 +104,59 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
 
   const { item, board } = detail
   const columns = board.columns ?? []
+  const follow = async () => {
+    const next = !detail.following
+    setDetail({ ...detail, following: next })
+    await api.follow(item.id, next).catch(() => reload())
+  }
+  const archive = async () => {
+    await api.archiveItem(item.id).catch((err: unknown) => setNotice(errorMessage(err)))
+    onClose()
+  }
+  const cardActions = floating ? (
+    <>
+      <GlassButton label={detail.following ? 'Stop following' : 'Follow'} onPress={() => void follow()}>
+        {detail.following ? <Bell size={18} className="text-primary" /> : <BellOff size={18} className="text-muted-foreground" />}
+      </GlassButton>
+      <GlassButton label="Archive card" onPress={() => void archive()}>
+        <Archive size={18} className="text-muted-foreground" />
+      </GlassButton>
+    </>
+  ) : (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={detail.following ? 'Stop following' : 'Follow'}
+        onPress={() => void follow()}
+        className="rounded-md p-1.5 hover:bg-muted active:bg-muted"
+      >
+        {detail.following ? <Bell size={15} className="text-primary" /> : <BellOff size={15} className="text-muted-foreground" />}
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Archive card"
+        onPress={() => void archive()}
+        className="rounded-md p-1.5 hover:bg-muted active:bg-muted"
+      >
+        <Archive size={15} className="text-muted-foreground" />
+      </Pressable>
+    </>
+  )
   return (
     <View className="flex-1 bg-background" testID="card-pane">
-      <PaneHeader
-        title={`${item.key} · ${board.name}`}
-        onClose={onClose}
-        actions={(
-          <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={detail.following ? 'Stop following' : 'Follow'}
-              onPress={async () => {
-                const next = !detail.following
-                setDetail({ ...detail, following: next })
-                await api.follow(item.id, next).catch(() => reload())
-              }}
-              className="rounded-md p-1.5 hover:bg-muted active:bg-muted"
-            >
-              {detail.following ? <Bell size={15} className="text-primary" /> : <BellOff size={15} className="text-muted-foreground" />}
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Archive card"
-              onPress={async () => {
-                await api.archiveItem(item.id).catch((err: Error) => setNotice(err.message))
-                onClose()
-              }}
-              className="rounded-md p-1.5 hover:bg-muted active:bg-muted"
-            >
-              <Archive size={15} className="text-muted-foreground" />
-            </Pressable>
-          </>
-        )}
-      />
+      {floating ? (
+        <PhoneScreenHeader
+          title={`${item.key} · ${board.name}`}
+          closeLabel="Close card"
+          closeTestID="card-pane-close"
+          onClose={onClose}
+          onLayout={header.onLayout}
+          actions={cardActions}
+        />
+      ) : (
+        <PaneHeader title={`${item.key} · ${board.name}`} onClose={onClose} actions={cardActions} />
+      )}
+      <View className="min-h-0 flex-1" style={floating ? { paddingTop: header.height } : undefined}>
       <View className="shrink-0 gap-2 px-4 pb-2 pt-3">
         <EditableText
           key={`title:${item.id}`}
@@ -182,6 +216,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
         ) : (
           <AgentRuns detail={detail} mentionables={mentionables} />
         )}
+      </View>
       </View>
       {sheet === 'column' ? (
         <OptionSheet
@@ -378,7 +413,7 @@ function CardThread({ detail, workspaceId, me, mentionables, conversation, visib
     if (!conversationId) return
     if (conversation?.id === conversationId) return setChannel(conversation)
     let live = true
-    chat.get(conversationId).then((c) => live && setChannel(c)).catch((err: Error) => live && setError(err.message))
+    chat.get(conversationId).then((c) => live && setChannel(c)).catch((err: unknown) => live && setError(errorMessage(err)))
     return () => {
       live = false
     }
@@ -388,7 +423,7 @@ function CardThread({ detail, workspaceId, me, mentionables, conversation, visib
     if (!channel) {
       return (
         <View className="flex-1 items-center justify-center p-6">
-          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <ActivityIndicator />}
+          {error ? <Text className="text-center text-sm text-muted-foreground">{error}</Text> : <Spinner />}
         </View>
       )
     }
@@ -529,7 +564,7 @@ function CardHistory({ itemId, mentionables }: { itemId: string; mentionables: M
             </Pressable>
           )
         })}
-        {loading ? <ActivityIndicator /> : null}
+        {loading ? <Spinner /> : null}
         {!loading && !entries.length ? <Text className="py-4 text-center text-sm text-muted-foreground">Nothing here yet.</Text> : null}
         {!loading && next ? (
           <Pressable accessibilityRole="button" onPress={() => void load(next)} className="self-center rounded-md bg-muted px-3 py-1.5">

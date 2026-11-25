@@ -6,7 +6,7 @@
  * workspace agent proxy, and reuses the IDE previews and chat markdown.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react"
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native"
+import { Platform, Pressable, ScrollView, Text, View } from "react-native"
 import * as Clipboard from "expo-clipboard"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { Copy, Check, X, Link2 } from "lucide-react-native"
@@ -22,6 +22,7 @@ import { DownloadChip } from "../chat/turns/DownloadChip"
 import { FileContentView, viewerPathKey } from "../files/FileContentView"
 import { fileViewKind, type FileViewKind } from "../files/file-view-kind"
 import { isPreviewLanguage } from "../project/panels/ide/FilePreview"
+import { Spinner } from '@/components/ui/spinner'
 
 /** Text past this many characters is cut off, with a note and a download. */
 const MAX_TEXT_CHARS = 500_000
@@ -176,7 +177,7 @@ export function WorkspaceFileViewer({
           setState({ status: "preview", kind, url: objectUrl })
         })
         .catch(fail)
-    } else if (Platform.OS !== "web" && kind === "slides") {
+    } else if (Platform.OS !== "web" && (kind === "slides" || kind === "document")) {
       readFirst(sources, (client, readPath) => client.readFileBytes(readPath))
         .then(({ value: bytes, source: hit }) => {
           if (cancelled) return
@@ -309,7 +310,7 @@ function Body({
     case "loading":
       return (
         <View className="flex-1 items-center justify-center gap-2" testID="workspace-file-loading">
-          <ActivityIndicator />
+          <Spinner />
           <Text className="text-xs text-muted-foreground">Loading {name}…</Text>
         </View>
       )
@@ -365,7 +366,8 @@ function Body({
       return (
         <FileContentView
           kind={state.kind}
-          slidesBytes={state.bytes}
+          slidesBytes={state.kind === "slides" ? state.bytes : undefined}
+          documentBytes={state.kind === "document" ? state.bytes : undefined}
           name={name}
           path={path}
           readOnly

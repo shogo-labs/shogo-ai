@@ -10,7 +10,7 @@
  * Run: bun test apps/api/src/routes/__tests__/chat-message-changes.test.ts
  */
 
-import { describe, test, expect, beforeEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from 'bun:test'
 import { Hono } from 'hono'
 import { mock } from 'bun:test'
 
@@ -128,12 +128,22 @@ function row(over: Partial<Row> & { id: string }): Row {
   } as Row
 }
 
+// The delta route asks the client to reload when its cursor is more than 30
+// days old. The fixtures below are literal 2026-10-30 timestamps, so pin the
+// clock to that day: a shifted clock (SHOGO_TEST_CLOCK_OFFSET_DAYS) would
+// otherwise read those literals as older than the 30-day window and answer
+// `reset: true` instead of the changed rows.
 beforeEach(() => {
+  setSystemTime(new Date('2026-10-30T10:00:00.000Z'))
   rows.length = 0
   lastFindManyArgs = null
   reconcileCalls = 0
   sessions.clear()
   sessions.set('s1', { members: ['u1'] })
+})
+
+afterEach(() => {
+  setSystemTime()
 })
 
 describe('GET /api/chat-messages/session/:id/changes', () => {

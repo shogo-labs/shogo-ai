@@ -91,6 +91,15 @@ spec:
         autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "10"
         autoscaling.knative.dev/target: "50"
+        # Keep the activator off the request path once a replica is Ready (SHO-506,
+        # same fix staging has carried since the 5-minute chat-stream cut): the
+        # activator imposes a hardcoded ~5-minute `defaultRequestTimeout` on
+        # in-flight requests that ignores the revision's `timeoutSeconds`, so every
+        # long-lived stream through this DomainMapping — a desktop tunnel, a chat
+        # turn, an SSE read — died at exactly 5:00 with `1006`/`UC`.
+        autoscaling.knative.dev/target-burst-capacity: "0"
+        autoscaling.knative.dev/scale-down-delay: "5m"
+        autoscaling.knative.dev/window: "60s"
     spec:
       serviceAccountName: api-service-account
       containers:
@@ -184,6 +193,12 @@ spec:
             # `shogo-published-data-${var.environment}`.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-production"
+            # Project bucket (SHO-491) — same production bucket the modern
+            # production-us overlay uses; this legacy all-in-one manifest points
+            # at the same cluster and the same publish buckets, so it must not
+            # be the one place the feature is silently off.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             - name: BETTER_AUTH_URL
@@ -207,6 +222,12 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai"
+            # learn.shogo.ai sign-in (routes/learn.ts, lib/learn-token.ts): the
+            # learn-only cookie is set on this parent domain; never the session.
+            - name: LEARN_COOKIE_DOMAIN
+              value: ".shogo.ai"
+            - name: LEARN_ORIGINS
+              value: "https://learn.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-system:6379"
             - name: DATABASE_URL
@@ -364,6 +385,33 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: SLACK_APP_ID
+                  optional: true
+            # WhatsApp Tech Provider (SHO-463). Optional so the pod boots before
+            # the secrets exist; until set the feature flag is false and the
+            # route returns 412.
+            - name: WHATSAPP_META_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_ID
+                  optional: true
+            - name: WHATSAPP_META_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_SECRET
+                  optional: true
+            - name: WHATSAPP_ES_CONFIG_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_ES_CONFIG_ID
+                  optional: true
+            - name: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
                   optional: true
             - name: ZERNIO_API_KEY
               valueFrom:

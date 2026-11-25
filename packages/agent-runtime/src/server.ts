@@ -65,6 +65,7 @@ import {
 import { LiveTurnGate } from './live-turn-wait'
 import { handleWorkspaceDriveOp, readWorkspaceDriveUsage, type DriveOp } from './workspace-drive'
 import type { TurnOrigin } from './gateway'
+import type { Context } from 'hono'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -102,6 +103,7 @@ import {
   autoTrackLargeFiles,
   lfsPushAll,
   lfsPushIncremental,
+  lfsPushedTips,
   LfsPushError,
   LfsPushRunner,
   lfsPull,
@@ -165,7 +167,6 @@ import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { ensureDurableTaskLogs } from './task-log-durability'
-import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
@@ -183,7 +184,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, derivePublicApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -243,7 +244,7 @@ import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
 import { modelDowngradeNotice, parseModelDowngrade } from './model-downgrade'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
-import { WebhookAdapter } from './channels/webhook'
+import { WebhookAdapter, generateWebhookSecret } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { recordCanvasRuntimeErrorEscaped } from './canvas-slo'
 import {
@@ -586,6 +587,25 @@ function lfsPushFailureBody(err: LfsPushError) {
 }
 
 /**
+ * Push this repo's new LFS objects for a save, through the SAME runner the
+ * `/pool/export*` routes use, and answer whether the bytes are now durable.
+ *
+ * It used to call `lfsPushAll` directly (SHO-531): `tips: null`, outside the
+ * runner, so a save and a host export each ran a full-history scan plus a full
+ * push, concurrently, on a 2 vCPU guest. Now the tips come from the repo's own
+ * pushed-tips marker (so `rev-list` walks only the commits since the last
+ * successful push) and the runner makes the export join this job instead of
+ * starting a second one.
+ */
+async function pushLfsForSave(dir: string): Promise<boolean> {
+  if (!isLfsActive() || !existsSync(join(dir, '.git'))) return false
+  const cfg = lfsRemoteConfigFromEnv(dir)
+  if (!cfg) return false
+  const push = await awaitLfsPush(dir, lfsPushedTips(dir), LFS_PUSH_WAIT_MS)
+  return push?.state === 'done'
+}
+
+/**
  * Persist `.git` to object storage, first offloading LFS object bytes to OCI
  * when LFS is active. The local `.git/lfs/objects` cache is excluded from the
  * tarball ONLY when the push succeeded — otherwise the bytes would be durable
@@ -600,8 +620,7 @@ function lfsPushFailureBody(err: LfsPushError) {
 async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   if (isHostMediatedDurability()) {
     if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-      if (lfsCfg) await lfsPushAll(lfsCfg)
+      s3SyncInstance?.setLfsObjectsDurable(await pushLfsForSave(WORKSPACE_DIR))
     }
     // LFS bytes are offloaded via the API; the host packs `.git` on export.
     return { ok: true, changed: false, reason: 'host-mediated' }
@@ -610,8 +629,10 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   if (!repoCfg) return { ok: true, changed: false, reason: 'no-store-config' }
   let excludeLfsObjects = false
   if (isLfsActive()) {
-    const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-    if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+    excludeLfsObjects = await pushLfsForSave(WORKSPACE_DIR)
+    // The same "bytes are durable now" fact decides whether the project
+    // archive may store LFS files as pointer text (SHO-478).
+    s3SyncInstance?.setLfsObjectsDurable(excludeLfsObjects)
   }
   return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
 }
@@ -1013,6 +1034,12 @@ const { app, state, logTiming } = await createRuntimeApp({
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
     const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
+    // A merged workspace runtime keeps its projects' repos in subfolders and
+    // never has a root `.git`, and a runtime whose repo was dropped has none
+    // either. Reporting a HEAD it can never export refused that VM for
+    // durability on every sweep, forever (SHO-540).
+    const repoPresent = existsSync(join(WORKSPACE_DIR, '.git'))
+    if (!repoPresent) cachedRepoHeadSha = null
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -1022,7 +1049,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       activeTurns: work.turns,
       activeTasks: work.tasks,
       activeChildren: work.children ?? 0,
-      repoHeadSha: cachedRepoHeadSha,
+      repoHeadSha: repoPresent ? cachedRepoHeadSha : null,
+      repoPresent,
       previewHealth: safePreviewHealth(),
     }
   },
@@ -1480,11 +1508,20 @@ if (typeof (streamReaperTimer as any)?.unref === 'function') (streamReaperTimer 
 WhatsAppAdapter.registerWebhookRoutes(app)
 
 // Register Webhook/HTTP channel routes
-WebhookAdapter.registerRoutes(app, () => {
-  if (!agentGateway) return null
-  const adapter = agentGateway.getChannel('webhook')
-  return adapter && adapter.getStatus().connected ? adapter as any : null
-})
+WebhookAdapter.registerRoutes(
+  app,
+  () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webhook')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  },
+  (correlationId: string) => {
+    const projectId = process.env.PROJECT_ID
+    const publicApiUrl = derivePublicApiUrl()
+    if (!publicApiUrl || !projectId) return null
+    return `${publicApiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/outbox/${encodeURIComponent(correlationId)}`
+  },
+)
 
 // Hot-connect a channel at runtime (called by MCP tool after writing config.json)
 app.post('/agent/channels/hot-connect', async (c) => {
@@ -1558,6 +1595,26 @@ app.get('/agent/status', (c) => {
     const entry = (status as any).channels.find((ch: any) => ch.type === 'webchat')
     if (entry) {
       entry.metadata = { ...(entry.metadata ?? {}), widgetKey: webchatKey }
+    }
+  }
+  // Webhook: expose secret + public URLs in owner-only status (never on public
+  // health endpoint). Follows the widgetKey pattern above (SHO-462).
+  const webhookAdapter = agentGateway?.getChannel('webhook') as WebhookAdapter | undefined
+  const webhookSecret = webhookAdapter?.getSecret()
+  if (webhookSecret && Array.isArray((status as any).channels)) {
+    const entry = (status as any).channels.find((ch: any) => ch.type === 'webhook')
+    if (entry) {
+      const projectId = process.env.PROJECT_ID
+      const publicApiUrl = derivePublicApiUrl()
+      const proxyBase = publicApiUrl && projectId
+        ? `${publicApiUrl}/api/projects/${projectId}/agent-proxy`
+        : null
+      entry.metadata = {
+        ...(entry.metadata ?? {}),
+        webhookSecret,
+        incomingUrl: proxyBase ? `${proxyBase}/agent/channels/webhook/incoming` : null,
+        outboxBaseUrl: proxyBase ? `${proxyBase}/agent/channels/webhook/outbox/` : null,
+      }
     }
   }
   return c.json(status)
@@ -1865,6 +1922,12 @@ app.post('/agent/channels/connect', async (c) => {
       const savedWebchat = fileConfig.channels.find((ch: any) => ch.type === 'webchat')?.config
       channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
     }
+    if (type === 'webhook') {
+      // Keep or generate the secret — reconnecting must not rotate it (SHO-462).
+      const { resolveChannelSecret } = await import('./channels/channel-secret')
+      const savedWebhook = fileConfig.channels.find((ch: any) => ch.type === 'webhook')?.config
+      channelConfig.secret = resolveChannelSecret(channelConfig, savedWebhook, 'secret', generateWebhookSecret)
+    }
     const channelEntry = { type, config: channelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
@@ -1882,6 +1945,7 @@ app.post('/agent/channels/connect', async (c) => {
       type,
       message: `${type} channel connected`,
       ...(type === 'webchat' ? { widgetKey: channelConfig.widgetSecret } : {}),
+      ...(type === 'webhook' ? { secret: channelConfig.secret } : {}),
     })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
@@ -2905,6 +2969,13 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 
 import { PreviewManager, publishedBootPlan } from './preview-manager'
 import { handleDistFiles, handlePublishArtifact, type PublishEndpointDeps } from './publish-endpoints'
+import {
+  serveDistResponse,
+  RUNTIME_MARKER_HEADER,
+  RUNTIME_MARKER_VALUE,
+  type DistServeContext,
+} from './dist-response'
+import { lfsObjectStore } from './lfs-store'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -3542,6 +3613,19 @@ app.post('/pool/export', async (c) => {
       })
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
     await flushGitBeforeExport(destinationDir)
+    // A pointer-only source archive is only safe once the object bytes are
+    // durable in `lfs/objects`. Zero-wait check: if `/pool/export-repo` already
+    // pushed this HEAD the job settles instantly, and otherwise it starts the
+    // push now so the next save can drop the bytes (SHO-478).
+    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
+      if (lfsCfg) {
+        // Same tips as the save path, so this joins a running push instead of
+        // starting a second full scan (SHO-531).
+        const push = await lfsPushRunner.run(lfsCfg, lfsPushedTips(destinationDir))
+        sync.setLfsObjectsDurable((await lfsPushRunner.settle(push, 0)) === 'done')
+      }
+    }
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
     const size = statSync(tmp).size
@@ -3619,7 +3703,9 @@ app.post('/pool/export-repo', async (c) => {
     // `.git/lfs/objects` itself, so waiting on a push would only delay it.
     if (body?.skipLfsPush !== true) {
       const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
-      const push = await awaitLfsPush(destinationDir, null, waitMs)
+      // Marker tips, like the save path: this is the same job when a save is
+      // already pushing, and a one-commit walk when it is not (SHO-531).
+      const push = await awaitLfsPush(destinationDir, lfsPushedTips(destinationDir), waitMs)
       // Only a finished push lets the tarball drop the local object store;
       // otherwise the bytes would be durable nowhere.
       excludeLfsObjects = push?.state === 'done'
@@ -3769,18 +3855,28 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s)) throw new Error('since must be object ids')
       return s
     })
+    // A workspace runtime keeps its members' repos in subfolders and has no
+    // root `.git`, so there is nothing here to bundle. Asking git for a
+    // snapshot used to answer 500, which the host recorded as a failed export
+    // for a VM that has no repo at all — and, since the guest kept reporting a
+    // HEAD, refused it for durability forever (SHO-540). Say "no repo" instead.
+    if (!existsSync(join(destinationDir, '.git'))) {
+      return c.json({ code: 'no-repo', error: 'this runtime has no root git repo' }, 404)
+    }
     await flushGitBeforeExport(destinationDir)
-    // A workspace runtime keeps its members' repos in subfolders and drops
-    // the root `.git`, so the root can have no repo and nothing to push.
-    //
     // The push is a background job (SHO-442): a media-heavy history takes
     // minutes, so the request waits only `waitMs` and then answers 202 with
     // progress. The next call joins the same job instead of starting over, and
     // a host that stopped waiting cannot make it restart.
     let lfsMissing: import('@shogo/shared-runtime').LfsMissingObject[] = []
-    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+    if (isLfsActive()) {
       const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
-      const push = await awaitLfsPush(destinationDir, since, waitMs)
+      // Both lower bounds are valid: the refs the host's last manifest covered,
+      // and the tips this repo recorded as pushed. Naming both walks the union
+      // of what is still unsent instead of everything since the older one.
+      const marker = since ? lfsPushedTips(destinationDir) : null
+      const base = since && marker?.length ? [...new Set([...since, ...marker])] : since
+      const push = await awaitLfsPush(destinationDir, base, waitMs)
       if (push?.state === 'pending') {
         return c.json(
           {
@@ -4026,8 +4122,15 @@ app.post('/pool/export-data', async (c) => {
     // Deliberately NOT falling back to copying the database files: a torn copy
     // restores as a healthy-looking database with wrong contents, which is
     // worse than no new backup at all (the last good archive stays intact).
-    console.error('[pool/export-data] failed:', err?.message ?? err)
-    return c.json({ error: err?.message ?? 'export failed' }, 500)
+    //
+    // A snapshot failure carries a NAMED code so the host can tell a database
+    // it cannot read from a guest that is merely unhappy: it records the code
+    // on the VM, alerts once, and backs the retry off to hours instead of
+    // re-exporting a backup that keeps failing every few minutes (SHO-541).
+    // Everything else stays a plain 500.
+    const code = typeof err?.code === 'string' ? err.code : 'export_failed'
+    console.error(`[pool/export-data] failed (${code}):`, err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export failed', code }, 500)
   } finally {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
@@ -4395,9 +4498,13 @@ app.post('/templates/copy', async (c) => {
     console.log(`[templates/copy] Prisma schema left as-is (Prisma 7.x adapter mode)`)
 
     // Rewrite db.tsx to use @prisma/adapter-libsql for SQLite
-    // (templates ship with PrismaPg adapter but run on SQLite in the runtime)
+    // (templates ship with PrismaPg adapter but run on SQLite in the runtime),
+    // but only when the project is NOT already on Postgres: a published pod whose
+    // DATABASE_URL points at projects-pg must keep its Postgres adapter (SHO-551 B).
+    const projectDatabaseUrl = (process.env.DATABASE_URL ?? '').trim()
+    const isPostgresDatabaseUrl = /^postgres(ql)?:\/\//.test(projectDatabaseUrl)
     const dbTsxPath = join(projectDir, 'src', 'lib', 'db.tsx')
-    if (existsSync(dbTsxPath)) {
+    if (existsSync(dbTsxPath) && !isPostgresDatabaseUrl) {
       const SQLITE_DB_TSX = `import { PrismaLibSql } from '@prisma/adapter-libsql'
 import { PrismaClient } from '../generated/prisma/client'
 
@@ -6201,21 +6308,21 @@ app.get('/agent/ports/listening', async (c) => {
   // Single-project mode: fall through to the ordinary root-dist route exactly
   // as if this block didn't exist, so a user app's own `/p/<id>` route (if it
   // has one) still resolves client-side via the SPA fallback.
-  app.get('/p/:projectId', (c) => {
+  app.get('/p/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
     if (!IS_WORKSPACE_RUNTIME) {
       const urlPath = new URL(c.req.url).pathname
-      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+      return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
     }
     if (!getWorkspacePreviewManager(projectId)) return projectNotAttached(c, projectId)
     return c.redirect(`/p/${projectId}/`)
   })
 
   // Static dist/ serve for a project, scoped to its subfolder + base prefix.
-  app.get('/p/:projectId/*', (c) => {
+  app.get('/p/:projectId/*', async (c) => {
     const urlPath = new URL(c.req.url).pathname
     if (!IS_WORKSPACE_RUNTIME) {
-      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+      return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
     }
     const parsed = parseWorkspacePreviewPath(urlPath)
     if (!parsed) return c.notFound()
@@ -6223,22 +6330,8 @@ app.get('/agent/ports/listening', async (c) => {
     if (!pm) return projectNotAttached(c, parsed.projectId)
     const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
     const inFlight = BUILDING_PHASES.has(pm.phase)
-    return serveDistResponse(distDir, parsed.rest, inFlight) ?? markedNotFound()
+    return (await serveDist(c, distDir, parsed.rest, inFlight, parsed.projectId)) ?? markedNotFound()
   })
-}
-
-// =============================================================================
-// Shared MIME map for static file serving
-// =============================================================================
-
-const STATIC_MIME: Record<string, string> = {
-  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-  '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff',
-  '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject',
-  '.map': 'application/json', '.txt': 'text/plain', '.xml': 'application/xml',
-  '.webmanifest': 'application/manifest+json', '.mjs': 'application/javascript',
 }
 
 // =============================================================================
@@ -6502,6 +6595,13 @@ function getProjectPreviewManager(projectId?: string): PreviewManager | null {
 const publishEndpointDeps: PublishEndpointDeps = {
   projectDir: (projectId) => getProjectWorkspaceDir(projectId),
   outputRoot: (projectId, projectDir) => getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir,
+  // One client for the publish bucket and for `<projectId>/lfs/objects` (both
+  // live on the same S3-compatible endpoint); the bucket the API names for the
+  // artifact is passed per request.
+  objectStore: () => {
+    const store = lfsObjectStore()
+    return store ? { client: store.client, bucket: store.bucket } : null
+  },
 }
 
 app.get('/agent/dist-files', (c) => handleDistFiles(c, publishEndpointDeps))
@@ -6589,6 +6689,31 @@ app.post('/agent/published-data/suspend', (c) => {
     return c.json({ ok: true, suspended: true })
   }
   return c.json({ ok: true, suspended: false })
+})
+
+/**
+ * Upload this pod's writable state NOW instead of at the next sync interval
+ * (§G3). The publish flow calls it inside a write freeze, so the archive it is
+ * about to seed Postgres from holds the last write the SQLite site accepted —
+ * without it, up to `PUBLISHED_DATA_SYNC_INTERVAL` (30 s) of real writes stay on
+ * a pod that the new revision replaces.
+ *
+ * `flushed: false, unchanged: true` is a success: the archive already holds this
+ * pod's current bytes, so there is nothing newer to wait for.
+ */
+app.post('/agent/published-data/flush', async (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode', message: 'Only server-backed published pods can be flushed' }, 400)
+  }
+  if (!publishedDataSyncInstance) {
+    return c.json({ ok: true, flushed: false, unchanged: true })
+  }
+  try {
+    const flushed = await publishedDataSyncInstance.flush()
+    return c.json({ ok: true, flushed, unchanged: !flushed })
+  } catch (err: any) {
+    return c.json({ error: 'flush_failed', message: err?.message ?? String(err) }, 500)
+  }
 })
 
 /**
@@ -6682,6 +6807,14 @@ app.post('/agent/published-schema', async (c) => {
     mode?: 'describe' | 'export'
     seed?: boolean
     expectedHash?: string
+    /**
+     * Gzipped tar of the live environment's `prisma/` files, base64 — the
+     * SQLite→Postgres switchover (SHO-514). When present, the seed comes from
+     * that database instead of the builder's `prisma/dev.db`, so the rows the
+     * live site accumulated are the ones that cross over. The API reads it from
+     * `{subdomain}/data.tar.gz`.
+     */
+    seedArchive?: string
   }
   try {
     body = await c.req.json()
@@ -6725,7 +6858,12 @@ app.post('/agent/published-schema', async (c) => {
     )
   }
 
-  const result = await exportPublishedSchema(projectDir, { seed: body.seed === true })
+  const result = await exportPublishedSchema(projectDir, {
+    seed: body.seed === true,
+    ...(typeof body.seedArchive === 'string' && body.seedArchive.length > 0
+      ? { seedArchive: body.seedArchive }
+      : {}),
+  })
   if (!result.ok) {
     return c.json({ ok: false, code: result.code, message: result.message }, result.status as 400 | 413)
   }
@@ -6748,6 +6886,11 @@ app.post('/agent/published-schema', async (c) => {
       transformed: result.schema.transformed,
     },
     seed: result.seed,
+    // Where the seed's rows came from. The API REQUIRES this to be `archive`
+    // when it sent `seedArchive`: a runtime that predates SHO-514 ignores the
+    // archive and seeds from the builder's `prisma/dev.db`, and the API has no
+    // other way to tell that from a successful switchover (SHO-541).
+    ...(result.seedSource ? { seedSource: result.seedSource } : {}),
   })
 })
 
@@ -6958,15 +7101,44 @@ function isBuildLikelyInFlight(): boolean {
   return BUILDING_PHASES.has(phase)
 }
 
-// Marker header stamped on every response the agent-runtime itself
-// produces for a preview document. The Cloudflare preview-router Worker
-// uses its presence to distinguish an *infra* error (Kourier "no healthy
-// upstream" 404, activator/pod 503 — no marker) from the *app's own*
-// response (404 page, building placeholder — marked). Infra errors get
-// swapped for the "waking up" interstitial; marked responses pass through
-// untouched so a genuine app 404 never gets masked or reload-looped.
-const RUNTIME_MARKER_HEADER = 'x-shogo-runtime'
-const RUNTIME_MARKER_VALUE = '1'
+/**
+ * What the shared dist/serve function needs from this process.
+ *
+ * The LFS half is wired whenever this runtime has an object store: a published
+ * image is built from pointer text instead of media bytes (SHO-485 §2), so its
+ * `dist/` media only exists in `<projectId>/lfs/objects`. A project without LFS
+ * never produces a pointer file, so its serving path is unchanged.
+ */
+function distServeContext(projectId?: string): DistServeContext {
+  const store = lfsObjectStore()
+  const id = projectId || process.env.PROJECT_ID || ''
+  return {
+    lfs: store && id ? { store, projectId: id } : null,
+    injectHtml: injectRuntimeHtml,
+    renderBuildingPlaceholder,
+  }
+}
+
+/** `serveDistResponse` with the request's own method/range/conditional headers. */
+function serveDist(
+  c: Context,
+  distDir: string,
+  requestPath: string,
+  buildInFlight: boolean,
+  projectId?: string,
+): Promise<Response | null> {
+  return serveDistResponse(
+    {
+      distDir,
+      requestPath,
+      buildInFlight,
+      method: c.req.method,
+      range: c.req.header('range'),
+      ifNoneMatch: c.req.header('if-none-match'),
+    },
+    distServeContext(projectId),
+  )
+}
 
 function renderBuildingPlaceholder(): Response {
   const html = `<!doctype html>
@@ -7012,96 +7184,6 @@ function renderBuildingPlaceholder(): Response {
   })
 }
 
-/**
- * Serve a request out of a `dist/` directory with SPA fallback.
- *
- * Shared by the root static handler (single-project: serves
- * `<WORKSPACE_DIR>/dist`) and the workspace per-project handler
- * (serves `<WORKSPACE_DIR>/<projectId>/dist`). Returns `null` when there
- * is genuinely nothing to serve (no matching file, no `index.html`, no
- * build in flight) so the caller can fall through to `c.notFound()`.
- *
- * `requestPath` is the path *relative to the dist root* — for the root
- * handler that's the full URL path; for the per-project handler it's the
- * remainder after `/p/<projectId>`.
- */
-function serveDistResponse(
-  distDir: string,
-  requestPath: string,
-  buildInFlight: boolean,
-): Response | null {
-  const safePath = requestPath.replace(/\.\./g, '').replace(/\/+/g, '/')
-  const filePath = join(distDir, safePath === '/' ? 'index.html' : safePath)
-
-  if (!filePath.startsWith(resolve(distDir))) {
-    return null
-  }
-
-  const resolvedFile = resolveDistFile(filePath)
-  if (resolvedFile) {
-    const ext = extname(resolvedFile).toLowerCase()
-    const mime = STATIC_MIME[ext] || 'application/octet-stream'
-    if (ext === '.html') {
-      const html = injectRuntimeHtml(readFileSync(resolvedFile, 'utf-8'))
-      return new Response(html, {
-        headers: {
-          'Content-Type': mime,
-          // no-store (not no-cache): no-cache still allows a client to keep a
-          // cached copy and revalidate, and browsers commonly serve a
-          // stale-while-revalidate copy on flaky preview connections. HTML is
-          // the one response that points at content-hashed asset URLs, so it
-          // must never be served from cache once those hashes change.
-          'Cache-Control': 'no-store',
-          [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-        },
-      })
-    }
-    return new Response(readFileSync(resolvedFile), {
-      headers: {
-        'Content-Type': mime,
-        'Cache-Control': staticAssetCacheControl(safePath),
-        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-      },
-    })
-  }
-
-  // The file doesn't exist. Static-asset paths (hashed JS/CSS, images,
-  // fonts, etc.) must 404 here rather than silently fall back to
-  // `index.html` — see `shouldServeSpaFallback` for why: a stale HTML
-  // document requesting an asset hash that an atomic rebuild already
-  // removed would otherwise get a 200 HTML body back for what the browser
-  // expects to be a JS module, producing a blank white page with no
-  // visible error. Only real SPA routes (extension-less paths, `.html`)
-  // fall back below.
-  if (!shouldServeSpaFallback(safePath)) {
-    return null
-  }
-
-  // SPA fallback
-  const indexPath = join(distDir, 'index.html')
-  if (existsSync(indexPath)) {
-    const html = injectRuntimeHtml(readFileSync(indexPath, 'utf-8'))
-    return new Response(html, {
-      headers: {
-        'Content-Type': 'text/html',
-        'Cache-Control': 'no-store',
-        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-      },
-    })
-  }
-
-  // No dist yet. If a build is in flight, render a self-refreshing
-  // "Building..." placeholder so the user doesn't stare at a raw 404
-  // during the first build of a fresh workspace. After the first
-  // successful build the atomic-swap pipeline keeps `dist/` populated,
-  // so this only matters pre-first-build (or after a fresh wipe).
-  if (buildInFlight) {
-    return renderBuildingPlaceholder()
-  }
-
-  return null
-}
-
 // A 404 the agent-runtime itself produced. Carries the runtime marker so
 // the preview-router Worker treats it as an app response (pass through),
 // not an infra "no upstream" 404 (which it would swap for the interstitial).
@@ -7115,7 +7197,7 @@ function markedNotFound(): Response {
   })
 }
 
-app.get('*', (c) => {
+app.get('*', async (c) => {
   const urlPath = new URL(c.req.url).pathname
 
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
@@ -7126,7 +7208,7 @@ app.get('*', (c) => {
     return markedNotFound()
   }
 
-  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+  return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
 })
 
 // =============================================================================
@@ -8000,12 +8082,14 @@ async function initializePublished(): Promise<void> {
     //    archive. We deliberately do NOT start any source uploader/watcher —
     //    published source is immutable for the life of the pod.
     let hydrated = false
+    let hydratedFromGit = false
     const repoCfg = repoStoreConfigFromEnv()
     if (repoCfg) {
       try {
         const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
         hydrated = res.restored
         if (hydrated) {
+          hydratedFromGit = true
           await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
           logTiming('Published mode: source restored from git repo store')
         }
@@ -8028,6 +8112,19 @@ async function initializePublished(): Promise<void> {
       } catch (err: any) {
         console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
       }
+    }
+    if (hydratedFromGit && boot.materializeLfs) {
+      // Smudge is skipped in the pod image, so the git path leaves every
+      // LFS-tracked file as its pointer text. Put the real bytes back from
+      // `lfs/objects` before anything serves this tree (SHO-478). The S3 path
+      // does the same thing inside `downloadAll`. An image-booted pod skips it:
+      // its media is served from the store on request (SHO-485 §1c).
+      const lfsSync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+        watchEnabled: false,
+        syncInterval: 0,
+        suppressProjectArchive: true,
+      })
+      await lfsSync?.materializeLfsObjects()
     }
     if (!hydrated) {
       console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')

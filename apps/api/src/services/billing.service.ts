@@ -43,11 +43,6 @@ import { getOveragePriceConfig } from '../config/stripe-prices';
 import type { BilledUsageActionType } from '../config/usage-action-types';
 import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region';
 import { callPeerInternal } from '../lib/region-peer-proxy';
-import {
-  meetsMinimumInstanceSize,
-  type InstanceSizeName,
-} from '../config/instance-sizes';
-import { getMinimumInstanceSize } from '@shogo/shared-runtime';
 import { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason } from './usage-limits';
 import { getBillingWorkspaceTrustHold, SIGNUP_TRUST_MESSAGES } from '../lib/signup-trust';
 import { recordLocalUsage } from './billing-local';
@@ -55,6 +50,18 @@ import { invalidateAnalyticsCache } from '../lib/analytics-cache';
 import { invalidateAgentReplyCapacity } from './agent-reply-capacity';
 export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
+/**
+ * Local mode read at call time, for decisions that must follow the env as it
+ * is *now* rather than as it was at import. `isLocalMode` above caches the
+ * import-time value, which is right for the process-lifetime gates but wrong
+ * for anything a test flips mid-run: `mail.integration.test.ts` boots with
+ * `SHOGO_LOCAL_MODE=true` and then deletes it to exercise the cloud gating,
+ * and a cached `true` made `getPlanStamp` answer "desktop" there (SHO-508).
+ */
+function localModeNow(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
 
 /**
  * USD source a usage event was charged against. Mirrors the DB enum.
@@ -91,22 +98,70 @@ export async function getSubscriptions(workspaceId: string) {
  * Resolve the workspace whose billing primitives (subscription, usage wallet,
  * grants, seats) actually govern `workspaceId`.
  *
- * A "child" workspace (one with a `parentWorkspaceId`) pools its parent's
- * plan, wallet, and seats — it has no subscription/wallet of its own. For such
- * a workspace this returns the parent id; otherwise it returns the id
- * unchanged. The `system` sentinel and local mode are passed through.
+ * Two cases beyond the workspace itself:
  *
- * Hierarchy is intentionally a single level: only Business/Enterprise (top-level)
- * workspaces may have children, so we never need to walk more than one hop.
+ * 1. **Child workspace** (`parentWorkspaceId` set): pools the parent's plan,
+ *    wallet and seats — it has no subscription/wallet of its own.
+ *
+ * 2. **Desktop-hosted workspace** (`hostInstanceId` set, SHO-285): the
+ *    workspace's compute runs on a paired desktop. The desktop registers as an
+ *    `Instance` whose `workspaceId` is the owner's cloud workspace (which
+ *    carries the actual subscription or grant). Without this branch a hosted
+ *    workspace always resolves to Free even when the host desktop has a paid
+ *    entitlement, locking every non-economy model for mobile users.
+ *    Safety guard: we only follow the hop when the instance's `userId` is a
+ *    member of the hosted workspace AND a current owner or billing admin of
+ *    the paying workspace (SEC-29), so an unpaired or reassigned machine, a
+ *    plain member, or an ex-member cannot lend that plan and wallet out.
+ *
+ * Hierarchy is intentionally a single level (never recurse): only
+ * Business/Enterprise workspaces may have children, and a hosted workspace
+ * always lives under a cloud workspace that has a subscription/grant directly.
  */
 export async function resolveBillingWorkspaceId(workspaceId: string): Promise<string> {
   if (isLocalMode) return workspaceId
   if (workspaceId === SYSTEM_WORKSPACE_ID) return workspaceId
   const ws = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: { parentWorkspaceId: true },
+    select: { parentWorkspaceId: true, hostInstanceId: true },
   });
-  return ws?.parentWorkspaceId ?? workspaceId;
+  if (!ws) return workspaceId;
+
+  // Case 1: child workspace pools the parent.
+  if (ws.parentWorkspaceId) return ws.parentWorkspaceId;
+
+  // Case 2: desktop-hosted workspace — inherit the host desktop's entitlement.
+  if (ws.hostInstanceId) {
+    const instance = await prisma.instance.findUnique({
+      where: { id: ws.hostInstanceId },
+      select: { workspaceId: true, userId: true },
+    });
+    // Only lend the host's plan when the instance owner is a member of the
+    // hosted workspace, and when the host workspace differs from the workspace
+    // itself (guards against trivial self-references).
+    if (
+      instance?.userId &&
+      instance.workspaceId !== workspaceId
+    ) {
+      const membership = await prisma.member.findFirst({
+        where: { workspaceId, userId: instance.userId, projectId: null },
+        select: { id: true },
+      });
+      // SEC-29: being a member of the hosted workspace is not enough. The plan
+      // and wallet being lent belong to the paying workspace, so its holder
+      // must still be an owner or billing admin there; a plain member, or
+      // someone since removed, cannot hand them to outside workspaces.
+      if (membership) {
+        const payer = await prisma.member.findFirst({
+          where: { workspaceId: instance.workspaceId, userId: instance.userId, projectId: null },
+          select: { role: true, isBillingAdmin: true },
+        });
+        if (payer && (payer.role === 'owner' || payer.isBillingAdmin)) return instance.workspaceId;
+      }
+    }
+  }
+
+  return workspaceId;
 }
 
 /** The reads `resolvePromoCreditSource` needs, from `prisma` or a tx client. */
@@ -266,20 +321,51 @@ export async function getActiveGrantsForWorkspace(
 }
 
 /**
- * Resolve the "effective" plan id for a workspace given its active
- * paid subscription (if any) and active grants. Returns the highest
- * tier from either source; falls back to `'free'` when neither is
- * present. Normalized via `normalizePlanId`, so callers get one of
- * `free|basic|pro|business|enterprise`.
+ * The plan a workspace is on, plus whether the *install itself* is uncapped.
  *
- * A paid subscription always wins over a grant's `planId` (the
- * subscription is what Stripe is actually billing); the grant only
- * meaningfully upgrades workspaces without a paid sub.
+ * `planId` is `null` only on desktop (`SHOGO_LOCAL_MODE`) with no linked cloud
+ * plan to report — "we don't know", which is not the same as `'free'` and must
+ * never be stamped as one (SHO-508). Keyed like `PLAN_RANK`, so
+ * `free|basic|pro|business|enterprise` in cloud mode.
  */
-export async function getEffectivePlanId(
+export interface PlanStamp {
+  planId: keyof typeof PLAN_RANK | null
+  /**
+   * Desktop has no plan limits at all (channel rule, SHO-43): every gate next
+   * to this one (`hasPaidSubscription`, `hasAdvancedModelAccess`,
+   * `canPublishSubdomain`, ...) already short-circuits on `isLocalMode`. This
+   * flag is how a caller that only needs the *plan id* can still tell
+   * "unlimited desktop" from "free workspace".
+   */
+  desktopUnlimited: boolean
+}
+
+/**
+ * Resolve the plan a workspace is on, as one value, for everything that shows
+ * it to a user or an agent.
+ *
+ * In cloud mode: the highest tier from the active paid subscription (if any)
+ * and active grants, normalized via `normalizePlanId`. A paid subscription
+ * always wins over a grant's `planId` (the subscription is what Stripe is
+ * actually billing); the grant only meaningfully upgrades workspaces without a
+ * paid sub.
+ *
+ * On desktop: there is no `Subscription` row and no grant, so the local rows
+ * can only ever answer `free` — which is a lie when the install is signed into
+ * a paid Shogo Cloud account, and the lie is what made agents refuse working
+ * features (`lib/stamp-workspace-plan.ts` stamped it into the system prompt,
+ * SHO-508). The linked cloud workspace is the only source of truth, so this
+ * reads that instead. Not linked, or the cloud knows no plan: `planId: null`
+ * with `desktopUnlimited: true`.
+ */
+export async function getPlanStamp(
   workspaceId: string,
   now: Date = new Date(),
-): Promise<keyof typeof PLAN_RANK> {
+): Promise<PlanStamp> {
+  if (localModeNow()) {
+    const { getLinkedCloudPlanId } = await import('../lib/linked-cloud-plan')
+    return { planId: await getLinkedCloudPlanId(), desktopUnlimited: true }
+  }
   // Child workspaces pool the parent's plan tier.
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
   const sub = await prisma.subscription.findFirst({
@@ -287,10 +373,26 @@ export async function getEffectivePlanId(
     select: { planId: true },
   })
   if (sub) {
-    return normalizePlanId(sub.planId) ?? 'free'
+    return { planId: normalizePlanId(sub.planId) ?? 'free', desktopUnlimited: false }
   }
   const grant = await getActiveGrantsForWorkspace(billingWorkspaceId, now)
-  return normalizePlanId(grant.planId) ?? 'free'
+  return { planId: normalizePlanId(grant.planId) ?? 'free', desktopUnlimited: false }
+}
+
+/**
+ * Resolve the "effective" plan id for a workspace. Same resolution as
+ * `getPlanStamp`, flattened to a `PLAN_RANK` key for the gates that compare
+ * ranks: on desktop the linked cloud plan, falling back to `'free'` only
+ * because this signature has no way to say "unknown". Callers that must not
+ * mistake desktop for free (anything that stamps the plan into a prompt) use
+ * `getPlanStamp` instead.
+ */
+export async function getEffectivePlanId(
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<keyof typeof PLAN_RANK> {
+  const stamp = await getPlanStamp(workspaceId, now)
+  return stamp.planId ?? 'free'
 }
 
 /**
@@ -780,49 +882,6 @@ export async function canEnableAlwaysOn(
     countAlwaysOnUsed(workspaceId, projectId),
   ])
   return { allowed: used < allowance, planAllows: allowance > 0, allowance, used }
-}
-
-/**
- * Check whether a workspace's CURRENT instance size (compute add-on tier —
- * `micro`/`small`/`medium`/`large`/`xlarge`, a separate billing axis from the
- * seat plan checked above) meets `techStackId`'s declared
- * `minimumInstanceSize` floor (e.g. `docker-compose` requires `large`; see
- * `packages/core/src/tech-stack-registry.ts` and
- * `config/instance-sizes.ts`'s `applyDockerStackFloor`). Stacks that declare
- * no floor always pass — this only bites Docker-class stacks today.
- *
- * This is the ONLY check that looks at `workspace.instanceSize` for gating
- * purposes; it is independent of (and should be checked in ADDITION to) the
- * super-admin platform flag `runtime.docker_class_enabled`
- * (`lib/runtime-class-setting.ts`) — a workspace can be big enough AND still
- * be refused if the platform gate is off, or vice versa.
- *
- * In local mode returns `allowed: true` unconditionally so dev workspaces
- * (which are always `micro`, there being no Stripe to upgrade them) aren't
- * blocked from using Docker-class stacks locally.
- */
-export async function canRunTechStackOnInstanceSize(
-  workspaceId: string,
-  techStackId: string | null | undefined,
-): Promise<{
-  allowed: boolean
-  currentSize: InstanceSizeName
-  requiredSize: InstanceSizeName | null
-}> {
-  const requiredSize = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { instanceSize: true },
-  })
-  const currentSize = (workspace?.instanceSize ?? 'micro') as InstanceSizeName
-  if (isLocalMode || !requiredSize) {
-    return { allowed: true, currentSize, requiredSize }
-  }
-  return {
-    allowed: meetsMinimumInstanceSize(currentSize, techStackId),
-    currentSize,
-    requiredSize,
-  }
 }
 
 /** Snapshot of one rolling usage window for the usage endpoint / UI. */

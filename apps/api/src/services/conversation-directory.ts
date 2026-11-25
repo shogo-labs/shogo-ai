@@ -11,6 +11,7 @@ import { loadAccess } from '../lib/authz'
 import { agentIconUrl, ConversationError, storedAgentBuddyLook } from './conversation.service'
 import { serializeSettings, getSettingsRow, timeInZone, toStatus, type UserStatus } from './chat-settings'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { loadLearnProfile, type LearnProfileSummary } from './learn-profile.service'
 import { resolveAgentRunModelLabel } from './agent-run-model.service'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
@@ -223,6 +224,8 @@ export interface UserCard {
   localTime: string | null
   localTimeLabel: string | null
   status: UserStatus | null
+  /** Their Shogo Learn level and badges; null until they start learning. */
+  learn: LearnProfileSummary | null
 }
 
 /**
@@ -257,6 +260,7 @@ export async function loadUserCard(workspaceId: string, userId: string, viewerId
     localTime,
     localTimeLabel: localTime ? `${localTime} local time` : null,
     status: toStatus(row, now),
+    learn: await loadLearnProfile(user.id, { tz: timezone }).catch(() => null),
   }
 }
 

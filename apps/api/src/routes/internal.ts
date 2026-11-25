@@ -7,17 +7,20 @@
  * These are NOT exposed via external ingress — only reachable within the K8s cluster.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { NativeReleaseError as NativeReleaseHttpError } from '../services/native-release/client'
 import { timingSafeEqual } from 'node:crypto'
 import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
+import { parseWorkspaceRuntimeKey, type WorkspaceRuntimeKey } from './internal-runtime-auth'
+import { buildWorkspaceRuntimeRefreshEnv } from '../lib/runtime/workspace-runtime-refresh-env'
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
-import type { Permission } from '@shogo/authz'
+import { abilityDenial, type Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
-import { signSharedFileToken } from '../lib/shared-file-token'
+import { signSharedFileToken, sharedFilePathProblem, sharedFilePublicOrigin } from '../lib/shared-file-token'
+import { mintSharedFileLink } from '../lib/shared-file-mint'
 import { handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
 import { getChatProvider } from '../services/chat-providers/registry'
 import type { InboundEvent } from '../services/chat-providers/types'
@@ -58,13 +61,89 @@ function checkRateLimit(projectId: string): boolean {
 }
 
 /**
+ * `GET /pod-config/ws:…` — the AI-proxy credentials for a workspace runtime.
+ *
+ * A merged-root runtime calls itself `ws:<workspaceId>` (or `ws:proj:<anchor>`
+ * for a project canvas), never a real project id, so `buildProjectEnv` cannot
+ * answer for it: the key resolved no project and every refresh tick 401'd with
+ * `workspace_token_mismatch`, which is how the AI proxy token of every
+ * workspace runtime in prod went stale and its turns ended with 0 tokens
+ * (SHO-560).
+ *
+ * Authorisation comes from the token's own scope, never from the key: an SA is
+ * cluster-scoped, and a workspace token may only refresh its OWN workspace. A
+ * project token is refused outright — it is minted for a single-project runtime,
+ * and honouring it here would hand that runtime every token in the workspace.
+ *
+ * Only `AI_PROXY_*` keys are returned: the refresh applies env additively and
+ * never unsets, so shipping the boot env wholesale would overwrite the live
+ * runtime's topology (`WORKSPACE_PROJECT_IDS`, DB urls, …).
+ */
+async function workspacePodConfig(
+  c: Context,
+  key: string,
+  parsed: Extract<WorkspaceRuntimeKey, { kind: 'workspace' }>,
+) {
+  // `ws:<id>` names the workspace outright; `ws:proj:<anchor>` names a project,
+  // whose workspace is the only one such a key may ever be answered for.
+  let workspaceId = parsed.workspaceId
+  if (!workspaceId && parsed.anchorProjectId) {
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    workspaceId = await resolveProjectWorkspaceId(parsed.anchorProjectId)
+  }
+  if (!workspaceId) {
+    return c.json({ error: `Unknown project ${parsed.anchorProjectId}` }, 404)
+  }
+
+  // No projectId here on purpose: a workspace key names no project, and passing
+  // one is exactly what made a workspace token unresolvable.
+  const identity = await authenticate(c)
+  if (!identity) {
+    return c.json({ error: `Missing or invalid credentials for ${key}` }, 401)
+  }
+  if (identity.kind === 'project') {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenProject=${identity.projectId} key=${key}` },
+      401,
+    )
+  }
+  if (identity.kind === 'workspace' && identity.workspaceId !== workspaceId) {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenWorkspace=${identity.workspaceId} key=${key}` },
+      401,
+    )
+  }
+
+  try {
+    const { members, forMetal, env } = await buildWorkspaceRuntimeRefreshEnv({
+      workspaceId,
+      anchorProjectId: parsed.anchorProjectId,
+    })
+    console.log(
+      `[Internal] Pod config for workspace runtime ${key} (members=${members.length}, metal=${forMetal})`,
+    )
+    return c.json({ projectId: key, env })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to build pod config for ${key}:`, err?.message ?? err)
+    return c.json({ error: 'Failed to build pod configuration' }, 500)
+  }
+}
+
+/**
  * GET /api/internal/pod-config/:projectId
  *
- * Called by runtime pods on boot (self-assign path) to fetch project-specific
- * environment variables. Authenticated via K8s ServiceAccount token.
+ * Called by runtime pods on boot (self-assign path) and by their ~12 h AI-proxy
+ * token refresh. The key is either a real project id (a single-project runtime)
+ * or a workspace runtime key, which takes the `workspacePodConfig` path.
+ * Authenticated via K8s ServiceAccount token, or the runtime's own token.
  */
 app.get('/pod-config/:projectId', async (c) => {
   const projectId = c.req.param('projectId')
+  const workspaceKey = parseWorkspaceRuntimeKey(projectId)
+
+  if (workspaceKey?.kind === 'invalid') {
+    return c.json({ error: `Invalid runtime key: ${workspaceKey.reason}` }, 400)
+  }
 
   if (!checkRateLimit(projectId)) {
     return c.json({ error: 'Rate limit exceeded' }, 429)
@@ -79,6 +158,10 @@ app.get('/pod-config/:projectId', async (c) => {
   const hasBearer = authHeader?.startsWith('Bearer ') ?? false
   if (!hasBearer && !c.req.header('x-runtime-token')) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+
+  if (workspaceKey) {
+    return workspacePodConfig(c, projectId, workspaceKey)
   }
 
   if (hasBearer) {
@@ -357,7 +440,16 @@ async function enforceProjectAbility(
   if (!actor?.principal.userId || actor.unscoped) return null
   const access = await loadAccess(actor.principal, { projectId })
   const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
-  if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  if (!decision.ok) {
+    // A *project* permission can only be decided here, so this is where the
+    // agent's tool learns it was refused. Answer in the runtime gate's envelope
+    // (`withAbilityGate`) rather than `forbidden`: the tool maps the code to the
+    // permission the person has to ask an admin for (SHO-539). 401/404 keep
+    // their own meaning — "not signed in" and "no such project" are not an
+    // ability the admin can grant.
+    if (decision.status === 403) return c.json({ error: abilityDenial(permission) }, 403)
+    return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  }
   return null
 }
 
@@ -365,6 +457,12 @@ app.get('/projects/:projectId/publish', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  // A staging deploy writes the staging environment row, never the project
+  // (SHO-308 §8), so a caller following one has to name the row it is watching.
+  // Without this the tool polled production's `live` and reported a staging
+  // build that was still running — or had failed — as a success.
+  const environment: 'production' | 'staging' = c.req.query('environment') === 'staging' ? 'staging' : 'production'
 
   try {
     const { prisma } = await import('../lib/prisma')
@@ -376,24 +474,102 @@ app.get('/projects/:projectId/publish', async (c) => {
         accessLevel: true,
         sitePasswordHash: true,
         publishStatus: true,
+        publishError: true,
+        publishStatusAt: true,
       } as any,
     })) as Record<string, any> | null
     if (!project) return c.json({ error: 'Project not found' }, 404)
 
+    // Access settings belong to the project; only the deploy state differs.
+    const access = {
+      accessLevel: project.accessLevel ?? null,
+      hasPassword: !!project.sitePasswordHash,
+    }
+
+    // Publishing runs in the background (SHO-542), so this GET is how the
+    // agent's publish tool learns the outcome. An in-flight status past its
+    // lease is a dead publish, not a running one.
+    const { resolveReportedPublishStatus, markPublishInterrupted, markEnvironmentPublishInterrupted, splitPublishError } =
+      await import('./publish')
+
+    if (environment === 'staging') {
+      const { getEnvironment } = await import('../services/published-environments.service')
+      const staging = (await getEnvironment(projectId, 'staging')) as Record<string, any> | null
+      if (!staging) return c.json({ error: 'Staging environment not found' }, 404)
+      const reported = resolveReportedPublishStatus(staging)
+      if (reported.interrupted) await markEnvironmentPublishInterrupted(staging.id)
+      const storedError = reported.interrupted ? reported.error : (staging.publishError ?? null)
+      const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
+      return c.json({
+        ok: true,
+        environment,
+        published: reported.status === 'live',
+        subdomain: staging.subdomain ?? null,
+        // The environment has no publishedAt; a staging deploy is described by
+        // its status, and callers that need a timestamp use `publishStatusAt`.
+        publishedAt: null,
+        publishStatusAt: staging.publishStatusAt ? new Date(staging.publishStatusAt).getTime() : null,
+        ...access,
+        publishStatus: reported.status,
+        publishError,
+        publishErrorMessage: publishErrorDetail,
+        publishErrorDetails:
+          publishError === 'destructive_schema_change'
+            ? await describeDestructivePublish(projectId, environment)
+            : null,
+      })
+    }
+
+    const reported = resolveReportedPublishStatus(project)
+    if (reported.interrupted) await markPublishInterrupted(projectId)
+    const storedError = reported.interrupted ? reported.error : (project.publishError ?? null)
+    const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
+
     return c.json({
       ok: true,
+      environment,
       published: !!project.publishedSubdomain,
       subdomain: project.publishedSubdomain ?? null,
       publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : null,
-      accessLevel: project.accessLevel ?? null,
-      hasPassword: !!project.sitePasswordHash,
-      publishStatus: project.publishStatus ?? null,
+      ...access,
+      publishStatus: reported.status,
+      publishError,
+      /** Why the failing step failed, when it said (`publishError` is the code). */
+      publishErrorMessage: publishErrorDetail,
+      // A refused publish's machine-actionable context is not on the row (no
+      // schema change), so it is rebuilt on demand for the one code whose
+      // caller needs it: the agent has to tell the user exactly what a
+      // destructive schema change would drop.
+      publishErrorDetails:
+        publishError === 'destructive_schema_change'
+          ? await describeDestructivePublish(projectId, environment)
+          : null,
     })
   } catch (err: any) {
     console.error(`[Internal] publish state for ${projectId} failed:`, err.message)
     return c.json({ error: 'Failed to get publish state' }, 500)
   }
 })
+
+/**
+ * The changes a refused publish would have destroyed, for the tool to quote.
+ * Best-effort: a diff that cannot be computed must not turn a clear
+ * `destructive_schema_change` into a 500.
+ */
+async function describeDestructivePublish(
+  projectId: string,
+  environment: 'production' | 'staging',
+): Promise<Record<string, unknown> | null> {
+  try {
+    const { describePendingDestructiveChanges } = await import('../services/published-schema.service')
+    const described = await describePendingDestructiveChanges(projectId, environment)
+    if (!described) return null
+    return { environment, changes: described.changes }
+  } catch (err: any) {
+    console.warn(`[Internal] could not describe destructive changes for ${projectId}:`, err?.message ?? err)
+    return null
+  }
+}
 
 /**
  * POST /api/internal/projects/:projectId/publish — publish/republish a project.
@@ -420,6 +596,12 @@ app.post('/projects/:projectId/publish', async (c) => {
     environment?: 'production' | 'staging'
     /** Proceed when the schema change would destroy data (SHO-308 §1). */
     allowDataLoss?: boolean
+    /**
+     * `'empty'`: start this environment's first Postgres database with the
+     * schema and no rows (SHO-551 §G4). Refused with `data_empty_not_allowed`
+     * where rows could be lost.
+     */
+    data?: 'empty'
   }
   try {
     body = (await c.req.json()) as typeof body
@@ -427,35 +609,45 @@ app.post('/projects/:projectId/publish', async (c) => {
     return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
   }
   const environment = body.environment === 'staging' ? 'staging' : 'production'
-  if (!body.subdomain && environment !== 'staging') {
-    return c.json({ error: { code: 'subdomain_required', message: 'subdomain is required' } }, 400)
-  }
 
   try {
-    const { publishProject } = await import('./publish')
-    const result = await publishProject(projectId, {
-      subdomain: body.subdomain ?? '',
+    const { startPublish } = await import('./publish')
+    // Same runner as the session route: validate synchronously, record
+    // `building`, then let the pipeline run in the background and answer 202.
+    // The tool polls the GET above for the outcome (SHO-542) — the metal
+    // runtime reaches this API through the public URL, which has the same
+    // ~100 s edge limit.
+    //
+    // `subdomain` is passed through untouched: the same runner owns both the
+    // `subdomain_required` refusal and the re-publish fallback to the saved
+    // subdomain (SHO-559), so this route must not pre-empt either.
+    const started = await startPublish(projectId, {
+      subdomain: body.subdomain,
       accessLevel: body.accessLevel,
       password: body.password,
       siteTitle: body.siteTitle,
       siteDescription: body.siteDescription,
       environment,
       allowDataLoss: body.allowDataLoss === true,
+      data: body.data === 'empty' ? 'empty' : undefined,
     })
-    if (!result.ok) {
+    if (!started.ok) {
       return c.json(
-        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
-        result.status as any,
+        { error: { code: started.code, message: started.message, ...(started.details ? { details: started.details } : {}) } },
+        started.status as any,
       )
     }
-    return c.json({
-      ok: true,
-      url: result.url,
-      subdomain: result.subdomain,
-      publishedAt: result.publishedAt,
-      accessLevel: result.accessLevel,
-      hasPassword: result.hasPassword,
-    })
+    return c.json(
+      {
+        ok: true,
+        accepted: true,
+        status: started.publishStatus ?? 'building',
+        subdomain: started.subdomain,
+        url: started.url,
+        environment: started.environment,
+      },
+      202,
+    )
   } catch (err: any) {
     console.error(`[Internal] publish for ${projectId} failed:`, err.message)
     return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)
@@ -561,7 +753,10 @@ app.post('/projects/:projectId/publish/ops', async (c) => {
  *
  * Same handlers the publish panel's session routes call (routes/publish.ts), so
  * the agent reads and writes exactly what the Settings → Custom domain panel
- * does. Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token`.
+ * does. Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token`. Every
+ * write is behind `project:publish`, like the publish routes themselves — the
+ * runtime no longer gates the `publish` tool by a workspace ability (SHO-539),
+ * so this route is the gate for `domain_action` too.
  */
 app.get('/projects/:projectId/domains', async (c) => {
   const projectId = c.req.param('projectId')
@@ -577,6 +772,9 @@ app.post('/projects/:projectId/domains', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   let body: { hostname?: string }
   try {
@@ -595,6 +793,9 @@ app.post('/projects/:projectId/domains/:domainId/verify', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
+
   const { verifyCustomDomain } = await import('./publish')
   const result = await verifyCustomDomain(projectId, c.req.param('domainId'))
   return c.json(result.body, result.status as any)
@@ -604,6 +805,9 @@ app.post('/projects/:projectId/domains/:domainId/retrigger', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   const { retriggerCustomDomain } = await import('./publish')
   const result = await retriggerCustomDomain(projectId, c.req.param('domainId'))
@@ -615,6 +819,9 @@ app.patch('/projects/:projectId/domains/:domainId/primary', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
+
   const { setPrimaryCustomDomain } = await import('./publish')
   const result = await setPrimaryCustomDomain(projectId, c.req.param('domainId'))
   return c.json(result.body, result.status as any)
@@ -624,6 +831,9 @@ app.delete('/projects/:projectId/domains/:domainId', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   const { deleteCustomDomain } = await import('./publish')
   const result = await deleteCustomDomain(projectId, c.req.param('domainId'))
@@ -652,15 +862,9 @@ app.post('/projects/:projectId/shared-files', async (c) => {
   }
 
   const path = typeof body.path === 'string' ? body.path : ''
-  const segments = path.split('/')
-  if (
-    !path ||
-    path.length > 4096 ||
-    path.startsWith('/') ||
-    path.includes('\\') ||
-    segments.some((segment) => !segment || segment === '.' || segment === '..')
-  ) {
-    return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+  const pathProblem = sharedFilePathProblem(path)
+  if (pathProblem) {
+    return c.json({ error: { code: 'invalid_path', message: pathProblem } }, 400)
   }
 
   const requestedDays = typeof body.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
@@ -677,6 +881,16 @@ app.post('/projects/:projectId/shared-files', async (c) => {
     })
     if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
 
+    // A paired desktop's workspace is opened from the cloud, so the link has to
+    // be the cloud's (SHO-486); `null` means "mint it here".
+    const relayed = await mintSharedFileLink({
+      projectId,
+      workspaceId: project.workspaceId,
+      path,
+      expiresInDays,
+    })
+    if (relayed) return c.json(relayed)
+
     const token = signSharedFileToken({
       projectId,
       workspaceId: project.workspaceId,
@@ -684,12 +898,10 @@ app.post('/projects/:projectId/shared-files', async (c) => {
       exp: now + expiresInDays * 24 * 60 * 60,
       now,
     })
-    const configuredOrigin = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
-    const origin = (configuredOrigin || new URL(c.req.url).origin).replace(/\/+$/, '')
 
     return c.json({
       ok: true,
-      url: `${origin}/api/f/${encodeURIComponent(token)}`,
+      url: `${sharedFilePublicOrigin(c.req.url)}/api/f/${encodeURIComponent(token)}`,
       expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
       path,
     })
@@ -917,6 +1129,22 @@ app.post('/huddles/livekit', async (c) => {
     roomName: body.roomName,
     identity: typeof body.identity === 'string' ? body.identity : null,
   })
+  return c.json({ ok: true })
+})
+
+/**
+ * POST /api/internal/mail/apply
+ *
+ * A mail webhook's share for a workspace homed here, forwarded from the region
+ * that received it (see `handleMailWebhook`). The sender verified the
+ * provider's signature; this checks the region secret and applies it locally.
+ */
+app.post('/mail/apply', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || (body.kind !== 'received' && body.kind !== 'delivery')) return c.json({ error: 'Invalid mail event' }, 400)
+  const { applyMailForward } = await import('../services/mail/webhook')
+  await applyMailForward(body as any)
   return c.json({ ok: true })
 })
 
@@ -1188,6 +1416,7 @@ app.post('/projects/:projectId/native/releases/:releaseId/sources', async (c) =>
       releaseId: c.req.param('releaseId'),
       bucketKey: body.bucketKey,
       jobDraft: body.jobDraft,
+      projectId,
     })
     return c.json(result, 202)
   } catch (err) {

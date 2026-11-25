@@ -10,6 +10,7 @@
     "./agent-attribution": "./src/agent-attribution.ts",
     "./capability-settings": "./src/capability-settings.ts",
     "./project-call-chat": "./src/project-call-chat.ts",
+    "./publish-status": "./src/publish-status.ts",
     "./publish-timeouts": "./src/publish-timeouts.ts",
     "./project-transfer-limits": "./src/project-transfer-limits.ts",
     "./repo-bundles": "./src/repo-bundles.ts",
@@ -28,7 +29,8 @@
     "./published-schema": "./src/published-schema.ts",
     "./byte-range": "./src/byte-range.ts",
     "./published-image-ref": "./src/published-image-ref.ts",
-    "./standalone": "./src/standalone.ts"
+    "./standalone": "./src/standalone.ts",
+    "./whatsapp-graph": "./src/whatsapp-graph.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

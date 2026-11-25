@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '../generated/prisma-pg/client'
 import { prisma } from '../lib/prisma'
+import { loadNamesForTexts, renderMentionsAsText } from './conversation-mentions'
 
 /**
  * A turn whose heartbeat is older than this is treated as dead (API process
@@ -11,7 +12,26 @@ import { prisma } from '../lib/prisma'
  * Must stay comfortably above ACTIVE_TURN_HEARTBEAT_INTERVAL_MS.
  */
 export const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000
-export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000
+/**
+ * How long a turn is reported as *running* to a screen (`active-chats`).
+ *
+ * Deliberately much shorter than `DEFAULT_STALE_AFTER_MS`: that one answers
+ * "is the process gone?" and gates recovery, this one answers "is a turn
+ * happening right now?" and gates a spinner. A turn that stopped beating is
+ * not running whatever its `activeTurnId` still says — and a turn id does leak:
+ * a queue-dispatched turn on a paired computer can settle its stream yet leave
+ * the row marked on both sides, which used to keep "Running now" on screen for
+ * five minutes after a reply had landed (SHO-494). Well above the heartbeat
+ * interval, so a live turn never drops out.
+ */
+export const RUNNING_NOW_WINDOW_MS = 90 * 1000
+/**
+ * How often a streaming turn refreshes `activeTurnHeartbeatAt`.
+ *
+ * Short on purpose: `RUNNING_NOW_WINDOW_MS` is only meaningful if the beat is
+ * far more frequent than it. One indexed UPDATE per running turn per interval.
+ */
+export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 20 * 1000
 /**
  * The turn reattach job takes over a turn whose heartbeat is older than this.
  * Above the heartbeat interval, below DEFAULT_STALE_AFTER_MS.
@@ -23,6 +43,32 @@ const CLEARED_TURN = {
   activeTurnStartedAt: null,
   activeTurnHeartbeatAt: null,
 } as const
+
+/**
+ * "A turn is running right now" as a `ChatSession` where-clause.
+ *
+ * The one predicate every surface that paints a live spinner asks through, so
+ * `active-chats` and the recent-chat list (the desktop tray) can never disagree
+ * about which chat is running. `staleAfterMs` defaults to
+ * `RUNNING_NOW_WINDOW_MS`; only a caller with its own liveness window passes it.
+ */
+export function runningNowWhere(staleAfterMs: number = RUNNING_NOW_WINDOW_MS) {
+  return {
+    activeTurnId: { not: null },
+    activeTurnHeartbeatAt: { gt: new Date(Date.now() - staleAfterMs) },
+  } as const
+}
+
+/** The row-level twin of `runningNowWhere`, for a query that already selected
+ * `activeTurnId`/`activeTurnHeartbeatAt` and cannot carry the where-clause. */
+export function isRunningNow(
+  activeTurnId: string | null,
+  activeTurnHeartbeatAt: Date | null,
+  staleAfterMs: number = RUNNING_NOW_WINDOW_MS,
+): boolean {
+  if (!activeTurnId || !activeTurnHeartbeatAt) return false
+  return activeTurnHeartbeatAt.getTime() > Date.now() - staleAfterMs
+}
 
 export type ActiveChatTurn = {
   chatSessionId: string
@@ -360,6 +406,10 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
     })
     if (cleared.count === 0) continue
     swept++
+    if (recovered) {
+      const { deleteTurnFrames } = await import('./chat-turn-journal')
+      void deleteTurnFrames(turnId).catch(() => 0)
+    }
     // A recovered row already says the turn ended; only a turn with no frames
     // at all needs the stamp that stops it reading as unfinished.
     if (!recovered) {
@@ -378,17 +428,20 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
  * Return fresh active turns for a workspace. Project-scoped sessions derive
  * their workspace through the project relation; workspace-scoped sessions
  * use ChatSession.workspaceId directly.
+ *
+ * "Active" here means *running now*, so the default window is
+ * `RUNNING_NOW_WINDOW_MS` — a caller asking what a screen should show wants
+ * liveness, not the longer "this process is gone" threshold recovery uses.
  */
 export async function listActiveChatTurns(
   workspaceId: string,
   opts: { staleAfterMs?: number; viewerUserId?: string } = {},
 ): Promise<ActiveChatTurn[]> {
-  const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
-  const heartbeatAfter = new Date(Date.now() - staleAfterMs)
+  const staleAfterMs = opts.staleAfterMs ?? RUNNING_NOW_WINDOW_MS
   const sessions = await prisma.chatSession.findMany({
     where: {
       isArchived: false,
-      activeTurnHeartbeatAt: { gt: heartbeatAfter },
+      ...runningNowWhere(staleAfterMs),
       OR: [
         { workspaceId },
         { project: { workspaceId } },
@@ -514,4 +567,208 @@ async function conversationReplies(sessionIds: string[]) {
     if (row) bySession.set(sessionIds[index], row)
   })
   return bySession
+}
+
+/** Stable shape returned by the peek endpoint. All nullable fields may be absent. */
+export type ActiveChatPeek = {
+  chatSessionId: string
+  turnId: string
+  title: string
+  agentName: string | null
+  startedAt: Date
+  where: {
+    kind: string
+    conversationId: string | null
+    conversationName: string | null
+    threadRootId: string | null
+  }
+  card: { key: string; title: string; column: string } | null
+  trigger: { authorName: string; authorType: string; text: string; createdAt: Date } | null
+  reply: { text: string; updatedAt: Date } | null
+  hidden: boolean
+}
+
+const TRIGGER_TRIM = 1_000
+const REPLY_TRIM = 600
+
+/**
+ * Lightweight detail for one active run, fetched on hover only.
+ * Returns null when the session has no active turn (the row just finished — the
+ * client closes the card cleanly on a null response).
+ */
+export async function peekActiveChatTurn(
+  workspaceId: string,
+  chatSessionId: string,
+  viewerUserId: string | null,
+): Promise<ActiveChatPeek | null> {
+  // Verify the session belongs to this workspace and has an active turn.
+  const session = await prisma.chatSession.findFirst({
+    where: {
+      id: chatSessionId,
+      OR: [{ workspaceId }, { project: { workspaceId } }],
+    },
+    select: {
+      id: true,
+      name: true,
+      inferredName: true,
+      activeTurnId: true,
+      activeTurnStartedAt: true,
+      workspaceId: true,
+      createdByUserId: true,
+      project: { select: { id: true, name: true } },
+    },
+  })
+  if (!session || !session.activeTurnId || !session.activeTurnStartedAt) return null
+
+  const ws = session.workspaceId ?? workspaceId
+
+  // The latest agent reply in team chat for this session.
+  const agentReply = await prisma.conversationMessage.findFirst({
+    where: { agentSessionId: chatSessionId, authorType: 'agent', deletedAt: null },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      text: true,
+      updatedAt: true,
+      conversationId: true,
+      threadRootId: true,
+      createdAt: true,
+      conversation: { select: { kind: true, name: true, slug: true } },
+    },
+  })
+
+  const agentName = session.project?.name ?? null
+
+  // No conversation reply — this is a project/workspace direct chat session.
+  if (!agentReply) {
+    // Privacy: a session with a createdByUserId is private unless the viewer is
+    // that user.
+    const hidden = !!session.createdByUserId
+      && session.createdByUserId !== viewerUserId
+
+    // Trigger: last user ChatMessage before the turn started.
+    const chatTriggerRow = hidden ? null : await prisma.chatMessage.findFirst({
+      where: { sessionId: chatSessionId, role: 'user', createdAt: { lt: session.activeTurnStartedAt } },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true, createdAt: true },
+    })
+
+    // Reply: last assistant ChatMessage since the turn started.
+    const chatReplyRow = hidden ? null : await prisma.chatMessage.findFirst({
+      where: { sessionId: chatSessionId, role: 'assistant', createdAt: { gte: session.activeTurnStartedAt } },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true, updatedAt: true },
+    })
+
+    const triggerText = chatTriggerRow?.content?.trim()
+
+    return {
+      chatSessionId,
+      turnId: session.activeTurnId,
+      title: session.name || session.inferredName || 'Chat',
+      agentName,
+      startedAt: session.activeTurnStartedAt,
+      where: { kind: 'chat', conversationId: null, conversationName: null, threadRootId: null },
+      card: null,
+      trigger: chatTriggerRow && triggerText
+        ? {
+            authorName: 'User',
+            authorType: 'user',
+            text: triggerText.slice(-TRIGGER_TRIM),
+            createdAt: chatTriggerRow.createdAt,
+          }
+        : null,
+      reply: chatReplyRow?.content?.trim()
+        ? { text: chatReplyRow.content.trim().slice(-REPLY_TRIM), updatedAt: chatReplyRow.updatedAt }
+        : null,
+      hidden,
+    }
+  }
+
+  // Conversation-based run. Check privacy.
+  let canViewText = true
+  if (viewerUserId) {
+    const isOpen = agentReply.conversation.kind === 'public' || agentReply.conversation.kind === 'activity'
+    if (!isOpen) {
+      const membership = await prisma.conversationMember.findFirst({
+        where: { conversationId: agentReply.conversationId, userId: viewerUserId },
+        select: { id: true },
+      })
+      if (!membership) canViewText = false
+    }
+  }
+
+  // Card for this thread (key + title + columnId), then column name separately.
+  const cardRow = agentReply.threadRootId
+    ? await prisma.workItem.findFirst({
+        where: { threadRootMessageId: agentReply.threadRootId },
+        orderBy: { createdAt: 'desc' },
+        select: { key: true, title: true, columnId: true },
+      })
+    : null
+  const columnRow = cardRow
+    ? await prisma.boardColumn.findUnique({ where: { id: cardRow.columnId }, select: { name: true } })
+    : null
+
+  // Trigger: newest non-deleted non-agent-reply message in the same thread
+  // created before the agent's reply.
+  const triggerRow = canViewText
+    ? await prisma.conversationMessage.findFirst({
+        where: {
+          conversationId: agentReply.conversationId,
+          threadRootId: agentReply.threadRootId,
+          id: { not: agentReply.id },
+          deletedAt: null,
+          createdAt: { lt: agentReply.createdAt },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          text: true,
+          createdAt: true,
+          authorType: true,
+          authorUserId: true,
+          authorAgentRef: true,
+        },
+      })
+    : null
+
+  let renderedTrigger: ActiveChatPeek['trigger'] = null
+  if (triggerRow) {
+    // Render mention tokens as names (workspace agent name not needed for peek display).
+    const names = await loadNamesForTexts(prisma, ws, [triggerRow.text ?? ''])
+    const text = renderMentionsAsText(triggerRow.text ?? '', names).trim().slice(-TRIGGER_TRIM)
+    let authorName = 'User'
+    if (triggerRow.authorType === 'user' && triggerRow.authorUserId) {
+      const user = await prisma.user.findUnique({
+        where: { id: triggerRow.authorUserId! },
+        select: { name: true, email: true },
+      })
+      authorName = user?.name || user?.email || 'User'
+    } else if (triggerRow.authorType !== 'user') {
+      authorName = (triggerRow.authorAgentRef as { name?: string } | null)?.name ?? 'Agent'
+    }
+    renderedTrigger = text
+      ? { authorName, authorType: triggerRow.authorType, text, createdAt: triggerRow.createdAt }
+      : null
+  }
+
+  const replyText = canViewText ? agentReply.text?.trim() : null
+
+  return {
+    chatSessionId,
+    turnId: session.activeTurnId,
+    title: session.name || session.inferredName || 'Chat',
+    agentName,
+    startedAt: session.activeTurnStartedAt,
+    where: {
+      kind: agentReply.conversation.kind,
+      conversationId: agentReply.conversationId,
+      conversationName: agentReply.conversation.name || agentReply.conversation.slug,
+      threadRootId: agentReply.threadRootId,
+    },
+    card: cardRow && columnRow ? { key: cardRow.key, title: cardRow.title, column: columnRow.name } : null,
+    trigger: renderedTrigger,
+    reply: replyText ? { text: replyText.slice(-REPLY_TRIM), updatedAt: agentReply.updatedAt } : null,
+    hidden: !canViewText,
+  }
 }

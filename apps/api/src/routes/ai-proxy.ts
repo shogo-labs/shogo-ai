@@ -93,7 +93,7 @@ import {
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
-import { resolveAutoTierModel, resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
+import { resolveAutoTierModel, resolveInstanceAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -363,9 +363,16 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
 }
 
 /**
- * Whether a model accepts `video_url` content blocks natively, honoring
- * DB-defined models (e.g. GLM 5.3 Flash on OpenRouter) over the static
- * catalog. Mirrors `resolveModelSupportsAudioInput`.
+ * Whether a model accepts video input natively, honoring DB-defined models
+ * (e.g. GLM 5.3 Flash on OpenRouter) as well as the static catalog (the
+ * Google-direct Gemini models, which take video as `image_url` +
+ * `data:video/*`). Mirrors `resolveModelSupportsAudioInput`.
+ *
+ * The catalog is consulted first. A seeded `ModelDefinition` row carries no
+ * `capabilities` of its own, and the merged entry replaces the catalog entry
+ * wholesale, so reading the DB row first erased video support the catalog
+ * declares (SHO-495). A DB row can still grant the flag to a model the
+ * catalog does not know.
  *
  * BYOK `openrouter:` ids we have no metadata for are treated as allowed and
  * let upstream decide: OpenRouter drops every endpoint that can't take video
@@ -373,9 +380,9 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
  * than video bytes being silently dropped locally.
  */
 export function resolveModelSupportsVideoInput(model: string): boolean {
-  const dbEntry = getMergedModelEntrySync(model)
-  if (dbEntry) return dbEntry.capabilities?.supportsVideoInput === true
   if (modelSupportsVideoInput(model)) return true
+  const dbEntry = getMergedModelEntrySync(model)
+  if (dbEntry?.capabilities?.supportsVideoInput === true) return true
   return isOpenRouterModel(model)
 }
 
@@ -481,9 +488,11 @@ export async function resolveRequestModel(
   }
   // `auto` must resolve inside the acting person's set, not the workspace's
   // (SHO-417, AC3): resolving to the workspace standard-tier model and then
-  // 403ing would refuse a request the person could have served.
+  // 403ing would refuse a request the person could have served. The tiers come
+  // from the instance's defaults (the connected cloud's on a desktop), so a
+  // cloud id is not narrowed back to a local one (SHO-481).
   if (userId) {
-    const defaults = await resolveEffectiveAgentModelDefaults(workspaceId)
+    const defaults = await resolveInstanceAgentModelDefaults(workspaceId)
     const configured = Object.fromEntries(
       Object.entries(defaults.autoTiers).map(([tier, entry]) => [tier, entry.id]),
     )
@@ -637,7 +646,20 @@ async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
 export const TERMINAL_EVENT_RE =
   /(?:^|\n)data:[^\n]*"type"\s*:\s*"(message_stop|error)"/
 
-export function scanForTerminalEvent(buffer: string): boolean {
+/**
+ * Terminal markers on an OpenAI-compatible stream: the `[DONE]` sentinel every
+ * provider ends with, an `{"error": …}` chunk, or a resolved `finish_reason`.
+ * Without this the wrapper would call every completed OpenAI/Google stream
+ * "truncated" and append a synthetic error frame after a finished answer.
+ */
+export const OPENAI_TERMINAL_EVENT_RE =
+  /(?:^|\n)data:\s*\[DONE\]|(?:^|\n)data:\s*\{\s*"error"|(?:^|\n)data:[^\n]*"finish_reason"\s*:\s*"(?!null)[a-zA-Z_]+"/
+
+export function scanForTerminalEvent(
+  buffer: string,
+  dialect: 'anthropic' | 'openai' = 'anthropic',
+): boolean {
+  if (dialect === 'openai') return OPENAI_TERMINAL_EVENT_RE.test(buffer) || TERMINAL_EVENT_RE.test(buffer)
   return TERMINAL_EVENT_RE.test(buffer)
 }
 
@@ -772,10 +794,14 @@ export function logUpstreamError(upstream: string, status: number, model: string
  * a fatal message (non-retryable).
  */
 export type StreamErrorCode =
-  | 'upstream_truncated' // clean EOF without message_stop
-  | 'network_drop'       // ECONNRESET, socket hang up, etc.
-  | 'idle_timeout'       // MAX_IDLE_MS exceeded with no upstream data
-  | 'upstream_error'     // catch-all for other errors
+  | 'upstream_truncated'   // clean EOF without message_stop
+  | 'network_drop'         // ECONNRESET, socket hang up, etc.
+  | 'idle_timeout'         // MAX_IDLE_MS exceeded with no upstream data
+  | 'upstream_error'       // catch-all for other errors
+  | 'upstream_5xx'         // provider answered 5xx after our headers had gone out
+  | 'upstream_rate_limit'  // provider answered 429 after our headers had gone out
+  | 'upstream_rejected'    // provider answered 4xx after our headers had gone out
+  | 'upstream_timeout'     // provider sent no headers at all within EARLY_SSE_MAX_WAIT_MS
 
 export interface StreamErrorPayload {
   type: 'error'
@@ -817,6 +843,19 @@ export interface StreamWrapOptions {
   maxIdleMs?: number
   /** How often to check the watchdog condition, in ms. Default 5000. */
   watchdogIntervalMs?: number
+  /**
+   * Wire shape of the synthetic error frames. `anthropic` writes
+   * `event: error` + `data: {type:'error',…}`; `openai` writes a bare
+   * `data: {'error':…}` chunk, which is what the OpenAI SDK's SSE reader
+   * throws on. Default `anthropic` (every pre-existing caller).
+   */
+  dialect?: 'anthropic' | 'openai'
+}
+
+/** One synthetic SSE error frame in the dialect the client's SDK parses. */
+function sseErrorFrame(dialect: 'anthropic' | 'openai', payload: StreamErrorPayload): string {
+  const json = JSON.stringify(payload)
+  return dialect === 'anthropic' ? `event: error\ndata: ${json}\n\n` : `data: ${json}\n\n`
 }
 
 /**
@@ -849,6 +888,7 @@ export function wrapSseForErrorVisibility(
   const keepaliveMs = options.keepaliveMs ?? KEEPALIVE_INTERVAL_MS
   const maxIdleMs = options.maxIdleMs ?? MAX_IDLE_MS
   const watchdogIntervalMs = options.watchdogIntervalMs ?? 5_000
+  const dialect = options.dialect ?? 'anthropic'
   let tailBuffer = ''
   let sawTerminalEvent = false
   let chunkCount = 0
@@ -859,8 +899,9 @@ export function wrapSseForErrorVisibility(
   function buildErrorPayload(
     code: StreamErrorCode,
     message: string,
+    retryableOverride?: boolean,
   ): StreamErrorPayload {
-    const retryable = code !== 'upstream_error'
+    const retryable = retryableOverride ?? code !== 'upstream_error'
     // Embed a stable, machine-readable marker so the retryable flag + code
     // survive transport through the provider SDK into pi-ai's `errorMessage`,
     // where the agent-runtime's retry classifier can read them deterministically
@@ -890,9 +931,7 @@ export function wrapSseForErrorVisibility(
     payload: StreamErrorPayload,
   ) {
     try {
-      controller.enqueue(
-        encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`),
-      )
+      controller.enqueue(encoder.encode(sseErrorFrame(dialect, payload)))
     } catch { /* downstream gone */ }
   }
 
@@ -945,7 +984,7 @@ export function wrapSseForErrorVisibility(
             lastChunkAt = Date.now()
             const text = decoder.decode(value, { stream: true })
             tailBuffer = (tailBuffer + text).slice(-8192)
-            if (!sawTerminalEvent && scanForTerminalEvent(tailBuffer)) {
+            if (!sawTerminalEvent && scanForTerminalEvent(tailBuffer, dialect)) {
               sawTerminalEvent = true
             }
             controller.enqueue(value)
@@ -996,6 +1035,433 @@ export function wrapSseForErrorVisibility(
       upstream.cancel(reason).catch(() => { /* noop */ })
     },
   })
+}
+
+// =============================================================================
+// Early SSE headers — never wait on the provider past the edge timeout
+// =============================================================================
+//
+// Cloudflare closes any request that has produced no response headers within
+// 125s (HTTP 524). A streaming request used to send nothing until the provider
+// answered, so a slow first byte — Gemini on a 150k–340k-token context writing
+// a whole file in one tool call routinely takes minutes — died at the edge, and
+// the client got HTML instead of a stream or a typed error. The agent loop then
+// ended the turn as incomplete with no auto-continue.
+//
+// `proxySseWithEarlyHeaders` starts the upstream fetch and, if the provider has
+// not answered within the grace window, answers `200 text/event-stream` right
+// away with `: keepalive` comments until the real stream arrives. A provider
+// that answers inside the window keeps today's behaviour exactly: a real status
+// and, for a fast 4xx/429/401/billing error, its real JSON body.
+
+/** How long a streaming request may wait for provider headers. */
+const EARLY_HEADERS_GRACE_MS = 10_000
+
+/**
+ * Hard ceiling on the wait for provider headers once the early `200` has gone
+ * out. Nothing the client can do about a provider that never answers, so the
+ * stream must end with a typed `upstream_timeout` frame it can act on instead of
+ * leaving it to whatever infrastructure happens to notice first (Knative's
+ * 300s activator cut, the desktop local server's 255s socket idle timeout, a
+ * Cloudflare reset) — each of which lands as plain text or a raw ECONNRESET,
+ * which the agent then retries as a network blip.
+ *
+ * 240s sits under all of them, and above the longest first byte a huge-context
+ * write actually takes in production.
+ */
+const EARLY_SSE_MAX_WAIT_MS = 240_000
+
+let earlySseTiming = {
+  graceMs: EARLY_HEADERS_GRACE_MS,
+  keepaliveMs: KEEPALIVE_INTERVAL_MS,
+  maxWaitMs: EARLY_SSE_MAX_WAIT_MS,
+}
+
+/**
+ * Test hook: shrink the grace/keepalive/max-wait windows so a unit test can
+ * observe them.
+ */
+export function __setEarlySseTimingForTests(
+  timing?: { graceMs?: number; keepaliveMs?: number; maxWaitMs?: number },
+): void {
+  earlySseTiming = {
+    graceMs: timing?.graceMs ?? EARLY_HEADERS_GRACE_MS,
+    keepaliveMs: timing?.keepaliveMs ?? KEEPALIVE_INTERVAL_MS,
+    maxWaitMs: timing?.maxWaitMs ?? EARLY_SSE_MAX_WAIT_MS,
+  }
+}
+
+/**
+ * Would this provider status have been retried before the early headers went
+ * out? Status-based retryability is unchanged; billing/auth 4xx stay final.
+ */
+export function isRetryableUpstreamStatus(status: number): boolean {
+  return ANTHROPIC_RETRYABLE_STATUS.has(status)
+}
+
+function upstreamStatusErrorCode(status: number): StreamErrorCode {
+  if (status === 429) return 'upstream_rate_limit'
+  if (status === 408 || status === 425 || status >= 500) return 'upstream_5xx'
+  return 'upstream_rejected'
+}
+
+/**
+ * One line of the provider's error body, safe to put in a message: tags
+ * stripped, whitespace collapsed, capped. Cloudflare's 524 page is ~2KB of HTML
+ * and must never reach a user or a log line whole.
+ */
+export function upstreamErrorSnippet(raw: string, maxLength = 240): string {
+  const text = raw
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+}
+
+function deferredErrorPayload(
+  code: StreamErrorCode,
+  message: string,
+  retryable: boolean,
+): StreamErrorPayload {
+  return {
+    type: 'error',
+    error: {
+      type: 'stream_error',
+      code,
+      retryable,
+      message: `${message} [shogo:retryable=${retryable};code=${code}]`,
+      meta: { chunks: 0, bytes: 0, durationMs: 0, idleMs: 0 },
+    },
+  }
+}
+
+interface DeferredSseOptions {
+  providerLabel: string
+  /** Wire shape of the frames this stream writes to the client. */
+  dialect: 'anthropic' | 'openai'
+  keepaliveMs: number
+  startedAt: number
+  /**
+   * Ceiling on the wait for provider headers, measured from `startedAt`. When
+   * it expires the upstream request is aborted and the client gets one typed
+   * `upstream_timeout` frame instead of waiting for a hop to reset the socket.
+   */
+  maxWaitMs: number
+  /** Aborts the in-flight upstream request (used by the cap above). */
+  abortUpstream: () => void
+  transform?: (body: ReadableStream<Uint8Array>, upstream: Response) => ReadableStream<Uint8Array>
+}
+
+/** Keepalives now, the provider's stream (or a typed error frame) when it lands. */
+function openDeferredSse(
+  pending: Promise<Response>,
+  options: DeferredSseOptions,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null
+  let capTimer: ReturnType<typeof setTimeout> | null = null
+  let innerReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let cancelled = false
+  let capped = false
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const stopTimers = () => {
+        if (keepaliveTimer) clearInterval(keepaliveTimer)
+        keepaliveTimer = null
+        if (capTimer) clearTimeout(capTimer)
+        capTimer = null
+      }
+      const emitFrame = (payload: StreamErrorPayload) => {
+        if (cancelled) return
+        try {
+          controller.enqueue(encoder.encode(sseErrorFrame(options.dialect, payload)))
+        } catch {
+          cancelled = true
+        }
+      }
+      const close = () => {
+        try { controller.close() } catch { /* already closed / cancelled */ }
+      }
+      const keepalive = () => {
+        if (cancelled) return
+        try {
+          controller.enqueue(
+            encoder.encode(`: keepalive ${Date.now() - options.startedAt}ms\n\n`),
+          )
+        } catch {
+          cancelled = true
+        }
+      }
+
+      // Flush the response head *now*. Nothing is written until the first chunk,
+      // so waiting for the interval to tick put the "early" 200 out a full
+      // keepalive period late (10s grace + 15s tick = 25s) — most of the edge's
+      // header budget spent for nothing.
+      keepalive()
+      keepaliveTimer = setInterval(keepalive, options.keepaliveMs)
+
+      capTimer = setTimeout(() => {
+        if (cancelled || capped) return
+        capped = true
+        stopTimers()
+        options.abortUpstream()
+        const seconds = Math.round(options.maxWaitMs / 1000)
+        console.warn(
+          `[AI Proxy] ${options.providerLabel} sent no response headers within ${options.maxWaitMs}ms — aborting the upstream request`,
+        )
+        // Nothing was generated, so nothing is metered: the caller's completion
+        // hook only runs off the upstream body, which never existed.
+        emitFrame(
+          deferredErrorPayload(
+            'upstream_timeout',
+            `The model did not start responding within ${seconds}s. Split large tool calls (e.g. write_file then append).`,
+            true,
+          ),
+        )
+        close()
+      }, Math.max(0, options.maxWaitMs - (Date.now() - options.startedAt)))
+
+      try {
+        const upstream = await pending
+        stopTimers()
+        if (capped || cancelled) {
+          try { upstream.body?.cancel() } catch { /* noop */ }
+          return
+        }
+
+        if (!upstream.ok) {
+          const raw = await upstream.text().catch(() => '')
+          const code = upstreamStatusErrorCode(upstream.status)
+          const retryable = isRetryableUpstreamStatus(upstream.status)
+          const detail = upstreamErrorSnippet(raw)
+          console.warn(
+            `[AI Proxy] ${options.providerLabel} answered ${upstream.status} after early SSE headers (retryable=${retryable}): ${detail}`,
+          )
+          emitFrame(
+            deferredErrorPayload(
+              code,
+              `The model provider rejected the request after the stream had started (HTTP ${upstream.status})${detail ? `: ${detail}` : ''}.`,
+              retryable,
+            ),
+          )
+          close()
+          return
+        }
+
+        if (!upstream.body) {
+          emitFrame(
+            deferredErrorPayload(
+              'upstream_error',
+              `The model provider returned no stream body. Please retry.`,
+              false,
+            ),
+          )
+          close()
+          return
+        }
+
+        // Keepalives + mid-stream error framing come from the same wrapper every
+        // other streaming path uses, so an early stream and a fast stream end
+        // exactly the same way. The cap above only ever covers the wait *for
+        // headers*: a stream that has started is never cut (SHO-529).
+        const wrapped = wrapSseForErrorVisibility(upstream.body, options.providerLabel, {
+          keepaliveMs: options.keepaliveMs,
+          dialect: options.dialect,
+        })
+        const body = options.transform ? options.transform(wrapped, upstream) : wrapped
+        innerReader = body.getReader()
+        while (!cancelled) {
+          const { done, value } = await innerReader.read()
+          if (done) break
+          if (value && value.byteLength > 0) controller.enqueue(value)
+        }
+        close()
+      } catch (err: any) {
+        stopTimers()
+        if (capped || cancelled || err?.name === 'AbortError') {
+          close()
+          return
+        }
+        const code = classifyStreamError(err)
+        const retryable = code !== 'upstream_error'
+        console.warn(
+          `[AI Proxy] ${options.providerLabel} failed before its stream began (after early SSE headers) [${code}]: ${err?.message || err?.code}`,
+        )
+        emitFrame(
+          deferredErrorPayload(
+            code,
+            `The model provider connection failed before it answered: ${err?.message || err?.code || 'unknown network error'}. Please retry.`,
+            retryable,
+          ),
+        )
+        close()
+      } finally {
+        stopTimers()
+      }
+    },
+    cancel(reason) {
+      cancelled = true
+      if (keepaliveTimer) clearInterval(keepaliveTimer)
+      if (capTimer) clearTimeout(capTimer)
+      try { innerReader?.cancel(reason) } catch { /* noop */ }
+      pending.then((upstream) => {
+        try { upstream.body?.cancel() } catch { /* noop */ }
+      }).catch(() => { /* noop */ })
+    },
+  })
+}
+
+export interface EarlySseOptions {
+  /** Human label for logs and synthetic error text. */
+  providerLabel: string
+  /** Wire dialect for the wrapped upstream body. Default `anthropic`. */
+  dialect?: 'anthropic' | 'openai'
+  /**
+   * Wire dialect of the frames this call writes straight to the client (the
+   * post-header provider error). Defaults to `dialect`; differs when the
+   * upstream speaks Anthropic SSE but the client speaks OpenAI chunks
+   * (`proxyAnthropicStream`).
+   */
+  clientDialect?: 'anthropic' | 'openai'
+  /** Response headers for the streamed 200. */
+  headers?: Record<string, string>
+  /**
+   * Applied to the upstream SSE body after keepalive + error framing. Receives
+   * the upstream response because several callers pick their rewriter from it
+   * (`served` provider, cache headers, …).
+   */
+  transform?: (body: ReadableStream<Uint8Array>, upstream: Response) => ReadableStream<Uint8Array>
+  /**
+   * Fast path: the provider answered non-2xx inside the grace window, so we
+   * still hold the real status. Callers that throw or rewrap keep doing so.
+   */
+  onUpstreamError?: (response: Response) => Response | Promise<Response>
+  /** Grace override (tests). */
+  graceMs?: number
+  /** Keepalive override (tests). */
+  keepaliveMs?: number
+  /** Ceiling on the wait for provider headers, measured from the request start. */
+  maxWaitMs?: number
+  /**
+   * The caller's own abort signal (usually `c.req.raw.signal`). It is combined
+   * with the cap's controller and handed to `startUpstream`, so a client cancel
+   * and an `upstream_timeout` abort both reach the provider fetch.
+   */
+  signal?: AbortSignal
+}
+
+/**
+ * Start a streaming upstream request and make sure the client gets response
+ * headers before the edge's 125s header timeout.
+ *
+ * - Provider answers inside the grace window → identical to fetching directly:
+ *   real status, real body; a non-2xx is handed to `onUpstreamError`.
+ * - Provider is slower → `200 text/event-stream` immediately (flushed with the
+ *   first `: keepalive` comment), `: keepalive` comments every `keepaliveMs`,
+ *   then the provider's stream (or one typed `[shogo:retryable=…;code=…]` error
+ *   frame if it fails after headers).
+ * - Provider still silent at `maxWaitMs` → the upstream request is aborted and
+ *   the client gets one `upstream_timeout` frame, so the agent can reshape the
+ *   call instead of waiting for a hop to drop the socket.
+ */
+export async function proxySseWithEarlyHeaders(
+  startUpstream: (signal: AbortSignal) => Promise<Response>,
+  options: EarlySseOptions,
+): Promise<Response> {
+  const dialect = options.dialect ?? 'anthropic'
+  const clientDialect = options.clientDialect ?? dialect
+  const graceMs = options.graceMs ?? earlySseTiming.graceMs
+  const keepaliveMs = options.keepaliveMs ?? earlySseTiming.keepaliveMs
+  const maxWaitMs = options.maxWaitMs ?? earlySseTiming.maxWaitMs
+  const startedAt = Date.now()
+  const capController = new AbortController()
+  const upstreamSignal = options.signal
+    ? AbortSignal.any([options.signal, capController.signal])
+    : capController.signal
+  const pending = startUpstream(upstreamSignal)
+
+  // Race the headers, not the body. A rejection inside the window is the
+  // caller's problem (throw it); a rejection after it becomes an SSE frame.
+  let settled: { response: Response } | null = null
+  await new Promise<void>((resolve, reject) => {
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      resolve()
+    }, graceMs)
+    pending.then(
+      (response) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        settled = { response }
+        resolve()
+      },
+      (err) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+
+  const sseHeaders = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    ...options.headers,
+  }
+
+  const fast = settled as { response: Response } | null
+  if (fast) {
+    const upstream = fast.response
+    if (!upstream.ok) {
+      return options.onUpstreamError ? options.onUpstreamError(upstream) : upstream
+    }
+    // The provider answered inside the window, so its own headers can still be
+    // relayed — `request-id` is what support traces a bad generation by, and
+    // callers read it off this response. Nothing here can be added once the
+    // deferred path has already sent its headers.
+    const headers: Record<string, string> = { ...sseHeaders }
+    const contentType = upstream.headers.get('Content-Type')
+    if (contentType && contentType.toLowerCase().includes('text/event-stream')) {
+      headers['Content-Type'] = contentType
+    }
+    const requestId = upstream.headers.get('request-id')
+    if (requestId) headers['request-id'] = requestId
+    const wrapped = wrapSseForErrorVisibility(upstream.body!, options.providerLabel, {
+      keepaliveMs,
+      dialect,
+    })
+    const body = options.transform ? options.transform(wrapped, upstream) : wrapped
+    return new Response(body, { status: upstream.status, headers })
+  }
+
+  console.warn(
+    `[AI Proxy] ${options.providerLabel} sent no response headers within ${graceMs}ms — answering 200 SSE now, streaming when the provider answers`,
+  )
+  return new Response(
+    openDeferredSse(pending, {
+      providerLabel: options.providerLabel,
+      dialect: clientDialect,
+      keepaliveMs,
+      startedAt,
+      maxWaitMs,
+      abortUpstream: () => {
+        capController.abort(new Error('upstream_timeout'))
+      },
+      transform: options.transform,
+    }),
+    { status: 200, headers: sseHeaders },
+  )
 }
 
 // =============================================================================
@@ -1647,26 +2113,6 @@ export async function proxyAnthropicStream(
 
   logCacheControlIfEnabled(body, 'stream')
 
-  const response = await fetchAnthropicWithRetry(
-    'https://api.anthropic.com/v1/messages',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(body),
-      signal,
-    },
-    { label: 'anthropic', signal },
-  )
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
-  }
-
   // Transform Anthropic SSE stream to OpenAI SSE format
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
@@ -1735,18 +2181,44 @@ export async function proxyAnthropicStream(
   // Wrap upstream with keepalive + mid-stream error visibility before the
   // OpenAI translator runs, so truncation-related `event: error` frames flow
   // through `convertAnthropicStreamEvent` and surface as typed errors.
-  const wrapped = wrapSseForErrorVisibility(response.body!, 'anthropic')
-  const transformed = wrapped.pipeThrough(transformStream)
-
-  return new Response(transformed, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Proxy-Provider': 'anthropic',
-      'X-Proxy-Model': modelConfig.apiModel,
+  //
+  // Headers go out within the grace window even while Anthropic is still
+  // thinking: Cloudflare drops a headerless request at 125s, which a large
+  // context writing a whole file in one tool call easily exceeds.
+  return proxySseWithEarlyHeaders(
+    (upstreamSignal) => fetchAnthropicWithRetry(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: upstreamSignal,
+      },
+      { label: 'anthropic', signal: upstreamSignal },
+    ),
+    {
+      providerLabel: 'anthropic',
+      dialect: 'anthropic',
+      // The client reads OpenAI chunks; a provider error after the headers have
+      // gone out never reaches `transformStream`, so it must be written in the
+      // dialect the caller's SDK parses.
+      clientDialect: 'openai',
+      signal,
+      headers: {
+        'X-Proxy-Provider': 'anthropic',
+        'X-Proxy-Model': modelConfig.apiModel,
+      },
+      transform: (upstreamBody) => upstreamBody.pipeThrough(transformStream),
+      onUpstreamError: async (response) => {
+        const errorText = await response.text()
+        throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
+      },
     },
-  })
+  )
 }
 
 /**
@@ -2082,52 +2554,287 @@ export function applyGoogleThoughtSignatures(messages: any[]): any[] {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Gemini thinking summaries
+// ---------------------------------------------------------------------------
+
 /**
- * Per-stream rewriter for Gemini SSE. A signature can arrive in the same chunk
- * as its tool call or in a later chunk that only carries the call's `index`, so
- * the id is remembered across lines.
+ * Gemini's OpenAI-compatible layer reports its thinking summary as ordinary
+ * `content`, wrapped in `<thought>` … `</thought>` and (usually) flagged with
+ * `extra_content.google.thought`. pi-ai has no notion of either, so without
+ * this the summary is rendered as reply text. The proxy rewrites it into
+ * `reasoning_content`, the field pi-ai already turns into a thinking block.
+ *
+ * A tag can be split across two SSE chunks ("…</thou" then "ght>The ball
+ * costs…"), so one state object per response carries the open/closed state and
+ * whatever trailing tag prefix is being held back.
  */
-export function createGoogleSseRewriter(): (line: string) => string {
+const GOOGLE_THOUGHT_OPEN = '<thought>'
+const GOOGLE_THOUGHT_CLOSE = '</thought>'
+
+interface GoogleThoughtState {
+  /** A `</thought>` is still owed before the text is reply content again. */
+  inside: boolean
+  /** Content or a tool call has been seen; an opening tag is only valid before that. */
+  started: boolean
+  /** A trailing prefix of a tag, held until the next chunk completes or denies it. */
+  held: string
+}
+
+/** Length of the longest suffix of `text` that is a proper prefix of `tag`. */
+function heldTagPrefix(text: string, tag: string): number {
+  for (let length = Math.min(tag.length - 1, text.length); length > 0; length -= 1) {
+    if (text.endsWith(tag.slice(0, length))) return length
+  }
+  return 0
+}
+
+/**
+ * Split one chunk of Gemini `content` into thinking (`reasoning`) and reply
+ * (`content`) text.
+ *
+ *  - A chunk Google flagged as a thought is thinking, with its `<thought>`
+ *    opener stripped.
+ *  - Otherwise `<thought>` only opens a thought at the very start of the
+ *    stream, so a reply that quotes the literal text passes through untouched.
+ *  - While a thought is open, everything up to `</thought>` is thinking. The
+ *    text after the closing tag is reply content, which is why one chunk can
+ *    produce both.
+ */
+function splitGoogleThoughtChunk(
+  state: GoogleThoughtState,
+  text: string,
+  thoughtFlagged: boolean,
+): { state: GoogleThoughtState; reasoning: string; content: string } {
+  let buffer = state.held + text
+  let inside = state.inside
+  let started = state.started
+
+  if (!inside && (thoughtFlagged || !started)) {
+    if (buffer.startsWith(GOOGLE_THOUGHT_OPEN)) {
+      inside = true
+      started = true
+      buffer = buffer.slice(GOOGLE_THOUGHT_OPEN.length)
+    } else if (!thoughtFlagged && !started && GOOGLE_THOUGHT_OPEN.startsWith(buffer)) {
+      // Wholly a prefix of the opening tag — hold it until the next chunk.
+      return { state: { inside, started, held: buffer }, reasoning: '', content: '' }
+    } else if (thoughtFlagged) {
+      inside = true
+      started = true
+    }
+  }
+
+  if (!inside) {
+    return { state: { inside, started: started || buffer.length > 0, held: '' }, reasoning: '', content: buffer }
+  }
+
+  const close = buffer.indexOf(GOOGLE_THOUGHT_CLOSE)
+  if (close >= 0) {
+    return {
+      state: { inside: false, started: true, held: '' },
+      reasoning: buffer.slice(0, close),
+      content: buffer.slice(close + GOOGLE_THOUGHT_CLOSE.length),
+    }
+  }
+
+  const held = heldTagPrefix(buffer, GOOGLE_THOUGHT_CLOSE)
+  return {
+    state: { inside, started: true, held: buffer.slice(buffer.length - held) },
+    reasoning: buffer.slice(0, buffer.length - held),
+    content: '',
+  }
+}
+
+/** Cursor over one response's thought state, shared by the stream and non-stream paths. */
+function createGoogleThoughtReader() {
+  let state: GoogleThoughtState = { inside: false, started: false, held: '' }
+  return {
+    push(text: string, thoughtFlagged = false) {
+      const part = splitGoogleThoughtChunk(state, text, thoughtFlagged)
+      state = part.state
+      return { reasoning: part.reasoning, content: part.content }
+    },
+    /** A tool call counts as content for the "opening tag must be first" rule. */
+    markStarted() {
+      state = { ...state, started: true }
+    },
+    /** Release whatever was held back when the stream ends. */
+    drain() {
+      const { held, inside } = state
+      state = { ...state, held: '' }
+      return inside ? { reasoning: held, content: '' } : { reasoning: '', content: held }
+    },
+  }
+}
+
+/**
+ * Move a complete (non-streamed) message's thought summary out of `content`
+ * and into `reasoning_content`, dropping the marker Google attaches to it.
+ */
+export function splitGoogleThoughtMessage(payload: any): boolean {
+  const choices = Array.isArray(payload?.choices) ? payload.choices : []
+  let changed = false
+  for (const choice of choices) {
+    const message = choice?.message
+    if (!message || typeof message.content !== 'string' || message.content.length === 0) continue
+    const flagged = message?.extra_content?.google?.thought === true
+    if (!flagged && !message.content.includes(GOOGLE_THOUGHT_OPEN)) continue
+    const reader = createGoogleThoughtReader()
+    const head = reader.push(message.content, flagged)
+    const tail = reader.drain()
+    const reasoning = head.reasoning + tail.reasoning
+    const content = head.content + tail.content
+    delete message.extra_content
+    if (reasoning) {
+      message.reasoning_content = typeof message.reasoning_content === 'string'
+        ? message.reasoning_content + reasoning
+        : reasoning
+    }
+    message.content = content || null
+    changed = true
+  }
+  return changed
+}
+
+/** A line rewriter may need to emit more than one line, and may hold text back. */
+export interface SseLineRewriter {
+  (line: string): string | string[]
+  /** Lines owed when the upstream stream ends (text held back mid-tag). */
+  flush?: () => string | string[]
+}
+
+/**
+ * Per-stream rewriter for Gemini SSE. Two jobs:
+ *
+ *  - A thought signature can arrive in the same chunk as its tool call or in a
+ *    later chunk that only carries the call's `index`, so the id is remembered
+ *    across lines.
+ *  - Thinking summaries are moved into `reasoning_content`.
+ *
+ * A chunk carrying `"</thought>answer"` has to become two lines: pi-ai reads
+ * `content` before `reasoning_content` within one delta, so a single delta
+ * would emit the answer's text block in front of the thinking block.
+ */
+export function createGoogleSseRewriter(): SseLineRewriter {
   const idByIndex = new Map<number, string>()
-  return (line: string) => {
+  const thoughts = createGoogleThoughtReader()
+  let envelope: Record<string, unknown> | null = null
+
+  const standalone = (data: Record<string, unknown>): string =>
+    `data: ${JSON.stringify({
+      ...(envelope ?? { id: null, object: 'chat.completion.chunk', created: 0, model: 'unknown' }),
+      choices: [{ index: 0, delta: data, finish_reason: null }],
+    })}`
+
+  const rewriter = (line: string): string | string[] => {
     if (!line.startsWith('data: ')) return line
     const raw = line.slice(6).trim()
-    if (!raw || raw === '[DONE]') return line
+    if (!raw) return line
+    if (raw === '[DONE]') {
+      // Same field choice as `flush` below: a held prefix of `<thought>` that
+      // never completed is reply text, not thinking.
+      const owed = thoughts.drain()
+      if (!owed.reasoning && !owed.content) return line
+      const tail = owed.reasoning ? { reasoning_content: owed.reasoning } : { content: owed.content }
+      return [standalone(tail), line]
+    }
     let parsed: any
     try {
       parsed = JSON.parse(raw)
     } catch {
       return line
     }
+    if (parsed?.id !== undefined || parsed?.model !== undefined) {
+      envelope = {
+        id: parsed.id ?? envelope?.id ?? null,
+        object: parsed.object ?? envelope?.object ?? 'chat.completion.chunk',
+        created: parsed.created ?? envelope?.created ?? 0,
+        model: parsed.model ?? envelope?.model ?? 'unknown',
+      }
+    }
     const choices = Array.isArray(parsed?.choices) ? parsed.choices : []
+    const reasoningChunks: string[] = []
     let changed = false
     for (const choice of choices) {
       const delta = choice?.delta
-      const toolCalls = delta?.tool_calls
-      if (!Array.isArray(toolCalls)) continue
-      const found: Array<{ id: string; data: string }> = []
-      for (const toolCall of toolCalls) {
-        const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
-        const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
-        if (index !== undefined && id) idByIndex.set(index, id)
-        const signature = googleThoughtSignature(toolCall)
-        if (!signature) continue
-        delete toolCall.extra_content
-        const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
-        if (!owner) continue
-        found.push({ id: owner, data: signature })
-        changed = true
+      if (!delta) continue
+      const toolCalls = delta.tool_calls
+      if (Array.isArray(toolCalls)) {
+        thoughts.markStarted()
+        const found: Array<{ id: string; data: string }> = []
+        for (const toolCall of toolCalls) {
+          const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
+          const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
+          if (index !== undefined && id) idByIndex.set(index, id)
+          const signature = googleThoughtSignature(toolCall)
+          if (!signature) continue
+          delete toolCall.extra_content
+          const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
+          if (!owner) continue
+          found.push({ id: owner, data: signature })
+          changed = true
+        }
+        if (found.length > 0) {
+          const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
+          for (const item of found) {
+            if (details.some((detail) => detail?.id === item.id)) continue
+            details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+          }
+          delta.reasoning_details = details
+        }
       }
-      if (found.length === 0) continue
-      const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
-      for (const item of found) {
-        if (details.some((detail) => detail?.id === item.id)) continue
-        details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+
+      const flagged = delta?.extra_content?.google?.thought === true
+      if (typeof delta.content === 'string' && (flagged || delta.content.length > 0)) {
+        const { reasoning, content } = thoughts.push(delta.content, flagged)
+        if (flagged) {
+          delete delta.extra_content.google.thought
+          if (Object.keys(delta.extra_content.google).length === 0) delete delta.extra_content
+        }
+        if (reasoning || content !== delta.content) {
+          changed = true
+          if (content) {
+            delta.content = content
+          } else {
+            delete delta.content
+          }
+          if (reasoning) {
+            const handed = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : ''
+            if (content) {
+              // Emit the reasoning as its own line so it lands before the text
+              // block pi-ai builds for this delta's content.
+              reasoningChunks.push(standaloneChoice(parsed, choice, handed + reasoning))
+              delete delta.reasoning_content
+            } else {
+              delta.reasoning_content = handed + reasoning
+            }
+          }
+        }
       }
-      delta.reasoning_details = details
     }
-    return changed ? `data: ${JSON.stringify(parsed)}` : line
+    if (!changed) return line
+    const lines = [...reasoningChunks.map((payload) => `data: ${payload}`), `data: ${JSON.stringify(parsed)}`]
+    return lines.length === 1 ? lines[0] : lines
   }
+
+  rewriter.flush = () => {
+    const owed = thoughts.drain()
+    const extra = owed.reasoning || owed.content
+    if (!extra) return []
+    return [standalone(owed.reasoning ? { reasoning_content: extra } : { content: extra })]
+  }
+
+  return rewriter
+}
+
+/** A standalone reasoning line for a delta that also carries reply text. */
+function standaloneChoice(parsed: any, choice: any, reasoning: string): string {
+  const payload: any = {
+    ...parsed,
+    choices: [{ index: choice?.index ?? 0, delta: { reasoning_content: reasoning }, finish_reason: null }],
+  }
+  delete payload.usage
+  return JSON.stringify(payload)
 }
 
 /**
@@ -2308,7 +3015,49 @@ export function bridgeVideoContentBlocks(
   return mutated ? next : messages
 }
 
-function buildOpenAICompatibleBody(
+/**
+ * Thinking levels each Gemini text model accepts, and the lowest one it will
+ * run at. Thinking cannot be turned off on Gemini 3 and newer, so `off` — and
+ * every other "less than the minimum" effort — becomes that model's floor
+ * instead of a disabled config.
+ *
+ * The Flash family keeps `minimal`: `gemini-3.5-flash-lite` is billed at the
+ * `minimal` rate, so flooring it at `low` would quietly make our cheapest model
+ * more expensive on every call. `xhigh` is accepted only by Neon and Hydrogen.
+ *
+ * Do not widen a set without probing it — an unsupported level is a 400, not a
+ * silent downgrade. To re-check a model, send one request per level:
+ *
+ *   curl -s -o /dev/null -w '%{http_code}\n' \
+ *     -H "Authorization: Bearer $GOOGLE_API_KEY" -H 'Content-Type: application/json' \
+ *     -d '{"model":"<model>","max_tokens":1,"messages":[{"role":"user","content":"hi"}],
+ *          "extra_body":{"google":{"thinking_config":{"thinking_level":"<level>","include_thoughts":true}}}}' \
+ *     "$GOOGLE_BASE_URL/chat/completions"
+ */
+const GOOGLE_THINKING_LEVELS: Record<string, { levels: readonly string[]; lowest: string }> = {
+  'gemini-4-carbon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-4-argon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-4-neon': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
+  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
+  'gemini-3.1-pro-preview': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-3.8-flash': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
+  'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
+}
+
+/** A model this table has never seen: the levels every Gemini text model takes. */
+const DEFAULT_GOOGLE_THINKING = { levels: ['low', 'medium', 'high'], lowest: 'low' } as const
+
+/** Map a caller's reasoning effort onto a `thinking_level` the model accepts. */
+export function googleThinkingLevel(apiModel: string, effort?: string): string {
+  const { levels, lowest } = GOOGLE_THINKING_LEVELS[apiModel] ?? DEFAULT_GOOGLE_THINKING
+  const requested = (effort ?? 'medium').trim().toLowerCase()
+  if (requested === 'off' || requested === 'none') return lowest
+  if (requested === 'minimal') return levels.includes('minimal') ? 'minimal' : lowest
+  if (requested === 'xhigh') return levels.includes('xhigh') ? 'xhigh' : 'high'
+  return levels.includes(requested) ? requested : 'medium'
+}
+
+export function buildOpenAICompatibleBody(
   request: ChatCompletionRequest,
   modelConfig: ModelConfig,
   extra: Record<string, unknown>,
@@ -2324,7 +3073,19 @@ function buildOpenAICompatibleBody(
     // pi-ai can only emit `image_url`; OpenRouter wants `video_url` for video.
     body.messages = bridgeVideoContentBlocks(request.messages)
   }
-  if (max_tokens !== undefined) {
+  if (modelConfig.provider === 'google') {
+    // Google rejects a body carrying both fields ("max_tokens and
+    // max_completion_tokens cannot both be set"), and pi-ai's chat-completions
+    // client sends max_completion_tokens on every turn, so fold it into the one
+    // field Gemini gets.
+    const requested = max_tokens ?? (rest as { max_completion_tokens?: number }).max_completion_tokens
+    delete body.max_completion_tokens
+    // Gemini's synchronous completions endpoint silently truncates output at
+    // 65 536 tokens; exceeding it requires background execution (not supported
+    // here). Inject the catalog cap so callers that omit a limit still get a
+    // predictable one instead of relying on Google's server default.
+    body.max_tokens = requested ?? getMaxOutputTokens(request.model)
+  } else if (max_tokens !== undefined) {
     if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
     else body.max_tokens = max_tokens
   }
@@ -2343,11 +3104,57 @@ function buildOpenAICompatibleBody(
   // rejects OpenAI-only bookkeeping fields, cannot disable thinking on 3 and
   // newer, and enforces thought signatures on replayed function calls.
   if (modelConfig.provider === 'google') {
+    // Read the effort before the provider-options bag is dropped: pi-ai's
+    // shogo namespace is the caller's explicit override, ahead of the field it
+    // sends itself and the catalog default.
+    const providerOptions = body.providerOptions as ProviderOptionsField | undefined
+    // `modelConfig.reasoningEffort` only carries a value for DB-routed rows, so
+    // fall back to the merged catalog entry: it is the same table the picker
+    // reads, and it is what keeps Flash-Lite on `minimal`.
+    const catalogEffort = modelConfig.reasoningEffort ?? getMergedModelEntrySync(modelConfig.apiModel)?.reasoningEffort
+    const requestedEffort =
+      providerOptions?.shogo?.reasoning_effort ??
+      (typeof body.reasoning_effort === 'string' ? body.reasoning_effort : undefined) ??
+      catalogEffort ??
+      'medium'
+
     delete body.store
     delete body.providerOptions
     delete body.thinking
     delete body.reasoning_content
-    if (body.reasoning_effort === 'none') delete body.reasoning_effort
+    // Google rejects `reasoning_effort` alongside a custom `thinking_config`
+    // ("Expected one of either reasoning_effort or custom thinking_config;
+    // found both"), so the level is the only control we send.
+    delete body.reasoning_effort
+
+    // Thinking cannot be turned off on Gemini 3 and newer, and a turn that
+    // thinks with no summaries is a user staring at an empty bubble until the
+    // first tool call. Always ask for the summary, at the level the model will
+    // accept.
+    const existingExtra =
+      body.extra_body && typeof body.extra_body === 'object' && !Array.isArray(body.extra_body)
+        ? (body.extra_body as Record<string, unknown>)
+        : {}
+    const existingGoogle =
+      existingExtra.google && typeof existingExtra.google === 'object' && !Array.isArray(existingExtra.google)
+        ? (existingExtra.google as Record<string, unknown>)
+        : {}
+    const existingThinking =
+      existingGoogle.thinking_config && typeof existingGoogle.thinking_config === 'object'
+        ? (existingGoogle.thinking_config as Record<string, unknown>)
+        : {}
+    body.extra_body = {
+      ...existingExtra,
+      google: {
+        ...existingGoogle,
+        thinking_config: {
+          ...existingThinking,
+          thinking_level: googleThinkingLevel(modelConfig.apiModel, requestedEffort),
+          include_thoughts: true,
+        },
+      },
+    }
+
     if (Array.isArray(body.messages)) {
       body.messages = applyGoogleThoughtSignatures(body.messages as any[])
     }
@@ -2636,6 +3443,42 @@ export function splitOpenAIPromptUsage(usage: any): {
 }
 
 /**
+ * Split an OpenAI-format `usage` object into billable output tokens and
+ * reasoning tokens. The completion-side half of `splitOpenAIPromptUsage`.
+ *
+ * Some providers report only the visible answer in `completion_tokens` and
+ * leave their thinking tokens in `total_tokens` alone — Google's
+ * OpenAI-compatible endpoint does this for every Gemini model, and xAI does
+ * the same. The provider still bills those tokens at the output rate, so the
+ * unreported gap (`total_tokens - prompt_tokens - completion_tokens`) is
+ * folded into the output count and priced through the normal
+ * `calculateUsageCost` path.
+ *
+ * It is provider-agnostic on purpose: bill every token the provider says it
+ * counted. OpenAI already includes reasoning inside `completion_tokens` (and
+ * reports it again in `completion_tokens_details.reasoning_tokens`), so the
+ * gap is 0 there and nothing is counted twice. Same for DeepSeek cache
+ * misses and `anthropicUsageToOpenAI`, whose `total_tokens` is exactly
+ * `prompt_tokens + completion_tokens`.
+ */
+export function splitOpenAICompletionUsage(usage: any): {
+  outputTokens: number
+  reasoningTokens: number
+} {
+  const promptTokens = usage?.prompt_tokens || 0
+  const completionTokens = usage?.completion_tokens || 0
+  const totalTokens = usage?.total_tokens || 0
+  const unreportedTokens = Math.max(0, totalTokens - promptTokens - completionTokens)
+  return {
+    outputTokens: completionTokens + unreportedTokens,
+    reasoningTokens:
+      usage?.completion_tokens_details?.reasoning_tokens ??
+      usage?.reasoning_tokens ??
+      unreportedTokens,
+  }
+}
+
+/**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 export async function proxyOpenAIStream(
@@ -2651,30 +3494,16 @@ export async function proxyOpenAIStream(
   ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const { response, served } = await fetchOpenAICompatible(request, apiKey, modelConfig, {
-    stream: true,
-    stream_options: { include_usage: true },
-  }, signal)
+  let served: ModelConfig = modelConfig
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`${served.provider} API error (${response.status}): ${errorText}`)
-  }
-
-  const rewriteReasoning = shouldRewriteOpenRouterReasoning(served)
-  // Gemini also needs a per-line rewrite: it returns the thought signature on
-  // the tool call, while the runtime persists it in `reasoning_details`.
-  const lineRewriter = rewriteReasoning
-    ? rewriteOpenRouterSseLine
-    : served.provider === 'google'
-      ? createGoogleSseRewriter()
-      : null
-
-  if (!onComplete && !lineRewriter) {
-    return new Response(response.body, {
-      headers: openAIProxyHeaders(served),
-    })
-  }
+  const pickLineRewriter = (config: ModelConfig) =>
+    // Gemini also needs a per-line rewrite: it returns the thought signature on
+    // the tool call, while the runtime persists it in `reasoning_details`.
+    shouldRewriteOpenRouterReasoning(config)
+      ? rewriteOpenRouterSseLine
+      : config.provider === 'google'
+        ? createGoogleSseRewriter()
+        : null
 
   // Parse SSE to extract usage from the final chunk, then call onComplete.
   // OpenRouter streams are re-chunked by line so `reasoning` can be rewritten
@@ -2693,90 +3522,119 @@ export async function proxyOpenAIStream(
     if (!parsed?.usage) return
     const usage = parsed.usage
     ;({ inputTokens, cachedInputTokens, cacheWriteTokens } = splitOpenAIPromptUsage(usage))
-    outputTokens = usage.completion_tokens || 0
-    reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
-    if (rewriteReasoning && typeof usage.cost === 'number' && !loggedOpenRouterCost) {
+    ;({ outputTokens, reasoningTokens } = splitOpenAICompletionUsage(usage))
+    if (
+      shouldRewriteOpenRouterReasoning(served) &&
+      typeof usage.cost === 'number' &&
+      !loggedOpenRouterCost
+    ) {
       loggedOpenRouterCost = true
       console.log(`[AI Proxy] OpenRouter usage cost $${usage.cost} model=${served.apiModel}`)
     }
   }
 
-  const transformStream = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      const rewrite = lineRewriter
-      if (!rewrite) {
-        controller.enqueue(chunk)
+  const buildTransformStream = (lineRewriter: SseLineRewriter | null) =>
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        const rewrite = lineRewriter
+        if (!rewrite) {
+          controller.enqueue(chunk)
+          sseBuffer += decoder.decode(chunk, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+            try {
+              noteUsage(JSON.parse(data))
+            } catch {
+              // Skip unparseable lines
+            }
+          }
+          return
+        }
+
+        // A rewriter can turn one upstream line into several (the Gemini
+        // thought rewriter splits "</thought>answer" into thinking then text),
+        // so each piece is enqueued and counted on its own.
+        const emit = (rewritten: string | string[]) => {
+          for (const piece of Array.isArray(rewritten) ? rewritten : [rewritten]) {
+            if (piece.startsWith('data: ')) {
+              const data = piece.slice(6).trim()
+              if (data && data !== '[DONE]') {
+                try {
+                  noteUsage(JSON.parse(data))
+                } catch {
+                  // Skip unparseable lines
+                }
+              }
+            }
+            controller.enqueue(encoder.encode(`${piece}\n`))
+          }
+        }
+
         sseBuffer += decoder.decode(chunk, { stream: true })
         const lines = sseBuffer.split('\n')
-        sseBuffer = lines.pop() || ''
+        sseBuffer = lines.pop() ?? ''
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') continue
-          try {
-            noteUsage(JSON.parse(data))
-          } catch {
-            // Skip unparseable lines
-          }
+          emit(rewrite(line))
         }
-        return
-      }
-
-      sseBuffer += decoder.decode(chunk, { stream: true })
-      const lines = sseBuffer.split('\n')
-      sseBuffer = lines.pop() ?? ''
-      for (const line of lines) {
-        const rewritten = rewrite(line)
-        if (rewritten.startsWith('data: ')) {
-          const data = rewritten.slice(6).trim()
-          if (data && data !== '[DONE]') {
-            try {
-              noteUsage(JSON.parse(data))
-            } catch {
-              // Skip unparseable lines
+      },
+      flush(controller) {
+        const rewrite = lineRewriter
+        const emit = (rewritten: string | string[] | undefined) => {
+          for (const piece of rewritten === undefined ? [] : Array.isArray(rewritten) ? rewritten : [rewritten]) {
+            if (piece.startsWith('data: ')) {
+              const data = piece.slice(6).trim()
+              if (data && data !== '[DONE]') {
+                try {
+                  noteUsage(JSON.parse(data))
+                } catch {
+                  // Skip unparseable lines
+                }
+              }
             }
+            controller.enqueue(encoder.encode(`${piece}\n`))
           }
         }
-        controller.enqueue(encoder.encode(`${rewritten}\n`))
-      }
-    },
-    flush(controller) {
-      const rewrite = lineRewriter
-      if (rewrite && sseBuffer) {
-        const rewritten = rewrite(sseBuffer)
-        if (rewritten.startsWith('data: ')) {
-          const data = rewritten.slice(6).trim()
-          if (data && data !== '[DONE]') {
-            try {
-              noteUsage(JSON.parse(data))
-            } catch {
-              // Skip unparseable lines
-            }
-          }
-        }
-        controller.enqueue(encoder.encode(`${rewritten}\n`))
-      }
-      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
-    },
-  })
+        if (rewrite && sseBuffer) emit(rewrite(sseBuffer))
+        if (rewrite?.flush) emit(rewrite.flush())
+        onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
+      },
+    })
 
-  const reader = response.body!.getReader()
-  const readable = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const { done, value } = await reader.read()
-      if (done) {
-        controller.close()
-        return
-      }
-      controller.enqueue(value)
+  // Headers go out within the grace window even while the provider is still
+  // thinking: Cloudflare drops a headerless request at 125s, and a Gemini call
+  // on a huge context writing a whole file emits nothing for longer than that.
+  return proxySseWithEarlyHeaders(
+    async (upstreamSignal) => {
+      const { response, served: upstreamServed } = await fetchOpenAICompatible(
+        request,
+        apiKey,
+        modelConfig,
+        { stream: true, stream_options: { include_usage: true } },
+        upstreamSignal,
+      )
+      served = upstreamServed
+      return response
     },
-  })
-
-  const transformed = readable.pipeThrough(transformStream)
-
-  return new Response(transformed, {
-    headers: openAIProxyHeaders(served),
-  })
+    {
+      providerLabel: modelConfig.provider,
+      dialect: 'openai',
+      signal,
+      headers: openAIProxyHeaders(modelConfig),
+      transform: (upstreamBody) => {
+        const lineRewriter = pickLineRewriter(served)
+        if (!onComplete && !lineRewriter) return upstreamBody
+        return upstreamBody.pipeThrough(buildTransformStream(lineRewriter))
+      },
+      onUpstreamError: async (response) => {
+        const errorText = await response.text()
+        throw new Error(`${served.provider} API error (${response.status}): ${errorText}`)
+      },
+    },
+  )
 }
 
 /**
@@ -2804,6 +3662,9 @@ export async function proxyOpenAINonStream(
   const result = await response.json()
   if (served.provider === 'google') {
     liftGoogleThoughtSignatures(result)
+    // Non-streamed Gemini reports its summary the same way the stream does —
+    // inside `content`, wrapped in <thought> tags.
+    splitGoogleThoughtMessage(result)
   }
   if (shouldRewriteOpenRouterReasoning(served)) {
     rewriteOpenRouterReasoningPayload(result)
@@ -3101,7 +3962,7 @@ function spendWindowStart(period: 'day' | 'week' | 'month' | null): Date {
  */
 const INTERNAL_USAGE_TAG_HEADER = 'x-shogo-usage-tag'
 /** Allowlisted internal usage tags the server may request via the header. */
-const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation', 'analytics_digest'])
+const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation', 'analytics_digest', 'learn_coach'])
 
 /**
  * Sentinel `projectId` values that never correspond to a real `Project` row:
@@ -4711,6 +5572,48 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * Cloudflare answers a request that had no upstream response headers within
+   * 125s with an HTML 524 page, and other edge failures with 520–523. Forwarded
+   * verbatim that reaches the runtime as an HTTP body it cannot classify: the
+   * turn fails with no retry and the user saw raw HTML. Turn it into the same
+   * typed JSON error shape every other proxy error uses, with a status the
+   * retry classifier already reads as transient.
+   */
+  async function cloudEdgeError(response: Response): Promise<Response | null> {
+    if (response.ok) return null
+    const contentType = (response.headers.get('content-type') || '').toLowerCase()
+    const htmlError = contentType.includes('text/html') && response.status >= 500
+    const edgeTimeout = response.status === 524
+    if (!edgeTimeout && !htmlError) return null
+
+    const raw = await response.text().catch(() => '')
+    const detail = upstreamErrorSnippet(raw, 160)
+    console.warn(
+      `[AI Proxy] Shogo Cloud answered ${response.status} (${contentType || 'no content-type'}) instead of a model response${detail ? `: ${detail}` : ''}`,
+    )
+    const body = edgeTimeout
+      ? {
+          error: {
+            type: 'api_error',
+            code: 'upstream_timeout',
+            message:
+              'The model provider did not answer within 125 seconds, so the connection was closed before any output. The request can be retried; if it keeps happening, ask for the work in smaller pieces (for example write the file in parts).',
+          },
+        }
+      : {
+          error: {
+            type: 'api_error',
+            code: 'upstream_error',
+            message: `Shogo Cloud returned an error page (HTTP ${response.status}) instead of a model response. Please retry.`,
+          },
+        }
+    return new Response(JSON.stringify(body), {
+      status: edgeTimeout ? 504 : 502,
+      headers: { 'Content-Type': 'application/json', 'X-Proxy-Provider': 'shogo-cloud' },
+    })
+  }
+
+  /**
    * Forward an OpenAI-compatible chat completions request to the Shogo Cloud proxy.
    */
   async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest, signal?: AbortSignal): Promise<Response> {
@@ -4733,6 +5636,9 @@ export function aiProxyRoutes() {
     if (response.status === 401) {
       void wipeCloudKeyIfRejected('AI proxy chat-completions got 401 from Shogo Cloud')
     }
+
+    const edge = await cloudEdgeError(response)
+    if (edge) return edge
 
     if (request.stream) {
       if (!response.body) {
@@ -4783,6 +5689,9 @@ export function aiProxyRoutes() {
     if (response.status === 401) {
       void wipeCloudKeyIfRejected('AI proxy responses got 401 from Shogo Cloud')
     }
+
+    const edge = await cloudEdgeError(response)
+    if (edge) return edge
 
     if (request?.stream) {
       if (!response.body) {
@@ -4853,6 +5762,8 @@ export function aiProxyRoutes() {
     // that marker as authoritative and retries forever, which surfaces to the
     // user as an endless "Back online — resuming…" loop that never completes.
     if (!response.ok) {
+      const edge = await cloudEdgeError(response)
+      if (edge) return edge
       const errorBody = await response.text()
       logUpstreamError('Shogo Cloud (anthropic)', response.status, parsed.model, errorBody)
       return new Response(errorBody, {
@@ -5221,19 +6132,20 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
         }
 
+        const usage = result.usage || {}
+        const promptUsage = splitOpenAIPromptUsage(usage)
+        const completionUsage = splitOpenAICompletionUsage(usage)
         if (!isByokOpenRouter) {
-          const usage = result.usage || {}
-          const prompt = splitOpenAIPromptUsage(usage)
           recordUsage(
             tokenPayload,
             request.model,
-            prompt.inputTokens,
-            usage.completion_tokens || 0,
-            prompt.cachedInputTokens,
-            prompt.cacheWriteTokens,
+            promptUsage.inputTokens,
+            completionUsage.outputTokens,
+            promptUsage.cachedInputTokens,
+            promptUsage.cacheWriteTokens,
             chatSessionId,
             internalUsage,
-            usage.completion_tokens_details?.reasoning_tokens || 0,
+            completionUsage.reasoningTokens,
           )
         }
 
@@ -5242,10 +6154,10 @@ export function aiProxyRoutes() {
           body: result,
           format: 'json',
           usage: {
-            inputTokens: result.usage?.prompt_tokens ?? result.usage?.input_tokens,
-            outputTokens: result.usage?.completion_tokens ?? result.usage?.output_tokens,
-            cachedInputTokens: result.usage?.prompt_tokens_details?.cached_tokens ?? result.usage?.cache_read_input_tokens,
-            reasoningTokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? result.usage?.reasoning_tokens,
+            inputTokens: usage.prompt_tokens ?? usage.input_tokens,
+            outputTokens: result.usage ? completionUsage.outputTokens : undefined,
+            cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens,
+            reasoningTokens: result.usage ? completionUsage.reasoningTokens : undefined,
           },
         })
         return c.json(result)
@@ -5402,82 +6314,23 @@ export function aiProxyRoutes() {
 
       const forwardBody = { ...body, model: modelConfig.apiModel }
 
-      const response = await fetch('https://api.openai.com/v1/responses', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(forwardBody),
-        signal: c.req.raw.signal,
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
-        return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
-      }
-
-      if (isStream) {
-        // SSE pass-through with usage extraction
-        const decoder = new TextDecoder()
-        let inputTokens = 0
-        let outputTokens = 0
-        let cachedInputTokens = 0
-        let sseBuffer = ''
-
-        const transformStream = new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            controller.enqueue(chunk)
-            sseBuffer += decoder.decode(chunk, { stream: true })
-            const lines = sseBuffer.split('\n')
-            sseBuffer = lines.pop() || ''
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
-              const data = line.slice(6).trim()
-              if (data === '[DONE]') continue
-              try {
-                const parsed = JSON.parse(data)
-                if (parsed.type === 'response.completed' && parsed.response?.usage) {
-                  const usage = parsed.response.usage
-                  const totalInput = usage.input_tokens || 0
-                  cachedInputTokens =
-                    usage.input_tokens_details?.cached_tokens ??
-                    usage.prompt_cache_hit_tokens ??
-                    0
-                  inputTokens =
-                    usage.prompt_cache_miss_tokens ??
-                    Math.max(0, totalInput - cachedInputTokens)
-                  outputTokens = usage.output_tokens || 0
-                }
-              } catch {}
-            }
-          },
-          flush() {
-            if (inputTokens || outputTokens || cachedInputTokens) {
-              recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
-            }
-          },
-        })
-
-        const reader = response.body!.getReader()
-        const readable = new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            const { done, value } = await reader.read()
-            if (done) { controller.close(); return }
-            controller.enqueue(value)
-          },
-        })
-
-        const streamedResponse = new Response(readable.pipeThrough(transformStream), {
+      if (!isStream) {
+        const response = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
           headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
           },
+          body: JSON.stringify(forwardBody),
+          signal: c.req.raw.signal,
         })
-        return capture?.wrapStream(streamedResponse, 'openai-responses') || streamedResponse
-      } else {
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
+          return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
+        }
+
         const result = await response.json() as any
         if (result.usage) {
           const usage = result.usage
@@ -5514,6 +6367,75 @@ export function aiProxyRoutes() {
         })
         return c.json(result)
       }
+
+      // SSE pass-through with usage extraction
+      const decoder = new TextDecoder()
+      let inputTokens = 0
+      let outputTokens = 0
+      let cachedInputTokens = 0
+      let sseBuffer = ''
+
+      const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk)
+          sseBuffer += decoder.decode(chunk, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+            try {
+              const parsed = JSON.parse(data)
+              if (parsed.type === 'response.completed' && parsed.response?.usage) {
+                const usage = parsed.response.usage
+                const totalInput = usage.input_tokens || 0
+                cachedInputTokens =
+                  usage.input_tokens_details?.cached_tokens ??
+                  usage.prompt_cache_hit_tokens ??
+                  0
+                inputTokens =
+                  usage.prompt_cache_miss_tokens ??
+                  Math.max(0, totalInput - cachedInputTokens)
+                outputTokens = usage.output_tokens || 0
+              }
+            } catch {}
+          }
+        },
+        flush() {
+          if (inputTokens || outputTokens || cachedInputTokens) {
+            recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
+          }
+        },
+      })
+
+      const streamedResponse = await proxySseWithEarlyHeaders(
+        (upstreamSignal) => fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(forwardBody),
+          signal: upstreamSignal,
+        }),
+        {
+          providerLabel: 'openai-responses',
+          dialect: 'openai',
+          signal: c.req.raw.signal,
+          headers: {
+            'X-Proxy-Provider': modelConfig.provider,
+            'X-Proxy-Model': modelConfig.apiModel,
+          },
+          transform: (upstreamBody) => upstreamBody.pipeThrough(transformStream),
+          onUpstreamError: async (response) => {
+            const errorText = await response.text()
+            console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
+            return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
+          },
+        },
+      )
+      return capture?.wrapStream(streamedResponse, 'openai-responses') || streamedResponse
     } catch (error: any) {
       capture?.finish({ errorType: 'proxy_error' })
       console.error('[AI Proxy] Responses API error:', error.message)
@@ -5953,7 +6875,8 @@ export function aiProxyRoutes() {
         } else {
           const openaiResult = await response.json() as any
           const oaiPrompt = splitOpenAIPromptUsage(openaiResult.usage)
-          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, openaiResult.usage?.completion_tokens || 0, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage)
+          const oaiCompletion = splitOpenAICompletionUsage(openaiResult.usage)
+          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, oaiCompletion.outputTokens, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage, oaiCompletion.reasoningTokens)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           capture?.recordResponse({
             status: 200,
@@ -5961,9 +6884,9 @@ export function aiProxyRoutes() {
             format: 'json',
             usage: {
               inputTokens: oaiPrompt.inputTokens,
-              outputTokens: openaiResult.usage?.completion_tokens,
+              outputTokens: openaiResult.usage ? oaiCompletion.outputTokens : undefined,
               cachedInputTokens: oaiPrompt.cachedInputTokens,
-              reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
+              reasoningTokens: openaiResult.usage ? oaiCompletion.reasoningTokens : undefined,
             },
           })
           return c.json(anthropicResult)
@@ -6019,28 +6942,28 @@ export function aiProxyRoutes() {
         headers['anthropic-version'] = '2023-06-01'
       }
 
-      const response = await fetchAnthropicWithRetry(
-        'https://api.anthropic.com/v1/messages',
-        {
-          method: 'POST',
-          headers,
-          body: forwardBody,
-          signal: c.req.raw.signal,
-        },
-        { label: 'anthropic', signal: c.req.raw.signal },
-      )
-
-      if (!response.ok) {
-        const errorBody = await response.text()
-        logUpstreamError('Anthropic', response.status, parsed.model, errorBody)
-        capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
-        return new Response(errorBody, {
-          status: relayStatusForProviderError(response.status),
-          headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
-        })
-      }
-
       if (!isStream) {
+        const response = await fetchAnthropicWithRetry(
+          'https://api.anthropic.com/v1/messages',
+          {
+            method: 'POST',
+            headers,
+            body: forwardBody,
+            signal: c.req.raw.signal,
+          },
+          { label: 'anthropic', signal: c.req.raw.signal },
+        )
+
+        if (!response.ok) {
+          const errorBody = await response.text()
+          logUpstreamError('Anthropic', response.status, parsed.model, errorBody)
+          capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
+          return new Response(errorBody, {
+            status: relayStatusForProviderError(response.status),
+            headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+          })
+        }
+
         const responseBody = await response.json() as any
         const inTok = responseBody.usage?.input_tokens || 0
         const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
@@ -6062,13 +6985,10 @@ export function aiProxyRoutes() {
       }
 
       // Streaming: pass through with token tracking
-      const responseHeaders = new Headers()
-      const contentType = response.headers.get('Content-Type')
-      if (contentType) responseHeaders.set('Content-Type', contentType)
-      const requestId = response.headers.get('request-id')
-      if (requestId) responseHeaders.set('request-id', requestId)
-      responseHeaders.set('X-Proxy-Provider', 'anthropic')
-      responseHeaders.set('X-Proxy-Project', tokenPayload.projectId)
+      const responseHeaders: Record<string, string> = {
+        'X-Proxy-Provider': 'anthropic',
+        'X-Proxy-Project': tokenPayload.projectId,
+      }
 
       let streamInputTokens = 0
       let streamCachedInputTokens = 0
@@ -6106,15 +7026,37 @@ export function aiProxyRoutes() {
         },
       })
 
-      // Wrap with keepalive + mid-stream error visibility *before* token
-      // tracking, so synthetic error frames are also scanned for usage fields
-      // (they have none — harmless) but kept in the stream for downstream.
-      const wrapped = wrapSseForErrorVisibility(response.body!, 'anthropic')
-      const trackedBody = wrapped.pipeThrough(tokenTrackingTransform)
-      const streamedResponse = new Response(trackedBody, {
-        status: response.status,
-        headers: responseHeaders,
-      })
+      // Keepalive + mid-stream error visibility come from the shared wrapper,
+      // and the headers go out inside the grace window so a slow first byte
+      // (a huge context writing a whole file) is not cut off by the edge.
+      const streamedResponse = await proxySseWithEarlyHeaders(
+        (upstreamSignal) => fetchAnthropicWithRetry(
+          'https://api.anthropic.com/v1/messages',
+          {
+            method: 'POST',
+            headers,
+            body: forwardBody,
+            signal: upstreamSignal,
+          },
+          { label: 'anthropic', signal: upstreamSignal },
+        ),
+        {
+          providerLabel: 'anthropic',
+          dialect: 'anthropic',
+          signal: c.req.raw.signal,
+          headers: responseHeaders,
+          transform: (upstreamBody) => upstreamBody.pipeThrough(tokenTrackingTransform),
+          onUpstreamError: async (response) => {
+            const errorBody = await response.text()
+            logUpstreamError('Anthropic', response.status, parsed.model, errorBody)
+            capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
+            return new Response(errorBody, {
+              status: relayStatusForProviderError(response.status),
+              headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+            })
+          },
+        },
+      )
       return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
     } catch (error: any) {
       // Client cancelled — surface 499 silently, don't log as a server error.

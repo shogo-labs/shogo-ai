@@ -34,9 +34,17 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from 'hono'
-import { isMacOSJunkName } from '@shogo/shared-runtime'
+import { isMacOSJunkName, putFileToObjectStore } from '@shogo/shared-runtime'
+import { publishArtifactInlineMaxBytes, publishArtifactMaxBytes } from '@shogo/shared-runtime/publish-timeouts'
 import { cleanupStagingOutput } from './build-output-commit'
-import { createPublishedArtifactFilter } from './publish-artifact-filter'
+import { isObjectStoreAuthFailure } from './object-store-errors'
+import {
+  ArtifactMediaOffloadError,
+  createPublishedArtifactFilter,
+  measureDockerignoreExclusion,
+  offloadArtifactMedia,
+  type ArtifactMediaOffloadResult,
+} from './publish-artifact-filter'
 import { PUBLISH_STAGING_DIR } from './preview-manager'
 
 /** What the handlers need from the runtime that owns them. */
@@ -45,6 +53,11 @@ export interface PublishEndpointDeps {
   projectDir(projectId?: string): string | null
   /** Where the publish build wrote `dist.publish.staging` (the bundler cwd). */
   outputRoot(projectId: string, projectDir: string): string
+  /**
+   * The object store this runtime can write to: LFS objects and, when the API
+   * names a target, the artifact itself. Null when the runtime has none.
+   */
+  objectStore?(): { client: { send(command: any): Promise<any> }; bucket: string } | null
 }
 
 const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -108,18 +121,33 @@ export function handleDistFiles(c: Context, deps: PublishEndpointDeps): Response
 }
 
 /**
- * `GET /agent/publish-artifact?projectId=…`
+ * `GET /agent/publish-artifact?projectId=…[&bucket=…&key=…]`
  *
- * The build context a published image is built from (SHO-308 §2), as a gzipped
- * tar, base64-encoded. Publishing used to build on boot: the pod hydrated source
- * and then ran `bun install`, `prisma generate` and a Vite build before it could
- * answer. Now the image is built once per commit, in a BuildKit Job, from this
- * artifact — so a published pod only has to start. What goes in it:
+ * The build context a published image is built from (SHO-308 §2). Publishing
+ * used to build on boot: the pod hydrated source and then ran `bun install`,
+ * `prisma generate` and a Vite build before it could answer. Now the image is
+ * built once per commit, in a BuildKit Job, from this artifact — so a published
+ * pod only has to start. What goes in it:
  *
  *   - the project's source at its current commit, minus `node_modules`, `.git`
  *     and the caches a build regenerates anyway;
  *   - the root-based `dist/` that `buildForPublish()` just produced, since a
  *     published bundle must be served from `/` rather than `/p/<id>/`.
+ *
+ * **Large media is left out** (SHO-485): every LFS-tracked source file and
+ * every `dist/` file over {@link PUBLISH_DIST_OFFLOAD_MIN_BYTES} becomes pointer
+ * text, and its bytes are made durable in `<projectId>/lfs/objects` first. The
+ * published pod streams them from there on request, so neither the artifact nor
+ * the image nor the pod's 2 Gi volume grows with the project's media.
+ *
+ * **The archive never crosses the API** (SHO-485). Given `bucket` + `key`, the
+ * runtime uploads the tar straight to object storage and answers
+ * `{ bucket, key, bytes }`. With no object store of its own it streams the tar
+ * to the `putUrl` the API presigned (SHO-536). Without either it falls back to
+ * the old base64 body, which is what an API that has not been rolled out yet
+ * still asks for — and above
+ * {@link publishArtifactInlineMaxBytes} that body is refused with
+ * `artifact_too_large_for_inline` instead of dying on V8's string limit.
  *
  * Always cleans up after itself: it is the last reader of the staging dir.
  */
@@ -146,8 +174,38 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     projectDir,
     stagingDirName: PUBLISH_STAGING_DIR,
   })
+  // The project's own `.dockerignore` can only remove paths (SHO-514). Say how
+  // much it removed in the publish output: a 2 GiB image is usually one rule
+  // nobody remembered writing, and a silent filter is a silent 2 GiB upload.
+  const ignoredByDockerignore = measureDockerignoreExclusion({
+    projectDir,
+    stagingDirName: PUBLISH_STAGING_DIR,
+  })
+  if (ignoredByDockerignore.paths > 0) {
+    console.log(
+      `[agent-runtime] publish-artifact: .dockerignore left out ${ignoredByDockerignore.paths} paths / ` +
+        `${(ignoredByDockerignore.bytes / (1024 * 1024)).toFixed(1)} MB`,
+    )
+  }
 
-  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
+  const targetBucket = (c.req.query('bucket') || '').trim()
+  const targetKey = (c.req.query('key') || '').trim()
+  // A presigned PUT for the same bucket+key (SHO-536). The API mints it with
+  // its own credentials, so a runtime that has no object store of its own can
+  // still stream the tar out instead of handing it back base64.
+  const targetPutUrl = (c.req.query('putUrl') || '').trim()
+  const store = deps.objectStore?.() ?? null
+  if (!store && (targetBucket || targetPutUrl)) {
+    // Why a named target has no store to write it with: the env is the answer,
+    // so say which one was missing rather than only failing later (SHO-536 §A).
+    console.warn(
+      '[agent-runtime] publish-artifact: no object store on this runtime ' +
+        '(S3_LFS_BUCKET/S3_WORKSPACES_BUCKET unset) — media stays in the archive' +
+        (targetPutUrl ? ', tar streamed to the API\'s presigned PUT' : ''),
+    )
+  }
+
+  const { cp, mkdtemp, readFile, rm, stat } = await import('fs/promises')
   const os = await import('os')
   const tar = await import('tar')
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
@@ -172,13 +230,188 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     }
     await cp(projectDir, contextDir, { recursive: true, filter })
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
+
+    // SHO-551 B: when the API requests a Postgres build context, one helper
+    // rewrites the copy — schema, db module and the adapter dependency. The
+    // editor's own files are never touched, and there is exactly one
+    // implementation: the inline copy that used to live here shipped db.ts
+    // without promoting @prisma/adapter-pg, so the image booted into
+    // `Cannot find module '@prisma/adapter-pg'` (QA round 1).
+    //
+    // A context that could not be converted is refused here rather than tarred:
+    // staging proved that a SQLite `db.ts` under a Postgres `DATABASE_URL` keeps
+    // writing to a per-pod LibSQL file, so a cross-pod read loses the row while
+    // projects-pg stays empty (SHO-551, QA round 5).
+    let dbContext: 'sqlite' | 'postgres' = 'sqlite'
+    if ((c.req.query('db') || '').trim() === 'postgres') {
+      const { applyPostgresBuildContext } = await import('./published-build-db')
+      const converted = applyPostgresBuildContext(contextDir)
+      for (const warning of converted.warnings) {
+        console.warn('[agent-runtime] publish-artifact: postgres context:', warning)
+      }
+      if (!converted.ok) {
+        return c.json(
+          {
+            error: 'postgres_context_failed',
+            message:
+              'The build context could not be made a Postgres one, so this publish would run a ' +
+              `SQLite client against a Postgres database: ${converted.errors.join(' ')}`,
+            errors: converted.errors,
+          },
+          422,
+        )
+      }
+      dbContext = 'postgres'
+      console.log(
+        `[agent-runtime] publish-artifact: Postgres build context ready — provider ` +
+          `${converted.schemaProvider}, db module ${converted.dbModule}` +
+          (converted.applied ? ' (rewritten)' : ' (already Postgres)'),
+      )
+    }
+    // Media out before the tar, so neither the tar nor the upload carries it.
+    // SHO-551 C: a CredentialsProviderError on the runtime's own store is not
+    // fatal — media stays in the tar and the upload still goes through putUrl.
+    let offloaded: ArtifactMediaOffloadResult | null = null
+    let offloadSkipped: 'no_object_store' | 'credentials' | null = null
+    if (store) {
+      try {
+        offloaded = await offloadArtifactMedia({
+          contextDir,
+          sourceDir: projectDir,
+          projectId: projectId ?? '',
+          store: { bucket: store.bucket, client: store.client },
+        })
+      } catch (err: any) {
+        if (err instanceof ArtifactMediaOffloadError) {
+          return c.json({ error: 'lfs_object_missing', message: err.message }, 500)
+        }
+        if (isObjectStoreAuthFailure(err)) {
+          offloadSkipped = 'credentials'
+          console.warn('[agent-runtime] publish-artifact: media offload skipped (credentials unavailable):', err?.message ?? err)
+        } else {
+          throw err
+        }
+      }
+    } else {
+      offloadSkipped = 'no_object_store'
+    }
     await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
-    const buf = await readFile(archivePath)
+    const { size: bytes } = await stat(archivePath)
     cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
+
+    // Media that could not be moved out stays in the tar, and a size refusal that
+    // follows is caused by that rather than by the project (SHO-536). Say which
+    // reason it was, so a metal host missing S3 credentials is not reported as a
+    // runtime with no store at all.
+    const offload = offloadSkipped ? { skipped: offloadSkipped } : null
+    const mediaStayed =
+      offloadSkipped === 'no_object_store'
+        ? " Media could not be moved out because this runtime has no object store, so the context carries the project's media."
+        : offloadSkipped === 'credentials'
+          ? " Media could not be moved out because this runtime's object store has no usable credentials, so the context carries the project's media."
+          : ''
+
+    // The Job's src volume is a 2 Gi `emptyDir`: an artifact over the limit is
+    // an eviction with no explanation, so refuse it here with a name, before
+    // spending the upload (SHO-485 §2c).
+    const maxBytes = publishArtifactMaxBytes()
+    if (bytes > maxBytes) {
+      return c.json(
+        {
+          error: 'artifact_too_large',
+          message:
+            `The publish build context is ${(bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
+            `${(maxBytes / (1024 * 1024)).toFixed(0)} MB limit for an image build.${mediaStayed}`,
+        },
+        413,
+      )
+    }
+
+    // SHO-551 C: prefer the presigned PUT from the API over the runtime's own
+    // store. The API's credentials are known to work; a runtime whose S3 creds
+    // are invalid (e.g. a metal host that has S3_LFS_BUCKET set but no access
+    // key) would 500 on `putFileToObjectStore`, losing the artifact entirely.
+    if (targetBucket && targetKey && targetPutUrl) {
+      try {
+        await putArtifactToPresignedUrl(targetPutUrl, archivePath, bytes)
+      } catch (err: any) {
+        return c.json(
+          { error: 'artifact_upload_failed', message: err?.message ?? String(err) },
+          502,
+        )
+      }
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, dbContext, offloaded, ...(offload ? { offload } : {}) })
+    }
+
+    if (targetBucket && targetKey && store) {
+      try {
+        await putFileToObjectStore(
+          { bucket: targetBucket, client: store.client },
+          targetKey,
+          archivePath,
+          { bytes, contentType: 'application/gzip' },
+        )
+      } catch (err: any) {
+        // A named error, not `artifact_failed`: the caller can only fix this by
+        // minting a presigned putUrl, and the message has to say so (SHO-551 C).
+        if (isObjectStoreAuthFailure(err)) {
+          return c.json(
+            {
+              error: 'object_store_credentials_unavailable',
+              message:
+                'This runtime has an object store configured but no usable credentials, so it cannot ' +
+                'write the build context itself. Retry with a presigned putUrl (the API mints one with ' +
+                `its own credentials). Underlying error: ${err?.message ?? String(err)}`,
+            },
+            502,
+          )
+        }
+        return c.json({ error: 'artifact_upload_failed', message: err?.message ?? String(err) }, 502)
+      }
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, dbContext, offloaded, ...(offload ? { offload } : {}) })
+    }
+
+    // Last resort: the old base64 body, for an API that named no target and
+    // minted no PUT. Above this cap the answer is a name, never a V8 string
+    // crash — base64 of 1.5 GiB is one character past V8's 2^31−1 limit.
+    const inlineMaxBytes = publishArtifactInlineMaxBytes()
+    if (bytes > inlineMaxBytes) {
+      return c.json(
+        {
+          error: 'artifact_too_large_for_inline',
+          message:
+            `The publish build context is ${(bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
+            `${(inlineMaxBytes / (1024 * 1024)).toFixed(0)} MB this runtime can send inline: the ` +
+            `artifact must go through object storage.${mediaStayed}`,
+        },
+        413,
+      )
+    }
+    const buf = await readFile(archivePath)
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length, dbContext, offloaded, ...(offload ? { offload } : {}) })
   } catch (err: any) {
     return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
+ * PUT the archive to a presigned URL the API minted (SHO-536).
+ *
+ * Streams from disk: a runtime without S3 credentials of its own can still
+ * upload a multi-gigabyte build context, and the tar never becomes a string or
+ * a single `Buffer` in this process. The explicit `content-length` keeps an S3
+ * endpoint from treating the body as a chunked upload it cannot size.
+ */
+async function putArtifactToPresignedUrl(url: string, filePath: string, bytes: number): Promise<void> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    body: Bun.file(filePath),
+    headers: { 'content-length': String(bytes), 'content-type': 'application/gzip' },
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`object storage refused the artifact (HTTP ${res.status}): ${detail.slice(0, 200)}`)
   }
 }

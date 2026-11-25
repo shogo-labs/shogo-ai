@@ -80,7 +80,8 @@ const grants = new Map<string, Grant[]>() // by workspaceId
 const usageEvents: UsageEvent[] = []
 const billingAccounts = new Map<string, BillingAccount>()
 const members: Member[] = []
-const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null }>()
+const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null; hostInstanceId?: string | null }>()
+const instances = new Map<string, { id: string; workspaceId: string; userId: string | null }>()
 
 let usageEventCreateImpl: (data: any) => Promise<any> | any = (data) => {
   const ev: UsageEvent = {
@@ -303,6 +304,9 @@ const prismaApi = {
       })
     },
   },
+  instance: {
+    findUnique: async ({ where }: any) => instances.get(where.id) ?? null,
+  },
   workspace: {
     findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null,
     findMany: async ({ where }: any) => {
@@ -398,6 +402,7 @@ beforeEach(() => {
   billingAccounts.clear()
   members.length = 0
   workspaces.clear()
+  instances.clear()
   stripeCalls.length = 0
   logs.length = 0
   usageEventCreateImpl = (data) => {
@@ -703,55 +708,6 @@ describe('plan helpers (no local mode)', () => {
       subs.set(ws, [{ id: `s_${ws}`, workspaceId: ws, stripeSubscriptionId: 's', stripeCustomerId: 'c', planId: plan, seats: 1, status: 'active', billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today }])
       expect(await billing.canUseNativeRelease(ws)).toBe(true)
     }
-  })
-})
-
-// ============================================================================
-// canRunTechStackOnInstanceSize — the workspace.instanceSize (compute
-// add-on) gate for Docker-class stacks, independent of the seat-plan checks
-// above.
-// ============================================================================
-describe('canRunTechStackOnInstanceSize', () => {
-  it('allows any instance size for a stack with no declared minimum (e.g. vite-react)', async () => {
-    workspaces.set('w-none', { id: 'w-none', name: 'x', slug: 'x', instanceSize: 'micro' } as any)
-    const out = await billing.canRunTechStackOnInstanceSize('w-none', 'vite-react')
-    expect(out).toEqual({ allowed: true, currentSize: 'micro', requiredSize: null })
-  })
-
-  it('allows a stack with no techStackId at all', async () => {
-    workspaces.set('w-empty', { id: 'w-empty', name: 'x', slug: 'x', instanceSize: 'micro' } as any)
-    const out = await billing.canRunTechStackOnInstanceSize('w-empty', undefined)
-    expect(out.allowed).toBe(true)
-    expect(out.requiredSize).toBeNull()
-  })
-
-  it('refuses docker-compose (requires large) on a micro workspace', async () => {
-    workspaces.set('w-micro', { id: 'w-micro', name: 'x', slug: 'x', instanceSize: 'micro' } as any)
-    const out = await billing.canRunTechStackOnInstanceSize('w-micro', 'docker-compose')
-    expect(out).toEqual({ allowed: false, currentSize: 'micro', requiredSize: 'large' })
-  })
-
-  it('refuses docker-compose on small/medium (still below large)', async () => {
-    workspaces.set('w-small', { id: 'w-small', name: 'x', slug: 'x', instanceSize: 'small' } as any)
-    expect((await billing.canRunTechStackOnInstanceSize('w-small', 'docker-compose')).allowed).toBe(false)
-    workspaces.set('w-medium', { id: 'w-medium', name: 'x', slug: 'x', instanceSize: 'medium' } as any)
-    expect((await billing.canRunTechStackOnInstanceSize('w-medium', 'docker-compose')).allowed).toBe(false)
-  })
-
-  it('allows docker-compose exactly at the large floor', async () => {
-    workspaces.set('w-large', { id: 'w-large', name: 'x', slug: 'x', instanceSize: 'large' } as any)
-    const out = await billing.canRunTechStackOnInstanceSize('w-large', 'docker-compose')
-    expect(out).toEqual({ allowed: true, currentSize: 'large', requiredSize: 'large' })
-  })
-
-  it('allows docker-compose above the large floor (xlarge)', async () => {
-    workspaces.set('w-xlarge', { id: 'w-xlarge', name: 'x', slug: 'x', instanceSize: 'xlarge' } as any)
-    expect((await billing.canRunTechStackOnInstanceSize('w-xlarge', 'docker-compose')).allowed).toBe(true)
-  })
-
-  it('defaults currentSize to micro when the workspace is missing (still refuses docker-compose)', async () => {
-    const out = await billing.canRunTechStackOnInstanceSize('w-does-not-exist', 'docker-compose')
-    expect(out).toEqual({ allowed: false, currentSize: 'micro', requiredSize: 'large' })
   })
 })
 
@@ -2097,6 +2053,111 @@ describe('pooled child workspaces', () => {
     // Counting from either the parent or a child yields the family total.
     expect(await billing.countActiveWorkspaceMembers('parent')).toBe(2)
     expect(await billing.countActiveWorkspaceMembers('child')).toBe(2)
+  })
+})
+
+// ============================================================================
+// Desktop-hosted workspaces (SHO-472): plan inherited from host's workspace
+// ============================================================================
+// A workspace with hostInstanceId set has no subscription of its own.
+// resolveBillingWorkspaceId must follow hostInstanceId → Instance.workspaceId
+// so the host's entitlement is used for model-tier and usage-window checks.
+describe('desktop-hosted workspace inherits the host workspace plan (SHO-472)', () => {
+  function setupHosted({
+    instanceUserId = 'russell',
+    instanceMemberOfHosted = true,
+    payerRole = 'owner',
+    payerBillingAdmin = false,
+  }: {
+    instanceUserId?: string | null
+    instanceMemberOfHosted?: boolean
+    payerRole?: 'owner' | 'admin' | 'member' | null
+    payerBillingAdmin?: boolean
+  } = {}) {
+    // Hosted workspace: no subscription, no grant — only a hostInstanceId.
+    workspaces.set('hosted', {
+      id: 'hosted',
+      name: 'Local User Personal',
+      slug: 'hosted',
+      parentWorkspaceId: null,
+      hostInstanceId: 'inst-1',
+    })
+    // The desktop owner's cloud workspace — has an enterprise grant.
+    workspaces.set('odin', {
+      id: 'odin',
+      name: 'Odin AI',
+      slug: 'odin',
+      parentWorkspaceId: null,
+    })
+    // The pairing instance: registered under the owner's cloud workspace.
+    instances.set('inst-1', { id: 'inst-1', workspaceId: 'odin', userId: instanceUserId ?? null })
+    // Owner is a member of the hosted workspace (the safety guard).
+    if (instanceMemberOfHosted && instanceUserId) {
+      members.push({ workspaceId: 'hosted', userId: instanceUserId, projectId: null })
+    }
+    // The desktop owner's standing in the paying workspace (SEC-29).
+    if (payerRole && instanceUserId) {
+      members.push({ workspaceId: 'odin', userId: instanceUserId, projectId: null, role: payerRole, isBillingAdmin: payerBillingAdmin } as any)
+    }
+    // Enterprise grant on the host's cloud workspace (not on the hosted workspace).
+    const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+    grants.set('odin', [{ id: 'g1', workspaceId: 'odin', freeSeats: 0, monthlyIncludedUsd: 0, planId: 'enterprise', startsAt: new Date(0), expiresAt: future }])
+  }
+
+  it('resolveBillingWorkspaceId returns the host workspace id', async () => {
+    setupHosted()
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('odin')
+  })
+
+  it('getEffectivePlanId for a hosted workspace resolves to the host plan', async () => {
+    setupHosted()
+    expect(await billing.getEffectivePlanId('hosted')).toBe('enterprise')
+  })
+
+  it('workspace-plan paidTier is true for a hosted workspace whose host has a grant', async () => {
+    setupHosted()
+    wallets.set('odin', freshWallet({ workspaceId: 'odin' }))
+    const status = await billing.getOverageStatus('hosted')
+    expect(status.paidTier).toBe(true)
+  })
+
+  it('falls back to the hosted workspace plan when the instance owner is not a member', async () => {
+    setupHosted({ instanceMemberOfHosted: false })
+    // No membership → safety guard blocks the hop → resolve to self → free
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+    expect(await billing.getEffectivePlanId('hosted')).toBe('free')
+  })
+
+  it('SEC-29: a plain member of the paying workspace cannot lend its plan', async () => {
+    setupHosted({ payerRole: 'member' })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+    expect(await billing.getEffectivePlanId('hosted')).toBe('free')
+  })
+
+  it('SEC-29: an admin who is not a billing admin cannot lend its plan', async () => {
+    setupHosted({ payerRole: 'admin' })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+  })
+
+  it('SEC-29: a billing admin of the paying workspace can', async () => {
+    setupHosted({ payerRole: 'member', payerBillingAdmin: true })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('odin')
+  })
+
+  it('SEC-29: someone removed from the paying workspace keeps nothing', async () => {
+    setupHosted({ payerRole: null })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+    expect(await billing.getEffectivePlanId('hosted')).toBe('free')
+  })
+
+  it('falls back when the instance has no userId (legacy row)', async () => {
+    setupHosted({ instanceUserId: null })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+  })
+
+  it('falls back when the instance row is missing (unpaired or deleted)', async () => {
+    workspaces.set('hosted', { id: 'hosted', name: 'Orphan', slug: 'orphan', parentWorkspaceId: null, hostInstanceId: 'gone' })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
   })
 })
 

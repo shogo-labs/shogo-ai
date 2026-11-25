@@ -79,6 +79,7 @@ const {
 type Call = { url: string; method: string; body: any }
 
 let calls: Call[] = []
+let stateIndex = 0
 let serverBacked = false
 let buildOk = true
 let buildBody: any = { ok: true }
@@ -86,17 +87,26 @@ let distFiles: Array<{ path: string; content: string }> = [
   { path: 'index.html', content: Buffer.from('<html>hi</html>').toString('base64') },
   { path: 'assets/app.js', content: Buffer.from('console.log(1)').toString('base64') },
 ]
-let cloudResponse: { status: number; body: any } = {
-  status: 200,
+/**
+ * The cloud accepts the upload with 202 and finishes hosting it in the
+ * background (SHO-542), so a POST here answers `cloudAccept` and every GET
+ * answers the next entry of `cloudPublishStates` (the last one repeats).
+ */
+let cloudResponse: { status: number; body: any } = { status: 202, body: null as any }
+let cloudAccept: { status: number; body: any } = {
+  status: 202,
   body: {
     ok: true,
+    accepted: true,
+    status: 'building',
     url: 'https://my-app.shogo.one',
     subdomain: 'my-app',
-    accessLevel: 'anyone',
-    hasPassword: false,
     hostProjectId: 'host-1',
   },
 }
+let cloudPublishStates: Array<Record<string, any>> = [
+  { publishStatus: 'live', published: true, subdomain: 'my-app', accessLevel: 'anyone', hasPassword: false, hostProjectId: 'host-1' },
+]
 
 function fakeFetch(input: any, init: any = {}): Promise<Response> {
   const url = String(input)
@@ -123,9 +133,15 @@ function fakeFetch(input: any, init: any = {}): Promise<Response> {
     )
   }
   if (url.includes('/api/published-sites/')) {
+    // POST = accept (202) unless a test overrode it with a refusal; GET = the
+    // publish status the desktop follows to `live` / `failed`.
+    const respond =
+      method === 'POST'
+        ? (cloudResponse.body ? cloudResponse : cloudAccept)
+        : { status: 200, body: cloudPublishStates[Math.min(stateIndex++, cloudPublishStates.length - 1)] }
     return Promise.resolve(
-      new Response(JSON.stringify(cloudResponse.body), {
-        status: cloudResponse.status,
+      new Response(JSON.stringify(respond.body), {
+        status: respond.status,
         headers: { 'content-type': 'application/json' },
       }),
     )
@@ -139,6 +155,8 @@ const deps = {
   cloudKey: async () => cloudKey,
   cloudUrl: () => 'https://cloud.test',
   fetch: fakeFetch as unknown as typeof fetch,
+  // The real 2 s → 5 s ramp is not worth waiting for in a unit test.
+  publishPoll: { startDelayMs: 1, maxDelayMs: 2 },
 }
 
 beforeEach(() => {
@@ -160,6 +178,7 @@ beforeEach(() => {
   projectUpdates.length = 0
   localConfig = {}
   calls = []
+  stateIndex = 0
   cloudKey = 'shogo_sk_test'
   serverBacked = false
   buildOk = true
@@ -168,17 +187,22 @@ beforeEach(() => {
     { path: 'index.html', content: Buffer.from('<html>hi</html>').toString('base64') },
     { path: 'assets/app.js', content: Buffer.from('console.log(1)').toString('base64') },
   ]
-  cloudResponse = {
-    status: 200,
+  cloudResponse = { status: 202, body: null as any }
+  cloudAccept = {
+    status: 202,
     body: {
       ok: true,
+      accepted: true,
+      status: 'building',
       url: 'https://my-app.shogo.one',
       subdomain: 'my-app',
-      accessLevel: 'anyone',
-      hasPassword: false,
       hostProjectId: 'host-1',
     },
   }
+  cloudPublishStates = [
+    { publishStatus: 'live', published: true, subdomain: 'my-app', accessLevel: 'anyone', hasPassword: false, hostProjectId: 'host-1' },
+  ]
+  stateIndex = 0
 })
 
 afterEach(() => {
@@ -193,14 +217,18 @@ describe('localPublishProject', () => {
     expect(result.url).toBe('https://my-app.shogo.one')
     expect(result.subdomain).toBe('my-app')
 
-    // Build order: probe → build → dist → upload.
+    // Build order: probe → build → dist → upload → follow the status.
     const order = calls.map((c) => new URL(c.url).pathname)
-    expect(order).toEqual([
+    expect(order.slice(0, 4)).toEqual([
       '/agent/server-info',
       '/agent/publish-build',
       '/agent/dist-files',
       '/api/published-sites/p1',
     ])
+    // The upload was accepted (202) and the desktop then polled until live.
+    const followUps = calls.slice(4)
+    expect(followUps.length).toBeGreaterThan(0)
+    expect(followUps.every((c) => c.method === 'GET')).toBe(true)
 
     const upload = calls.find((c) => c.url.endsWith('/api/published-sites/p1'))!
     expect(upload.method).toBe('POST')
@@ -288,8 +316,66 @@ describe('localPublishProject', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('polls after the 202 and reports live only once the cloud says so', async () => {
+    cloudPublishStates = [
+      { publishStatus: 'building' },
+      { publishStatus: 'uploading' },
+      { publishStatus: 'configuring' },
+      { publishStatus: 'live', published: true, subdomain: 'my-app', accessLevel: 'anyone', hasPassword: false },
+    ]
+
+    const result = await localPublishProject('p1', { subdomain: 'my-app' }, deps)
+
+    expect(result.ok).toBe(true)
+    expect(result.subdomain).toBe('my-app')
+    expect(projects.p1.publishStatus).toBe('live')
+    // Four status reads: building → uploading → configuring → live.
+    expect(calls.filter((c) => c.method === 'GET' && c.url.includes('/api/published-sites/'))).toHaveLength(4)
+  })
+
+  it('reports a background publish failure with the cloud\'s code and leaves the row unpublished', async () => {
+    cloudPublishStates = [
+      { publishStatus: 'building' },
+      { publishStatus: 'failed', publishError: 'configure_failed', publishErrorMessage: 'Publishing failed on our hosting side.' },
+    ]
+
+    const result = await localPublishProject('p1', { subdomain: 'my-app' }, deps)
+
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('configure_failed')
+    expect(result.message).toMatch(/hosting side/i)
+    expect(projects.p1.publishedSubdomain).toBeNull()
+    expect(projects.p1.publishStatus).toBe('failed')
+    expect(projects.p1.publishError).toBe('configure_failed')
+  })
+
+  it('leaves the local row in flight when the poll budget expires mid-publish', async () => {
+    // The cloud is still configuring when our 20-minute budget runs out. The
+    // publish is not failed — marking the row `failed` made the panel offer
+    // Publish again, and the cloud then refused that upload with 409.
+    cloudPublishStates = [{ publishStatus: 'configuring' }]
+
+    const result = await localPublishProject(
+      'p1',
+      { subdomain: 'my-app' },
+      { ...deps, publishPoll: { startDelayMs: 1, maxDelayMs: 2, timeoutMs: 40 } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.status).toBe(504)
+    expect(result.code).toBe('upload_timeout')
+    expect(result.message).toMatch(/may still finish/i)
+    // In flight, not failed: no `failed` write, and nothing cleared.
+    expect(projects.p1.publishStatus).not.toBe('failed')
+    expect(projects.p1.publishError).toBeNull()
+    expect(projects.p1.publishedSubdomain).toBeNull()
+  })
+
   it('stores a password-gate hash so the panel reports hasPassword', async () => {
-    cloudResponse.body = { ...cloudResponse.body, accessLevel: 'password', hasPassword: true }
+    // The cloud reports the mirrored settings on the followed status (SHO-542).
+    cloudPublishStates = [
+      { publishStatus: 'live', published: true, subdomain: 'my-app', accessLevel: 'password', hasPassword: true, hostProjectId: 'host-1' },
+    ]
     const result = await localPublishProject('p1', { subdomain: 'my-app', accessLevel: 'password', password: 'hunter2' }, deps)
 
     expect(result.ok).toBe(true)

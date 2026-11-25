@@ -25,7 +25,7 @@ afterEach(() => {
 class FakeDataDriveProvisioner extends DataDriveProvisioner {
   mkfsCalls: string[] = []
   labels: Array<string | undefined> = []
-  protected override runMkfs(path: string, label?: string): void {
+  protected override async runMkfs(path: string, label?: string): Promise<void> {
     this.mkfsCalls.push(path)
     this.labels.push(label)
   }
@@ -38,10 +38,10 @@ function makeCfg() {
 }
 
 describe('DataDriveProvisioner', () => {
-  test('provision creates a sparse file of the requested logical size and formats it', () => {
+  test('provision creates a sparse file of the requested logical size and formats it', async () => {
     const cfg = makeCfg()
     const dd = new FakeDataDriveProvisioner(cfg as any)
-    const path = dd.provision('fcvm-1', 1024)
+    const path = await dd.provision('fcvm-1', 1024)
 
     expect(path).toBe(join(cfg.runDir, 'fcvm-1.data.ext4'))
     expect(existsSync(path)).toBe(true)
@@ -50,11 +50,11 @@ describe('DataDriveProvisioner', () => {
     expect(dd.mkfsCalls).toEqual([path])
   })
 
-  test('a workspace drive gets its own file name and the label fc-init mounts', () => {
+  test('a workspace drive gets its own file name and the label fc-init mounts', async () => {
     const cfg = makeCfg()
     const dd = new FakeDataDriveProvisioner(cfg as any)
-    const docker = dd.provision('fcvm-3', 64)
-    const ws = dd.provision('fcvm-3', 64, 'workspace')
+    const docker = await dd.provision('fcvm-3', 64)
+    const ws = await dd.provision('fcvm-3', 64, 'workspace')
 
     expect(ws).toBe(join(cfg.runDir, `fcvm-3${WORKSPACE_DRIVE_SUFFIX}`))
     expect(ws).not.toBe(docker)
@@ -62,10 +62,10 @@ describe('DataDriveProvisioner', () => {
     expect(WORKSPACE_DRIVE_LABEL).toBe('shogo-ws')
   })
 
-  test('exists reflects the current filesystem state', () => {
+  test('exists reflects the current filesystem state', async () => {
     const cfg = makeCfg()
     const dd = new FakeDataDriveProvisioner(cfg as any)
-    const path = dd.provision('fcvm-2', 64)
+    const path = await dd.provision('fcvm-2', 64)
     expect(dd.exists(path)).toBe(true)
     dd.release(path)
     expect(dd.exists(path)).toBe(false)
@@ -78,11 +78,11 @@ describe('DataDriveProvisioner', () => {
     expect(() => dd.release(path)).not.toThrow()
   })
 
-  test('two VMs get independent, differently-named data drives', () => {
+  test('two VMs get independent, differently-named data drives', async () => {
     const cfg = makeCfg()
     const dd = new FakeDataDriveProvisioner(cfg as any)
-    const a = dd.provision('fcvm-a', 32)
-    const b = dd.provision('fcvm-b', 32)
+    const a = await dd.provision('fcvm-a', 32)
+    const b = await dd.provision('fcvm-b', 32)
     expect(a).not.toBe(b)
     expect(existsSync(a)).toBe(true)
     expect(existsSync(b)).toBe(true)

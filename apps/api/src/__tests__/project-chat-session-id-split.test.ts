@@ -60,6 +60,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',
@@ -113,7 +114,7 @@ mock.module('../lib/prisma', () => ({
       findUnique: async (args: any) => {
         prismaCalls.chatSessionFindUnique.push(args)
         if (!chatSessionFixture) return null
-        return { id: args?.where?.id ?? chatSessionFixture.id }
+        return { id: args?.where?.id ?? chatSessionFixture.id, contextType: 'project', contextId: 'p-split' }
       },
     },
     toolCallLog: {

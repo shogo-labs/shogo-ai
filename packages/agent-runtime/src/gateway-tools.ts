@@ -16,7 +16,9 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
-import { declareService, deriveServiceName, serviceTmpWarning, undeclareService } from './services-registry'
+import { applyServiceDeclaration, declareService, deriveServiceName, planServiceDeclaration, readDeclaredServices, serviceTmpWarning, undeclareService, type ServiceDeclarationPlan } from './services-registry'
+import { claimedWorkItemKey } from './work-item-claim'
+import { describeSpawnExhaustion, isSpawnExhaustion, liveGroupCount, liveGroupHolders, liveGroupIdsForService, processBudgetRefusal, releaseLiveGroup, trackLiveGroup } from './process-budget'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
@@ -40,7 +42,8 @@ import { createGenerateImageTool, createMediaTools } from './media-tools'
 import { IMAGE_TOOL_NAMES, MUSIC_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
-import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
+import { createMailTools } from './mail-tools'
+import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, MAIL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
 import { resolveRuntimeCapabilities } from './capability-status-prompt'
 import {
   copyToProjectAvailable,
@@ -125,7 +128,7 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
-import { applyAbilityGate } from './access-gate'
+import { abilityDenialBody, applyAbilityGate } from './access-gate'
 import {
   crossWorkspaceEnabled,
   crossWorkspaceEnabledFor,
@@ -220,6 +223,7 @@ import {
   postPlanMirror,
   configureProject as apiConfigureProject,
   getProjectConfig as apiGetProjectConfig,
+  HOST_WAKE_TOLERANT_TIMEOUT_MS,
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
@@ -352,6 +356,20 @@ export interface ToolContext {
   }
   /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
   commandRegistry?: import('./task-registry').TaskRegistry
+  /**
+   * Stop a declared service by its name (SHO-509). A service's name is the only
+   * handle a re-declaration has on the tree it replaces, and its card needs the
+   * same handle when it reaches a terminal column. `undeclare: false` stops the
+   * tree but leaves the declaration in place — a replacement must not lose the
+   * service if its own spawn fails.
+   */
+  cancelServiceByName?: (name: string, options?: { undeclare?: boolean }) => Promise<boolean>
+  /**
+   * Called when a card reaches Done/Dismissed: undeclare the services declared
+   * for it, so a finished card stops restarting a dev server on every boot
+   * (SHO-509). Returns the names it released.
+   */
+  onCardFinished?: (cardKey: string) => Promise<string[]>
   /**
    * Steering state for the current turn (sleep polls already made, repeated
    * `wait` timeouts). Built per turn by the gateway, so a new turn steers
@@ -642,11 +660,16 @@ const WORKSPACE_MEMBER_TIMEOUT_MS = 180_000
  */
 const PREVIEW_START_REQUEST_TIMEOUT_MS = 100_000
 
+/**
+ * Every workspace-API call can be forwarded to a desktop that hosts the
+ * workspace, and that may have to be woken first (SHO-506) — so the default
+ * outlasts `HOST_WAKE_TOLERANT_TIMEOUT_MS`'s wake window.
+ */
 async function workspaceMetaFetch(
   ctx: ToolContext,
   path: string,
   init: RequestInit = {},
-  timeoutMs = 30_000,
+  timeoutMs = HOST_WAKE_TOLERANT_TIMEOUT_MS,
 ): Promise<any> {
   const apiUrl = deriveApiUrl()
   const workspaceId = resolveWorkspaceId(ctx)
@@ -881,7 +904,8 @@ const REMOTE_DEVICE_PARAM_DESCRIPTION =
   '"Your devices"). Paths are resolved by that desktop\'s own runtime — relative to its workspace root; ' +
   'use an absolute path to reach anywhere else on that machine — and that desktop\'s permission system ' +
   'decides what is allowed. Omit to run here. An offline device answers `device_offline` with its ' +
-  'last-seen time.'
+  'last-seen time (do not retry); a desktop that is online but still opening its connection answers ' +
+  '`device_connecting` with `retryAfterSeconds` — wait that long and call once more.'
 
 type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
 
@@ -1708,6 +1732,53 @@ function buildSoftTimeoutResult(
 export const BACKGROUND_TASK_HINT =
   'Call wait({ task_ids: [task_id] }) to block on it, or end your turn and you will get a [Task update] when it finishes.'
 
+/** How long a `background: true` call waits for a spawn failure to report itself. */
+const SPAWN_FAILURE_GRACE_MS = 250
+
+/**
+ * Did the OS refuse to start this process at all?
+ *
+ * libuv fails a fork synchronously (`posix_spawn EAGAIN` when the process table
+ * is full), so `child.pid` is undefined and Node emits `error` on the next tick
+ * instead of `exit`. A background exec that returned on the spot would hand the
+ * agent a `task_id` with no process behind it — the silent hang that made this
+ * outage hard to see (SHO-509). Waits one tick (bounded), then reports.
+ */
+async function awaitSpawnFailure(handle: CommandHandle): Promise<string | undefined> {
+  if (handle.pid !== undefined) return undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const grace = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), SPAWN_FAILURE_GRACE_MS)
+    ;(timer as any)?.unref?.()
+  })
+  const outcome = await Promise.race([handle.done.then((result) => result.spawnError), grace])
+  if (timer) clearTimeout(timer)
+  // No pid and no reported error: the process is gone (or was never ours).
+  return outcome
+}
+
+/**
+ * The result of a command the OS refused to fork.
+ *
+ * `EAGAIN` at the fork limit is not a command failing — it is the machine
+ * saying no, and the agent cannot even run `ps` to find out why. The message
+ * comes from the in-process account of live groups, which is readable precisely
+ * because it needs no fork.
+ */
+function execSpawnFailureResult(raw: string): AgentToolResult<any> {
+  if (!isSpawnExhaustion(raw)) {
+    return textResult({ error: `The command could not start: ${raw}`, code: 'spawn_failed' })
+  }
+  const explained = describeSpawnExhaustion(raw)
+  console.error(`[process-pressure] ${explained}`)
+  return textResult({
+    error: explained,
+    code: 'process_exhausted',
+    live_groups: liveGroupCount(),
+    holders: liveGroupHolders().map((group) => ({ task_id: group.id, label: group.label, service: group.service ?? false })),
+  })
+}
+
 /**
  * Per-turn steering state. A tool instance is built per turn, but a test (or a
  * subagent) may build several from one context, so the state lives on the
@@ -1957,6 +2028,73 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const cwdDirHost = execCwdDirFor(ctx.workspaceDir)
       const cwdFileHost = cwdDirHost ? join(cwdDirHost, cwdMarker) : join(ctx.workspaceDir, cwdMarker)
 
+      // A declared service is decided BEFORE anything spawns (SHO-509): a
+      // declaration that would add a fourth service, or duplicate one already
+      // on record, must not leave a process behind while the agent is told no.
+      // `replace` means the entry on record is this same service — same name,
+      // same command and cwd, or the same port — and its tree has to stop
+      // before the new one binds the port.
+      let servicePlan: ServiceDeclarationPlan | undefined
+      if (service) {
+        const serviceName = (name && name.trim()) || deriveServiceName(attributedCommand)
+        const workItemKey = claimedWorkItemKey(ctx.sessionId)
+        servicePlan = planServiceDeclaration(readDeclaredServices(ctx.workspaceDir), {
+          name: serviceName,
+          command,
+          cwd: currentCwd,
+          sessionId: ctx.sessionId ?? '',
+          declaredAt: Date.now(),
+          ...(workItemKey ? { workItemKey } : {}),
+        })
+        if (servicePlan.action === 'refuse') {
+          return textResult({
+            error: servicePlan.error,
+            code: 'service_cap',
+            services: readDeclaredServices(ctx.workspaceDir).map((s) => s.name),
+          })
+        }
+      }
+
+      // One runtime can only hold so many live process groups before the OS
+      // stops handing out slots altogether (SHO-509). A foreground command is
+      // never refused — the user is waiting on the answer and it holds its slot
+      // for one call — but a background one that would push past the budget is.
+      // This runs BEFORE the replace kill: refusing after the old tree is dead
+      // leaves the service stopped with nothing in its place. A replacement
+      // counts the slot it is about to free, so restarting a dev server at the
+      // cap is not a new process.
+      if (background) {
+        const freedGroupIds = servicePlan?.action === 'replace' && servicePlan.replaced
+          ? liveGroupIdsForService(servicePlan.replaced.name)
+          : []
+        const budgetRefusal = processBudgetRefusal(process.env, freedGroupIds)
+        if (budgetRefusal) {
+          console.warn(`[process-pressure] background exec refused: ${liveGroupCount()} live groups`)
+          return textResult({
+            error: budgetRefusal,
+            code: 'process_budget',
+            live_groups: liveGroupCount(),
+            holders: liveGroupHolders().map((group) => ({ task_id: group.id, label: group.label, service: group.service ?? false })),
+          })
+        }
+      }
+
+      // `replace`: the declaration on record is this same service. Its tree
+      // stops BEFORE the new one spawns — cancelling afterwards would find the
+      // entry we just registered and kill the replacement instead. The
+      // declaration stays until the spawn succeeds: an EAGAIN here must not
+      // lose the service for good.
+      if (servicePlan?.action === 'replace' && servicePlan.replaced) {
+        const previous = servicePlan.replaced
+        const stopped = ctx.cancelServiceByName
+          ? await ctx.cancelServiceByName(previous.name, { undeclare: false })
+          : false
+        if (!stopped) {
+          const stale = ctx.commandRegistry?.listAll().find((task) => task.service && task.name === previous.name)
+          if (stale) await ctx.commandRegistry!.cancel(stale.id)
+        }
+      }
+
       const isSandboxed = shouldSandbox({
         command: attributedCommand,
         workspaceDir: ctx.workspaceDir,
@@ -2035,9 +2173,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const serviceMeta = service
-        ? { name: (name && name.trim()) || deriveServiceName(attributedCommand) }
-        : undefined
+      const serviceMeta = servicePlan ? { name: servicePlan.service.name } : undefined
       const entry = registry.register(attributedCommand, handle, {
         cwd: currentCwd,
         service: !!serviceMeta,
@@ -2046,21 +2182,40 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // A shell task's thread is its own output file — the log the dock shows.
       entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
 
+      // Every group this runtime starts is counted against the live-process
+      // budget, so a refusal or an `EAGAIN` can name the holders without
+      // forking (SHO-509). Released when the process settles, however it ends.
+      trackLiveGroup({
+        id: entry.id,
+        label: attributedCommand,
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        startedAt: handle.startedAt,
+        ...(serviceMeta ? { service: true, serviceName: serviceMeta.name } : {}),
+      })
+      void handle.done.then(
+        () => releaseLiveGroup(entry.id),
+        () => releaseLiveGroup(entry.id),
+      )
+
       if (background) {
         registry.markBackgrounded(entry.id)
+        // A spawn the OS refused (`posix_spawn EAGAIN` at the fork limit) never
+        // creates a process and never emits 'exit'. Without this the agent gets
+        // a task_id for something that does not exist and waits on it forever —
+        // exactly the silent timeout that hid this outage (SHO-509).
+        const spawnFailure = await awaitSpawnFailure(handle)
+        if (spawnFailure) {
+          await registry.cancel(entry.id)
+          return execSpawnFailureResult(spawnFailure)
+        }
         if (serviceMeta && ctx.sessionId) {
           // The declaration is what brings it back after a restart or a VM
           // recycle; it lives in `.shogo/`, which is in the source backup.
-          declareService(ctx.workspaceDir, {
-            name: serviceMeta.name,
-            command,
-            cwd: currentCwd,
-            sessionId: ctx.sessionId,
-            declaredAt: Date.now(),
-          })
+          applyServiceDeclaration(ctx.workspaceDir, servicePlan!)
           const tmpWarning = serviceTmpWarning(command)
           const result = await buildSoftTimeoutResult(ctx, entry, null, {
             service: serviceMeta.name,
+            ...(servicePlan?.replaced ? { replaced: servicePlan.replaced.name } : {}),
             ...(tmpWarning ? { warning: tmpWarning } : {}),
           })
           return result
@@ -2082,9 +2237,15 @@ function createExecTool(ctx: ToolContext): AgentTool {
       stopped.dispose()
 
       if (winner === SOFT_TIMEOUT || winner === STOPPED) {
-        registry.markBackgrounded(entry.runId)
+        // A foreground command that overran its soft timeout is handed back as a
+        // background task: it keeps its slot only while its session is active.
+        registry.markHandedBack(entry.runId)
         return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
+
+      // The shell never started: say why in the machine's own terms instead of
+      // reporting exit code 1 and a bare errno (SHO-509).
+      if (winner.spawnError) return execSpawnFailureResult(winner.spawnError)
 
       const completed = buildCompletedExecResult({ ctx, entry, finalResult: winner })
       return withOtherProjectFolderWarning(
@@ -3227,7 +3388,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
     description:
-      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than ${mb(MAX_IMAGE_READ_BYTES)} are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than ${mb(MAX_VIDEO_READ_BYTES)} are rejected.`,
+      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than ${mb(MAX_IMAGE_READ_BYTES)} are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. Carbon, Argon or GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than ${mb(MAX_VIDEO_READ_BYTES)} are rejected.`,
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -3416,7 +3577,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           return textResult({
             error:
               `This model cannot watch video, so "${filePath}" was not sent. ` +
-              "Switch to a video-native model (e.g. 'GLM 5.3 Flash') to read video files.",
+              "Switch to a video-native model (e.g. Carbon, Argon or GLM 5.3 Flash) to read video files.",
           })
         }
         try {
@@ -5243,11 +5404,29 @@ function customDomainSuccess(action: string, data: { fallbackOrigin?: string; do
   }
 }
 
+/**
+ * The server's refusal of a `publish` call for the person it acts for (SHO-539).
+ *
+ * Publishing is a *project* permission (`project:publish`), so the per-turn
+ * workspace gate must not decide it — the internal route does, with the
+ * project role. When it refuses, answer in the shape `withAbilityGate` uses so
+ * a project viewer gets the same named permission instead of a raw 403.
+ */
+function publishAbilityDenial(res: { code?: string }) {
+  if (res.code !== 'ability_not_allowed') return null
+  return abilityDenialBody(
+    'project:publish',
+    'Ask a workspace admin for publish access to this project. Nothing was published.',
+  )
+}
+
 /** Map a domain-route error code onto something the agent can act on. */
 function customDomainFailure(
   action: string,
   res: { status?: number; code?: string; error?: string },
 ) {
+  const denial = publishAbilityDenial(res)
+  if (denial) return { ...denial, ok: false, action, status: res.status ?? null }
   const code = res.code ?? 'domain_action_failed'
   const messages: Record<string, string> = {
     not_published:
@@ -5521,6 +5700,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             'Only after the user explicitly confirms: proceed even though the schema change destroys data (a dropped table/column, a narrowed type, or a new required column with no default). Publishing is refused with `destructive_schema_change` otherwise — show the user exactly which fields would lose data first.',
         }),
       ),
+      data: Type.Optional(
+        Type.Union([Type.Literal('empty')], {
+          description:
+            "Pass \"empty\" to start this environment's FIRST Postgres database with the app's schema and no rows — the way past `seed_too_large` (the builder database is too big to seed). Nothing is copied: the builder's dev.db is never read. Refused with `data_empty_not_allowed` when the environment already has a Postgres schema or is live on SQLite with data, so it can never wipe or abandon rows. Only use it when the user has agreed the live app should start with no data.",
+        }),
+      ),
       target: Type.Optional(
         Type.Union(
           [Type.Literal('web'), Type.Literal('ios'), Type.Literal('android'), Type.Literal('native')],
@@ -5623,6 +5808,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         project_id,
         environment,
         allow_data_loss,
+        data,
         ops_action,
         min_replicas,
         max_replicas,
@@ -5645,6 +5831,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         project_id?: string
         environment?: 'production' | 'staging'
         allow_data_loss?: boolean
+        data?: 'empty'
         ops_action?: 'status' | 'metrics' | 'logs' | 'scale' | 'rollback' | 'redeploy' | 'promote' | 'create_env' | 'delete_env' | 'list'
         min_replicas?: number
         max_replicas?: number
@@ -5714,7 +5901,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
           replica,
         })
         if (!ops.ok) {
-          return textResult({ error: ops.error, code: ops.code })
+          return textResult(publishAbilityDenial(ops) ?? { error: ops.error, code: ops.code })
         }
         return textResult(ops.data ?? {})
       }
@@ -5741,9 +5928,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         siteDescription: site_description,
         environment: environment === 'staging' ? 'staging' : 'production',
         allowDataLoss: allow_data_loss === true,
+        data,
       })
 
       if (!res.ok) {
+        const denial = publishAbilityDenial(res)
+        if (denial) return textResult(denial)
         if (res.code === 'subdomain_taken') {
           return textResult({
             error: `The subdomain "${targetSubdomain}" is already in use. Ask the user to choose a different one, then publish again.`,
@@ -11110,10 +11300,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
     name: 'social_media',
     description:
       `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
+      `search for reels beating their creator's normal view counts (outlier score), ` +
       `or work a workspace's connected accounts: connect one, publish and schedule posts, ` +
       `read the calendar and analytics, and run the inbox. ` +
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"search" takes platform + query (keyword or #hashtag; Instagram is hashtag-only), optional period (1d|7d|30d|90d|180d|all, default 30d) and limit, and score:true to rank results by outlier score (views ÷ creator median views — costs one lookup per new creator, max 10 scored); ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
       `the account it creates belongs to this project, so another project's agent cannot see or post to it (a workspace-shared account is usable by every project); ` +
       `to add a second account on a platform that is already connected, pass expected_username — Instagram always shows its own login page for a new connect, so the person can pick the account to add; ` +
@@ -11135,6 +11327,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         [
           Type.Literal('profile'),
           Type.Literal('recent_posts'),
+          Type.Literal('search'),
           Type.Literal('inbox'),
           Type.Literal('reply'),
           Type.Literal('comment_reply'),
@@ -11150,7 +11343,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
+            'profile | recent_posts | search | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(
@@ -11163,6 +11356,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       limit: Type.Optional(Type.Number({
         description: 'How many posts or inbox rows to return (1-50, default 20).',
       })),
+      period: Type.Optional(Type.String({ description: 'For action "search": time window — 1d|7d|30d|90d|180d|all (default 30d).' })),
+      score: Type.Optional(Type.Boolean({ description: 'For action "search": rank results by outlier score (views ÷ creator median). Costs one baseline lookup per creator, max 10.' })),
       kind: Type.Optional(Type.Union([Type.Literal('dms'), Type.Literal('comments')], {
         description: 'For action "inbox": which half of the inbox to list.',
       })),
@@ -11335,6 +11530,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         status?: unknown
         from?: unknown
         to?: unknown
+        period?: unknown
+        score?: unknown
       }
       const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
@@ -11872,10 +12069,50 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
         })
       }
+      if (action === 'search') {
+        const proxyUrl = process.env.TOOLS_PROXY_URL
+        const proxyToken = process.env.AI_PROXY_TOKEN
+        if (!proxyUrl || !proxyToken) {
+          return textResult({
+            error: 'Social media search is unavailable.',
+            suggestion: 'Configure TOOLS_PROXY_URL and AI_PROXY_TOKEN.',
+          })
+        }
+        const query = String(params.query ?? '').trim()
+        if (!query) return textResult({ error: 'query is required for action "search".' })
+        const period = typeof params.period === 'string' ? params.period : '30d'
+        const scoreFlag = params.score === true
+        const cacheKey = webCacheKey('social-search', JSON.stringify({ platform, query: query.toLowerCase(), period, limit, score: scoreFlag }))
+        const cachedSearch = await webCacheGet<AgentToolResult<any>>(cacheKey)
+        if (cachedSearch) return cachedSearch
+
+        try {
+          const response = await fetch(`${proxyUrl.replace(/\/$/, '')}/social/${platform}/search`, {
+            method: 'POST',
+            headers: { 'x-api-key': proxyToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, period, limit, score: scoreFlag }),
+            signal: AbortSignal.timeout(30_000),
+          })
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) {
+            return textResult({
+              error: (data as any)?.error || `Social search failed: HTTP ${response.status}`,
+              code: (data as any)?.code,
+              platform,
+            })
+          }
+          const result = textResult(data)
+          await webCachePut(cacheKey, result, SOCIAL_CACHE_TTL_SECONDS)
+          return result
+        } catch (err: any) {
+          return textResult({ error: `Social search failed: ${err?.message ?? err}`, platform })
+        }
+      }
+
       if (action !== 'profile' && action !== 'recent_posts') {
         return textResult({
           error:
-            'action must be profile, recent_posts, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
+            'action must be profile, recent_posts, search, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
         })
       }
       const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
@@ -12054,6 +12291,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
       }
     } else {
       tools.push(...createChannelTools(ctx))
+      tools.push(...createMailTools(ctx))
       // A project-anchored runtime speaks as that project's agent, not the workspace agent.
       if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
       tools.push(...createBoardTools(ctx))
@@ -12688,7 +12926,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
  * skill's declared tool list cannot pull them in by group name.
  */
 export const WORK_TOOL_GROUPS = {
-  team_chat: [...CHANNEL_TOOL_NAMES],
+  team_chat: [...CHANNEL_TOOL_NAMES, ...MAIL_TOOL_NAMES],
   boards: [...BOARD_TOOL_NAMES],
   board_admin: [...BOARD_ADMIN_TOOL_NAMES],
   triggers: ['trigger_create', 'trigger_update', 'trigger_delete', 'trigger_test'],
@@ -13625,9 +13863,15 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     ].join('\n'),
   },
   whatsapp: {
-    requiredKeys: ['accessToken', 'phoneNumberId', 'appSecret'],
+    requiredKeys: [],
     guide: [
-      '## WhatsApp Setup',
+      '## WhatsApp — One-Click Setup (recommended)',
+      'channel_connect({ type: "whatsapp", config: {} })',
+      '  → Returns a connectUrl. Send it to the user. They click "Connect with Meta" in their browser,',
+      '    pick their WhatsApp Business account, and it\'s done. Works with numbers already on the',
+      '    WhatsApp Business app — the phone app keeps working.',
+      '',
+      '## WhatsApp — Bring Your Own Meta App (enterprise / on-prem)',
       '1. Go to https://developers.facebook.com and create or select an app with WhatsApp added.',
       '2. Under App Settings → Basic → App Secret — copy the App Secret.',
       '3. Under WhatsApp → API Setup:',
@@ -13636,7 +13880,6 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
       '     Go to Business Settings → System Users → Add → give it Admin role → Generate token → select your WhatsApp app, grant whatsapp_business_messaging + whatsapp_business_management.',
       '4. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_SYSTEM_USER_TOKEN", phoneNumberId: "YOUR_PHONE_NUMBER_ID", appSecret: "YOUR_APP_SECRET" } })',
       '   The connect result returns callbackUrl and verifyToken — use those in step 5.',
-      '   Optionally set verifyToken yourself; a random one is generated if omitted.',
       '5. In Meta Developer Portal → WhatsApp → Configuration:',
       '   - Set Callback URL to the callbackUrl from step 4.',
       '   - Set Verify Token to the verifyToken from step 4.',
@@ -13648,26 +13891,34 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     requiredKeys: [],
     guide: [
       '## Webhook / HTTP Setup',
-      'No external accounts needed. Optionally provide a shared secret for authentication.',
+      'No external accounts needed. A shared secret is generated automatically if you do not provide one.',
       '',
-      'Connect: channel_connect({ type: "webhook", config: { secret: "your-shared-secret" } })',
+      'Connect: channel_connect({ type: "webhook" })',
+      'Or with a custom secret: channel_connect({ type: "webhook", config: { secret: "your-secret" } })',
       '',
-      'Once connected, external services can POST to /agent/channels/webhook/incoming with:',
-      '  - Header: Authorization: Bearer your-shared-secret',
-      '  - Body: { "message": "...", "channelId": "default", "mode": "sync" }',
+      'After connecting, external services POST to the returned incomingUrl with:',
+      '  X-Webhook-Secret: <your-secret>',
+      '  Content-Type: application/json',
+      '  Body: { "message": "..." }',
       '',
-      'Works with Zapier, Make, n8n, or any HTTP-capable service.',
+      'No shogo_sk_* API key is needed. Works with Zapier, Make, n8n, or any HTTP client.',
     ].join('\n'),
   },
   teams: {
     requiredKeys: ['appId', 'appPassword'],
     guide: [
-      '## Microsoft Teams Setup',
-      '1. Go to Azure Portal → Azure Bot Service → create a new Bot resource',
-      '2. Note the Microsoft App ID and create a client secret (App Password)',
-      '3. Set the messaging endpoint to: <agent-url>/agent/channels/teams/messages',
-      '4. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_SECRET", botName: "My Agent" } })',
-      '5. Install the bot in Teams via the Teams Admin Center or a Teams App manifest',
+      '## Microsoft Teams Setup (Single-Tenant Bot)',
+      '1. Go to Azure Portal → Azure Active Directory → App registrations → New registration',
+      '   Set Supported account types to "Accounts in this organizational directory only (Single tenant)"',
+      '2. Note the Application (client) ID and the Directory (tenant) ID',
+      '3. Under Certificates & secrets, create a new client secret — save it immediately',
+      '4. Go to Azure Bot Service → create a new Azure Bot; set the App Type to "Single Tenant" and paste the App ID',
+      '5. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_CLIENT_SECRET", tenantId: "YOUR_TENANT_ID", botName: "My Agent" } })',
+      '   The tool returns the messagingEndpoint — paste it into the Azure Bot → Configuration → Messaging endpoint',
+      '6. In Azure Bot → Channels → Microsoft Teams → enable and save',
+      '7. Install the bot via Teams Developer Portal or an app manifest',
+      '',
+      'Multi-tenant bots (created before 2025-07-31): omit tenantId from the config.',
     ].join('\n'),
   },
   webchat: {
@@ -13766,6 +14017,57 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         }
       }
 
+      // ── WhatsApp: one-click (no own-app keys) → return a connect link ──────
+      if (type === 'whatsapp' && !channelConfig.accessToken) {
+        const apiUrl = derivePublicApiUrl()
+        const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+        if (!apiUrl || !projectId) {
+          return textResult({
+            error: 'WhatsApp one-click setup requires Shogo Cloud. Set WHATSAPP_META_APP_ID, WHATSAPP_META_APP_SECRET, and WHATSAPP_ES_CONFIG_ID, or provide accessToken, phoneNumberId and appSecret to use your own Meta app.',
+            setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+          })
+        }
+        // Call the internal connect-link route
+        const { deriveApiUrl, getInternalHeaders } = await import('./internal-api')
+        const internalApiUrl = deriveApiUrl()
+        if (!internalApiUrl) {
+          return textResult({ error: 'Cannot reach internal API to generate WhatsApp connect link.', setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide })
+        }
+        const res = await fetch(
+          `${internalApiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/channels/whatsapp/connect-link`,
+          { method: 'POST', headers: getInternalHeaders() },
+        ).catch(() => null)
+        if (!res || !res.ok) {
+          const body = await res?.json().catch(() => null) as any
+          if (body?.code === 'whatsapp_embedded_signup_unavailable') {
+            return textResult({
+              error: `WhatsApp one-click is not configured on this server. ${body.error ?? ''}\n\nUse your own Meta app: provide accessToken, phoneNumberId, and appSecret.`,
+              setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+              own_app_guide: true,
+            })
+          }
+          return textResult({
+            error: `Failed to generate WhatsApp connect link: ${body?.error ?? 'unknown error'}`,
+            setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+          })
+        }
+        const { url, expiresAt } = await res.json() as { url: string; expiresAt: string }
+        return textResult({
+          ok: true,
+          status: 'awaiting_user',
+          connectUrl: url,
+          expiresAt,
+          message: [
+            'Send the user this link. They click **Connect with Meta** and finish in Meta\'s popup.',
+            'Works for numbers already on the WhatsApp Business app — their phone app keeps working.',
+            `channel_list shows it once done. Link expires at ${expiresAt}.`,
+            '',
+            `Connect URL: ${url}`,
+          ].join('\n'),
+          own_app_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+        })
+      }
+
       if (type === 'webchat') {
         // Keep the key already saved in config.json so a reconnect does not
         // break pages that are already embedding the widget (SHO-380).
@@ -13781,6 +14083,24 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           } catch { /* ignore a malformed config; a fresh key is still correct */ }
         }
         channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
+      }
+
+      if (type === 'webhook') {
+        // Keep the secret already saved in config.json so a reconnect does not
+        // rotate it (SHO-462). Generate one if none is provided or saved.
+        const { existsSync, readFileSync } = await import('fs')
+        const { join } = await import('path')
+        const { resolveChannelSecret } = await import('./channels/channel-secret')
+        const { generateWebhookSecret } = await import('./channels/webhook')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedWebhook: Record<string, string> | undefined
+        if (existsSync(configPath)) {
+          try {
+            const saved = JSON.parse(readFileSync(configPath, 'utf-8'))
+            savedWebhook = saved?.channels?.find((c: any) => c.type === 'webhook')?.config
+          } catch { /* ignore a malformed config; a fresh secret is still correct */ }
+        }
+        channelConfig.secret = resolveChannelSecret(channelConfig, savedWebhook, 'secret', generateWebhookSecret)
       }
 
       try {
@@ -13868,13 +14188,73 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
             })
           }
 
+          if (type === 'webhook') {
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            let incomingUrl: string | null = null
+            let outboxBaseUrl: string | null = null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              const proxyBase = `${apiUrl}/api/projects/${projectId}/agent-proxy`
+              incomingUrl = `${proxyBase}/agent/channels/webhook/incoming`
+              outboxBaseUrl = `${proxyBase}/agent/channels/webhook/outbox/`
+            }
+            const curlExample = incomingUrl
+              ? `curl -X POST "${incomingUrl}" -H "X-Webhook-Secret: ${channelConfig.secret}" -H "Content-Type: application/json" -d '{"message":"Hello agent!"}'`
+              : `curl -X POST "http://localhost:${process.env.PORT || '8080'}/agent/channels/webhook/incoming" -H "X-Webhook-Secret: ${channelConfig.secret}" -H "Content-Type: application/json" -d '{"message":"Hello agent!"}'`
+            return textResult({
+              ok: true,
+              secret: channelConfig.secret,
+              incomingUrl,
+              outboxBaseUrl,
+              message: [
+                'Webhook channel connected!',
+                '',
+                incomingUrl
+                  ? `Incoming URL: ${incomingUrl}`
+                  : 'Incoming URL: use the cloud project URL — desktop tunnels relay to the same path.',
+                `Secret: ${channelConfig.secret}`,
+                '',
+                'Send requests with:',
+                '  X-Webhook-Secret: <secret>',
+                '  Content-Type: application/json',
+                '  Body: { "message": "..." }',
+                '',
+                'No shogo_sk_* API key needed.',
+                '',
+                'Example curl:',
+                curlExample,
+              ].join('\n'),
+            })
+          }
+
+          if (type === 'teams') {
+            // Return the messaging endpoint URL so the user can paste it into
+            // the Azure Bot configuration. Works for cloud and paired desktop.
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            let messagingEndpoint: string | null = null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              messagingEndpoint = `${apiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
+            }
+            return textResult({
+              ok: true,
+              message: [
+                'Microsoft Teams channel connected!',
+                '',
+                messagingEndpoint
+                  ? `Messaging endpoint: ${messagingEndpoint}`
+                  : 'Messaging endpoint: use the cloud project URL — desktop tunnels relay to the same path.',
+                '',
+                'Paste the messaging endpoint into Azure Bot → Configuration → Messaging endpoint.',
+                'Then enable the Teams channel in Azure Bot → Channels → Microsoft Teams.',
+              ].join('\n'),
+              messagingEndpoint,
+            })
+          }
+
           return textResult({
             ok: true,
-            message:
-              `${type} channel connected and live. ` +
-              (type === 'webhook'
-                ? 'External services can now POST to /agent/channels/webhook/incoming'
-                : `The ${type} adapter is now receiving messages.`),
+            message: `${type} channel connected and live. The ${type} adapter is now receiving messages.`,
           })
         } catch (err: any) {
           return textResult({

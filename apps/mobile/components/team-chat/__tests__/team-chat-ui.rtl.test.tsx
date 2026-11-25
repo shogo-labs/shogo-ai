@@ -12,6 +12,8 @@ const copied: string[] = []
 const pins: Array<{ id: string; pinned: boolean }> = []
 const reminders: Array<{ messageId: string; remindAt: string }> = []
 const uploaded: string[] = []
+/** When set, `api.upload` waits on it, so a test can hold an upload in flight. */
+let uploadHold: Promise<void> | null = null
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
 const sentWakes: string[] = []
@@ -189,6 +191,7 @@ mock.module('../../../lib/team-chat-api', () => ({
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
     upload: async (_id: string, file: { name: string }) => {
       uploaded.push(file.name)
+      if (uploadHold) await uploadHold
       return { id: `att-${file.name}`, name: file.name, mimeType: 'text/plain', size: 1, width: null, height: null, url: '/f' }
     },
     update: async (id: string, patch: unknown) => {
@@ -436,6 +439,21 @@ function type(input: HTMLElement, value: string) {
 
 const composerInput = () => screen.getByLabelText('Message') as HTMLTextAreaElement
 
+/** True when `node` renders before the composer input in the tree — i.e. above it. */
+function rendersAboveInput(node: Node): boolean {
+  return Boolean(node.compareDocumentPosition(composerInput()) & Node.DOCUMENT_POSITION_FOLLOWING)
+}
+
+/** Hold every upload until the returned release runs, so "Uploading…" stays up. */
+function holdUploads(): () => void {
+  let release!: () => void
+  uploadHold = new Promise<void>((resolve) => { release = resolve })
+  return () => {
+    uploadHold = null
+    release()
+  }
+}
+
 describe('Composer', () => {
   test('@ autocomplete inserts a mention that is sent as a wire token', async () => {
     const onSend = mock(async () => {})
@@ -583,10 +601,42 @@ describe('Composer on a phone', () => {
     fireEvent.click(screen.getByTestId('project-composer-plus'))
     fireEvent.click(screen.getByLabelText('Also send to channel'))
     expect(screen.getByText('Also sending to the channel')).toBeTruthy()
+    // Above the input, not under it where it would sit on the pager indicator.
+    expect(rendersAboveInput(screen.getByText('Also sending to the channel'))).toBe(true)
     await act(async () => {
       fireEvent.click(screen.getByLabelText('Send message'))
     })
     expect(onSend).toHaveBeenCalledWith({ text: 'done', attachmentIds: [], alsoSentToChannel: true })
+  })
+
+  test('"Uploading…" sits above the input while an attachment uploads, and goes when it sends', async () => {
+    const onSend = mock(async () => {})
+    const ref = createRef<ComposerHandle>()
+    const release = holdUploads()
+    try {
+      render(
+        <PhoneLayoutOverrideProvider value>
+          <Composer ref={ref} workspaceId="ws" conversationId="c1" placeholder="Message Ana" mentionables={mentionables} me="u-me" onSend={onSend} />
+        </PhoneLayoutOverrideProvider>,
+      )
+      await act(async () => {
+        ref.current!.addFiles([new File(['notes'], 'notes.txt', { type: 'text/plain' })])
+      })
+      await waitFor(() => expect(screen.getByText('notes.txt')).toBeTruthy())
+
+      const input = composerInput()
+      type(input, 'see attached')
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('Send message'))
+      })
+
+      const status = await screen.findByText('Uploading…')
+      expect(rendersAboveInput(status)).toBe(true)
+    } finally {
+      await act(async () => { release() })
+    }
+    await waitFor(() => expect(screen.queryByText('Uploading…')).toBeNull())
+    expect(onSend).toHaveBeenCalledWith({ text: 'see attached', attachmentIds: ['att-notes.txt'], alsoSentToChannel: undefined })
   })
 })
 
@@ -1991,7 +2041,8 @@ describe('ConversationHeader channel editing', () => {
 
 describe('desktop header overflow', () => {
   // The desktop channel header's actions, in the order the header builds them.
-  const actions = ['agent-profile', 'edit', 'notify', 'star', 'pins', 'files', 'catchup', 'members', 'leave', 'archive', 'delete'].map((key) => ({ key }))
+  // Files is a tab, not a header action, so it is not in this list.
+  const actions = ['agent-profile', 'edit', 'notify', 'star', 'pins', 'catchup', 'members', 'leave', 'archive', 'delete'].map((key) => ({ key }))
   const keys = (list: Array<{ key: string }>) => list.map((a) => a.key)
 
   test('an unmeasured or wide header keeps every action inline', () => {
@@ -2000,15 +2051,15 @@ describe('desktop header overflow', () => {
   })
 
   test('More appears only once the actions no longer fit', () => {
-    // 196px of fixed room plus 36px per icon: all 11 actions need 592px.
-    expect(splitHeaderActions(actions, 592).overflow).toEqual([])
-    expect(splitHeaderActions(actions, 591).overflow.length).toBeGreaterThan(0)
+    // 196px of fixed room plus 36px per icon: all 10 actions need 556px.
+    expect(splitHeaderActions(actions, 556).overflow).toEqual([])
+    expect(splitHeaderActions(actions, 555).overflow.length).toBeGreaterThan(0)
   })
 
   test('a narrow header keeps the most useful actions inline and moves the rest under More', () => {
     const { inline, overflow } = splitHeaderActions(actions, 480)
-    expect(keys(inline)).toEqual(['notify', 'star', 'pins', 'files', 'catchup', 'members'])
-    expect(keys(overflow)).toEqual(['agent-profile', 'edit', 'leave', 'archive', 'delete'])
+    expect(keys(inline)).toEqual(['agent-profile', 'notify', 'star', 'pins', 'catchup', 'members'])
+    expect(keys(overflow)).toEqual(['edit', 'leave', 'archive', 'delete'])
   })
 
   test('below the compact width only More remains, with every action under it', () => {

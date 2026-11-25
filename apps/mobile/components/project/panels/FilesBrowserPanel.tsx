@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   TextInput,
-  ActivityIndicator,
   Platform,
   InteractionManager,
   Share,
@@ -47,6 +46,8 @@ import {
 } from '../../../lib/native-phone-layout';
 import { densityFor } from "../../../lib/phone-density"
 import { MarkdownText } from "../../chat/MarkdownText"
+import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -360,7 +361,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
         setTree(newTree)
       }
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       if (showLoading) setIsLoadingTree(false)
     }
@@ -378,7 +379,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       setSavedContent(text)
       setSelectedPath(path)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoadingFile(false)
     }
@@ -396,7 +397,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       setSavedContent(text)
       setSelectedPath(filename)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoadingFile(false)
     }
@@ -442,7 +443,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       setSavedContent(content)
       if (!isWorkspaceFile) loadTree()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsSaving(false)
     }
@@ -457,7 +458,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       setSavedContent('')
       loadTree()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     }
   }
 
@@ -489,7 +490,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
             setError(null)
           }
         } catch (err: any) {
-          setError(err.message)
+          setError(errorMessage(err))
         } finally {
           unmount()
         }
@@ -527,7 +528,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
         loadTree()
         setError(null)
       } catch (err: any) {
-        setError(err.message ?? 'Upload failed')
+        setError(errorMessage(err, 'Upload failed'))
       }
     })()
   }, [client, loadTree])
@@ -551,7 +552,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
     try {
       setSearchResults(await client.searchFiles(searchQuery.trim(), { limit: 15 }))
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsSearching(false)
     }
@@ -581,7 +582,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       setNewItemParentDir(null)
       loadTree()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     }
   }
 
@@ -638,7 +639,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       }
       setError(null)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsExporting(false)
     }
@@ -680,7 +681,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
       }
       setError(null)
     } catch (err: any) {
-      setError(err.message ?? 'Download failed')
+      setError(errorMessage(err, 'Download failed'))
     } finally {
       setIsDownloadingZip(false)
     }
@@ -706,7 +707,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
           }
           setError(null)
         } catch (err: any) {
-          setError(err.message || 'Failed to import agent configuration')
+          setError(errorMessage(err, 'Failed to import agent configuration'))
         } finally {
           unmount()
         }
@@ -737,7 +738,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
         loadTree()
         setError(null)
       } catch (err: any) {
-        setError(err.message || 'Failed to import agent configuration')
+        setError(errorMessage(err, 'Failed to import agent configuration'))
       }
     })()
   }, [client, isWorkspaceFile, selectedPath, loadWorkspaceFile, loadTree])
@@ -819,7 +820,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
                 </Pressable>
               </View>
               {isSearching ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 searchResults.map((r, i) => (
                   <Pressable
@@ -845,7 +846,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
             </View>
           ) : isLoadingTree ? (
             <View className="flex-1 items-center justify-center p-4">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : (
             <View className="p-1">
@@ -1092,7 +1093,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
 
             {isLoadingFile ? (
               <View className="flex-1 items-center justify-center">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               </View>
             ) : selectedPath && /\.mdx?$/i.test(selectedPath) && mdMode === 'preview' ? (
               <ScrollView className="flex-1 p-4" testID="ide-md-preview">

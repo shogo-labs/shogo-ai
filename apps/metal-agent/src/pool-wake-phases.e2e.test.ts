@@ -108,7 +108,7 @@ describe('stale reason honesty (SHO-271)', () => {
       ensureBase: async () => {},
       pullBase: async () => false,
     } as unknown as SnapshotStore
-    ;(pool as unknown as { evictLocal(id: string): void }).evictLocal('p1')
+    await (pool as unknown as { evictLocal(id: string): Promise<boolean> }).evictLocal('p1')
     const r = await pool.open('p1', ENV)
     expect(r.mode).toBe('assigned')
     expect(r.staleReason).toBe('store_miss')

@@ -6,10 +6,11 @@
  * Provides billing data from the SDK domain store. All values are in USD.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
 import { resolveUsageWindows } from "./usage-windows"
+import { subscribeAppActivity } from "../lib/app-activity"
 
 export interface EffectiveBalance {
   dailyIncludedUsd: number
@@ -95,6 +96,8 @@ export interface BillingDataState {
   loadMoreUsageEvents: () => void
   hasActiveSubscription: boolean
   hasAdvancedModelAccess: boolean
+  /** workspace-plan failed: the plan is unknown (not Free), so models aren't locked. */
+  planLookupFailed: boolean
   daysRemaining: number | undefined
   isLoading: boolean
   error: Error | null
@@ -191,12 +194,21 @@ export function useBillingData(
   // the customer pays (or confirms, for bank-required authentication) on
   // Stripe's hosted invoice page.
   const [overagePayment, setOveragePayment] = useState<OveragePaymentPending | null>(null)
+  // workspace-plan failed or answered without a plan: the plan is unknown,
+  // which is not the same as Free.
+  const [planLookupFailed, setPlanLookupFailed] = useState(false)
+  // Epoch-ms timestamp when the last workspace-plan fetch settled (success or
+  // failure). Used to throttle foreground-triggered refetches to one per 60s
+  // so a rapid series of focus events (e.g. command-tab back and forth) does
+  // not hammer the endpoint.
+  const lastPlanFetchAt = useRef(0)
 
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
     let cancelled = false
     setIsLoadingSubscription(true)
     setError(null)
+    setPlanLookupFailed(false)
     // Load the Prisma Subscription row (Stripe-backed) AND the effective
     // plan resolver in parallel. The effective resolver is the only place
     // grant-conferred tiers (planId set on workspace_grants) become visible
@@ -243,17 +255,38 @@ export function useBillingData(
                 ? { amountUsd: data.overageOutstandingUsd ?? 0, invoiceUrl: data.overageOutstandingInvoiceUrl ?? null }
                 : null,
             )
+          } else {
+            console.warn("[billing] workspace-plan answered without a plan; plan unknown, not locking models:", data)
+            setPlanLookupFailed(true)
           }
         })
-        .catch(() => {
-          // Non-fatal: if the endpoint fails the UI just falls back to the
-          // store-backed subscription view (current behavior pre-grants).
+        .catch((err: unknown) => {
+          // Grant plans only arrive through this endpoint. Record the failure
+          // so model access isn't inferred as Free from a missing answer.
+          if (cancelled) return
+          console.warn("[billing] workspace-plan failed; plan unknown, not locking models:", err)
+          setPlanLookupFailed(true)
         }),
     ])
       .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load subscription")) })
-      .finally(() => { if (!cancelled) setIsLoadingSubscription(false) })
+      .finally(() => { if (!cancelled) { lastPlanFetchAt.current = Date.now(); setIsLoadingSubscription(false) } })
     return () => { cancelled = true }
   }, [workspaceId, store, subscriptionRefetchCounter, http])
+
+  // Re-fetch the workspace plan whenever the app comes to the foreground
+  // (native: AppState -> 'active'; web: visibilitychange/focus). Throttled to
+  // at most once per 60s so rapid focus events don't hammer the endpoint.
+  // `subscriptionRefetchCounter` is the existing mechanism that re-runs the
+  // plan effect above — bumping it here re-uses that path without duplicating
+  // the fetch logic.
+  useEffect(() => {
+    const THROTTLE_MS = 60_000
+    return subscribeAppActivity(() => {
+      if (Date.now() - lastPlanFetchAt.current >= THROTTLE_MS) {
+        setSubscriptionRefetchCounter((c) => c + 1)
+      }
+    })
+  }, [])
 
   useEffect(() => {
     const wallet = (store as any)?.usageWalletCollection
@@ -434,7 +467,12 @@ export function useBillingData(
     effectivePlan?.source ?? (realSubscription ? "subscription" : "free")
 
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const hasAdvancedModelAccess = hasActiveSubscription && subscription?.planId !== 'basic'
+  // When the plan can't be resolved, don't lock: the AI proxy enforces model
+  // tiers on every request, so a wrong "unlocked" costs a clear 403 while a
+  // wrong "locked" strands every paying grant workspace (SHO-459 outage).
+  const hasAdvancedModelAccess =
+    (hasActiveSubscription && subscription?.planId !== 'basic') ||
+    (planLookupFailed && !realSubscription)
 
   return {
     subscription,
@@ -448,6 +486,7 @@ export function useBillingData(
     loadMoreUsageEvents,
     hasActiveSubscription,
     hasAdvancedModelAccess,
+    planLookupFailed,
     daysRemaining: subscription?.daysRemaining,
     isLoading: isLoadingSubscription || isLoadingUsageWallet || isLoadingUsageEvents,
     error,

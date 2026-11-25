@@ -21,7 +21,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Modal,
   TextInput,
   Alert,
@@ -62,6 +61,7 @@ import {
   type AuditStatus,
   type AuditFinding,
 } from '../_helpers'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ListingVersion {
   id: string
@@ -188,7 +188,7 @@ function ReasonModal({
               )}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <XCircle size={14} color="#fff" />
               )}
@@ -243,7 +243,7 @@ function ConfirmModal({
               )}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <CheckCircle2 size={14} color="#fff" />
               )}
@@ -512,7 +512,7 @@ export default function AdminListingDetailPage() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -624,7 +624,7 @@ export default function AdminListingDetailPage() {
                   )}
                 >
                   {busy === 'approve' ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <Spinner className="text-white" size="small" />
                   ) : (
                     <CheckCircle2 size={14} color="#fff" />
                   )}
@@ -649,7 +649,7 @@ export default function AdminListingDetailPage() {
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg border border-border active:bg-muted"
                 >
                   {busy === 'suspend' ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <Pause size={14} className="text-foreground" />
                   )}
@@ -661,7 +661,7 @@ export default function AdminListingDetailPage() {
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg border border-border active:bg-muted"
                 >
                   {busy === 'archive' ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <ArchiveIcon size={14} className="text-foreground" />
                   )}
@@ -674,18 +674,18 @@ export default function AdminListingDetailPage() {
                     'flex-row items-center gap-1.5 px-3 py-2 rounded-lg',
                     isFeatured
                       ? 'border border-border active:bg-muted'
-                      : 'bg-amber-500 active:opacity-80',
+                      : 'bg-primary active:opacity-80',
                   )}
                 >
                   {busy === 'feature' || busy === 'unfeature' ? (
-                    <ActivityIndicator size="small" color={isFeatured ? undefined : '#fff'} />
+                    <Spinner size="small" tone={isFeatured ? 'primary' : 'onPrimary'} />
                   ) : (
-                    <Sparkles size={14} className={isFeatured ? 'text-foreground' : 'text-white'} />
+                    <Sparkles size={14} className={isFeatured ? 'text-foreground' : 'text-primary-foreground'} />
                   )}
                   <Text
                     className={cn(
                       'text-sm font-medium',
-                      isFeatured ? 'text-foreground' : 'text-white',
+                      isFeatured ? 'text-foreground' : 'text-primary-foreground',
                     )}
                   >
                     {isFeatured ? 'Unfeature' : 'Feature'}
@@ -704,7 +704,7 @@ export default function AdminListingDetailPage() {
                 )}
               >
                 {busy === 'republish' ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <Spinner className="text-white" size="small" />
                 ) : (
                   <RotateCw size={14} color="#fff" />
                 )}

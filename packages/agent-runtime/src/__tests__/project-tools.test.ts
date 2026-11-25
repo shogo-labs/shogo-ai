@@ -238,10 +238,10 @@ describe('project_create', () => {
   })
 
   test('surfaces a lifecycle error from createProject without attaching', async () => {
-    api.create = { ok: false, status: 402, error: 'This stack requires a bigger instance', code: 'instance_too_small' }
+    api.create = { ok: false, status: 400, error: 'Docker projects are not available on this server yet.', code: 'docker_class_disabled' }
     const ctx = baseCtx()
     const out = await run(createProjectCreateTool(ctx), { name: 'Docker Project', techStackId: 'docker-compose' })
-    expect(out.code).toBe('instance_too_small')
+    expect(out.code).toBe('docker_class_disabled')
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
   })
 

@@ -37,18 +37,22 @@ export function createApp(options: CreateAppOptions): Hono {
     // The slides viewer is a static, sandboxed page (no tenant data, no
     // network) that every file host frames to render a deck (SHO-426).
     '/api/viewers/slides',
+    // The document viewer is the same, for Word files (SHO-467).
+    '/api/viewers/document',
   ]
 
-  // The slides viewer is framed by every file host, and locally the app and
+  // Both office viewers are framed by every file host, and locally the app and
   // the API are different origins (app :8081, API :8002), so SAMEORIGIN below
   // would block the frame. Registered before secureHeaders so it wraps it and
   // can remove the header on the way back out of the middleware onion
-  // (SHO-426).
-  app.use('/api/viewers/slides', async (c, next) => {
-    await next()
-    c.res.headers.delete('X-Frame-Options')
-    c.res.headers.delete('Cross-Origin-Opener-Policy')
-  })
+  // (SHO-426, SHO-467).
+  for (const viewerPath of ['/api/viewers/slides', '/api/viewers/document']) {
+    app.use(viewerPath, async (c, next) => {
+      await next()
+      c.res.headers.delete('X-Frame-Options')
+      c.res.headers.delete('Cross-Origin-Opener-Policy')
+    })
+  }
   app.use('*', secureHeaders({
     xFrameOptions: 'SAMEORIGIN',
     xContentTypeOptions: 'nosniff',

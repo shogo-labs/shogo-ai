@@ -114,3 +114,23 @@ describe("chatSessionEvents touch", () => {
     unsubscribe();
   });
 });
+
+describe("chatSessionEvents clear-all", () => {
+  test("every owner of an unopened-reply set hears one clear", () => {
+    let workspaceChats = 0;
+    let projectTabs = 0;
+    let island = 0;
+    const unsubscribers = [
+      chatSessionEvents.subscribeClearCompletions(() => (workspaceChats += 1)),
+      chatSessionEvents.subscribeClearCompletions(() => (projectTabs += 1)),
+      chatSessionEvents.subscribeClearCompletions(() => (island += 1)),
+    ];
+
+    chatSessionEvents.clearChatCompletions();
+
+    expect([workspaceChats, projectTabs, island]).toEqual([1, 1, 1]);
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+    chatSessionEvents.clearChatCompletions();
+    expect([workspaceChats, projectTabs, island]).toEqual([1, 1, 1]);
+  });
+});

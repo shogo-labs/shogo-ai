@@ -125,7 +125,7 @@ function homeFeedSwitcher(page: Page, currentName: string) {
 }
 
 function chatDrawerOpener(page: Page) {
-  return page.getByRole("button", { name: "Open chat sessions" })
+  return page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ })
 }
 
 async function openChatDrawerAndExpectWorkspace(page: Page, name: string) {

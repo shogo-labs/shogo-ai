@@ -31,6 +31,16 @@ export const MIME_TYPES: Record<string, string> = {
   '.ppt': 'application/vnd.ms-powerpoint',
   '.odp': 'application/vnd.oasis.opendocument.presentation',
   '.key': 'application/vnd.apple.keynote',
+  // Word documents: the browser-based document viewer decides from the
+  // extension, but a labelled response keeps every other consumer honest
+  // (SHO-467). Macros never run — the renderer only reads the XML.
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.docm': 'application/vnd.ms-word.document.macroEnabled.12',
+  '.dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  '.dotm': 'application/vnd.ms-word.template.macroEnabled.12',
+  '.doc': 'application/msword',
+  '.rtf': 'application/rtf',
+  '.odt': 'application/vnd.oasis.opendocument.text',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain',

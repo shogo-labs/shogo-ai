@@ -13,7 +13,6 @@ import {
   Text,
   Image,
   Pressable,
-  ActivityIndicator,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Globe, ImageIcon } from "lucide-react-native"
@@ -23,6 +22,7 @@ import { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { ImagePreviewModal } from "../ImagePreviewModal"
 import { useChatImageWidth } from "./use-chat-image-width"
+import { Spinner } from '@/components/ui/spinner'
 
 interface BrowserScreenshotDetails {
   ok?: boolean
@@ -114,7 +114,7 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
     return (
       <View className="overflow-hidden rounded-lg border border-border/60 bg-muted/50 dark:bg-muted/30 p-3">
         <View className="flex-row items-center gap-2">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <Text className="text-xs text-muted-foreground">Taking screenshot...</Text>
         </View>
       </View>
@@ -151,7 +151,7 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
       <Pressable onPress={handlePress} className="rounded-lg overflow-hidden border border-border/60">
         {!isLoaded && !hasError && (
           <View style={{ width: imageWidth, aspectRatio: 16 / 10 }} className="bg-muted/50 items-center justify-center">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         )}
         {hasError ? (

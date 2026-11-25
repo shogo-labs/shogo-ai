@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-419: a profile opened from a channel offers that channel's "Messages in
- * #<channel>" list. Activity channels are left out — they post-filter
- * `canSeeMessage` after the page is taken, so a filtered page can come back
- * short, which is why the header action is hidden there too.
+ * SHO-419, SHO-458: a profile opened from a channel offers that channel's
+ * "Messages in #<channel>" button — now it filters the timeline in place.
+ * Activity channels are left out — they post-filter `canSeeMessage` after
+ * the page is taken, so a filtered page can come back short.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -27,7 +27,7 @@ const { UserProfilePane } = await import('../UserProfilePane')
 
 const channel = (kind: string) => ({ id: 'c-1', kind, name: 'launch', members: [] }) as unknown as ConversationDetail
 
-const onOpenMemberMessages = mock((_from: string) => {})
+const onFilterByMember = mock((_from: string) => {})
 const onClose = mock(() => {})
 
 const renderPane = (conversation: ConversationDetail | null) =>
@@ -36,22 +36,22 @@ const renderPane = (conversation: ConversationDetail | null) =>
       workspaceId="w-1"
       userId="u-ada"
       conversation={conversation}
-      onOpenMemberMessages={onOpenMemberMessages}
+      onFilterByMember={onFilterByMember}
       onClose={onClose}
     />,
   )
 
 afterEach(cleanup)
 beforeEach(() => {
-  onOpenMemberMessages.mockClear()
+  onFilterByMember.mockClear()
   onClose.mockClear()
 })
 
 describe('UserProfilePane', () => {
-  test('offers the channel’s messages for a person in a public channel', () => {
+  test("offers the channel's messages for a person in a public channel", () => {
     renderPane(channel('public'))
     fireEvent.click(screen.getByLabelText('Messages in #launch'))
-    expect(onOpenMemberMessages).toHaveBeenCalledWith('user:u-ada')
+    expect(onFilterByMember).toHaveBeenCalledWith('user:u-ada')
   })
 
   test('a private channel offers it too', () => {

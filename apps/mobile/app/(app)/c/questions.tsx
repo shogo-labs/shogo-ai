@@ -5,7 +5,7 @@
  * each one answerable in place. Approvals waiting on you sit at the top.
  */
 import { useState } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
+import { FlatList, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ShieldAlert } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -18,6 +18,7 @@ import { openConversationMessage } from '../../../lib/team-chat-nav'
 import type { QuestionListItem } from '../../../lib/team-chat-api'
 import { QuestionCardView } from '../../../components/team-chat/QuestionCard'
 import { AgentAvatar } from '../../../components/team-chat/AgentAvatar'
+import { Spinner } from '@/components/ui/spinner'
 
 const TABS: Array<{ id: QuestionTab; label: string }> = [
   { id: 'open', label: 'Open' },
@@ -98,7 +99,7 @@ export default function QuestionsInbox() {
           >
             <Text className={cn('text-xs', everyone ? 'text-primary' : 'text-muted-foreground')}>Include other people's</Text>
           </Pressable>
-          {loading ? <ActivityIndicator size="small" /> : null}
+          {loading ? <Spinner size="small" /> : null}
         </View>
         {error ? <Text className="mt-3 text-sm text-destructive">{error}</Text> : null}
       </View>

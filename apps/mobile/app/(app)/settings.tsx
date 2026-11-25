@@ -15,7 +15,6 @@ import {
   ScrollView,
   Pressable,
   Modal,
-  ActivityIndicator,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -62,6 +61,7 @@ import {
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
 import { ChatPreferencesTab } from "../../components/settings/ChatPreferencesTab";
+import { EmailSettingsTab } from "../../components/settings/EmailSettingsTab";
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
@@ -128,6 +128,10 @@ import {
   isNativePhoneIntegrationsLayout,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
+import {
+  PhoneScreenHeader,
+  usePhoneScreenHeaderInset,
+} from "../../components/layout/PhoneScreenHeader";
 import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
 import whatsNewCatalog from "../../lib/whats-new/releases.generated.json";
 import {
@@ -170,8 +174,9 @@ import { useNotificationPermission } from "../../lib/notifications/useNotificati
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
-import { openExternalLink } from "../../lib/open-external-link";
+import { openDownloadUrl, openExternalLink } from "../../lib/open-external-link";
 import { isCloudWorkspace } from "../../lib/workspace-route";
+import { Spinner } from '@/components/ui/spinner'
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
@@ -212,6 +217,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   workspace: "Building2",
   people: "Users",
   chat: "MessageSquare",
+  email: "Mail",
   models: "Boxes",
   access: "ShieldCheck",
   integrations: "Plug",
@@ -254,6 +260,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "people",
   "chat",
+  "email",
   "models",
   "access",
   "integrations",
@@ -269,6 +276,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "chat",
+  "email",
   "models",
   "access",
   "integrations",
@@ -298,7 +306,7 @@ function TabBar({
 }) {
   const icons = useSettingsIcons();
   const items = (showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS).filter(
-    (item) => item.id !== "chat" || teamChat,
+    (item) => (item.id !== "chat" && item.id !== "email") || teamChat,
   );
   return (
     <ScrollView
@@ -388,7 +396,7 @@ function SettingsSidebar({
 
   const workspaceItems: SidebarItem[] = [
     ...(peopleVisible ? [tabItem("people")] : []),
-    ...(teamChat ? [tabItem("chat")] : []),
+    ...(teamChat ? [tabItem("chat"), tabItem("email")] : []),
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
@@ -1084,6 +1092,12 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     {" · "}
                     {deletePreview.channelCount} channels, {deletePreview.boardCount} boards,{" "}
                     {deletePreview.chatCount} chats
+                  </Text>
+                )}
+                {deletePreview.bucketBytes > 0 && (
+                  <Text className="text-xs text-muted-foreground">
+                    {formatBytes(deletePreview.bucketBytes)} of that is project bucket media
+                    (uploaded files, not repo content).
                   </Text>
                 )}
                 {deletePreview.projects.some((project) => project.folderLinked) && (
@@ -2463,12 +2477,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = exportCsvUrl;
-    if (typeof window !== "undefined") {
-      window.open(url, "_blank", "noopener");
-    } else {
-      openExternalLink(url);
-    }
+    openDownloadUrl(exportCsvUrl);
   };
 
   return (
@@ -2676,7 +2685,7 @@ const PeopleTab = observer(function PeopleTab() {
           <CardContent className="p-0">
             {isLoading ? (
               <View className="py-12 items-center">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-sm text-muted-foreground mt-2">
                   Loading members...
                 </Text>
@@ -2794,7 +2803,7 @@ const PeopleTab = observer(function PeopleTab() {
               <CardContent className="p-0">
                 {isLoading ? (
                   <View className="py-12 items-center">
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                     <Text className="text-sm text-muted-foreground mt-2">
                       Loading...
                     </Text>
@@ -3144,8 +3153,8 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
         ),
       });
     } catch (err: any) {
-      const msg = err?.message?.includes("plan_required")
-        ? "Additional workspaces are included on Business and Enterprise plans only."
+      const msg = err?.message && !String(err.message).startsWith("createChildWorkspace")
+        ? String(err.message)
         : "Could not create the workspace. Please try again.";
       toast.show({
         placement: "top",
@@ -3183,7 +3192,7 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
 
         {loading ? (
           <View className="py-4 items-center">
-            <ActivityIndicator />
+            <Spinner />
           </View>
         ) : children.length === 0 ? (
           <Text className="text-xs text-muted-foreground">
@@ -3930,6 +3939,7 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "disk" && <WorkspaceDiskTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
+      {activeTab === "email" && <EmailSettingsTab />}
       {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "access" && <WorkspaceAccessTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
@@ -3977,6 +3987,7 @@ export default observer(function SettingsPage({
   // sidebar beside this page, so the page drops its own exit and switcher.
   const inAppShell = !onClose && Platform.OS === "web" && isWide;
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height);
+  const header = usePhoneScreenHeaderInset();
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
@@ -4033,7 +4044,7 @@ export default observer(function SettingsPage({
     if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
-    if (activeTab === "chat" && !teamChat) setActiveTab("workspace");
+    if ((activeTab === "chat" || activeTab === "email") && !teamChat) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
@@ -4114,32 +4125,45 @@ export default observer(function SettingsPage({
     );
   }
 
+  // A phone redirects to the account page above, so this page is the tablet
+  // (or a narrow web panel). On the app the top follows the same glass
+  // standard as every other screen you go into.
+  const glassHeader = Platform.OS !== "web"
   return (
     <View
       testID="settings-legacy-page"
       className="flex-1 bg-background"
-      style={{ paddingTop: insets.top }}
+      style={glassHeader ? undefined : { paddingTop: insets.top }}
     >
-      <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          onPress={exitSettings}
-          className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
-        >
-          <ArrowLeft size={20} className="text-foreground" />
-        </Pressable>
-        <View className="flex-1">
-          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Settings
-          </Text>
-          <Text className="text-xl font-semibold text-foreground">
-            {activeTabLabel}
-          </Text>
+      {glassHeader ? (
+        <PhoneScreenHeader
+          title={activeTabLabel}
+          subtitle="Settings"
+          onBack={exitSettings}
+          onLayout={header.onLayout}
+        />
+      ) : (
+        <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            onPress={exitSettings}
+            className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
+          >
+            <ArrowLeft size={20} className="text-foreground" />
+          </Pressable>
+          <View className="flex-1">
+            <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Settings
+            </Text>
+            <Text className="text-xl font-semibold text-foreground">
+              {activeTabLabel}
+            </Text>
+          </View>
         </View>
-      </View>
+      )}
 
-      <View className="z-10 bg-card">
+      <View className="z-10 bg-card" style={glassHeader ? { paddingTop: header.height } : undefined}>
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}

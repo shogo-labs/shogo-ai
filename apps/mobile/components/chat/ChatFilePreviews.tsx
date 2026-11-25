@@ -15,7 +15,6 @@
  */
 import { useMemo, useState } from "react"
 import {
-  ActivityIndicator,
   Image,
   Platform,
   Pressable,
@@ -29,6 +28,7 @@ import { useAgentImageSource } from "../../lib/agent-image-source"
 import { resolveChatAttachmentUrl } from "../../lib/chat-attachment-url"
 import { extractInlineMediaLinks, type InlineMediaTarget } from "./inline-file-previews"
 import { useShareFileOpener, type OpenShareFile } from "./share-file-context"
+import { Spinner } from '@/components/ui/spinner'
 
 /** More than this many, the rest stay chips and the message stays readable. */
 const MAX_CARDS = 4
@@ -79,7 +79,7 @@ function ImageCard({ target, onOpen }: { target: InlineMediaTarget; onOpen: Open
           className="items-center justify-center bg-muted"
           style={{ width: frameWidth, height: Math.round(frameWidth * 0.66) }}
         >
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       ) : Platform.OS === "web" ? (
         <img

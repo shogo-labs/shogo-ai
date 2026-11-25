@@ -88,15 +88,27 @@ function isLaterObservation(candidate: DeviceVersionEventRow, current: DeviceVer
 }
 
 /**
- * Minimal surface of the prisma client this module needs. Callers that already
- * hold a client (the device mint) pass theirs so the write lands in the same
- * place as the rest of their work.
+ * Minimal surface of the prisma client this module needs: both device-analytics
+ * writes in one adapter. Callers that already hold a client (the device mint)
+ * pass theirs so the write lands in the same place as the rest of their work.
  */
-export interface DeviceVersionEventClient {
+export interface DeviceAnalyticsClient {
   deviceVersionEvent: {
     upsert: (args: any) => Promise<unknown>
   }
+  deviceActiveDay: {
+    upsert: (args: any) => Promise<unknown>
+  }
 }
+
+/**
+ * The real client satisfies both delegates; the arguments stay `any` because
+ * their generated shapes are large and only used here. One cast, one adapter —
+ * the ratchet in `untyped-prisma-ratchet.test.ts` counts casts per file. Read
+ * per call, not captured at import, so a client replaced after load (tests)
+ * is the one written through.
+ */
+const defaultClient = () => prisma as unknown as DeviceAnalyticsClient
 
 /**
  * The `region` stamped on a row this build writes.
@@ -121,7 +133,7 @@ export function resolveWritingRegion(rawRegionId: string | null): string {
  */
 export async function recordDeviceVersionEvent(
   touch: DeviceVersionTouch,
-  client: DeviceVersionEventClient = prisma as unknown as DeviceVersionEventClient,
+  client: DeviceAnalyticsClient = defaultClient(),
 ): Promise<boolean> {
   const deviceId = touch.deviceId?.trim()
   const version = normalizeDeviceVersion(touch.version)
@@ -152,6 +164,71 @@ export async function recordDeviceVersionEvent(
     return true
   } catch (error) {
     console.warn('[device-version] failed to record version event:', error)
+    return false
+  }
+}
+
+/** UTC `YYYY-MM-DD` for a moment in time. */
+export function utcDayKey(at: Date): string {
+  return at.toISOString().slice(0, 10)
+}
+
+/**
+ * Upsert one row per (region, deviceId, UTC day): the first touch of the day
+ * inserts, every later one only bumps `lastSeenAt` (and re-states `os`,
+ * `client` or `version` when the caller actually knows them).
+ *
+ * A device counts as active on a day if anything touched its key that day —
+ * heartbeat, proxy call or mint. Callers gate on `planApiKeyTouch`'s
+ * `recordActiveDay`, so this runs at most once per key per day rather than on
+ * every request; the upsert is idempotent either way, which keeps it correct
+ * when two regions both observe the device.
+ *
+ * A touch that carries no version cannot tell a desktop app from a CLI worker
+ * (`parseClient` returns `unknown`), so the `update` half leaves that column
+ * alone: a version-less proxy call must not downgrade what the day's heartbeat
+ * already established.
+ *
+ * Analytics must never break auth, so a storage failure is swallowed.
+ */
+export async function recordDeviceActiveDay(
+  touch: DeviceVersionTouch,
+  client: DeviceAnalyticsClient = defaultClient(),
+): Promise<boolean> {
+  const deviceId = touch.deviceId?.trim()
+  if (!deviceId) return false
+
+  const region = resolveWritingRegion(RAW_REGION_ID)
+  const { os } = parseDevicePlatform(touch.platform)
+  const version = normalizeDeviceVersion(touch.version)
+  const deviceClient = parseClient(version, touch.platform)
+  const seenAt = touch.seenAt ?? new Date()
+  const day = utcDayKey(seenAt)
+
+  try {
+    await client.deviceActiveDay.upsert({
+      where: { region_deviceId_day: { region, deviceId, day } },
+      create: {
+        region,
+        deviceId,
+        day,
+        os,
+        client: deviceClient,
+        version,
+        firstSeenAt: seenAt,
+        lastSeenAt: seenAt,
+      },
+      // `region` + `day` are the lookup key and are never in `update`.
+      update: {
+        lastSeenAt: seenAt,
+        ...(os !== 'unknown' ? { os } : {}),
+        ...(deviceClient !== 'unknown' ? { client: deviceClient } : {}),
+        ...(version ? { version } : {}),
+      },
+    })
+    return true
+  } catch (error) {
+    console.warn('[device-version] failed to record active day:', error)
     return false
   }
 }

@@ -7,11 +7,11 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native"
+import { AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
-import { SlidersHorizontal, Sparkles, X } from "lucide-react-native"
+import { Sparkles, X } from "lucide-react-native"
 import { useAuth } from "../../contexts/auth"
 import { useActiveInstance } from "../../contexts/active-instance"
 import {
@@ -69,11 +69,17 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
+import { buildWorkingSetDockPanel, useWorkingSetRevision } from "./WorkingSetDockPanel"
 import { useFileLinkArrival } from "./use-file-link-arrival"
 import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
+import {
+  SidePaneResizeHandle,
+  SIDE_PANE_CHAT_MIN_WIDTH,
+  useSidePaneWidth,
+} from "../layout/SidePaneResizer"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -88,9 +94,16 @@ import {
   publishWorkspaceSessionScopeChanged,
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
+import { Spinner } from '@/components/ui/spinner'
 
 /** Wide enough to show a project beside the chat (same as team chat's side pane). */
 const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
+/** Share of the row a right-hand pane takes until the user drags it. */
+const SIDE_PANE_DEFAULT_RATIO = 0.45
+/** Narrowest a plan or project pane may be dragged (team chat's project pane floor). */
+const SIDE_PANE_MIN_WIDTH = 420
+/** The file pane opens on a wider canvas, so it tolerates a narrower column. */
+const FILE_SIDE_PANE_MIN_WIDTH = 320
 
 /**
  * How far below the top inset `MobileWorkspaceShell`'s floating chrome reaches:
@@ -215,6 +228,10 @@ export const WorkspaceAgentChatScreen = observer(
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
     const { width, height } = useWindowDimensions()
+    // Measured width of the row the right-hand panes open into — the window
+    // without the app's sidebar — so dragging a pane can never starve the chat.
+    const [rowWidth, setRowWidth] = useState(0)
+    const [taskThreadPaneWidth, setTaskThreadPaneWidth] = useState<number | null>(null)
     const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
     const [filePane, setFilePane] = useState<FilePaneState | null>(null)
@@ -543,6 +560,43 @@ export const WorkspaceAgentChatScreen = observer(
     }, [sessionId])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    // Plan, file and project panes each remember their own width (SHO-569).
+    // They share the one right-hand slot, so each may be as wide as the row
+    // minus the chat column and minus the task-thread pane when that is open.
+    const measuredWidth = rowWidth || width
+    const paneDefaultWidth = Math.max(
+      SIDE_PANE_MIN_WIDTH,
+      Math.round(measuredWidth * SIDE_PANE_DEFAULT_RATIO),
+    )
+    const paneMaxWidth = measuredWidth - SIDE_PANE_CHAT_MIN_WIDTH - (taskThreadPaneWidth ?? 0)
+    const planPaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.planPaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
+    const filePaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.filePaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: FILE_SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
+    const projectPaneWidth = useSidePaneWidth({
+      storageKey: "shogo.workspaceChat.projectPaneWidth",
+      defaultWidth: paneDefaultWidth,
+      minWidth: SIDE_PANE_MIN_WIDTH,
+      maxWidth: paneMaxWidth,
+    })
+    // The dock re-renders a panel's body only when its `revision` changes (it
+    // ignores `render`, see `panelsObservablyEqual`), so the Working set's
+    // revision has to follow what its chips show — above all which project the
+    // side pane holds, which no other observable field carries.
+    const workingSetRevision = useWorkingSetRevision({
+      attachments,
+      focusedProjectId,
+      hasSidePane,
+      paneProjectId: projectPane?.projectId ?? null,
+    })
     // Plan, project, and file panes share one slot: opening any of them closes the others.
     const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
       setPlanPane(null)
@@ -805,7 +859,7 @@ export const WorkspaceAgentChatScreen = observer(
             </>
           ) : loadingView === "spinner" ? (
             <>
-              <ActivityIndicator />
+              <Spinner />
               <Text className="mt-3 text-sm text-muted-foreground">
                 Preparing Workspace Agent Chat…
               </Text>
@@ -1030,10 +1084,47 @@ export const WorkspaceAgentChatScreen = observer(
       )
     ) : null
 
+    // Width the task-thread pane has to leave free: whichever right-hand pane
+    // is open beside the chat. They share one slot, so at most one is open.
+    const openRightPaneWidth = !hasSidePane
+      ? 0
+      : plansPanel
+        ? planPaneWidth.width
+        : filePaneContent
+          ? filePaneWidth.width
+          : activePane
+            ? projectPaneWidth.width
+            : 0
+
+    // The Working set is a chat-dock panel now, on desktop and phone alike
+    // (SHO-484) — one "Working set" card above the composer instead of a row
+    // between the header and the transcript. Its chips keep SHO-427's split:
+    // a side-pane press selects the pane, a phone press opens the project.
+    const workingSetDockPanels =
+      attachments.length > 0
+        ? [
+            buildWorkingSetDockPanel({
+              attachments,
+              focusedProjectId,
+              projectName,
+              hasSidePane,
+              paneProjectId: activePane?.projectId ?? null,
+              onPressChip: hasSidePane
+                ? pressWorkingSetChip
+                : openProjectFromSheet,
+              onManage: () => setScopeSheetOpen(true),
+              revision: workingSetRevision,
+            }),
+          ]
+        : undefined
+
     return (
       <PlanStreamProvider>
       <ShareFileProvider open={openShareFile}>
-      <View className="flex-1 flex-row bg-background">
+      <View
+        className="flex-1 flex-row bg-background"
+        onLayout={(e) => setRowWidth(Math.round(e.nativeEvent.layout.width))}
+      >
       <View className="min-w-0 flex-1 bg-background">
         {header ? (
           // Opened from a team chat message: the way back up (`#shogo-dev ›
@@ -1067,13 +1158,18 @@ export const WorkspaceAgentChatScreen = observer(
         )}
         {usesMobileWorkspaceChrome &&
         !header &&
-        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
+        isPersonalWorkspace &&
+        showWelcome ? (
           // `PersonalAgentMobileHeader` floats above this content instead of
-          // reserving layout space, so the welcome card / working-set chip —
-          // the first normal-flow content on this screen — need their own
-          // clearance to avoid starting underneath the avatar/name
-          // cluster (and the shell's floating menu/bell buttons).
-          <View style={{ height: insets.top + 112 }} />
+          // reserving layout space, so the welcome card — the first normal-flow
+          // content on this screen — needs its own clearance to avoid starting
+          // underneath the avatar/name cluster (and the shell's floating
+          // menu/bell buttons). The transcript below clears the same header
+          // itself (`phoneTranscriptTopPadding`), so only the card needs this.
+          <View
+            testID="workspace-welcome-clearance"
+            style={{ height: insets.top + 112 }}
+          />
         ) : null}
         {linkError ? (
           <View
@@ -1136,92 +1232,6 @@ export const WorkspaceAgentChatScreen = observer(
             </View>
           </View>
         ) : null}
-        {attachments.length > 0 ? (
-          <View className="mx-auto w-full max-w-[760px] px-4 pb-2 pt-3">
-            <View className="flex-row items-center gap-2">
-              <Text className="text-xs font-medium text-muted-foreground">
-                Working set
-              </Text>
-              {hasSidePane ? null : (
-                <>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Manage project scope"
-                    onPress={() => setScopeSheetOpen(true)}
-                    className="max-w-[190px] rounded-full border border-border bg-card px-2.5 py-1 active:bg-muted"
-                  >
-                    <Text
-                      className="text-xs font-medium text-foreground"
-                      numberOfLines={1}
-                    >
-                      {projectName(focusedProjectId ?? attachments[0].projectId)}
-                    </Text>
-                  </Pressable>
-                  {attachments.length > 1 ? (
-                    <Text className="text-xs text-muted-foreground">
-                      +{attachments.length - 1}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-            </View>
-            {hasSidePane ? (
-              // Every attached project gets its own chip and opens beside the
-              // chat like a thread's agent (SHO-427); a long working set scrolls
-              // sideways rather than pushing the Manage button off the row.
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ alignItems: "center", gap: 8 }}
-                className="mt-1.5 flex-row"
-                testID="working-set-projects"
-              >
-                {attachments.map((attachment) => {
-                  const name = projectName(attachment.projectId)
-                  const shown = activePane?.projectId === attachment.projectId
-                  return (
-                    <Pressable
-                      key={attachment.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${name} project`}
-                      accessibilityHint={
-                        shown
-                          ? "Closes the project beside this chat"
-                          : "Shows the project beside this chat"
-                      }
-                      aria-selected={shown}
-                      testID={`working-set-project-${attachment.projectId}`}
-                      onPress={() => pressWorkingSetChip(attachment.projectId)}
-                      className={`max-w-[190px] rounded-full border px-2.5 py-1 active:bg-muted ${
-                        shown
-                          ? "border-primary bg-primary/10"
-                          : "border-border bg-card"
-                      }`}
-                    >
-                      <Text
-                        className={`text-xs font-medium ${
-                          shown ? "text-primary" : "text-foreground"
-                        }`}
-                        numberOfLines={1}
-                      >
-                        {name}
-                      </Text>
-                    </Pressable>
-                  )
-                })}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Manage project scope"
-                  testID="working-set-manage"
-                  onPress={() => setScopeSheetOpen(true)}
-                  className="h-7 w-7 items-center justify-center rounded-full active:bg-muted"
-                >
-                  <SlidersHorizontal size={14} className="text-muted-foreground" />
-                </Pressable>
-              </ScrollView>
-            ) : null}
-          </View>
-        ) : null}
         <View className="min-h-0 flex-1">
           <ChatPanel
             featureId={null}
@@ -1249,6 +1259,7 @@ export const WorkspaceAgentChatScreen = observer(
             className="flex-1"
             isActive
             ownsPlanStream
+            dockPanels={workingSetDockPanels}
             phoneTranscriptTopPadding={
               usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
             }
@@ -1404,20 +1415,53 @@ export const WorkspaceAgentChatScreen = observer(
         ) : null}
       </View>
       {hasSidePane && plansPanel ? (
-        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-plan-pane">
+        <View
+          className="relative shrink-0 border-l border-border"
+          style={{ width: planPaneWidth.width }}
+          testID="workspace-plan-pane"
+        >
+          <SidePaneResizeHandle
+            width={planPaneWidth.width}
+            minWidth={SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={planPaneWidth.setWidth}
+            onResizeEnd={planPaneWidth.commit}
+            onReset={planPaneWidth.reset}
+          />
           {plansPanel}
         </View>
       ) : null}
       {hasSidePane && filePane ? (
         <View
-          className="w-[45%] min-w-[420px] border-l border-border"
+          className="relative shrink-0 border-l border-border"
+          style={{ width: filePaneWidth.width }}
           testID={filePane.kind === "share" ? "workspace-share-file-pane" : "workspace-file-pane"}
         >
+          <SidePaneResizeHandle
+            width={filePaneWidth.width}
+            minWidth={FILE_SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={filePaneWidth.setWidth}
+            onResizeEnd={filePaneWidth.commit}
+            onReset={filePaneWidth.reset}
+          />
           {filePaneContent}
         </View>
       ) : null}
       {activePane ? (
-        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-project-pane">
+        <View
+          className="relative shrink-0 border-l border-border"
+          style={{ width: projectPaneWidth.width }}
+          testID="workspace-project-pane"
+        >
+          <SidePaneResizeHandle
+            width={projectPaneWidth.width}
+            minWidth={SIDE_PANE_MIN_WIDTH}
+            maxWidth={paneMaxWidth}
+            onResize={projectPaneWidth.setWidth}
+            onResizeEnd={projectPaneWidth.commit}
+            onReset={projectPaneWidth.reset}
+          />
           <ProjectSidePane
             key={`${activePane.projectId}:${activePane.chatSessionId ?? ""}:${activePane.nonce}`}
             projectId={activePane.projectId}
@@ -1431,7 +1475,11 @@ export const WorkspaceAgentChatScreen = observer(
       ) : null}
       {/* The thread a pressed background task runs in — beside the chat on
           desktop, in a sheet on phones. Never replaces this chat. */}
-      <TaskThreadPaneHost />
+      <TaskThreadPaneHost
+        containerWidth={measuredWidth}
+        reservedWidth={openRightPaneWidth}
+        onWidthChange={setTaskThreadPaneWidth}
+      />
       </View>
       </ShareFileProvider>
       </PlanStreamProvider>

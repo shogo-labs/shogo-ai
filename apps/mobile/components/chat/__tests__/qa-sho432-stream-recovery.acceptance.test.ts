@@ -246,8 +246,9 @@ describe("AC2 — recovery reattaches while the turn runs, and only gives up whe
 
     // A terminal answer paints saved history and never raises the stall banner.
     const recoveryBody = panel.slice(
-      panel.indexOf("const ended = snapshot.answered && turnEndedOnServer(turnStatus)"),
+      panel.indexOf("const outcome = decideStallGiveUp({"),
     )
+    expect(recoveryBody.length).toBeGreaterThan(1)
     expect(recoveryBody.indexOf("catchUpAfterTurnEndedRef.current?.()")).toBeGreaterThan(-1)
     expect(recoveryBody).toContain("effects.showRetryBanner && !ended")
   })

@@ -19,7 +19,6 @@ import {
   View,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
@@ -60,6 +59,7 @@ import {
   useAccountSheetIcons,
 } from './account-sheet-chrome'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 const LOG_PREFIX = '[IntegrationsTab]'
 
@@ -711,7 +711,7 @@ export function IntegrationsTab() {
                             accessibilityLabel="Disconnect"
                           >
                             {isDisconnecting ? (
-                              <ActivityIndicator size="small" />
+                              <Spinner size="small" />
                             ) : (
                               <LogOut size={14} className="text-muted-foreground" />
                             )}
@@ -733,7 +733,7 @@ export function IntegrationsTab() {
                   Browse catalog
                 </Text>
                 {providersLoading && (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 )}
               </View>
 

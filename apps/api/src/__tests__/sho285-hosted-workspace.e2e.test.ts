@@ -31,6 +31,7 @@ import { join } from 'node:path'
 import { FakeLlmServer, marker, token } from '../../../desktop/e2e/streaming/fake-llm-server'
 import { writeMachineCanary } from '../../../../e2e/staging/machine-pairing'
 import {
+  CLOUD_AUTH_SECRET,
   httpClient,
   pairMachine,
   read,
@@ -94,6 +95,91 @@ async function warmHostTunnel(): Promise<void> {
     120_000,
     2_000,
   )
+}
+
+/**
+ * A cross-workspace call from the **cloud Personal** workspace's agent, with the
+ * credentials that agent really holds: a workspace runtime token for the
+ * Personal workspace and the person's requester ticket (SHO-493). The token and
+ * ticket are signed with the cloud process's own secret, which is why the
+ * harness exports it.
+ */
+async function crossWorkspaceRequest(
+  method: string,
+  path: string,
+  headers: Record<string, string> = {},
+  body?: unknown,
+): Promise<{ status: number; data: any }> {
+  process.env.BETTER_AUTH_SECRET = CLOUD_AUTH_SECRET
+  const [{ deriveWorkspaceRuntimeToken }, { signRequesterTicket, workspaceTicketKey }] = await Promise.all([
+    import('../lib/workspace-runtime-token'),
+    import('../lib/requester-ticket'),
+  ])
+  const ticket = signRequesterTicket({
+    projectId: workspaceTicketKey(machine.cloudWorkspaceId),
+    userId: cloudUserId,
+  })
+  const res = await fetch(`${cloud.base}${path}`, {
+    method,
+    headers: {
+      'x-runtime-token': deriveWorkspaceRuntimeToken(machine.cloudWorkspaceId),
+      'X-Requester-Ticket': ticket,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...headers,
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+  const text = await res.text()
+  let data: any = text
+  try {
+    data = JSON.parse(text)
+  } catch {
+    /* a non-JSON body is the answer, verbatim */
+  }
+  return { status: res.status, data }
+}
+
+/**
+ * Move a machine's heartbeat into the past, around the API.
+ *
+ * `wakeHostTunnel` decides "still opening" from "away" by how old the heartbeat
+ * is (SHO-506), and a machine that has been killed sends no more of them — so
+ * this is the same state an hour of silence produces, without an hour of test
+ * time. The row is read fresh on every wake, so the next call sees it.
+ */
+async function ageMachineHeartbeat(instanceId: string, minutes = 10): Promise<void> {
+  const { Client } = await import('pg')
+  const client = new Client({ connectionString: cloud.dbUrl })
+  await client.connect()
+  try {
+    // `now() AT TIME ZONE 'UTC'` is deliberate: Prisma stores a DateTime in a
+    // naive `timestamp` column and reads it back as UTC, so a bare `now()` is
+    // written in the server's own timezone and comes back in the future (a host
+    // that looks *more* recently seen the older it gets).
+    await client.query(
+      'UPDATE instances SET "lastSeenAt" = (now() AT TIME ZONE \'UTC\') - make_interval(mins => $1) WHERE id = $2',
+      [minutes, instanceId],
+    )
+  } finally {
+    await client.end()
+  }
+}
+
+/**
+ * Write straight to the cloud's Postgres, around the API. The host change log
+ * that syncs a write down to the desktop is a Prisma extension, so a raw UPDATE
+ * reaches Postgres and never reaches the desktop — which is exactly the
+ * divergence a read has to be tested against.
+ */
+async function renameBoardInPostgresOnly(boardId: string, name: string): Promise<void> {
+  const { Client } = await import('pg')
+  const client = new Client({ connectionString: cloud.dbUrl })
+  await client.connect()
+  try {
+    await client.query('UPDATE boards SET name = $1 WHERE id = $2', [name, boardId])
+  } finally {
+    await client.end()
+  }
 }
 
 function logs(): string {
@@ -325,7 +411,6 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     expect(inCloud.data?.item?.title).toBe(cloudEdit)
   }, 180_000)
 
-  // Last: it switches the desktop off.
   test('AC5 · desktop off: the cloud still shows everything and a send is queued; back on: it catches up', async () => {
     const { cloud: c, desktop } = clients()
     const channelId = seeds.machine.channelId
@@ -368,6 +453,125 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
       return JSON.stringify(res.data ?? '').includes(queuedText)
     }, 180_000, 3_000)
   }, 360_000)
+
+  test('AC6 · the cloud Personal agent reaches the hosted workspace over its host’s tunnel (SHO-493)', async () => {
+    const { cloud: c, desktop } = clients()
+    const hosted = machine.machineWorkspaceId
+    const boardId = seeds.machine.boardId
+    await warmHostTunnel()
+
+    // --- a read answers from the desktop's SQLite, not from Postgres ---------
+    const desktopBoard = await read(desktop, `/api/boards/${encodeURIComponent(boardId)}`)
+    const desktopName = desktopBoard.data?.board?.name ?? desktopBoard.data?.name
+    expect(desktopName).toBeTruthy()
+
+    const postgresOnly = `Postgres only ${Date.now()}`
+    await renameBoardInPostgresOnly(boardId, postgresOnly)
+
+    const boards = await crossWorkspaceRequest('GET', `/api/internal/workspaces/${hosted}/agent-boards`)
+    expect(boards.status, JSON.stringify(boards.data).slice(0, 500)).toBe(200)
+    const names = (boards.data?.boards ?? []).map((b: any) => b.name)
+    expect(names).toContain(desktopName)
+    expect(names).not.toContain(postgresOnly)
+
+    // The cloud's own rows do have the new name: the answer above came from the
+    // desktop's database, over the tunnel.
+    const cloudSide = await read(c, `/api/workspaces/${encodeURIComponent(hosted)}/boards`)
+    expect(JSON.stringify(cloudSide.data ?? '')).toContain(postgresOnly)
+
+    // --- a write spends its approval in the cloud and lands on the desktop ---
+    const text = `from the cloud Personal agent ${Date.now()}`
+    const hash = 'c'.repeat(64)
+    const minted = await crossWorkspaceRequest('POST', `/api/internal/workspaces/${machine.cloudWorkspaceId}/cross-workspace/approvals`, {}, {
+      targetWorkspaceId: hosted,
+      tool: 'team_chat_post',
+      argsHash: hash,
+    })
+    expect(minted.status, JSON.stringify(minted.data)).toBe(200)
+    expect(minted.data?.approvalId).toBeTruthy()
+
+    // No approval: refused in the cloud, nothing reaches the tunnel or the disk.
+    const refused = await crossWorkspaceRequest(
+      'POST',
+      `/api/internal/workspaces/${hosted}/agent-channels/${encodeURIComponent(seeds.machine.channelId)}/messages`,
+      {},
+      { text: `${text} (no approval)` },
+    )
+    expect(refused.status).toBe(403)
+    expect(refused.data?.error?.code).toBe('approval_required')
+
+    const posted = await crossWorkspaceRequest(
+      'POST',
+      `/api/internal/workspaces/${hosted}/agent-channels/${encodeURIComponent(seeds.machine.channelId)}/messages`,
+      {
+        'X-Cross-Workspace-Approval': minted.data.approvalId,
+        'X-Cross-Workspace-Tool': 'team_chat_post',
+        'X-Cross-Workspace-Args-Hash': hash,
+      },
+      { text },
+    )
+    expect(posted.status, JSON.stringify(posted.data).slice(0, 500)).toBeLessThan(300)
+
+    // It landed in the desktop's SQLite, attributed to the person it was for.
+    const onDesktop = await read(desktop, `/api/conversations/${encodeURIComponent(seeds.machine.channelId)}/messages?limit=50`)
+    const mine = (onDesktop.data?.messages ?? []).find((m: any) => m.text === text)
+    expect(mine, `the post in the desktop's channel: ${JSON.stringify(onDesktop.data).slice(0, 800)}`).toBeTruthy()
+    expect(mine.blocks?.onBehalfOf?.userId ?? mine.metadata?.onBehalfOf?.userId).toBe(cloudUserId)
+
+    // --- a host whose socket just died is "still opening", not "away" --------
+    // Its heartbeat is still fresh, so the wake waits for its next poll before
+    // giving up — and what it answers then is the retryable `device_connecting`.
+    // That is the point of SHO-506: a Mac that polled forty seconds ago is not a
+    // Mac that is off, whatever its socket is doing right now.
+    await machine.kill()
+    // The cloud notices the closed socket a moment after the process dies; until
+    // then a forwarded call can still fail as a tunnel error. What it may never
+    // do is answer 200 with nothing in it. One attempt can spend the whole wake
+    // window (up to 75s), so this poll has to outlast one of them.
+    const connecting = await waitForSync(
+      'the cloud to say the host is online but still connecting',
+      async () => {
+        const res = await crossWorkspaceRequest('GET', `/api/internal/workspaces/${hosted}/agent-boards`)
+        expect(res.status, JSON.stringify(res.data).slice(0, 300)).not.toBe(200)
+        return res.status === 503 && res.data?.error?.code === 'device_connecting' ? res : null
+      },
+      180_000,
+      2_000,
+    )
+    const opening = connecting.data?.error
+    expect(opening?.instanceId).toBe(machine.machineId)
+    expect(typeof opening?.lastSeenAt).toBe('string')
+    expect(opening?.retryable).toBe(true)
+    expect(opening?.retryAfterSeconds).toBeGreaterThan(0)
+    expect(String(opening?.message ?? '')).toContain(machine.machineName)
+    expect(String(opening?.message ?? '')).toContain('try again')
+    expect(String(opening?.message ?? '')).not.toContain('offline')
+
+    // --- once its heartbeat is stale it is honestly offline ------------------
+    // The machine is dead, so nothing refreshes its heartbeat: aging the row is
+    // exactly the state an hour of silence produces, and the answer stops
+    // inviting a retry.
+    await ageMachineHeartbeat(machine.machineId)
+    const offline = await waitForSync(
+      'the cloud to report the host offline',
+      async () => {
+        const res = await crossWorkspaceRequest('GET', `/api/internal/workspaces/${hosted}/agent-boards`)
+        expect(res.status, JSON.stringify(res.data).slice(0, 300)).not.toBe(200)
+        return res.status === 503 && res.data?.error?.code === 'device_offline' ? res : null
+      },
+      60_000,
+      2_000,
+    )
+    expect(offline.data?.error?.instanceId).toBe(machine.machineId)
+    expect(typeof offline.data?.error?.lastSeenAt).toBe('string')
+    expect(offline.data?.error?.retryable).toBe(false)
+    expect(String(offline.data?.error?.message ?? '')).toContain(machine.machineName)
+    expect(offline.data?.error?.message ?? '').toContain('offline')
+
+    // Back on, so the rest of the file starts from a live machine.
+    await machine.restart()
+    await warmHostTunnel()
+  }, 480_000)
 
   test('someone who does not own the desktop gets nothing from it', async () => {
     const stranger = await signUp(cloud.base, 'stranger')

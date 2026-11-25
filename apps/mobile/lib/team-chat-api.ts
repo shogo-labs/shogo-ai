@@ -5,6 +5,7 @@
  * (`/api/workspaces/:workspaceId/conversations`, `/api/conversations/:id`,
  * `/api/conversation-messages/:id`).
  */
+import type { LearnProfileSummary } from './learn-badge-art'
 import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { getSDKHttpClient } from '@shogo/shared-app/domain'
@@ -342,6 +343,8 @@ export interface UserCard {
   localTime: string | null
   localTimeLabel: string | null
   status: UserStatus | null
+  /** Shogo Learn level and badges; null until they start learning. */
+  learn?: LearnProfileSummary | null
 }
 
 export interface UserGroup {
@@ -528,7 +531,7 @@ export type TeamChatEvent =
   | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null; summarizing?: boolean }
   | { type: 'agent.capacity'; workspaceId: string; limit: number; running: number; parked: number; queued: number }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
@@ -1258,6 +1261,14 @@ export function teamChatApi() {
     },
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
+    },
+    /**
+     * Several messages in one request (quote cards). A message the viewer may
+     * not read is only listed in `missing`, the same neutral answer as a 404.
+     */
+    async messagesById(messageIds: string[]): Promise<{ messages: ChatMessage[]; missing: string[] }> {
+      const q = new URLSearchParams({ ids: messageIds.join(',') })
+      return (await http.get<{ messages: ChatMessage[]; missing: string[] }>(`/api/conversation-messages?${q}`)).data
     },
     /** What a file is, for the viewer. Never redirects to storage. */
     async fileMeta(

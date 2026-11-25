@@ -13,8 +13,11 @@ export const ACCENT_PRESETS = {
   'shogo-orange': {
     label: 'Shogo Orange',
     swatch: '#E27927',
+    // Shogo orange is one colour in both themes: #E27927, the brand orange the
+    // update bar and the app icon use. A lighter dark-mode tint read as a
+    // washed-out peach once SHO-544 moved every bar/spinner onto primary.
     light: { primary: '226 121 39', primaryForeground: '255 255 255', ring: '226 121 39' },
-    dark: { primary: '240 144 80', primaryForeground: '255 255 255', ring: '240 144 80' },
+    dark: { primary: '226 121 39', primaryForeground: '255 255 255', ring: '226 121 39' },
   },
   blue: {
     label: 'Blue',
@@ -45,3 +48,44 @@ export const ACCENT_PRESETS = {
 export type AccentThemeName = keyof typeof ACCENT_PRESETS
 export const DEFAULT_ACCENT: AccentThemeName = 'shogo-orange'
 export const ACCENT_NAMES = Object.keys(ACCENT_PRESETS) as AccentThemeName[]
+
+/** `226 121 39` → `rgb(226, 121, 39)`, the form React Native props accept. */
+export function accentTripletToRgb(triplet: string): string {
+  return `rgb(${triplet.trim().split(/\s+/).join(', ')})`
+}
+
+/**
+ * `rgb(226, 121, 39)` + `0.32` → `rgba(226, 121, 39, 0.32)`. React Native has no
+ * `color-mix`/alpha channel syntax, so a tint of a theme colour is built here
+ * rather than by string-concatenating at each call site.
+ */
+export function withAlpha(color: string, alpha: number): string {
+  const channels = color.match(/[\d.]+/g)
+  if (!channels || channels.length < 3) return color
+  return `rgba(${channels.slice(0, 3).join(', ')}, ${alpha})`
+}
+
+/**
+ * The live accent for code that cannot use a hook — the root error boundary
+ * renders when the providers it would read from may not be mounted. On web it
+ * reads the same stored preference and `dark` class the accent provider writes;
+ * elsewhere it falls back to the default preset.
+ */
+export function resolveAccentWithoutContext(): { primary: string; primaryForeground: string } {
+  let name: AccentThemeName = DEFAULT_ACCENT
+  let dark = false
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    try {
+      const stored = window.localStorage.getItem('accent-theme')
+      if (stored && stored in ACCENT_PRESETS) name = stored as AccentThemeName
+    } catch {
+      // storage unavailable — default accent is fine for a fallback screen
+    }
+    dark = document.documentElement.classList.contains('dark')
+  }
+  const values = dark ? ACCENT_PRESETS[name].dark : ACCENT_PRESETS[name].light
+  return {
+    primary: accentTripletToRgb(values.primary),
+    primaryForeground: accentTripletToRgb(values.primaryForeground),
+  }
+}

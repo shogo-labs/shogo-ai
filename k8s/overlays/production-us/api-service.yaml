@@ -125,6 +125,15 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "20"
+        # Keep the activator off the request path once a replica is Ready (SHO-506,
+        # same fix staging has carried since the 5-minute chat-stream cut): the
+        # activator imposes a hardcoded ~5-minute `defaultRequestTimeout` on
+        # in-flight requests that ignores the revision's `timeoutSeconds`, so every
+        # long-lived stream through this DomainMapping — a desktop tunnel, a chat
+        # turn, an SSE read — died at exactly 5:00 with `1006`/`UC`.
+        autoscaling.knative.dev/target-burst-capacity: "0"
+        autoscaling.knative.dev/scale-down-delay: "5m"
+        autoscaling.knative.dev/window: "60s"
     spec:
       serviceAccountName: api-service-account
       containers:
@@ -141,23 +150,31 @@ spec:
             - name: SYSTEM_NAMESPACE
               value: "shogo-production-system"
             # ---- Published apps' Postgres (SHO-308 §1) ----------------------
-            # Read from the projects-pg cluster's CNPG superuser secret, which
-            # only exists once `k8s/cnpg/production-us-oci/projects-cluster.yaml`
-            # is deployed. `optional: true` keeps the API booting before that:
-            # a publish then refuses with `database_unavailable`.
+            # Published server apps get their own database on projects-pg (the
+            # PUBLISHED-app cluster, not platform-pg) and connect through its
+            # PgBouncer. PROJECTS_DB_HOST/PORT are required for the schema push
+            # (DDL goes to the primary, never the pooler) and
+            # PROJECTS_DB_POOLER_HOST is required for a publish to move an app
+            # onto Postgres at all: with it unset, publish refuses with
+            # `database_unavailable` instead of handing the pod a hostname
+            # nothing resolves.
             #
-            # PROJECTS_DB_POOLER_HOST is deliberately NOT set here yet. The
-            # Pooler CR (projects-pooler.yaml) fronts a cluster this region does
-            # not have, and setting the host first would turn a clean refusal
-            # into pods pointing at a Service with no endpoints. Set it in the
-            # same change that deploys the cluster — see
-            # docs/runbooks/published-postgres.md.
+            # deploy-us applies the cluster and its pooler before this manifest
+            # (see .github/workflows/deploy.yml). `optional: true` on the
+            # superuser Secret keeps the API booting on the very first deploy,
+            # before CNPG has written it.
             - name: PROJECTS_DB_ADMIN_URL
               valueFrom:
                 secretKeyRef:
                   name: projects-pg-superuser
                   key: uri
                   optional: true
+            - name: PROJECTS_DB_HOST
+              value: "projects-pg-rw.shogo-production-system.svc.cluster.local"
+            - name: PROJECTS_DB_PORT
+              value: "5432"
+            - name: PROJECTS_DB_POOLER_HOST
+              value: "projects-pg-pooler-rw.shogo-production-system.svc.cluster.local"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE
@@ -249,6 +266,34 @@ spec:
                   key: secret-key
             - name: PUBLISH_NAMESPACE
               value: "shogo-production-system"
+            # ---- Per-commit published images (SHO-308 §2, on in prod SHO-485) --
+            # BuildKit Jobs in `shogo-builds` (k8s/published-builds/builds.yaml,
+            # applied by this region's kustomization) push to
+            # <registry>/<namespace>/shogo/published/<projectId>:<sha> with the
+            # `ocir-push` Secret in that namespace. The builder image must be
+            # fully qualified: CRI-O on OKE enforces short names. See
+            # docs/runbooks/published-images.md — the Secret and the egress rule
+            # are manual per region, and PUBLISH_BUILD_IMAGES=off rolls back
+            # without unsetting these.
+            # SHO-551: the Postgres rollout starts with two named projects, not
+            # the region. A comma-separated list means "on for these, off for
+            # everyone else", so the stop-gap (#2222) is still in force for every
+            # other server app while KIF CRM and Nada App move.
+            #   PUBLISH_POSTGRES      — which projects get a Postgres environment
+            #   PUBLISH_BUILD_IMAGES  — which projects build a per-commit image
+            # Both are needed: a Postgres environment must run its own `-pg`
+            # image (a shared-runtime pod hydrates the SQLite build).
+            # Widening this to `on` for the region is a separate decision.
+            - name: PUBLISH_POSTGRES
+              value: "5925615d-0157-44d3-a114-41b35a14785e,c7d51ded-aa79-42a5-8e48-2b10222d743d"
+            - name: PUBLISH_BUILD_IMAGES
+              value: "5925615d-0157-44d3-a114-41b35a14785e,c7d51ded-aa79-42a5-8e48-2b10222d743d"
+            - name: PUBLISH_BUILD_REGISTRY
+              value: "us-ashburn-1.ocir.io"
+            - name: PUBLISH_BUILD_NAMESPACE
+              value: "idin4oltblww"
+            - name: PUBLISH_BUILD_IMAGE
+              value: "docker.io/moby/buildkit:v0.18.2-rootless"
             # OCI Object Storage bucket the *.shogo.one Cloudflare Worker
             # reads from (terraform/modules/publish-hosting-oci). MUST
             # match `shogo-published-apps-${var.environment}` for the env
@@ -259,6 +304,16 @@ spec:
             # Writable-state bucket for SERVER-BACKED published apps.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-production"
+            # Project object storage (SHO-491): the SDK bucket API
+            # (`shogo bucket`, /api/bucket/*) stores agent-produced media here
+            # instead of base64 in chat. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. Public reads are served by the
+            # subdomain-router Worker at `cdn.<publish_domain>/<projectId>/<key>`
+            # (read-only PAR, `p/<projectId>/public/<key>` only) — the API's
+            # presigned GET is the path for private objects.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
@@ -357,6 +412,12 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai"
+            # learn.shogo.ai sign-in (routes/learn.ts, lib/learn-token.ts): the
+            # learn-only cookie is set on this parent domain; never the session.
+            - name: LEARN_COOKIE_DOMAIN
+              value: ".shogo.ai"
+            - name: LEARN_ORIGINS
+              value: "https://learn.shogo.ai"
             # Public hostname the desktop should use for the on-demand
             # tunnel WebSocket. Routed by api-tunnel-ingress.yaml directly
             # to the api revision pod (no DomainMapping → no broken WS
@@ -688,6 +749,33 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: SLACK_APP_ID
+                  optional: true
+            # WhatsApp Tech Provider (SHO-463). Optional so the pod boots before
+            # the secrets exist; until set the feature flag is false and the
+            # route returns 412.
+            - name: WHATSAPP_META_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_ID
+                  optional: true
+            - name: WHATSAPP_META_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_SECRET
+                  optional: true
+            - name: WHATSAPP_ES_CONFIG_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_ES_CONFIG_ID
+                  optional: true
+            - name: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
                   optional: true
             # OpenRouter key for the model-provider fallback. Every deploy job
             # writes it into api-secrets; without this reader the cloud never

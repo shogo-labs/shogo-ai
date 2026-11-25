@@ -35,6 +35,9 @@ export interface Seeded {
   scheduleName: string
   triggerId: string
   triggerName: string
+  goalId: string
+  goalTitle: string
+  goalEventMessage: string
 }
 
 async function post<T = any>(client: HttpClient, path: string, body: unknown, what: string): Promise<T> {
@@ -132,6 +135,17 @@ export async function seedWorkspace(client: HttpClient, workspaceId: string, tag
   )
   const triggerId = trigger.trigger?.id ?? trigger.id
 
+  // A goal with one event, so the `activity` surface has something real to show
+  // (`/activity` is goal events + agent tasks + the turns running right now, and
+  // the read-only turn list is empty in a seeded workspace). Without this the
+  // surface's `shows` could only assert a shape — which is how the hosted
+  // workspace's dead activity panel went unnoticed (SHO-486).
+  const goalTitle = `${tag} launch goal`
+  const goal = await post(client, `${ws}/goals`, { title: goalTitle, status: 'active' }, 'goal')
+  const goalId = goal.goal?.id ?? goal.id
+  const goalEventMessage = `${tag}: first step done`
+  await post(client, `${ws}/goals/${encodeURIComponent(goalId)}/events`, { kind: 'progress', message: goalEventMessage }, 'goal event')
+
   return {
     workspaceId,
     tag,
@@ -152,6 +166,9 @@ export async function seedWorkspace(client: HttpClient, workspaceId: string, tag
     scheduleName,
     triggerId,
     triggerName,
+    goalId,
+    goalTitle,
+    goalEventMessage,
   }
 }
 
@@ -286,8 +303,25 @@ export const SURFACES: Surface[] = [
   {
     name: 'activity',
     path: (s) => `${ws(s)}/activity?limit=100`,
-    view: (d) => byId((d?.activity ?? []).map((a: any) => ({ id: a.id, kind: a.kind ?? a.type ?? null }))),
-    shows: () => {},
+    view: (d) =>
+      byId(
+        (d?.activity ?? []).map((a: any) => ({
+          id: a.id,
+          type: a.type ?? null,
+          // A goal event names its goal and says what happened; a turn names
+          // the chat. Both are what the panel renders.
+          goalTitle: a.goalTitle ?? null,
+          message: a.message ?? null,
+          chatSessionId: a.chatSessionId ?? null,
+        })),
+      ),
+    shows: (v: any[], s) => {
+      if (!Array.isArray(v)) throw new Error(`activity is not a list: ${JSON.stringify(v).slice(0, 300)}`)
+      const goalEvent = v.find((row) => row.type === 'goal_event')
+      if (!goalEvent) throw new Error(`activity shows no goal event: ${JSON.stringify(v).slice(0, 400)}`)
+      includes(goalEvent, s.goalTitle, 'activity')
+      includes(goalEvent, s.goalEventMessage, 'activity')
+    },
   },
   {
     name: 'people and agents',

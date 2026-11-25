@@ -29,15 +29,8 @@ import { join } from "node:path"
 import { LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
-// This spec has its own CI job (`E2E (slides preview)` in ci.yml) because the
-// shards never reached it inside their cap. Running it inside a shard as well
-// only doubles the cost — and, when it flakes, doubles the red on a job that
-// already reports it (SHO-447). The shard step sets `E2E_SHARD`; the dedicated
-// entry does not.
-test.skip(
-  Boolean(process.env.E2E_SHARD),
-  "has its own CI job (E2E (slides preview)); it does not also run inside a shard",
-)
+// This spec has its own CI job (`E2E (slides preview)` in ci.yml); the shard
+// jobs exclude it via `OWN_ENTRY_SPECS` in playwright.config.ts (SHO-450).
 
 const SUFFIX = Date.now().toString(36)
 
@@ -149,14 +142,15 @@ async function send(page: Page, text: string) {
 }
 
 /**
- * The frame's own report is the assertion: `data-slide-count` is only set from
- * the viewer's `rendered` message, so `3` means the page loaded, the bytes
- * crossed the boundary, and the renderer counted three slides.
+ * The frame's own report is the assertion: `data-item-count` is only set from
+ * the viewer's `rendered` message (slides and pages share one preview
+ * component, SHO-467), so `3` means the page loaded, the bytes crossed the
+ * boundary, and the renderer counted three slides.
  */
 async function expectSlideCount(host: ReturnType<Page["getByTestId"]>, timeout = 60_000) {
   const frame = host.getByTestId("slides-preview-frame")
   await expect(frame).toBeVisible({ timeout })
-  await expect(frame).toHaveAttribute("data-slide-count", "3", { timeout })
+  await expect(frame).toHaveAttribute("data-item-count", "3", { timeout })
   return frame
 }
 

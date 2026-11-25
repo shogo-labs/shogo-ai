@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, Upload, X } from 'lucide-react-native'
+import { Filter, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import type { MentionTarget } from '../chat/file-links'
@@ -32,13 +32,24 @@ import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
 import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
 import { LinkPreviewConsentHost } from './LinkPreviewConsent'
-import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
+import { GlassChip } from './FloatingChrome'
+import { PhoneScreenHeader } from '../layout/PhoneScreenHeader'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
 import { MakeCardSheet } from '../boards/MakeCardSheet'
+import { useMemberMessages } from '../../hooks/useMemberMessages'
+import { memberForKey, memberFromKey } from '../../lib/member-messages'
+import { AgentAvatar } from './AgentAvatar'
+import { UserAvatar } from './UserAvatar'
+import type { ConversationMember } from '../../lib/team-chat-api'
 import type { WorkItem } from '../../lib/work-boards-api'
+import { emailBlockOf, mailApi, type MailView } from '../../lib/mail-api'
+import { useMailboxForConversation } from '../../hooks/useMail'
+import { MailReplyModeBar, MailThreadActions, type MailComposeMode } from './MailThreadBar'
+import { ComposeEmailSheet, MailboxHeader, MailThreadList, ScreenerList, type MailboxTab } from './MailboxView'
 
 const api = teamChatApi()
+const mail = mailApi()
 /** Pages of 200 to load back when jumping to an older message before opening it on its own. */
 const SEEK_PAGES = 6
 const SEEK_PAGE_SIZE = 200
@@ -69,6 +80,11 @@ export interface TimelinePaneProps {
   topInset?: number
   /** Open a card made from a message here. "Make a card" only shows when this is set. */
   onOpenCard?: (item: WorkItem) => void
+  /** Filter the timeline to one member's messages (\ / \). Only
+   * valid on the main scope (no \), not on #activity. */
+  memberFilter?: string | null
+  onChangeMemberFilter?: (from: string) => void
+  onClearMemberFilter?: () => void
 }
 
 /** Files dropped anywhere on a web pane go to the composer. */
@@ -201,11 +217,29 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [cardNotice])
   const canMakeCards = !!props.onOpenCard && (conversation.kind === 'public' || conversation.kind === 'private') && conversation.canReply
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
+  // Member filter: active only on the main scope (not threads, not #activity).
+  const memberFilterKey = !threadRootId && !showActivityFilters ? (props.memberFilter ?? null) : null
+  const memberData = useMemberMessages(workspaceId, memberFilterKey ? conversation.id : null, memberFilterKey)
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
   const channelDirectory = useChannelDirectory(workspaceId)
   const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
+  const mailbox = useMailboxForConversation(workspaceId, conversation.id)
+  const rootEmail = useMemo(() => {
+    if (!threadRootId) return null
+    return emailBlockOf(timeline.state.messages.find((m) => m.id === threadRootId))
+  }, [threadRootId, timeline.state.messages])
+  const mailThreadId = rootEmail?.threadId ?? null
+  // A mailbox thread replies by email unless the reader switches to a team comment.
+  const [mailMode, setMailMode] = useState<MailComposeMode>('reply')
+  const [replyAll, setReplyAll] = useState(false)
+  const mailReply = !!mailThreadId && mailMode === 'reply'
+  const [mailboxTab, setMailboxTab] = useState<MailboxTab>('inbox')
+  const [composingEmail, setComposingEmail] = useState(false)
+  const [mailListKey, setMailListKey] = useState(0)
+  const showMailboxHeader = !!mailbox && !threadRootId
+  const mailboxListView = showMailboxHeader && mailboxTab !== 'chat'
   // The typing row shares the composer's edges, so it lines up with the input box.
   const typingColumnStyle = useComposerColumnStyle({ presentation: 'agent' })
   // `#channel` references resolve against the channels this reader can see, so a
@@ -239,8 +273,9 @@ export function TimelinePane(props: TimelinePaneProps) {
   // An anchored notification view is intentionally a non-contiguous slice.
   // A realtime insert or reconnect can add a much newer row to that slice,
   // but the reader has not seen the gap between it and the target yet.
+  // Pause mark-read while filtered too: the user hasn't seen everyone else's messages.
   useMarkReadWhileVisible(
-    threadRootId || !conversation.joined ? null : conversation.id,
+    threadRootId || !conversation.joined || !!memberFilterKey ? null : conversation.id,
     newestSeq,
     visible,
     readPaused || timeline.hasMoreNewer,
@@ -414,11 +449,22 @@ export function TimelinePane(props: TimelinePaneProps) {
   const handleSend = useCallback(async (input: SendInput) => {
     setMentionNudge(null)
     setChannelsAdded(null)
+    if (mailReply && mailThreadId) {
+      await mail.reply(workspaceId, mailThreadId, { text: input.text, replyAll, attachmentIds: input.attachmentIds })
+      return
+    }
     const sent = await timeline.send(input)
     if (!sent || !channelMemberIds || getMentionNudgeDismissed()) return
     const ids = nonMemberMentionIds(input.text, channelMemberIds, me)
     if (ids.length) setMentionNudge({ ids, busy: false, error: null, createdAt: new Date().toISOString() })
-  }, [timeline.send, channelMemberIds, me])
+  }, [timeline.send, channelMemberIds, me, mailReply, mailThreadId, workspaceId, replyAll])
+  const handleMailSendLater = useCallback(
+    async (input: SendInput, at: Date) => {
+      if (!mailThreadId) return
+      await mail.reply(workspaceId, mailThreadId, { text: input.text, replyAll, sendAt: at.toISOString() })
+    },
+    [workspaceId, mailThreadId, replyAll],
+  )
   const addMentioned = useCallback(async () => {
     if (!mentionNudge) return
     const { ids } = mentionNudge
@@ -435,7 +481,11 @@ export function TimelinePane(props: TimelinePaneProps) {
     }
   }, [mentionNudge, conversation.id, conversation.kind])
 
-  const placeholder = threadRootId
+  const placeholder = mailReply
+    ? `Reply by email${replyAll ? ' to everyone' : ''}…`
+    : mailThreadId
+      ? 'Comment for the team (not emailed)…'
+      : threadRootId
     ? 'Reply in thread…'
     : isChannel
       ? `Message #${conversation.name ?? 'channel'}`
@@ -446,7 +496,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       ? 'Activity is posted by Shogo. Reply in a thread to discuss.'
       : 'You do not have permission to post here.'
   const canPostHere = threadRootId ? conversation.canReply : conversation.canPost
-  const showComposer = !(!conversation.joined && isChannel && !threadRootId)
+  const showComposer = !(!conversation.joined && isChannel && !threadRootId) && !mailboxListView
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   // Opening a conversation leaves you ready to type, the way Slack does on the
@@ -487,10 +537,57 @@ export function TimelinePane(props: TimelinePaneProps) {
   // covers, so the newest message clears the composer at rest while everything
   // older scrolls behind the transparent band above it.
   const listInsets = {
-    top: floating ? (showActivityFilters ? 0 : topInset) + threadHeaderHeight : 0,
+    top: floating ? (showActivityFilters || memberFilterKey || showMailboxHeader ? 0 : topInset) + threadHeaderHeight : 0,
     bottom: footerHeight,
   }
-  const list = (
+  // When filtered by member, sort the returned messages ascending (oldest first)
+  // so MessageList renders them newest-at-bottom, same as the live timeline.
+  const memberMessages = useMemo(
+    () => memberFilterKey ? [...memberData.messages].sort((a, b) => a.seq - b.seq) : null,
+    [memberFilterKey, memberData.messages],
+  )
+  const memberFilteredState = memberMessages
+    ? { messages: memberMessages, hasMoreOlder: memberData.hasMore, streaming: timeline.state.streaming }
+    : null
+  const memberFilterName = useMemo(() => {
+    if (!memberFilterKey) return null
+    const member = memberForKey(conversation.members, memberFilterKey)
+    return member?.name?.trim() || (member?.type === 'agent' ? 'Agent' : 'Former member')
+  }, [memberFilterKey, conversation.members])
+  const list = memberFilteredState ? (
+    <MessageList
+      state={memberFilteredState}
+      loading={memberData.loading}
+      me={me}
+      names={names}
+      mentionables={mentionables}
+      channelMemberIds={channelMemberIds}
+      canManage={conversation.canManage}
+      canPin={conversation.canReply}
+      workspaceId={workspaceId}
+      inThread={false}
+      header={props.header}
+      emptyText={isChannel ? `${memberFilterName ?? 'This member'} hasn't posted in #${conversation.name} yet.` : `${memberFilterName ?? 'This member'} hasn't posted in this conversation yet.`}
+      onLoadOlder={memberData.hasMore ? () => void memberData.loadMore() : undefined}
+      onReply={props.onOpenThread}
+      onReact={onReact}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onRetry={timeline.retry}
+      onDiscard={timeline.discard}
+      onOpenSession={props.onOpenSession}
+      onOpenProjectPane={props.onOpenProjectPane}
+      onOpenProfile={props.onOpenProfile}
+      onMentionPress={mentionPress}
+      onMakeCard={canMakeCards ? setCardFrom : undefined}
+      showThreadContext
+      unreadAfterSeq={null}
+      unreadNotLoaded={false}
+      unreadCount={null}
+      highlightId={highlight}
+      insets={listInsets}
+    />
+  ) : (
     <MessageList
       state={{ ...timeline.state, messages: waitingForTarget ? [] : visibleMessages }}
       loading={timeline.loading || waitingForTarget}
@@ -532,7 +629,70 @@ export function TimelinePane(props: TimelinePaneProps) {
       insets={listInsets}
     />
   )
-  const filterBar = showActivityFilters ? (
+  const memberFilterBar = memberFilterKey ? (
+    <View
+      className="shrink-0 grow-0 border-b border-border/60"
+      style={floating && topInset ? { marginTop: topInset } : undefined}
+      testID="member-filter-bar"
+    >
+      {/* Active-filter chip: avatar + "From {Name}" + × */}
+      <View className="flex-row items-center gap-2 px-3 py-2">
+        <Filter size={14} className="text-muted-foreground" />
+        <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
+          From {memberFilterName ?? 'member'}
+        </Text>
+        <Pressable
+          onPress={props.onClearMemberFilter}
+          accessibilityRole="button"
+          accessibilityLabel="Clear member filter"
+          testID="member-filter-clear"
+          className="rounded-md p-1 active:bg-muted"
+        >
+          <X size={16} className="text-muted-foreground" />
+        </Pressable>
+      </View>
+      {/* Member switcher */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerClassName="gap-1.5 px-3 pb-2"
+        testID="member-filter-switcher"
+      >
+        {conversation.members.map((m: ConversationMember) => {
+          const key = memberFromKey(m)
+          const active = key === memberFilterKey
+          const mname = m.name?.trim() || (m.type === 'agent' ? 'Agent' : 'Member')
+          return (
+            <Pressable
+              key={m.id}
+              onPress={() => props.onChangeMemberFilter?.(key)}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by ${mname}`}
+              aria-selected={active}
+              testID={`member-filter-switch-${key}`}
+              className={cn(
+                'flex-row items-center gap-1.5 rounded-full border px-2 py-1 active:bg-muted',
+                active ? 'border-primary bg-primary/10' : 'border-border',
+              )}
+            >
+              {m.type === 'agent' ? (
+                <AgentAvatar name={mname} projectId={m.projectId} workspaceId={workspaceId} size={18} />
+              ) : (
+                <UserAvatar name={mname} image={m.image} size={18} />
+              )}
+              <Text
+                className={cn('max-w-32 text-xs', active ? 'font-semibold text-foreground' : 'text-muted-foreground')}
+                numberOfLines={1}
+              >
+                {mname}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </ScrollView>
+    </View>
+  ) : null
+  const filterBar = memberFilterKey ? memberFilterBar : showActivityFilters ? (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
@@ -579,6 +739,54 @@ export function TimelinePane(props: TimelinePaneProps) {
       }}
     />
   ) : null
+  const mailThreadActions = mailThreadId ? (
+    <MailThreadActions
+      workspaceId={workspaceId}
+      threadId={mailThreadId}
+      mentionables={mentionables}
+      me={me}
+      onReply={() => {
+        setMailMode('reply')
+        composerRef.current?.focus()
+      }}
+    />
+  ) : null
+  const mailboxHeader = showMailboxHeader && mailbox ? (
+    <MailboxHeader
+      mailbox={mailbox}
+      tab={mailboxTab}
+      onTabChange={setMailboxTab}
+      onCompose={() => setComposingEmail(true)}
+      style={floating && topInset ? { marginTop: topInset } : undefined}
+    />
+  ) : null
+  const openMailThread = (rootMessageId: string) =>
+    props.onOpenThread?.({ id: rootMessageId, threadRootId: null } as unknown as ChatMessage)
+  const mailboxBody = mailboxListView && mailbox ? (
+    mailboxTab === 'screener' ? (
+      <ScreenerList key={mailListKey} workspaceId={workspaceId} mailbox={mailbox} />
+    ) : (
+      <MailThreadList
+        workspaceId={workspaceId}
+        mailbox={mailbox}
+        view={mailboxTab as MailView}
+        mentionables={mentionables}
+        onOpenThread={openMailThread}
+        refreshKey={mailListKey}
+      />
+    )
+  ) : null
+  const composeEmailSheet = composingEmail && mailbox ? (
+    <ComposeEmailSheet
+      workspaceId={workspaceId}
+      mailbox={mailbox}
+      onClose={() => setComposingEmail(false)}
+      onSent={(root) => {
+        setMailListKey((k) => k + 1)
+        if (root) openMailThread(root)
+      }}
+    />
+  ) : null
   const composer = (
     <>
       {mentionNudge && (
@@ -611,6 +819,9 @@ export function TimelinePane(props: TimelinePaneProps) {
       )}
       <AddToChannelConfirmHost />
       <LinkPreviewConsentHost />
+      {mailThreadId ? (
+        <MailReplyModeBar mode={mailMode} onModeChange={setMailMode} replyAll={replyAll} onReplyAllChange={setReplyAll} />
+      ) : null}
       <Composer
         ref={composerRef}
         workspaceId={workspaceId}
@@ -625,6 +836,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         onEditLast={onEditLast}
         channelMemberIds={channelMemberIds}
         channels={channelDirectory}
+        onSendLater={mailReply ? handleMailSendLater : undefined}
       />
     </>
   )
@@ -633,7 +845,9 @@ export function TimelinePane(props: TimelinePaneProps) {
     return (
       <View className="flex-1" ref={rootRef}>
         {filterBar}
+        {mailboxHeader}
         {makeCardSheet}
+        {composeEmailSheet}
         <GlassBlurTarget>
           {timeline.error && !timeline.state.messages.length ? (
             <View className="flex-1 items-center justify-center gap-2 px-8">
@@ -643,29 +857,23 @@ export function TimelinePane(props: TimelinePaneProps) {
               </Pressable>
             </View>
           ) : (
-            list
+            mailboxBody ?? list
           )}
         </GlassBlurTarget>
         {threadRootId ? (
-          <View
-            pointerEvents="box-none"
-            onLayout={(e) => setThreadHeaderHeight(Math.round(e.nativeEvent.layout.height))}
-            className="absolute left-0 right-0 z-30 flex-row items-center gap-2 px-3 pb-2"
-            style={{ top: topInset, paddingTop: topInset ? 0 : insets.top + 6 }}
+          <PhoneScreenHeader
             testID="floating-thread-header"
+            top={topInset}
+            paddingTop={topInset ? 0 : undefined}
+            rowClassName="pb-2"
+            onLayout={(e) => setThreadHeaderHeight(Math.round(e.nativeEvent.layout.height))}
+            onBack={props.onClose}
+            backLabel="Back to conversation"
+            title={crumbs[crumbs.length - 1]?.label ?? 'Thread'}
+            subtitle={crumbs[0]?.label}
           >
-            <GlassButton label="Back to conversation" onPress={props.onClose}>
-              <ChevronLeft size={22} className="text-foreground" />
-            </GlassButton>
-            <GlassChip className="min-w-0 flex-shrink justify-center px-4" style={{ height: CHROME_SIZE }}>
-              <Text className="text-[15px] font-semibold text-foreground" numberOfLines={1}>
-                {crumbs[crumbs.length - 1]?.label ?? 'Thread'}
-              </Text>
-              <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                {crumbs[0]?.label}
-              </Text>
-            </GlassChip>
-          </View>
+            {mailThreadActions}
+          </PhoneScreenHeader>
         ) : null}
         <OverlayFooter
           height={footerHeight}
@@ -721,8 +929,11 @@ export function TimelinePane(props: TimelinePaneProps) {
           )}
         </View>
       )}
+      {mailThreadActions}
       {filterBar}
+      {mailboxHeader}
       {makeCardSheet}
+      {composeEmailSheet}
       {timeline.error && !timeline.state.messages.length ? (
         <View className="flex-1 items-center justify-center gap-2 px-8">
           <Text className="text-center text-sm text-muted-foreground">{timeline.error}</Text>
@@ -731,7 +942,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           </Pressable>
         </View>
       ) : (
-        list
+        mailboxBody ?? list
       )}
       <OverlayFooter height={footerHeight} onHeight={measureFooter} testID="composer-footer">
         <View pointerEvents="box-none" style={typingColumnStyle}>

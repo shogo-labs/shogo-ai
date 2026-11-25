@@ -36,6 +36,8 @@ export interface PublishedEnvironmentRow {
   size: string
   dbProvider: string | null
   dbName: string | null
+  /** What a successful publish left out (a Postgres seed's orphan report). */
+  publishNotice: string | null
   currentDeploymentId: string | null
   /** Set once uploads are served from the shared bucket rather than a pod dir. */
   uploadsShared?: boolean

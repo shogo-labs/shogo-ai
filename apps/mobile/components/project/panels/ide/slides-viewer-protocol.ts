@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The wire between a file host and the slides viewer page (SHO-426).
+ * The wire between a file host and the office viewer pages (SHO-426, SHO-467).
  *
- * The viewer is one static document the API serves (`/api/viewers/slides`) and
- * every host frames it: an `<iframe sandbox="allow-scripts">` on web and
- * desktop, a `react-native-webview` on iOS and Android. It has an opaque origin
- * and no network, so the deck's bytes travel *in* as messages rather than in a
- * URL or a fetch:
+ * Two viewers live at `/api/viewers/slides` (PowerPoint) and
+ * `/api/viewers/document` (Word). Every host frames one of them: an
+ * `<iframe sandbox="allow-scripts">` on web and desktop, a
+ * `react-native-webview` on iOS and Android. Each has an opaque origin and no
+ * network, so the file's bytes travel *in* as messages rather than in a URL
+ * or a fetch:
  *
  *   host  → viewer   `load` (bytes, or name + theme for a chunked native send)
  *                    `chunk` (base64, native only) · `end` · `theme`
- *   viewer → host    `ready` · `rendered` (slide count) · `error`
+ *   viewer → host    `ready` · `rendered` (count) · `error`
  *
  * All of it lives here, with no React and no platform imports, so the chunking,
  * the size caps and the message checks are testable on their own.
  */
 
-/** Extensions the viewer renders. Macros never run: only the XML is read. */
+/** Extensions the slides viewer renders. Macros never run: only the XML is read. */
 const SLIDES_EXTENSIONS = new Set(['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'])
 
 /** True for an OOXML presentation we can render as real slides. */
@@ -26,17 +27,35 @@ export function isSlidesPath(path: string): boolean {
   return path.includes('.') && SLIDES_EXTENSIONS.has(ext)
 }
 
-/** Where the API serves the viewer page. Public: it knows no tenant. */
+/** Extensions the document viewer renders. Macros never run: only the XML is read. */
+const DOCUMENT_EXTENSIONS = new Set(['docx', 'docm', 'dotx', 'dotm'])
+
+/** True for an OOXML word-processing document we can render as real pages. */
+export function isDocumentPath(path: string): boolean {
+  const ext = path.toLowerCase().split('.').pop() ?? ''
+  return path.includes('.') && DOCUMENT_EXTENSIONS.has(ext)
+}
+
+/** Where the API serves the slides viewer page. Public: it knows no tenant. */
 export const SLIDES_VIEWER_PATH = '/api/viewers/slides'
 
+/** Where the API serves the document viewer page. Public: it knows no tenant. */
+export const DOCUMENT_VIEWER_PATH = '/api/viewers/document'
+
 /**
- * The renderer build the page is cached by. Bump it with the pinned
+ * The renderer build the slides page is cached by. Bump it with the pinned
  * `@aiden0z/pptx-renderer` version — the API serves the document `immutable`
  * for this exact `?v=`, so a stale value would pin a stale page.
  */
 export const SLIDES_VIEWER_VERSION = '1.4.0'
 
-/** Web and desktop buffer the whole deck; 50 MB is a slide deck, not a video. */
+/**
+ * The renderer build the document page is cached by. Bump it with the pinned
+ * `docx-preview` version.
+ */
+export const DOCUMENT_VIEWER_VERSION = '0.4.1'
+
+/** Web and desktop buffer the whole file; 50 MB is a deck or doc, not a video. */
 export const MAX_SLIDES_BYTES = 50 * 1024 * 1024
 /** Native pays for every byte twice on the JS↔WebView bridge. */
 export const MAX_SLIDES_BYTES_NATIVE = 25 * 1024 * 1024
@@ -47,17 +66,26 @@ export const NATIVE_CHUNK_BYTES = 512 * 1024
 
 export type SlidesTheme = 'dark' | 'light'
 
-/** viewer → host */
+/** viewer → host (slides) */
 export type SlidesViewerMessage =
   | { type: 'ready' }
   | { type: 'rendered'; slideCount: number }
   | { type: 'error'; message: string }
 
+/** viewer → host (document, SHO-467) */
+export type DocumentViewerMessage =
+  | { type: 'ready' }
+  | { type: 'rendered'; itemCount: number }
+  | { type: 'error'; message: string }
+
+/** viewer → host (kind-aware union) */
+export type OfficeViewerMessage = SlidesViewerMessage | DocumentViewerMessage
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-/** A message from the viewer page, or something we ignore. */
+/** A message from the slides viewer page, or something we ignore. */
 export function parseSlidesViewerMessage(value: unknown): SlidesViewerMessage | null {
   const data = typeof value === 'string' ? safeJson(value) : value
   if (!isRecord(data)) return null
@@ -68,6 +96,21 @@ export function parseSlidesViewerMessage(value: unknown): SlidesViewerMessage | 
   }
   if (data.type === 'error') {
     return { type: 'error', message: typeof data.message === 'string' ? data.message : 'Could not render this deck.' }
+  }
+  return null
+}
+
+/** A message from the document viewer page, or something we ignore (SHO-467). */
+export function parseDocumentViewerMessage(value: unknown): DocumentViewerMessage | null {
+  const data = typeof value === 'string' ? safeJson(value) : value
+  if (!isRecord(data)) return null
+  if (data.type === 'ready') return { type: 'ready' }
+  if (data.type === 'rendered') {
+    const count = Number(data.itemCount)
+    return { type: 'rendered', itemCount: Number.isFinite(count) ? count : 1 }
+  }
+  if (data.type === 'error') {
+    return { type: 'error', message: typeof data.message === 'string' ? data.message : 'Could not render this document.' }
   }
   return null
 }
@@ -87,10 +130,16 @@ export type SlidesHostMessage =
   | { type: 'chunk'; base64: string }
   | { type: 'end' }
 
-/** The viewer's URL, pinned to the build it is cached by. */
+/** The slides viewer's URL, pinned to the build it is cached by. */
 export function slidesViewerUrl(apiBase: string, version: string = SLIDES_VIEWER_VERSION): string {
   const base = apiBase.replace(/\/+$/, '')
   return `${base}${SLIDES_VIEWER_PATH}?v=${encodeURIComponent(version)}`
+}
+
+/** The document viewer's URL, pinned to the build it is cached by (SHO-467). */
+export function documentViewerUrl(apiBase: string, version: string = DOCUMENT_VIEWER_VERSION): string {
+  const base = apiBase.replace(/\/+$/, '')
+  return `${base}${DOCUMENT_VIEWER_PATH}?v=${encodeURIComponent(version)}`
 }
 
 /** Base64 in bounded slices: `String.fromCharCode(...bytes)` blows the stack. */
@@ -175,6 +224,9 @@ export async function fetchSlidesBytes(
   return bytes
 }
 
+/** Alias used by document host code (SHO-467). */
+export const fetchDocumentBytes = fetchSlidesBytes
+
 /**
  * Formats that hold slides but have no renderer here. They are honest about it
  * and name the way out, instead of the generic "no preview" line (SHO-426).
@@ -185,6 +237,19 @@ export function unsupportedPresentationMessage(name: string): string | null {
   if (ext === 'key') return "Keynote decks can't be previewed here — save as .pptx to preview."
   if (ext === 'ppt') return "PowerPoint 97–2003 decks can't be previewed here — save as .pptx to preview."
   if (ext === 'odp') return "OpenDocument decks open as text here — save as .pptx to see the slides."
+  return null
+}
+
+/**
+ * Formats that hold text documents but have no renderer here (SHO-467).
+ */
+export function unsupportedDocumentMessage(name: string): string | null {
+  if (!name.includes('.')) return null
+  const ext = name.toLowerCase().split('.').pop() ?? ''
+  if (ext === 'doc') return "Word 97–2003 documents can't be previewed here — save as .docx to preview."
+  if (ext === 'odt') return "OpenDocument text opens as extracted text here — save as .docx to see the layout."
+  // .rtf is considered textual (not binary) by the SDK, so it opens as text and
+  // never reaches the binary fallback.
   return null
 }
 

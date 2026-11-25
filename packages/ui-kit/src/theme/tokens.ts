@@ -155,7 +155,7 @@ export const darkTheme: Theme = {
     cardForeground: 'rgba(255, 255, 255, 0.87)',
     popover: '#1e1e1e',
     popoverForeground: 'rgba(255, 255, 255, 0.87)',
-    primary: '#f09050',
+    primary: '#e27927',
     primaryForeground: '#ffffff',
     secondary: '#333333',
     secondaryForeground: '#ffffff',
@@ -167,7 +167,7 @@ export const darkTheme: Theme = {
     destructiveForeground: '#ffffff',
     border: '#333333',
     input: '#333333',
-    ring: '#f09050',
+    ring: '#e27927',
   },
   chart: {
     chart1: '#2662d9',

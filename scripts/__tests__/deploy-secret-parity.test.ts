@@ -178,6 +178,14 @@ describe('deploy api-secrets parity', () => {
       }
     }
   })
+
+  it('each block carries the WhatsApp Tech Provider keys (SHO-463)', () => {
+    for (const block of blocks) {
+      for (const name of ['WHATSAPP_META_APP_ID', 'WHATSAPP_META_APP_SECRET', 'WHATSAPP_ES_CONFIG_ID', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN']) {
+        expect(block.names).toContain(name)
+      }
+    }
+  })
 })
 
 describe('deployed overlays read every api-secrets key', () => {
@@ -193,6 +201,13 @@ describe('deployed overlays read every api-secrets key', () => {
   it('the legacy production overlay reads the Slack keys too, so it cannot drift', () => {
     const keys = parseOverlaySecretReaders(read('k8s/overlays/production/api-service.yaml'))
     for (const name of ['SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET', 'SLACK_APP_ID']) {
+      expect(keys.has(name)).toBe(true)
+    }
+  })
+
+  it('the legacy production overlay reads the WhatsApp keys (SHO-463)', () => {
+    const keys = parseOverlaySecretReaders(read('k8s/overlays/production/api-service.yaml'))
+    for (const name of ['WHATSAPP_META_APP_ID', 'WHATSAPP_META_APP_SECRET', 'WHATSAPP_ES_CONFIG_ID', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN']) {
       expect(keys.has(name)).toBe(true)
     }
   })

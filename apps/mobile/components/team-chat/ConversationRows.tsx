@@ -7,13 +7,14 @@
  */
 import { memo, useState, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, Pencil, Plus, Radio, Users } from 'lucide-react-native'
+import { Bot, ChevronDown, ChevronRight, Hash, Lock, Mail, Pencil, Plus, Radio, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, isSelfDm, type ConversationSummary } from '../../lib/team-chat-api'
 import { isConversationUnread } from '../../lib/team-chat-counts'
 import { useHasDraft } from '../../hooks/useChatItems'
+import { useMailboxConversationIds } from '../../hooks/useMail'
 import { PresenceDot } from './PresenceDot'
 import { InlineMarkdown } from './InlineMarkdown'
 import { UserAvatar } from './UserAvatar'
@@ -26,7 +27,8 @@ export function hasAgent(c: Pick<ConversationSummary, 'participants'>): boolean 
   return (c.participants ?? []).some((p) => p.type === 'agent')
 }
 
-export function iconFor(c: ConversationSummary) {
+export function iconFor(c: ConversationSummary, isMailbox = false) {
+  if (isMailbox) return Mail
   if (c.kind === 'activity') return Radio
   if (c.kind === 'private') return Lock
   if (c.kind === 'public') return Hash
@@ -68,37 +70,54 @@ export interface ConversationRowProps {
   onPress: (c: ConversationSummary) => void
 }
 
+/** The size of a row's start slot, so a person and an agent match. */
+export function rowIconSize(comfortable: boolean): number {
+  return densityFor(comfortable).icon.nav
+}
+
+export interface ChatRowViewProps {
+  /** What sits at the start of the row — an avatar, a presence dot or an icon, sized by `rowIconSize`. */
+  start: ReactNode
+  title: string
+  /** A second line under the title, in the same slot a person's preview uses. */
+  subtitle?: ReactNode
+  unread?: boolean
+  active?: boolean
+  /** Anything after the title: a draft mark, a count pill. */
+  trailing?: ReactNode
+  accessibilityLabel?: string
+  accessibilityRole?: 'link' | 'button'
+  testID?: string
+  onPress: () => void
+  /** Resolved once by the list, so rows in a long list stay hook-free. */
+  comfortable: boolean
+}
+
 /**
- * The row without a `useWindowDimensions` subscription of its own. Long lists
- * render this with a `comfortable` they resolved once, so a list of 150 rows
- * does not hold 150 dimension subscriptions.
+ * The one row shape people, channels and agents all render, so the three
+ * cannot drift apart: a fixed-size start slot, one title line, an optional
+ * second line and whatever trailing marks the caller needs.
  */
-export const ConversationRowView = memo(function ConversationRowView({
-  conversation: c,
-  workspaceId,
+export function ChatRowView({
+  start,
+  title,
+  subtitle,
+  unread = false,
   active = false,
-  preview = false,
+  trailing,
+  accessibilityLabel,
+  accessibilityRole = 'link',
+  testID,
   onPress,
   comfortable,
-}: ConversationRowProps & { comfortable: boolean }) {
+}: ChatRowViewProps) {
   const density = densityFor(comfortable)
-  const Icon = iconFor(c)
-  const unread = !active && isConversationUnread(c)
-  const title = rowTitle(c)
-  const peers = c.kind === 'dm' ? c.participants ?? [] : []
-  // A direct message names the other person and says whether they are around.
-  // The one row that names you is the note-to-self, and nobody sits across from
-  // you there, so it shows your own face in that same leading slot.
-  const peer = peers.length === 1 ? peers[0]! : null
-  const self = peer?.type === 'user' && peer.self === true ? peer : null
-  const dmPeer = peer?.type === 'user' && !isSelfDm(c) ? peer.id : null
-  const iconSize = comfortable ? density.icon.nav : 12
-  const mentions = !active ? c.mentionCount : 0
   return (
     <Pressable
-      onPress={() => onPress(c)}
-      accessibilityRole="link"
-      accessibilityLabel={`${title}${c.mentionCount ? `, ${c.mentionCount} mentions` : unread ? ', unread' : ''}`}
+      testID={testID}
+      onPress={onPress}
+      accessibilityRole={accessibilityRole}
+      accessibilityLabel={accessibilityLabel ?? title}
       className={cn(
         'flex-row items-center',
         comfortable ? `${density.rowMin} gap-3 rounded-md px-3 py-2` : 'gap-2 rounded-lg px-2 py-1',
@@ -111,30 +130,9 @@ export const ConversationRowView = memo(function ConversationRowView({
             : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
       )}
     >
-      {self ? (
-        <View style={{ width: iconSize }} className="items-center">
-          <UserAvatar name={self.name} image={self.image} size={iconSize} />
-        </View>
-      ) : dmPeer ? (
-        <View style={{ width: iconSize }} className="items-center">
-          <PresenceDot userId={dmPeer} workspaceId={workspaceId} />
-        </View>
-      ) : (
-        <Icon
-          size={iconSize}
-          className={
-            comfortable
-              ? active || unread
-                ? 'text-foreground'
-                : 'text-muted-foreground'
-              : active
-                ? 'text-sidebar-accent-foreground'
-                : unread
-                  ? 'text-sidebar-foreground'
-                  : 'text-sidebar-foreground/70'
-          }
-        />
-      )}
+      <View style={{ width: rowIconSize(comfortable) }} className="items-center">
+        {start}
+      </View>
       <View className="min-w-0 flex-1">
         <Text
           className={cn(
@@ -154,18 +152,85 @@ export const ConversationRowView = memo(function ConversationRowView({
         >
           {title}
         </Text>
-        {preview && c.lastMessage?.preview ? (
-          <InlineMarkdown
-            text={c.lastMessage.preview}
-            numberOfLines={1}
-            testID="conversation-preview"
-            className={cn('text-xs', unread ? 'text-foreground' : 'text-muted-foreground')}
-          />
+        {subtitle ? (
+          <Text className={cn('text-xs', unread ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
+            {subtitle}
+          </Text>
         ) : null}
       </View>
-      {!active && <DraftMark conversationId={c.id} />}
-      <CountPill count={mentions} />
+      {trailing}
     </Pressable>
+  )
+}
+
+/**
+ * A conversation row, without a `useWindowDimensions` subscription of its own.
+ * Long lists render this with a `comfortable` they resolved once, so a list of
+ * 150 rows does not hold 150 dimension subscriptions.
+ */
+export const ConversationRowView = memo(function ConversationRowView({
+  conversation: c,
+  workspaceId,
+  active = false,
+  preview = false,
+  onPress,
+  comfortable,
+}: ConversationRowProps & { comfortable: boolean }) {
+  const mailboxIds = useMailboxConversationIds(workspaceId)
+  const Icon = iconFor(c, mailboxIds.has(c.id))
+  const unread = !active && isConversationUnread(c)
+  const title = rowTitle(c)
+  const peers = c.kind === 'dm' ? c.participants ?? [] : []
+  // A direct message names the other person and says whether they are around.
+  // The one row that names you is the note-to-self, and nobody sits across from
+  // you there, so it shows your own face in that same start slot.
+  const peer = peers.length === 1 ? peers[0]! : null
+  const self = peer?.type === 'user' && peer.self === true ? peer : null
+  const dmPeer = peer?.type === 'user' && !isSelfDm(c) ? peer.id : null
+  const iconSize = rowIconSize(comfortable)
+  const mentions = !active ? c.mentionCount : 0
+  return (
+    <ChatRowView
+      comfortable={comfortable}
+      onPress={() => onPress(c)}
+      accessibilityLabel={`${title}${c.mentionCount ? `, ${c.mentionCount} mentions` : unread ? ', unread' : ''}`}
+      start={
+        self ? (
+          <UserAvatar name={self.name} image={self.image} size={iconSize} />
+        ) : dmPeer ? (
+          <PresenceDot userId={dmPeer} workspaceId={workspaceId} />
+        ) : (
+          <Icon
+            size={iconSize}
+            className={
+              comfortable
+                ? active || unread
+                  ? 'text-foreground'
+                  : 'text-muted-foreground'
+                : active
+                  ? 'text-sidebar-accent-foreground'
+                  : unread
+                    ? 'text-sidebar-foreground'
+                    : 'text-sidebar-foreground/70'
+            }
+          />
+        )
+      }
+      title={title}
+      unread={unread}
+      active={active}
+      subtitle={
+        preview && c.lastMessage?.preview ? (
+          <InlineMarkdown text={c.lastMessage.preview} numberOfLines={1} testID="conversation-preview" />
+        ) : undefined
+      }
+      trailing={
+        <>
+          {!active && <DraftMark conversationId={c.id} />}
+          <CountPill count={mentions} />
+        </>
+      }
+    />
   )
 })
 

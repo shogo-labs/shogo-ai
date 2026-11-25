@@ -18,11 +18,13 @@ import {
   addChildLedgerEntry,
   childLedgerPath,
   commandFingerprint,
+  defaultReadProcessCommand,
   matchesFingerprint,
   readChildLedger,
   reapChildLedger,
   removeChildLedgerEntry,
   type ChildLedgerEntry,
+  type ReapChildLedgerOptions,
 } from '../child-ledger'
 
 const dirs: string[] = []
@@ -253,5 +255,225 @@ describe('reapChildLedger', () => {
       killGroup: (e) => killed.push(e.pgid),
     })
     expect(killed).toEqual([])
+  })
+
+  test('defaultReadProcessCommand rethrows EAGAIN so reapChildLedger keeps entries instead of dropping them', () => {
+    const eagain = Object.assign(new Error('spawnSync ps EAGAIN'), { code: 'EAGAIN' })
+    expect(() => defaultReadProcessCommand(12345, () => { throw eagain })).toThrow('EAGAIN')
+
+    // A normal `ps` exit status 1 (process exited, no spawn error code) still returns null.
+    const missingPid = Object.assign(new Error('Command failed: ps'), { status: 1 })
+    expect(defaultReadProcessCommand(12345, () => { throw missingPid })).toBeNull()
+
+    // End-to-end with reapChildLedger: an EAGAIN pass must NOT drop live entries
+    // from children.json, so once a slot frees up the next pass still reaps them.
+    const workspace = tempWorkspace()
+    const orphan = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(orphan))
+    const killed: number[] = []
+
+    const saturated = reapChildLedger(workspace, {
+      readProcessCommand: (pid) => defaultReadProcessCommand(pid, () => { throw eagain }),
+      killGroup: (e) => killed.push(e.pgid),
+    })
+    expect(killed).toEqual([])
+    expect(saturated.dropped).toEqual([])
+    expect(saturated.reaped).toEqual([])
+    expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([orphan.pid as number])
+
+    const recovered = reapChildLedger(workspace, {
+      readProcessCommand: (pid) =>
+        defaultReadProcessCommand(pid, () => `/bin/bash -c sleep 600 -- ${pid}\n`),
+      killGroup: (e) => killed.push(e.pgid),
+    })
+    expect(killed).toEqual([orphan.pid as number])
+    expect(recovered.reaped.map((e) => e.pid)).toEqual([orphan.pid as number])
+    expect(readChildLedger(workspace)).toEqual([])
+  })
+})
+
+describe('addChildLedgerEntry stamps ownerPid and ownerFingerprint', () => {
+  test('a fresh entry carries ownerPid === process.pid and a non-empty ownerFingerprint', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(child))
+    const entries = readChildLedger(workspace)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].ownerPid).toBe(process.pid)
+    expect(typeof entries[0].ownerFingerprint).toBe('string')
+    expect((entries[0].ownerFingerprint ?? '').length).toBeGreaterThan(0)
+  })
+
+  test('an explicit ownerPid in the entry is preserved, not overwritten', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, { ...entryFor(child), ownerPid: 42, ownerFingerprint: 'my-runtime' })
+    const entries = readChildLedger(workspace)
+    expect(entries[0].ownerPid).toBe(42)
+    expect(entries[0].ownerFingerprint).toBe('my-runtime')
+  })
+})
+
+describe('reapChildLedger spareLiveOwners', () => {
+  function entryWithOwner(child: ChildProcess, ownerPid: number, ownerFingerprint: string): ChildLedgerEntry {
+    return { ...entryFor(child), ownerPid, ownerFingerprint }
+  }
+
+  /**
+   * Build opts where `readProcessCommand` returns different values for the
+   * owner pid (`process.ppid`) vs any child pid.
+   */
+  function makeOpts(
+    childCmd: string | null | Error,
+    ownerCmd: string | null | Error,
+    extra: Partial<ReapChildLedgerOptions> = {},
+  ): ReapChildLedgerOptions {
+    return {
+      readProcessCommand: (pid) => {
+        if (pid === process.ppid) {
+          if (ownerCmd instanceof Error) throw ownerCmd
+          return ownerCmd
+        }
+        if (childCmd instanceof Error) throw childCmd
+        return childCmd
+      },
+      ...extra,
+    }
+  }
+
+  test('live owner + matching fingerprint → spared, entry stays in ledger', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryWithOwner(child, process.ppid, 'bun run api-server'))
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      ...makeOpts(`bash -c sleep 600 -- ${child.pid}`, 'node bun run api-server --port 3000'),
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+    })
+
+    expect(killed).toEqual([])
+    expect(result.reaped).toHaveLength(0)
+    expect(result.spared.map((e) => e.pid)).toEqual([child.pid])
+    expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([child.pid])
+  })
+
+  test('dead owner → entry is reaped normally', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    // 99999999 is not a real pid — isAlive returns false.
+    addChildLedgerEntry(workspace, { ...entryFor(child), ownerPid: 99999999, ownerFingerprint: 'old-runtime' })
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      readProcessCommand: () => `bash -c sleep 600 -- ${child.pid}`,
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+    })
+
+    expect(killed).toEqual([child.pid])
+    expect(result.reaped).toHaveLength(1)
+    expect(result.spared).toHaveLength(0)
+    expect(readChildLedger(workspace)).toHaveLength(0)
+  })
+
+  test('live owner + fingerprint mismatch (pid reused) → entry is reaped', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryWithOwner(child, process.ppid, 'old-runtime-command'))
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      ...makeOpts(`bash -c sleep 600 -- ${child.pid}`, '/usr/bin/some-other-process'),
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+    })
+
+    expect(killed).toEqual([child.pid])
+    expect(result.reaped).toHaveLength(1)
+    expect(result.spared).toHaveLength(0)
+  })
+
+  test("owner's ps threw → entry is spared (safe direction)", () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryWithOwner(child, process.ppid, 'bun run api'))
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      ...makeOpts(`bash -c sleep 600 -- ${child.pid}`, new Error('ps failed')),
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+    })
+
+    expect(killed).toEqual([])
+    expect(result.spared).toHaveLength(1)
+    expect(readChildLedger(workspace)).toHaveLength(1)
+  })
+
+  test('legacy entry (no ownerPid) + reapOwnerless false → spared (timer path)', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    const pid = child.pid as number
+    const ledgerPath = childLedgerPath(workspace)
+    mkdirSync(dirname(ledgerPath), { recursive: true })
+    writeFileSync(ledgerPath, JSON.stringify([{
+      pgid: pid, pid, label: 'exec',
+      commandFingerprint: `bash -c sleep 600 -- ${pid}`,
+      startedAt: Date.now(),
+    }]) + '\n', 'utf8')
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      readProcessCommand: () => `bash -c sleep 600 -- ${pid}`,
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+      reapOwnerless: false,
+    })
+
+    expect(killed).toEqual([])
+    expect(result.spared).toHaveLength(1)
+    expect(readChildLedger(workspace)).toHaveLength(1)
+  })
+
+  test('legacy entry (no ownerPid) + reapOwnerless true → reaped (boot path)', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    const pid = child.pid as number
+    const ledgerPath = childLedgerPath(workspace)
+    mkdirSync(dirname(ledgerPath), { recursive: true })
+    writeFileSync(ledgerPath, JSON.stringify([{
+      pgid: pid, pid, label: 'vite-watch',
+      commandFingerprint: `bash -c sleep 600 -- ${pid}`,
+      startedAt: Date.now(),
+    }]) + '\n', 'utf8')
+    const killed: number[] = []
+
+    const result = reapChildLedger(workspace, {
+      readProcessCommand: () => `bash -c sleep 600 -- ${pid}`,
+      killGroup: (e) => killed.push(e.pgid),
+      spareLiveOwners: true,
+      reapOwnerless: true,
+    })
+
+    expect(killed).toEqual([pid])
+    expect(result.reaped).toHaveLength(1)
+    expect(result.spared).toHaveLength(0)
+  })
+
+  test('spareLiveOwners false (default) → reaps regardless of live owner', () => {
+    const workspace = tempWorkspace()
+    const child = spawnSleeper()
+    addChildLedgerEntry(workspace, entryWithOwner(child, process.ppid, 'bun run api-server'))
+    const killed: number[] = []
+
+    reapChildLedger(workspace, {
+      readProcessCommand: () => `bash -c sleep 600 -- ${child.pid}`,
+      killGroup: (e) => killed.push(e.pgid),
+      // spareLiveOwners defaults to false — existing behaviour
+    })
+
+    expect(killed).toEqual([child.pid])
   })
 })

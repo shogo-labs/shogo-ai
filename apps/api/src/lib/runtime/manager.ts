@@ -670,7 +670,7 @@ export class RuntimeManager implements IRuntimeManager {
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
     await this.cleanupOrphanedRuntimeListeners()
-    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers()
+    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers('boot')
   }
 
   private async cleanupOrphanedRuntimeListeners(): Promise<void> {
@@ -730,7 +730,7 @@ export class RuntimeManager implements IRuntimeManager {
    * (observed: 120 orphans, ~18GB). Scoped to this API's workspaces dir so
    * another Shogo instance's watchers are untouched.
    */
-  private async cleanupOrphanedViteWatchers(): Promise<void> {
+  private async cleanupOrphanedViteWatchers(mode: 'timer' | 'boot'): Promise<void> {
     const workspacesDir = this.resolvedWorkspacesDir()
     const dirs = [workspacesDir]
     try {
@@ -758,7 +758,7 @@ export class RuntimeManager implements IRuntimeManager {
         }
       }
     }
-    this.reapOrphanedChildLedgers(workspacesDir)
+    this.reapOrphanedChildLedgers(workspacesDir, mode)
   }
 
   /**
@@ -773,11 +773,18 @@ export class RuntimeManager implements IRuntimeManager {
    * signalled while its command line still matches what was recorded, so a
    * reused pid is dropped, never killed.
    */
-  private reapOrphanedChildLedgers(workspacesDir: string): void {
+  private reapOrphanedChildLedgers(workspacesDir: string, mode: 'timer' | 'boot'): void {
     if (process.platform === 'win32') return
+    // timer: spare live owners' children; legacy ownerless entries are also
+    // spared (they might belong to a live API we cannot attribute).
+    // boot: spare live owners' children (another API may be running); reap
+    // ownerless entries — the previous API is gone so they are true orphans.
+    const opts = mode === 'timer'
+      ? { spareLiveOwners: true, reapOwnerless: false }
+      : { spareLiveOwners: true, reapOwnerless: true }
     let swept: ReturnType<typeof reapChildLedgersUnder>
     try {
-      swept = reapChildLedgersUnder(workspacesDir)
+      swept = reapChildLedgersUnder(workspacesDir, opts)
     } catch (err: any) {
       console.warn(`[RuntimeManager] Child ledger reap failed: ${err?.message ?? err}`)
       return
@@ -833,7 +840,7 @@ export class RuntimeManager implements IRuntimeManager {
       return
     }
     try {
-      await this.cleanupOrphanedViteWatchers()
+      await this.cleanupOrphanedViteWatchers('timer')
     } catch (err: any) {
       console.warn(`[RuntimeManager] Periodic orphan sweep failed: ${err?.message ?? err}`)
     }
@@ -1730,67 +1737,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     } catch (err: any) {
       console.warn(`[RuntimeManager] getProjectInfo(${projectId}) failed: ${err?.message ?? err}`)
       return {}
-    }
-  }
-
-  /**
-   * Build a merged security policy for a project runtime (local mode only).
-   * Reads user-level preference from LocalConfig and project-level overrides
-   * from Project.settings, merges with escalation protection, and returns
-   * a base64-encoded JSON string for the SECURITY_POLICY env var.
-   */
-  private async buildSecurityPolicy(projectId: string): Promise<string | null> {
-    try {
-      const { prisma } = await import('../prisma')
-      const localDb = prisma as any
-
-      const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
-
-      // Read user-level preference
-      let userPref = DEFAULT_PREF
-      try {
-        const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
-        if (row?.value) {
-          userPref = { ...DEFAULT_PREF, ...JSON.parse(row.value) }
-        }
-      } catch { /* use default */ }
-
-      // Read project-level override
-      let projectOverride: any = null
-      try {
-        const project = await prisma.project.findUnique({
-          where: { id: projectId },
-          select: { settings: true },
-        })
-        const settings = parseProjectSettings(project?.settings)
-        if (settings?.security) {
-          projectOverride = settings.security
-        }
-      } catch { /* no override */ }
-
-      // Merge with escalation protection; per-tool action rules always combine.
-      const { composeLocalPolicy, encodePolicy } = await import('../security-policy')
-      let effective = composeLocalPolicy(userPref, projectOverride)
-
-      // Desktop local-access policy (per-app data access, blocked folders,
-      // computer use). Not overridable per project.
-      try {
-        const accessRow = await localDb.localConfig.findUnique({ where: { key: 'LOCAL_ACCESS_PREFS' } })
-        if (accessRow?.value) {
-          const { normalizeLocalAccessPrefs, toLocalAccessPolicy } = await import(
-            '@shogo/agent-runtime/src/local-access'
-          )
-          effective = {
-            ...effective,
-            localAccess: toLocalAccessPolicy(normalizeLocalAccessPrefs(JSON.parse(accessRow.value))),
-          } as any
-        }
-      } catch { /* unconfigured: no local-access restrictions */ }
-
-      return encodePolicy(effective)
-    } catch (err) {
-      console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
-      return null
     }
   }
 
@@ -3817,6 +3763,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   /** Public status of a workspace runtime, or null when not running. */
   workspaceStatus(workspaceId: string): IProjectRuntime | null {
     return this.status(workspaceRuntimeKey(workspaceId))
+  }
+
+  /**
+   * The runtime currently serving workspace W, in whichever slot it lives.
+   *
+   * A workspace-level resolve that mounts nothing of its own is served by the
+   * workspace's *project-anchored* runtime (`ws:proj:<anchor>`, SHO-107), so
+   * asking only `ws:<id>` would answer "not running" for a workspace that is
+   * very much up. Synchronous on purpose: the tunnel resolver answers one
+   * request at a time and must never await a spawn (SHO-185).
+   */
+  runningWorkspaceRuntime(workspaceId: string): IProjectRuntime | null {
+    const direct = this.status(workspaceRuntimeKey(workspaceId))
+    if (direct?.agentPort && direct.status === 'running') return direct
+    for (const [key, owner] of this.runtimeOwners) {
+      if (!key.startsWith('ws:proj:') || owner.workspaceId !== workspaceId) continue
+      const anchored = this.status(key)
+      if (anchored?.agentPort && anchored.status === 'running') return anchored
+    }
+    return null
   }
 
   /**

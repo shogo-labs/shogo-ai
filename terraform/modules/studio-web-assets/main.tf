@@ -45,6 +45,18 @@ variable "compartment_id" {
   type        = string
 }
 
+variable "object_storage_namespace" {
+  description = "OCI Object Storage namespace (tenancy-wide, e.g. `idin4oltblww`). Pass `module.object_storage.namespace`. This module deliberately has no namespace lookup: while it sat behind `depends_on = [module.object_storage]` a deferred lookup turned the bucket's `namespace` into \"(known after apply)\", which force-replaced the live assets bucket, its lifecycle policy and the PAR the Worker's origin embeds."
+  type        = string
+  default     = ""
+}
+
+variable "lifecycle_service_policy_id" {
+  description = "OCID of the tenancy-scoped `objectstorage-<region>` service-principal IAM policy from module.object_storage. Used only for create ordering (the lifecycle policy relies on that policy existing), which is why the module no longer needs a module-level `depends_on`. Empty means no ordering constraint."
+  type        = string
+  default     = ""
+}
+
 variable "environment" {
   description = "Environment name (staging, production). Used in the bucket name and Worker name."
   type        = string
@@ -85,12 +97,12 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 # Data sources
 # -----------------------------------------------------------------------------
-data "oci_objectstorage_namespace" "current" {
-  compartment_id = var.compartment_id
-}
+# None on purpose: see var.object_storage_namespace. A namespace lookup here is
+# what turned this module's bucket into a "replace" whenever the object-storage
+# module had anything pending.
 
 locals {
-  namespace   = data.oci_objectstorage_namespace.current.namespace
+  namespace   = var.object_storage_namespace
   bucket_name = "shogo-web-assets-${var.environment}"
 
   # PAR access_uri ends in `/o/`; strip trailing slashes in the Worker before
@@ -116,13 +128,30 @@ resource "oci_objectstorage_bucket" "assets" {
   freeform_tags = merge(var.tags, {
     Purpose = "studio-web-immutable-assets"
   })
+
+  lifecycle {
+    precondition {
+      condition     = var.object_storage_namespace != ""
+      error_message = "object_storage_namespace must be set (pass module.object_storage.namespace); the assets bucket cannot be created without it."
+    }
+
+    # Every studio build ever deployed references objects in this bucket (the
+    # filenames are content-hashed and append-only). Replacing it 404s every
+    # already-served revision's /_expo/*. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 # Reap assets no deploy has referenced for `asset_max_age_days`. Relies on the
 # tenancy-scoped `Allow service objectstorage-<region> to manage object-family`
-# IAM policy created by the object-storage module; wire this module with
-# `depends_on = [module.object_storage]` so that policy exists first.
+# IAM policy created by the object-storage module, so it is ordered after that
+# policy via var.lifecycle_service_policy_id. (Ordering is expressed on this
+# resource rather than as a module-level `depends_on` on the whole module —
+# a module-level depends_on is what made terraform defer this module's data
+# sources and force-replace the bucket.)
 resource "oci_objectstorage_object_lifecycle_policy" "assets_lifecycle" {
+  depends_on = [var.lifecycle_service_policy_id]
+
   namespace = local.namespace
   bucket    = oci_objectstorage_bucket.assets.name
 

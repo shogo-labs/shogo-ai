@@ -15,7 +15,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import {
@@ -36,6 +35,7 @@ import { useActiveInstance } from '../../contexts/active-instance'
 import { useInstancePicker, type Instance } from '@shogo/shared-app/hooks'
 import { API_URL } from '../../lib/api'
 import { authClient } from '../../lib/auth-client'
+import { Spinner } from '@/components/ui/spinner'
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === 'web') return {}
@@ -116,7 +116,7 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
 
       {loading && (
         <View className="px-4 py-3 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       )}
 
@@ -183,7 +183,7 @@ export function InstancePicker({ workspaceId, collapsed }: InstancePickerProps) 
                 </Text>
               </View>
             </View>
-            {isConnecting && <ActivityIndicator size="small" />}
+            {isConnecting && <Spinner size="small" />}
             {isActive && !isConnecting && <Check size={16} className="text-primary" />}
           </Pressable>
         )

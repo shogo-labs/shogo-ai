@@ -26,11 +26,21 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { loadAccess, type AccessContext } from './authz/access'
+import {
+  CROSS_WORKSPACE_HOSTED_FROM_HEADER,
+  CROSS_WORKSPACE_REQUESTER_HEADER,
+  CROSS_WORKSPACE_TOOL_HEADER,
+} from './cross-workspace-headers'
+
+export {
+  CROSS_WORKSPACE_HOSTED_FROM_HEADER,
+  CROSS_WORKSPACE_REQUESTER_HEADER,
+  CROSS_WORKSPACE_TOOL_HEADER,
+} from './cross-workspace-headers'
 
 const db = prisma as any
 
 export const CROSS_WORKSPACE_APPROVAL_HEADER = 'X-Cross-Workspace-Approval'
-export const CROSS_WORKSPACE_TOOL_HEADER = 'X-Cross-Workspace-Tool'
 export const CROSS_WORKSPACE_ARGS_HEADER = 'X-Cross-Workspace-Args-Hash'
 /**
  * Which workspace the call is for, when the URL names a *project* instead
@@ -225,20 +235,7 @@ export function targetAccessAllows(access: AccessContext, write: boolean): boole
   return access.permissions.has(write ? 'workspace:update' : 'workspace:read')
 }
 
-/**
- * The person a forwarded cross-workspace call was made for (SHO-389).
- *
- * A desktop that relays a call to a cloud workspace has already proved who it
- * is for — it holds the person's ticket and their owned Personal workspace, and
- * it spends the approval. The cloud cannot re-verify that ticket (different
- * signing secret), so the desktop names the person in two headers instead. They
- * are only believed when the caller authenticated with a **workspace device
- * key** (the `Authorization: Bearer shogo_sk_…` a signed-in desktop uses) *and*
- * names a Personal workspace that person actually owns — so a runtime token,
- * which an agent can read, cannot use them to impersonate anybody.
- */
 export const CROSS_WORKSPACE_FROM_HEADER = 'X-Cross-Workspace-From'
-export const CROSS_WORKSPACE_REQUESTER_HEADER = 'X-Cross-Workspace-Requester'
 
 export async function relayedCrossWorkspaceRequester(c: {
   req: { header: (n: string) => string | undefined }
@@ -321,4 +318,148 @@ export async function resolveTargetHome(targetWorkspaceId: string): Promise<Targ
     code: 'not_a_member',
     message: 'You are not a member of that workspace, so it is not reachable from here.',
   }
+}
+
+/** The only path shape a forwarded call is accepted on. */
+const HOSTED_FORWARD_PATH = /^\/api\/internal\/workspaces\/([^/]+)(?:\/|$)/
+
+/** Context slot `hostedForward` leaves its answer in, so one request reads it once. */
+export const HOSTED_FORWARD_KEY = 'crossWorkspaceHostedForward'
+
+export interface HostedForward {
+  /** The workspace this desktop holds and the call acts in. */
+  workspaceId: string
+  /** The person the call is made for; the row it writes is attributed to them. */
+  requesterUserId: string
+}
+
+/**
+ * Is this request the cloud's forwarded call for a workspace this desktop holds?
+ *
+ * Deliberately narrow, and only true on a desktop: local mode, both headers, a
+ * `/api/internal/workspaces/<id>/…` path, a workspace in this SQLite, and a
+ * requester who is a member here with the permission the method implies. That
+ * trusts exactly what `middleware/auth.ts` step 3 already trusts — a
+ * tunnel-stamped user — and is never true in cloud mode or on any other path.
+ *
+ * The approval is *not* re-checked: it was spent in the cloud, where its row
+ * lives, before the call was forwarded.
+ */
+export async function hostedForward(c: {
+  req: { header: (name: string) => string | undefined; path: string; method: string }
+  get?: (key: string) => unknown
+  set?: (key: string, value: unknown) => void
+}): Promise<HostedForward | null> {
+  const cached = c.get?.(HOSTED_FORWARD_KEY)
+  if (cached !== undefined) return cached as HostedForward | null
+  const resolved = await resolveHostedForward(c)
+  try {
+    c.set?.(HOSTED_FORWARD_KEY, resolved)
+  } catch {
+    /* a plain test stub without set() */
+  }
+  return resolved
+}
+
+async function resolveHostedForward(c: {
+  req: { header: (name: string) => string | undefined; path: string; method: string }
+}): Promise<HostedForward | null> {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return null
+  const from = c.req.header(CROSS_WORKSPACE_HOSTED_FROM_HEADER)
+  const tunnelUserId = c.req.header('x-tunnel-auth-user-id')
+  if (!from || !tunnelUserId) return null
+  const match = HOSTED_FORWARD_PATH.exec(c.req.path)
+  if (!match) return null
+  let workspaceId: string
+  try {
+    workspaceId = decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+
+  const held = await db.workspace
+    .findUnique({ where: { id: workspaceId }, select: { id: true } })
+    .catch(() => null)
+  if (!held) return null
+
+  // The cloud names the person from the ticket it verified. Believe that only
+  // for a user this desktop knows; otherwise the tunnel's own user is the most
+  // this side can honestly claim.
+  const claimed = c.req.header(CROSS_WORKSPACE_REQUESTER_HEADER)
+  const known = claimed
+    ? await db.user.findUnique({ where: { id: claimed }, select: { id: true } }).catch(() => null)
+    : null
+  const requesterUserId = known?.id ?? tunnelUserId
+
+  const write = c.req.method !== 'GET' && c.req.method !== 'HEAD'
+  const access = await targetWorkspaceAccess(requesterUserId, workspaceId).catch(() => null)
+  if (!access || !targetAccessAllows(access, write)) return null
+  return { workspaceId, requesterUserId }
+}
+
+/**
+ * `authenticate` for the desktop's internal router (SHO-493): a request the
+ * cloud forwarded for a workspace this desktop hosts authenticates as that
+ * workspace's runtime. Everything else — every other path, every cloud-mode
+ * API, any request missing a header — falls through to the runtime token.
+ */
+export async function authenticateHostedForward(
+  c: any,
+  projectId?: string,
+): Promise<import('../routes/internal-runtime-auth').InternalIdentity | null> {
+  // Never on a project-scoped route: `project_call` into a hosted workspace is
+  // not part of this, and the forward only ever names a workspace path.
+  if (projectId) return null
+  const forward = await hostedForward(c)
+  return forward ? { kind: 'workspace', workspaceId: forward.workspaceId } : null
+}
+
+export interface ForwardToHostInput {
+  /** The paired desktop whose compute the workspace lives on. */
+  hostInstanceId: string
+  /** The person the call is made for (the verified ticket's user). */
+  requesterUserId: string
+  /** The Personal workspace the person was acting in. */
+  callerWorkspaceId: string
+  /** The tool the runtime gated, carried for the desktop's audit line. */
+  tool?: string | null
+}
+
+export interface ForwardToHostOptions {
+  /** Test seam: the instance-tunnel transport. */
+  _tunnel?: import('./host-tunnel').TunnelTransport
+  /** Test seam: how long to wait for a sleeping desktop. */
+  _wakeDeadlineMs?: number
+}
+
+/**
+ * Forward one cross-workspace call to the desktop that hosts the workspace
+ * (SHO-493).
+ *
+ * The forwarding itself lives in `cross-workspace-host.ts`, which is loaded only
+ * in cloud mode: it needs the instance-tunnel transport, and that pulls
+ * `proxy-billing-session` into whatever bundle contains it. The desktop's
+ * `resources/bundle/api.js` must not ship either, so the import sits behind the
+ * build-time guard, exactly like the other cloud-only islands. A desktop never
+ * gets here — its own API answers `503 desktop_hosted` before forwarding.
+ */
+export async function forwardToHost(
+  c: any,
+  input: ForwardToHostInput,
+  opts: ForwardToHostOptions = {},
+): Promise<Response> {
+  const cloud = process.env.SHOGO_LOCAL_MODE !== 'true' ? await import('./cross-workspace-host') : null
+  if (!cloud) {
+    return c.json(
+      {
+        error: {
+          code: 'desktop_hosted',
+          message:
+            'That workspace runs on a paired desktop, and a call from this machine can only reach it through Shogo Cloud.',
+        },
+      },
+      503,
+    )
+  }
+  return cloud.forwardToHostOnHost(c, input, opts)
 }

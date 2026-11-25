@@ -101,6 +101,8 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'channels-email-digest': jobNameToLockId('channels-email-digest'),
   'channels-scheduler': jobNameToLockId('channels-scheduler'),
   'channels-indexer': jobNameToLockId('channels-indexer'),
+  'mail-sender': jobNameToLockId('mail-sender'),
+  'mail-sync': jobNameToLockId('mail-sync'),
   'chat-dead-reply-sweep': jobNameToLockId('chat-dead-reply-sweep'),
   'social-account-monthly': jobNameToLockId('social-account-monthly'),
   'published-usage-collect': jobNameToLockId('published-usage-collect'),
@@ -115,6 +117,11 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   // the work or double-charge.
   'native-release-poll': jobNameToLockId('native-release-poll'),
   'native-update-monthly': jobNameToLockId('native-update-monthly'),
+  // SHO-459: daily free-account abuse check runs 1h before the digest.
+  'abuse-check-daily': jobNameToLockId('abuse-check-daily'),
+  // SHO-482: journal retention. Every pod booting the same interval would sweep
+  // the same rows, and the delete is the expensive part on a large journal.
+  'turn-frame-sweep': jobNameToLockId('turn-frame-sweep'),
 }) as Record<string, bigint>
 
 export type GlobalJobLockResult<T> =

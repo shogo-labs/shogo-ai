@@ -184,6 +184,7 @@ const { Hono } = await import('hono')
 const { AGENT_MODE_DEFAULTS, setAutoTierOverrides } = await import('@shogo/model-catalog')
 const { aiProxyRoutes, resolveRequestModel } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
+const { _resetAgentModelDefaultsCache } = await import('../lib/federated-upstream')
 
 /** Package default for the Auto standard tier (`AUTO_MODEL_DEFAULTS.standard`). */
 const AUTO_STANDARD_DEFAULT = 'claude-haiku-4-5-20251001'
@@ -342,6 +343,21 @@ describe('cloud-forwarding desktop', () => {
     const forwarded = JSON.parse(String(upstreamCall()?.init?.body))
     expect(forwarded.model).toBe('cloud-standard-model')
     expect(forwarded.model).not.toBe('auto')
+  })
+
+  // AC4 (SHO-481) — with an acting user the tier map is narrowed on the
+  // desktop, and the narrowing must not replace the cloud's id with a local one.
+  test('resolveRequestModel resolves auto to the cloud standard tier for an acting user', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_auto_model_test'
+    process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+    _resetAgentModelDefaultsCache()
+    fetchQueue.push(() => cloudAgentModelDefaults('cloud-standard-model'))
+
+    const { resolvedModel, isLocal } = await resolveRequestModel('auto', 'ws-1', 'user-1')
+    expect(resolvedModel).toBe('cloud-standard-model')
+    expect(resolvedModel).not.toBe(AUTO_STANDARD_DEFAULT)
+    expect(isLocal).toBe(false)
   })
 })
 

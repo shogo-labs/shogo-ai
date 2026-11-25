@@ -14,7 +14,6 @@ import {
   ScrollView,
   Pressable,
   Modal,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native'
@@ -51,6 +50,7 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import { useNativePhoneWindow } from '../../lib/native-phone-layout'
+import { Spinner } from '@/components/ui/spinner'
 
 function formatLastSeen(ts: string | null | undefined): string {
   if (!ts) return 'Never'
@@ -265,7 +265,7 @@ export default observer(function ApiKeysPage() {
 
         {isLoading ? (
           <View className="py-12 items-center">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
             <Text className="text-sm text-muted-foreground mt-3">Loading devices...</Text>
           </View>
         ) : deviceKeys.length === 0 ? (
@@ -406,7 +406,7 @@ export default observer(function ApiKeysPage() {
                 className={isNativePhone ? "w-full" : undefined}
               >
                 <View className="flex-row items-center gap-1.5">
-                  <Plus size={isNativePhone ? 16 : 14} color="#fff" />
+                  <Plus className="text-primary-foreground" size={isNativePhone ? 16 : 14} />
                   <Text className={cn("font-medium text-primary-foreground", isNativePhone ? "text-base" : "text-sm")}>Create Key</Text>
                 </View>
               </Button>

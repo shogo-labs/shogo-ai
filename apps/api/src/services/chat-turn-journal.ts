@@ -23,6 +23,25 @@ import { prisma } from '../lib/prisma'
 /** How long a turn's frames are kept if nothing else removes them. */
 export const TURN_FRAME_RETENTION_MS = 48 * 60 * 60_000
 
+/**
+ * Hard ceiling on the journal, whatever its age (SHO-482).
+ *
+ * Retention alone is not a bound: a desktop that wrote 8.6M rows in two days
+ * had every one of them inside the 48 h window at boot. The cap is what stops
+ * the table from growing without limit when the writer runs away.
+ */
+export const MAX_TURN_FRAMES = 200_000
+
+/** Rows per delete in any sweep. Large enough to make progress, small enough
+ * that one batch never blocks the event loop for long. */
+export const TURN_FRAME_SWEEP_BATCH = 5_000
+
+/** Batches one tick may run before it leaves the rest for the next one. */
+export const TURN_FRAME_SWEEP_MAX_BATCHES = 100
+
+/** Wall-clock budget of one sweep call, between batches. */
+export const TURN_FRAME_SWEEP_BUDGET_MS = 2_000
+
 /** Backoff between journal insert attempts. Summed, this holds the frames for
  * ~1.6 s before the relay gives up and forwards anyway. */
 const RETRY_DELAYS_MS = [50, 150, 400, 1_000]
@@ -88,21 +107,119 @@ export async function appendTurnFrames(sessionId: string, turnId: string, seq: n
  * the same row.
  */
 export async function readTurnFrames(turnId: string): Promise<string[]> {
-  const rows = await prisma.chatTurnFrame
-    .findMany({ where: { turnId }, orderBy: { seq: 'asc' }, select: { data: true } })
-    .catch(() => [])
-  return rows.map((row) => row.data)
+  try {
+    if (!prisma.chatTurnFrame) return []
+    const rows = await prisma.chatTurnFrame.findMany({
+      where: { turnId },
+      orderBy: { seq: 'asc' },
+      select: { data: true },
+    })
+    return rows.map((row) => row.data)
+  } catch {
+    return []
+  }
 }
 
 /** How much is waiting to be recovered for a turn, without reading it. */
 export async function turnFrameCount(turnId: string): Promise<number> {
-  return prisma.chatTurnFrame.count({ where: { turnId } }).catch(() => 0)
+  try {
+    if (!prisma.chatTurnFrame) return 0
+    return await prisma.chatTurnFrame.count({ where: { turnId } })
+  } catch {
+    return 0
+  }
 }
 
 /** Drop a turn's frames: its row is complete, or a recovery consumed them. */
 export async function deleteTurnFrames(turnId: string): Promise<number> {
-  const { count } = await prisma.chatTurnFrame.deleteMany({ where: { turnId } }).catch(() => ({ count: 0 }))
-  return count
+  try {
+    if (!prisma.chatTurnFrame) return 0
+    const { count } = await prisma.chatTurnFrame.deleteMany({ where: { turnId } })
+    return count
+  } catch {
+    return 0
+  }
+}
+
+export interface TurnFrameSweepOptions {
+  /** Rows per select+delete. Defaults to `TURN_FRAME_SWEEP_BATCH`. */
+  batchSize?: number
+  /** Batches to run before leaving the rest for the next tick. */
+  maxBatches?: number
+  /** Wall-clock budget, checked between batches. */
+  budgetMs?: number
+}
+
+/**
+ * Turns whose frames must survive any sweep.
+ *
+ * A live turn is still appending, and its recovery reads the frames it already
+ * has, so deleting them would lose the only durable copy of that reply. The
+ * window is small (they are being written right now), which is why this is one
+ * cheap query per sweep rather than a join on every batch.
+ */
+async function liveTurnIds(): Promise<string[]> {
+  const rows = await prisma.chatSession
+    .findMany({ where: { activeTurnId: { not: null } }, select: { activeTurnId: true } })
+    .catch(() => [] as Array<{ activeTurnId: string | null }>)
+  return rows.map((row) => row.activeTurnId).filter((id): id is string => !!id)
+}
+
+/** Hand the event loop a macrotask, so HTTP requests are served between
+ * batches. A microtask would not do: it never leaves the current tick. */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+/**
+ * Delete, in batches, every frame at or before `cutoff` that no live turn owns.
+ *
+ * A single `deleteMany` over millions of rows blocks the event loop for about a
+ * minute on the synchronous desktop SQLite adapter, which is long enough for the
+ * health check to give up and kill the API — so the next launch repeated it
+ * (SHO-482). Selecting ids and deleting them in small batches keeps the process
+ * answering: five thousand rows per delete is milliseconds, and the loop yields
+ * between batches.
+ *
+ * Keyset-free on purpose — `id` is portable, `rowid` is not. Stops when a batch
+ * comes back short (nothing left), when the batch budget is spent, or when the
+ * wall-clock budget is. Whatever is left belongs to the next tick.
+ */
+async function deleteFrameBatches(
+  cutoff: Date,
+  opts: Required<TurnFrameSweepOptions>,
+  live: string[],
+): Promise<number> {
+  const startedAt = Date.now()
+  let deleted = 0
+  for (let batch = 0; batch < opts.maxBatches; batch++) {
+    if (batch > 0 && Date.now() - startedAt >= opts.budgetMs) break
+    const rows = await prisma.chatTurnFrame.findMany({
+      where: {
+        createdAt: { lte: cutoff },
+        ...(live.length ? { turnId: { notIn: live } } : {}),
+      },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+      take: opts.batchSize,
+    })
+    if (rows.length === 0) break
+    const { count } = await prisma.chatTurnFrame
+      .deleteMany({ where: { id: { in: rows.map((row) => row.id) } } })
+      .catch(() => ({ count: 0 }))
+    deleted += count
+    // A short batch means the filter is exhausted; anything under the cutoff is
+    // already gone, so there is nothing to come back for.
+    if (rows.length < opts.batchSize) break
+    await yieldToEventLoop()
+  }
+  return deleted
+}
+
+function sweepOptions(opts: TurnFrameSweepOptions = {}): Required<TurnFrameSweepOptions> {
+  return {
+    batchSize: Math.max(1, opts.batchSize ?? TURN_FRAME_SWEEP_BATCH),
+    maxBatches: Math.max(1, opts.maxBatches ?? TURN_FRAME_SWEEP_MAX_BATCHES),
+    budgetMs: Math.max(0, opts.budgetMs ?? TURN_FRAME_SWEEP_BUDGET_MS),
+  }
 }
 
 /**
@@ -110,14 +227,39 @@ export async function deleteTurnFrames(turnId: string): Promise<number> {
  *
  * A turn that completed deletes its own; this catches the rest — a session
  * deleted mid-turn, a recovery that never ran because the app was closed.
+ *
+ * Never called during boot any more: a backlog that large is swept by the
+ * background worker, after the API is healthy (SHO-482).
  */
-export async function sweepTurnFrames(maxAgeMs: number = TURN_FRAME_RETENTION_MS): Promise<number> {
+export async function sweepTurnFrames(
+  maxAgeMs: number = TURN_FRAME_RETENTION_MS,
+  opts: TurnFrameSweepOptions = {},
+): Promise<number> {
   const cutoff = new Date(Date.now() - maxAgeMs)
-  const { count } = await prisma.chatTurnFrame
-    .deleteMany({ where: { createdAt: { lt: cutoff } } })
-    .catch(() => ({ count: 0 }))
-  if (count > 0) console.log(`[ChatTurnJournal] Swept ${count} journal frame(s) older than ${Math.round(maxAgeMs / 3_600_000)}h`)
-  return count
+  const deleted = await deleteFrameBatches(cutoff, sweepOptions(opts), await liveTurnIds())
+  if (deleted > 0) console.log(`[ChatTurnJournal] Swept ${deleted} journal frame(s) older than ${Math.round(maxAgeMs / 3_600_000)}h`)
+  return deleted
+}
+
+/**
+ * Trim the journal back to `MAX_TURN_FRAMES`, newest rows kept.
+ *
+ * The boundary is found with one index walk — the `createdAt` of the cap-th
+ * newest row — instead of a `COUNT(*)`, so a runaway writer costs a delete, not
+ * a full scan on every tick. Logged once per trim, so the runaway is visible in
+ * `main.log` rather than inferred from a large database file.
+ */
+export async function trimTurnFramesToCap(
+  max: number = MAX_TURN_FRAMES,
+  opts: TurnFrameSweepOptions = {},
+): Promise<number> {
+  const boundary = await prisma.chatTurnFrame
+    .findFirst({ orderBy: { createdAt: 'desc' }, skip: max, select: { createdAt: true } })
+    .catch(() => null)
+  if (!boundary) return 0
+  const deleted = await deleteFrameBatches(boundary.createdAt, sweepOptions(opts), await liveTurnIds())
+  if (deleted > 0) console.log(`[ChatTurnJournal] Cap trimmed ${deleted} frame(s)`)
+  return deleted
 }
 
 /**

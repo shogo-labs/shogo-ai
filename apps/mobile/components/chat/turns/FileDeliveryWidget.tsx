@@ -3,7 +3,6 @@
 
 import { useCallback, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   Text,
@@ -19,6 +18,7 @@ import { downloadAttachment } from "../../../lib/attachment-download";
 import { fileViewKind } from "../../files/file-view-kind";
 import { ChatFilePreviewCard } from "../ChatFilePreviews";
 import type { InlineMediaTarget } from "../inline-file-previews";
+import { Spinner } from '@/components/ui/spinner'
 
 function resultObject(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object") return result as Record<string, unknown>;
@@ -160,7 +160,7 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
           testID="file-delivery-download"
           className="self-stretch justify-center border-l border-border px-1.5 hover:bg-muted active:opacity-70"
         >
-          {busy ? <ActivityIndicator size="small" /> : <Download size={12} className="text-muted-foreground" />}
+          {busy ? <Spinner size="small" /> : <Download size={12} className="text-muted-foreground" />}
         </Pressable>
         <Pressable
           onPress={copyLink}

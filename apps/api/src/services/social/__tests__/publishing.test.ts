@@ -184,6 +184,8 @@ const calls: any[] = []
 let providerReply: any = {}
 /** What `GET /posts` answers — the reconcile read. */
 let providerList: any = { posts: [] }
+/** What `GET /posts/:id` answers — the read of one post we already dispatched. */
+let providerPostById: any = {}
 /** Make the next `POST /posts` behave like a provider that never answered. */
 let createTimesOut = false
 
@@ -191,6 +193,7 @@ function useFakeClient() {
   calls.length = 0
   providerReply = {}
   providerList = { posts: [] }
+  providerPostById = {}
   createTimesOut = false
   setSocialClient({
     mode: 'cloud',
@@ -198,6 +201,7 @@ function useFakeClient() {
       calls.push(req)
       if (req.path === '/profiles') return { id: 'zernio_profile_1' }
       if (req.method === 'GET' && req.path === '/posts') return providerList
+      if (req.method === 'GET' && /^\/posts\/[^/]+$/.test(req.path)) return providerPostById
       if (req.path === '/posts') {
         if (createTimesOut) {
           const { SocialError } = await import('../client')
@@ -1007,5 +1011,120 @@ describe('a publish that outruns the clock', () => {
 
     expect(read.status).toBe('publishing')
     expect(store.posts[0].status).toBe('publishing')
+  })
+})
+
+describe('a scheduled post that has already gone out', () => {
+  /** A post as `social_media post` leaves it: `scheduled` with the provider's id. */
+  async function scheduledPost(scheduledFor: Date) {
+    providerReply = { id: 'zp_1', status: 'scheduled' }
+    const post = await createPost('ws_1', 'Acme', {
+      content: 'Launch day',
+      accountIds: ['acct_ig', 'acct_tt'],
+      mediaUrls: [IMAGE],
+      // Composed while it was still in the future; the clock has moved on since.
+      scheduledFor: new Date(Date.now() + 3_600_000).toISOString(),
+    })
+    store.posts[0].scheduledFor = scheduledFor
+    calls.length = 0
+    return post
+  }
+
+  const publishedByProvider = {
+    post: {
+      _id: 'zp_1',
+      status: 'published',
+      publishedAt: '2026-11-20T20:30:00.000Z',
+      platforms: [
+        {
+          accountId: 'zernio_ig',
+          status: 'published',
+          platformPostId: 'ig_media_1',
+          publishedUrl: 'https://instagram.com/p/ig_1',
+        },
+        {
+          accountId: 'zernio_tt',
+          status: 'published',
+          platformPostId: 'tt_video_1',
+          platformPostUrl: 'https://tiktok.com/@brand/video/1',
+        },
+      ],
+    },
+  }
+
+  test('a due post is read by its zernioPostId and becomes published', async () => {
+    const post = await scheduledPost(new Date(Date.now() - 3_600_000))
+    expect(store.posts[0].status).toBe('scheduled')
+    providerPostById = publishedByProvider
+
+    const read = await getPost('ws_1', post.id)
+
+    expect(read.status).toBe('published')
+    const ig = read.targets.find((target: any) => target.accountId === 'acct_ig')
+    const tt = read.targets.find((target: any) => target.accountId === 'acct_tt')
+    expect(ig).toMatchObject({
+      status: 'published',
+      platformPostId: 'ig_media_1',
+      platformPostUrl: 'https://instagram.com/p/ig_1',
+    })
+    expect(tt).toMatchObject({
+      status: 'published',
+      platformPostId: 'tt_video_1',
+      platformPostUrl: 'https://tiktok.com/@brand/video/1',
+    })
+    expect(read.publishedAt.toISOString()).toBe('2026-11-20T20:30:00.000Z')
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /posts/zp_1'])
+  })
+
+  test('a post that is not due yet, or is inside the grace window, is not read at all', async () => {
+    const future = await scheduledPost(new Date(Date.now() + 3_600_000))
+    expect((await getPost('ws_1', future.id)).status).toBe('scheduled')
+
+    const justDue = await scheduledPost(new Date(Date.now() - 1_000))
+    expect((await getPost('ws_1', justDue.id)).status).toBe('scheduled')
+
+    expect(calls).toHaveLength(0)
+  })
+
+  test('a second read writes nothing new and never moves publishedAt', async () => {
+    const post = await scheduledPost(new Date(Date.now() - 3_600_000))
+    providerPostById = publishedByProvider
+
+    const first = await getPost('ws_1', post.id)
+    const publishedAt = first.publishedAt.getTime()
+    const targetsBefore = JSON.stringify(store.targets)
+
+    const second = await getPost('ws_1', post.id)
+
+    expect(second.status).toBe('published')
+    expect(second.publishedAt.getTime()).toBe(publishedAt)
+    expect(JSON.stringify(store.targets)).toBe(targetsBefore)
+    // A finished post with every leg settled is not asked about again.
+    expect(calls.filter((call) => call.path === '/posts/zp_1')).toHaveLength(1)
+  })
+})
+
+describe('targetStatusFrom', () => {
+  test('never reads a status it does not know as published', async () => {
+    const { targetStatusFrom } = await import('../publishing.service')
+    expect(targetStatusFrom({ status: 'scheduled' })).toBe('pending')
+    expect(targetStatusFrom({ status: 'queued' })).toBe('pending')
+    expect(targetStatusFrom({ status: 'uploading' })).toBe('publishing')
+    expect(targetStatusFrom({ status: 'processing' })).toBe('publishing')
+    expect(targetStatusFrom({ status: 'published' })).toBe('published')
+    expect(targetStatusFrom({ status: 'completed' })).toBe('published')
+    expect(targetStatusFrom({ status: 'failed' })).toBe('failed')
+    expect(targetStatusFrom({ status: 'cancelled' })).toBe('cancelled')
+    // The two that used to be silently read as live.
+    expect(targetStatusFrom({ status: 'something-new' })).toBeNull()
+    expect(targetStatusFrom({})).toBeNull()
+  })
+
+  test('a platform error is a failure and carries its category', async () => {
+    const { targetStatusFrom } = await import('../publishing.service')
+    expect(targetStatusFrom({ status: 'pending', error: 'nope' })).toBe('failed')
+    expect(
+      targetStatusFrom({ status: 'pending', errorCategory: 'auth_expired', platformError: { message: 'x' } }),
+    ).toBe('failed')
   })
 })

@@ -100,6 +100,21 @@ export interface MidTurnAutocompactOptions {
   /** Summarize a head, folding into `previousSummary` when continuing. */
   summarize: (head: Message[], previousSummary?: string) => Promise<string>
   /**
+   * Fires immediately before `summarize`, so the caller can tell the UI that a
+   * summarization is in flight (SHO-556). Summarizing a large head is the one
+   * step of a turn that produces no frames for seconds-to-minutes; without this
+   * the turn looks stuck. Synchronous and best-effort — a throwing hook must
+   * never break the compaction.
+   */
+  onSummarizeStart?: (info: {
+    /** The head about to be summarized. */
+    head: Message[]
+    /** The request size that fired this compaction. */
+    tokensBefore: number
+    /** What fired it: the cap, the idle gap, or the manual button. */
+    reason: 'cap' | 'idle' | 'manual'
+  }) => void
+  /**
    * Persist the compaction on the session. `splitIndex` is relative to
    * `session.messages`; `replaceSummary` is set when the new summary already
    * folds in the previous one. Returns what the session now holds — the
@@ -256,13 +271,22 @@ export class MidTurnAutocompactor {
     }
 
     this.compacting = true
+    const trigger: 'auto' | 'manual' = this.manualRequested ? 'manual' : 'auto'
     try {
+      try {
+        this.opts.onSummarizeStart?.({
+          head,
+          tokensBefore: estimate,
+          reason: trigger === 'manual' ? 'manual' : reason,
+        })
+      } catch (err: any) {
+        console.warn(`[MidTurnAutocompact] onSummarizeStart hook failed: ${err?.message}`)
+      }
       const summary = await this.opts.summarize(head, this.memo?.summary)
       if (!summary.trim()) {
         this.manualRequested = false
         return { messages: wire, event: null }
       }
-      const trigger: 'auto' | 'manual' = this.manualRequested ? 'manual' : 'auto'
       const applied = this.opts.apply(summary, splitIndex - this.baseIndex, { replaceSummary: continuing })
       // The session's summary carries the deterministic facts block; without it
       // the emitted prefix would differ from `buildHistory` for the same

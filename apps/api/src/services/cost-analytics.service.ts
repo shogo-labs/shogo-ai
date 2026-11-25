@@ -26,7 +26,7 @@ import {
   proxyModelToBillingModel,
   type ModelName,
 } from '../lib/usage-cost'
-import { resolveModelId } from '@shogo/model-catalog'
+import { resolveModelId, getModelDollarCosts } from '@shogo/model-catalog'
 import { getDbModelPricing } from '../lib/db-model-pricing'
 import { resolveModelLabelSync } from './model-registry.service'
 
@@ -214,8 +214,8 @@ function getModelCostPerMillionOutput(model: string): number {
   const dbPricing = getDbModelPricing(model)
   if (dbPricing) return dbPricing.outputPerMillion
   const billingModel = proxyModelToBillingModel(model)
-  const costs = MODEL_DOLLAR_COSTS[billingModel as ModelName]
-  return costs?.outputPerMillion ?? MODEL_DOLLAR_COSTS.sonnet.outputPerMillion
+  const costs = getModelDollarCosts(billingModel)
+  return costs.outputPerMillion
 }
 
 function recommendationCandidatesForTier(tier: number): string[] {

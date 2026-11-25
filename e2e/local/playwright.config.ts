@@ -71,7 +71,16 @@ const localEnv = {
 }
 
 // Specs written for a phone viewport; the other projects skip them.
-const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach)\.test\.ts$/
+// `phone-glass-header` is the SHO-490 phone navigation standard: it asserts the
+// one glass header on every pushed screen and pane, the profile pages included,
+// so it belongs in the phone job rather than being run by hand.
+const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach|phone-glass-header)\.test\.ts$/
+
+// Specs that have their own entry in the ci.yml matrix: they must not also
+// run inside a `--shard` job. Centralising the list here (testIgnore) rather
+// than per-spec `test.skip(Boolean(process.env.E2E_SHARD))` means a new
+// own-entry spec only needs to be added here, not inside its own file (SHO-450).
+const OWN_ENTRY_SPECS = /(slides-preview|chat-send-body-size|chat-return-to-live-chat|chat-resume-replay-storm)\.test\.ts$/
 
 export default defineConfig({
   ...(startStack
@@ -134,7 +143,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: PHONE_SPECS,
+      testIgnore: process.env.E2E_SHARD ? [PHONE_SPECS, OWN_ENTRY_SPECS] : PHONE_SPECS,
       use: { ...devices["Desktop Chrome"] },
     },
     {

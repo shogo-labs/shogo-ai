@@ -48,6 +48,19 @@ export function isPrivateAddress(ip: string): boolean {
 type Resolver = (host: string) => Promise<string[]>
 let resolveHost: Resolver = async (host) => (await lookup(host, { all: true, verbatim: true })).map((a) => a.address)
 
+/**
+ * Resolve a bare host name (no URL, e.g. an IMAP server) to one public address
+ * to connect to. Connect to the returned address, not the name, so a later
+ * lookup can't rebind it to an internal one.
+ */
+export async function resolvePublicHost(host: string): Promise<string> {
+  const h = host.trim().replace(/^\[|\]$/g, '')
+  const addresses = isIP(h) ? [h] : await resolveHost(h).catch(() => [])
+  if (!addresses.length) throw new UnsafeUrlError('Host does not resolve')
+  if (addresses.some(isPrivateAddress)) throw new UnsafeUrlError('Host resolves to a private address')
+  return addresses[0]!
+}
+
 export async function assertPublicUrl(raw: string): Promise<URL> {
   return (await resolvePublicUrl(raw)).url
 }

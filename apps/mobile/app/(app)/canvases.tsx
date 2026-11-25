@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native'
+import { FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { ArrowUpRight, CalendarDays, LayoutGrid, MonitorPlay } from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
 import { useProjectCollection } from '../../contexts/domain'
 import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
+import { Spinner } from '@/components/ui/spinner'
 
 function publishedDate(value?: number) {
   if (!value) return null
@@ -60,7 +61,7 @@ export default observer(function CanvasesScreen() {
   return (
     <View className="flex-1 bg-background">
       {loading ? (
-        <View className="flex-1 items-center justify-center"><ActivityIndicator /></View>
+        <View className="flex-1 items-center justify-center"><Spinner /></View>
       ) : canvases.length === 0 ? (
         <View className="flex-1 px-4 pt-4">
           <CanvasPageHeader count={0} />

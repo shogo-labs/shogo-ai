@@ -494,7 +494,7 @@ export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?:
     // promise serialises to `{}` and the panel then throws on
     // `reconciliation.hostsMissingMeter.length`, taking the whole admin
     // analytics screen down with it.
-    reconciliation: await reconcile(),
+    reconciliation: await reconcile(now),
   }
 }
 
@@ -505,16 +505,20 @@ export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?:
  * panel shows what CAN be compared within the API: the sum of per-host
  * `load.assigned` (what the hosts say they are running right now) against the
  * host count, plus the meter's own coverage — how many distinct hosts reported
- * usage this month. A host that is running VMs but has never reported a meter
- * row is invisible to the bill, and that is the failure this line exists to
- * catch.
+ * usage in the last 72 hours. A host that is running VMs but has never reported
+ * a meter row is invisible to the bill, and that is the failure this line exists
+ * to catch.
+ *
+ * `now` is the caller's clock, not the wall clock: every window in this file
+ * comes from one `now`, so a summary computed for an explicit instant reports
+ * that instant's coverage.
  */
-async function reconcile(): Promise<{
+async function reconcile(now: Date): Promise<{
   hostsReportingUsage: number
   hostsMissingMeter: string[]
 }> {
   try {
-    const since = new Date(Date.now() - 72 * 3_600_000)
+    const since = new Date(now.getTime() - 72 * 3_600_000)
     const seen = await prisma.vmUsageHour.findMany({
       where: { hour: { gte: since } },
       select: { hostId: true },

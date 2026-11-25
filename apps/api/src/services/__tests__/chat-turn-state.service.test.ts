@@ -43,6 +43,7 @@ const {
   markTurnStarted,
   registerTurnSnapshotFlusher,
   releaseTurnsForHandoff,
+  RUNNING_NOW_WINDOW_MS,
   startTurnHeartbeat,
   sweepDeadTurnsOnLocalBoot,
   TURN_REATTACH_AFTER_MS,
@@ -271,12 +272,19 @@ describe('chat-turn-state service', () => {
     findMany.mockResolvedValue([] as never)
   })
 
-  test('uses a five-minute heartbeat window by default', async () => {
+  test('reports a turn as running only while it is still beating', async () => {
+    // SHO-494: a queued turn on a paired computer can settle its stream and
+    // still leave the session marked, on both sides, for minutes. A screen must
+    // not keep "Running now" for a reply that already landed, so the listing
+    // asks for a recent beat rather than for a set id — and that window is far
+    // shorter than the "the process is gone" one, which gates recovery.
     const before = Date.now()
     await listActiveChatTurns('workspace-1')
     const cutoff = (findMany.mock.calls.at(-1) as any)[0].where.activeTurnHeartbeatAt.gt as Date
-    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(5 * 60 * 1000 - 50)
-    expect(before - cutoff.getTime()).toBeLessThan(5 * 60 * 1000 + 1000)
+    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(RUNNING_NOW_WINDOW_MS - 50)
+    expect(before - cutoff.getTime()).toBeLessThan(RUNNING_NOW_WINDOW_MS + 1000)
+    expect(RUNNING_NOW_WINDOW_MS).toBeLessThan(TURN_REATTACH_AFTER_MS)
+    expect(TURN_REATTACH_AFTER_MS).toBeLessThan(5 * 60 * 1000)
   })
 
   test('hands heartbeating turns to the reattach job on shutdown and stops heartbeating them', async () => {

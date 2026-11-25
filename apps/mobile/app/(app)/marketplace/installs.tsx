@@ -7,7 +7,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   RefreshControl,
   TextInput,
   Image,
@@ -32,6 +31,7 @@ import {
 import { useDomainHttp } from '../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
 import { getAccentColor, getInitial } from '../../../components/marketplace/accent'
+import { Spinner } from '@/components/ui/spinner'
 
 function InstallIcon({ iconUrl, title, size = 36 }: { iconUrl: string | null; title: string; size?: number }) {
   const accent = getAccentColor(title)
@@ -275,7 +275,7 @@ export default observer(function InstallsScreen() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -298,7 +298,7 @@ export default observer(function InstallsScreen() {
             accessibilityRole="button"
             accessibilityLabel="Back to marketplace"
           >
-            <ArrowLeft size={18} color="#a1a1aa" />
+            <ArrowLeft className="text-muted-foreground" size={18} />
           </Pressable>
           <View className="flex-1">
             {isWide && (
@@ -323,7 +323,7 @@ export default observer(function InstallsScreen() {
 
         {!loadError && sortedInstalls.length > 0 && (
           <View className="flex-row items-center bg-muted/50 rounded-lg px-3 h-9">
-            <Search size={14} color="#71717a" />
+            <Search className="text-muted-foreground" size={14} />
             <TextInput
               className="flex-1 ml-2 text-[13px] text-foreground web:outline-none no-focus-ring"
               placeholder="Filter installed agents…"
@@ -335,7 +335,7 @@ export default observer(function InstallsScreen() {
             />
             {searchQuery.length > 0 && (
               <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
-                <X size={13} color="#71717a" />
+                <X className="text-muted-foreground" size={13} />
               </Pressable>
             )}
           </View>
@@ -365,7 +365,7 @@ export default observer(function InstallsScreen() {
         {!loadError && sortedInstalls.length === 0 && (
           <View className="flex-1 items-center justify-center pt-20 gap-4">
             <View className="w-14 h-14 rounded-2xl bg-muted/60 items-center justify-center">
-              <Package size={24} color="#71717a" />
+              <Package className="text-muted-foreground" size={24} />
             </View>
             <View className="items-center gap-1">
               <Text className="text-sm font-medium text-foreground">No agents installed</Text>
@@ -384,7 +384,7 @@ export default observer(function InstallsScreen() {
 
         {!loadError && sortedInstalls.length > 0 && filteredInstalls.length === 0 && (
           <View className="items-center pt-16 gap-2">
-            <Search size={20} color="#71717a" />
+            <Search className="text-muted-foreground" size={20} />
             <Text className="text-sm text-muted-foreground">No matching agents</Text>
           </View>
         )}
@@ -424,13 +424,13 @@ export default observer(function InstallsScreen() {
                 {/* Status badge with text */}
                 {state.loading && (
                   <View className="flex-row items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50">
-                    <ActivityIndicator size={10} />
+                    <Spinner size={10} />
                     <Text className="text-[10px] text-muted-foreground">Checking</Text>
                   </View>
                 )}
                 {!state.loading && state.hasUpdate && (
                   <View className="flex-row items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/10">
-                    <ArrowUpCircle size={12} color="#3b82f6" />
+                    <ArrowUpCircle className="text-primary" size={12} />
                     <Text className="text-[10px] font-semibold text-blue-500">Update available</Text>
                   </View>
                 )}
@@ -493,9 +493,9 @@ export default observer(function InstallsScreen() {
                     )}
                   >
                     {state.applying ? (
-                      <ActivityIndicator size={10} color="#fff" />
+                      <Spinner tone="onPrimary" size={10} />
                     ) : (
-                      <RefreshCw size={11} color="#fff" />
+                      <RefreshCw className="text-primary-foreground" size={11} />
                     )}
                     <Text className="text-[11px] font-semibold text-primary-foreground">Update</Text>
                   </Pressable>
@@ -514,7 +514,7 @@ export default observer(function InstallsScreen() {
                   onPress={() => router.push(`/(app)/projects/${inst.projectId}` as any)}
                   className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border border-border active:opacity-80"
                 >
-                  <ExternalLink size={10} color="#71717a" />
+                  <ExternalLink className="text-muted-foreground" size={10} />
                   <Text className="text-[11px] font-medium text-muted-foreground">Open</Text>
                 </Pressable>
                 <View className="flex-1" />
@@ -570,7 +570,7 @@ export default observer(function InstallsScreen() {
                 disabled={uninstalling}
                 className="flex-1 flex-row items-center justify-center gap-2 py-3 active:bg-destructive/10"
               >
-                {uninstalling && <ActivityIndicator size={12} color="#dc2626" />}
+                {uninstalling && <Spinner tone="destructive" size={12} />}
                 <Text className="text-[13px] font-medium text-destructive">
                   {uninstalling ? 'Removing…' : 'Uninstall'}
                 </Text>

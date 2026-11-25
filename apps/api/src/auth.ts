@@ -17,6 +17,7 @@
 import { betterAuth, type BetterAuthPlugin } from "better-auth"
 import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
+import { expoAuthorizationProxyGuard, nativeTrustedOrigins } from "./lib/native-oauth-trust"
 import { createDefaultTeamWorkspace, createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
@@ -648,7 +649,7 @@ export const auth = betterAuth({
     const origins = [
       ...getAllowedOrigins(), baseURL,
       'https://eu.studio.shogo.ai',
-      'shogo://', 'exp://',
+      ...nativeTrustedOrigins(),
     ]
     if (process.env.NODE_ENV !== 'production') {
       origins.push('http://localhost:8081')
@@ -664,7 +665,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
+  plugins: [expo(), expoAuthorizationProxyGuard, projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
 
   rateLimit: {
     window: 60,
@@ -747,6 +748,26 @@ export const auth = betterAuth({
   // Database hooks for auto-creating personal workspace on user signup
   // Task: task-org-002
   databaseHooks: {
+    session: {
+      create: {
+        /** Refuse session creation for banned users (covers all sign-in paths). */
+        before: async (session) => {
+          if (!isLocalMode && session.userId) {
+            const user = await prisma.user.findUnique({
+              where: { id: session.userId },
+              select: { bannedAt: true },
+            })
+            if (user?.bannedAt) {
+              throw new APIError('FORBIDDEN', {
+                code: 'ACCOUNT_SUSPENDED',
+                message: 'Account suspended. Contact support@shogo.ai.',
+              })
+            }
+          }
+          return { data: session }
+        },
+      },
+    },
     user: {
       create: {
         /**
@@ -940,16 +961,24 @@ export const auth = betterAuth({
           // verification emails to bot inboxes, and Loops started returning 429s.
           let heldSignup = false
           if (!isLocalMode) {
+            const signupRiskParams = {
+              userId: user.id,
+              email: user.email,
+              provider: signupProviderFromPath(ctx?.path),
+              emailVerified: Boolean(user.emailVerified),
+              headers: ctx?.request?.headers ?? ctx?.headers ?? null,
+            }
             try {
               const { assessNewSignup } = await import('./services/signup-risk.service')
               const { applyInitialSignupCredit } = await import('./services/signup-credit.service')
-              const risk = await assessNewSignup({
-                userId: user.id,
-                email: user.email,
-                provider: signupProviderFromPath(ctx?.path),
-                emailVerified: Boolean(user.emailVerified),
-                headers: ctx?.request?.headers ?? ctx?.headers ?? null,
-              })
+              // One retry on transient failure (a single DB blip should not cost the gate).
+              let risk
+              try {
+                risk = await assessNewSignup(signupRiskParams)
+              } catch {
+                await new Promise((r) => setTimeout(r, 500))
+                risk = await assessNewSignup(signupRiskParams)
+              }
               await applyInitialSignupCredit({ userId: user.id, result: risk })
               heldSignup = risk.band === 'high' && !user.emailVerified
               if (!heldSignup) {
@@ -959,10 +988,19 @@ export const auth = betterAuth({
                   score: risk.score,
                 }).catch(() => {})
               }
-            } catch (err) {
+            } catch (err: any) {
               // An assessment failure leaves the account unheld, so the emails
               // below go out exactly as they did before this gate existed.
               console.error(`[signup-risk] assessment failed for ${user.email}`, err)
+              // Stable marker line (grepable by dashboards) + analytics event so
+              // failures become countable without manual pod-log inspection.
+              console.error(
+                `[signup-risk] assessment_failed userId=${user.id} provider=${signupRiskParams.provider}`,
+              )
+              trackEvent(user.id, 'signup_risk_failed', {
+                provider: signupRiskParams.provider,
+                message: err?.message ?? String(err),
+              }).catch(() => {})
             }
           }
 

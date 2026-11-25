@@ -16,11 +16,11 @@
  * other panes) and in its place on narrow ones. `?profile=<userId>` shows a
  * person's profile in that same pane; narrow screens push `/(app)/people/[userId]`
  * instead, and closing it brings back a thread it was shown over.
- * `?from=<user:id|agent:id|agent:ws>` lists every message one member sent in
- * this conversation, thread replies included, in that same pane.
+ * `?from=<user:id|agent:id|agent:ws>` filters the channel timeline to messages
+ * from one member. The filter is in-place: other panes stay open.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
@@ -44,11 +44,10 @@ import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { FilesPane } from '../../../components/team-chat/FilesPane'
-import { MemberMessagesPane } from '../../../components/team-chat/MemberMessagesPane'
-import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
+import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/layout/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
-import { ChannelTabs, channelSupportsDoc, channelTabItems } from '../../../components/team-chat/ChannelTabs'
+import { ChannelTabs, channelSupportsDoc, channelSupportsTabs, channelTabItems } from '../../../components/team-chat/ChannelTabs'
 import { ShareFileView } from '../../../components/chat/ShareFileViewer'
 import { ShareFileProvider, type ShareFileTarget } from '../../../components/chat/share-file-context'
 import { parseInAppFileHref } from '../../../lib/share-file-links'
@@ -59,7 +58,7 @@ import { useChannelBoards } from '../../../hooks/useWorkBoards'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import type { WorkItem } from '../../../lib/work-boards-api'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
@@ -120,7 +119,6 @@ export default function ConversationScreen() {
   const [headerHeight, setHeaderHeight] = useState(0)
   const [addingBoard, setAddingBoard] = useState(false)
   const chrome = usePhoneChromeOverlay()
-  const insets = useSafeAreaInsets()
 
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
@@ -271,12 +269,12 @@ export default function ConversationScreen() {
     router.setParams({ thread: undefined, msg: undefined } as any)
   }, [navigation, router, conversationId])
   const openProjectPane = useCallback(
-    (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined, from: undefined } as any),
+    (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined } as any),
     [router],
   )
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openFiles = useCallback(
-    () => router.setParams({ files: '1', doc: undefined, thread: undefined, project: undefined, from: undefined } as any),
+    () => router.setParams({ files: '1', doc: undefined, board: undefined, card: undefined, thread: undefined, project: undefined } as any),
     [router],
   )
   const closeFiles = useCallback(() => router.setParams({ files: undefined } as any), [router])
@@ -285,34 +283,25 @@ export default function ConversationScreen() {
       router.setParams({ files: undefined, doc: undefined, project: undefined, thread: file.threadRootId ?? undefined, msg: file.messageId } as any),
     [router],
   )
-  /**
-   * One member's messages in the pane. Like the files list it steps aside for
-   * nothing: the other panes close, and the switcher inside it changes who you
-   * are looking at without leaving.
-   */
-  const openMemberMessages = useCallback(
-    (from: string) =>
-      router.setParams({ from, files: undefined, doc: undefined, thread: undefined, project: undefined, card: undefined, profile: undefined, file: undefined } as any),
+  /** Filter the channel timeline to one member's messages. Clears the board (shows the timeline). */
+  const filterByMember = useCallback(
+    (from: string) => router.setParams({ from, board: undefined } as any),
     [router],
   )
-  const closeMemberMessages = useCallback(() => router.setParams({ from: undefined } as any), [router])
-  /** Jump the channel to one of those messages, in its thread when it has one. */
-  const showMemberMessageInChat = useCallback(
-    (message: ChatMessage) =>
-      router.setParams({ from: undefined, thread: message.threadRootId ?? undefined, msg: message.id } as any),
-    [router],
-  )
+  const clearMemberFilter = useCallback(() => router.setParams({ from: undefined } as any), [router])
   const openDoc = useCallback(
-    () => router.setParams({ doc: '1', board: undefined, files: undefined, thread: undefined, project: undefined, card: undefined, from: undefined } as any),
+    () => router.setParams({ doc: '1', board: undefined, files: undefined, thread: undefined, project: undefined, card: undefined } as any),
     [router],
   )
   const closeDoc = useCallback(() => router.setParams({ doc: undefined, board: undefined } as any), [router])
+  /** The Messages tab: out of the doc, a board or the files list, back to the timeline. */
+  const showMessages = useCallback(() => router.setParams({ doc: undefined, board: undefined, files: undefined } as any), [router])
   const openBoard = useCallback(
     (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined, from: undefined } as any),
     [router],
   )
   const openCard = useCallback(
-    (item: Pick<WorkItem, 'id'>) => router.setParams({ card: item.id, thread: undefined, project: undefined, files: undefined, doc: undefined, from: undefined } as any),
+    (item: Pick<WorkItem, 'id'>) => router.setParams({ card: item.id, thread: undefined, project: undefined, files: undefined, doc: undefined } as any),
     [router],
   )
   const closeCard = useCallback(() => router.setParams({ card: undefined } as any), [router])
@@ -323,7 +312,7 @@ export default function ConversationScreen() {
    */
   const openShareFile = useCallback(
     (target: ShareFileTarget) =>
-      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined, card: undefined, from: undefined } as any),
+      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined, card: undefined } as any),
     [router],
   )
   const closeShareFile = useCallback(() => router.setParams({ file: undefined } as any), [router])
@@ -338,7 +327,7 @@ export default function ConversationScreen() {
   const openProfile = useCallback(
     (userId: string) => {
       if (width >= THREAD_SIDE_PANE_MIN_WIDTH) {
-        router.setParams({ profile: userId, project: undefined, files: undefined, doc: undefined, card: undefined, from: undefined } as any)
+        router.setParams({ profile: userId, project: undefined, files: undefined, doc: undefined, card: undefined } as any)
       } else {
         router.push({ pathname: '/(app)/people/[userId]', params: { userId } } as any)
       }
@@ -392,13 +381,15 @@ export default function ConversationScreen() {
   if (!conversation || !workspaceId) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
 
   const visible = focused && foreground
   const supportsDoc = channelSupportsDoc(conversation)
+  // DMs list their files too, so every conversation but #activity gets tabs.
+  const supportsTabs = channelSupportsTabs(conversation)
   const boardId = supportsDoc && boardsOn ? boardParam : null
   const docOpen = supportsDoc && docParam && !boardId
   const {
@@ -412,8 +403,6 @@ export default function ConversationScreen() {
     showThreadPane,
     showFilePane,
     showFileFull,
-    showMemberPane,
-    showMemberFull,
     showMain,
   } = resolvePanes({
     sidePane,
@@ -424,7 +413,6 @@ export default function ConversationScreen() {
     cardId,
     profilePaneId,
     fileOpen: !!openFile,
-    memberFrom,
   })
   const projectPaneName =
     (projectPaneId &&
@@ -443,14 +431,16 @@ export default function ConversationScreen() {
     conversation,
     docOpen,
     onOpenDoc: openDoc,
-    onShowMessages: closeDoc,
+    onShowMessages: showMessages,
+    filesOpen,
+    onOpenFiles: openFiles,
     boards,
     activeBoardId: boardId,
     onOpenBoard: openBoard,
     onAddBoard,
   }
   // On a phone the tabs live in the header's glass panel (like Slack), not in a strip under it.
-  const tabsMenu = supportsDoc && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
+  const tabsMenu = supportsTabs && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
   const header = (
     <ConversationHeader
       conversation={conversation}
@@ -461,14 +451,15 @@ export default function ConversationScreen() {
       onDeleted={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
-      onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
-      onOpenMemberMessages={openMemberMessages}
+      onFilterByMember={filterByMember}
+      onClearMemberFilter={clearMemberFilter}
+      memberFilter={memberFrom}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
       tabsMenu={tabsMenu}
     />
   )
-  const tabs = supportsDoc && !floating ? <ChannelTabs {...tabProps} /> : null
+  const tabs = supportsTabs && !floating ? <ChannelTabs {...tabProps} /> : null
   // The phone header floats over the content; the content clears it with this inset.
   const topInset = headerHeight
 
@@ -526,7 +517,7 @@ export default function ConversationScreen() {
                   conversation={conversation}
                   me={me}
                   mentionables={mentionables}
-                  visible={visible && !((threadRootId || cardId || filesOpen || docOpen || !!openFile || !!memberFrom) && !sidePane)}
+                  visible={visible && !((threadRootId || cardId || filesOpen || docOpen || !!openFile) && !sidePane)}
                   highlightMessageId={threadRootId ? null : linkedMessageId}
                   onOpenThread={openThread}
                   onOpenSession={openSession}
@@ -536,6 +527,9 @@ export default function ConversationScreen() {
                   onOpenCard={boardsOn ? openCard : undefined}
                   floating={floating}
                   topInset={topInset}
+                  memberFilter={memberFrom}
+                  onChangeMemberFilter={filterByMember}
+                  onClearMemberFilter={clearMemberFilter}
                 />
               )}
             </View>
@@ -575,7 +569,7 @@ export default function ConversationScreen() {
           {showCardPane && cardId && (
             <View
               className={sidePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={sidePane ? { width: cardPane.width } : floating ? { paddingTop: insets.top, paddingBottom: chrome.bottom } : undefined}
+              style={sidePane ? { width: cardPane.width } : floating ? { paddingBottom: chrome.bottom } : undefined}
             >
               {sidePane && (
                 <SidePaneResizeHandle
@@ -596,13 +590,14 @@ export default function ConversationScreen() {
                 conversation={conversation}
                 visible={visible}
                 onClose={closeCard}
+                floating={floating}
               />
             </View>
           )}
           {(showFilePane || showFileFull) && openFile && (
             <View
               className={showFilePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={showFilePane ? { width: filePane.width } : floating ? { paddingTop: insets.top } : undefined}
+              style={showFilePane ? { width: filePane.width } : undefined}
               testID="chat-file-pane"
             >
               {showFilePane && (
@@ -615,7 +610,7 @@ export default function ConversationScreen() {
                   onReset={filePane.reset}
                 />
               )}
-              <ShareFileView key={openFile.href} target={openFile} onClose={closeShareFile} embedded />
+              <ShareFileView key={openFile.href} target={openFile} onClose={closeShareFile} embedded floating={floating} />
             </View>
           )}
           {showProjectPane && projectPaneId && (
@@ -634,7 +629,7 @@ export default function ConversationScreen() {
           {(showFilesPane || showFilesFull) && (
             <View
               className={showFilesPane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={showFilesPane ? { width: threadPane.width } : { paddingTop: floating ? insets.top : 0 }}
+              style={showFilesPane ? { width: threadPane.width } : undefined}
             >
               {showFilesPane && (
                 <SidePaneResizeHandle
@@ -653,35 +648,11 @@ export default function ConversationScreen() {
                 title={huddleLabel}
                 onClose={closeFiles}
                 onShowInChat={showFileInChat}
+                floating={floating}
               />
             </View>
           )}
-          {(showMemberPane || showMemberFull) && memberFrom && (
-            <View
-              className={showMemberPane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={showMemberPane ? { width: threadPane.width } : { paddingTop: floating ? insets.top : 0 }}
-            >
-              {showMemberPane && (
-                <SidePaneResizeHandle
-                  width={threadPane.width}
-                  minWidth={THREAD_PANE_MIN}
-                  maxWidth={maxPaneWidth}
-                  onResize={threadPane.setWidth}
-                  onResizeEnd={threadPane.commit}
-                  onReset={threadPane.reset}
-                />
-              )}
-              <MemberMessagesPane
-                key={`${conversation.id}:${memberFrom}`}
-                workspaceId={workspaceId}
-                conversation={conversation}
-                from={memberFrom}
-                onClose={closeMemberMessages}
-                onChangeMember={openMemberMessages}
-                onShowInChat={showMemberMessageInChat}
-              />
-            </View>
-          )}
+
           {showDocPane && (
             <View className="relative shrink-0 border-l border-border bg-background" style={{ width: docPane.width }}>
               <SidePaneResizeHandle
@@ -697,13 +668,13 @@ export default function ConversationScreen() {
           )}
           {showDocFull && (
             <View className="flex-1">
-              {floating ? <View style={{ height: insets.top }} /> : (
+              {floating ? null : (
                 <>
                   {header}
                   {tabs}
                 </>
               )}
-              <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} />
+              <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} floating={floating} />
             </View>
           )}
           {showProfilePane && profilePaneId && (
@@ -717,7 +688,7 @@ export default function ConversationScreen() {
                 workspaceId={workspaceId}
                 userId={profilePaneId}
                 conversation={conversation}
-                onOpenMemberMessages={openMemberMessages}
+                onFilterByMember={filterByMember}
                 onClose={closeProfile}
               />
             </View>

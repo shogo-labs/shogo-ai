@@ -26,6 +26,7 @@ import * as fs from "fs"
 import { RUNTIME_CONFIG } from "@shogo/shared-runtime"
 import type { InstanceSizeName } from "../config/instance-sizes"
 import { buildWorkspaceEnv } from "./runtime/build-workspace-env"
+import { workspaceRuntimeMembers } from "./runtime/workspace-runtime-members"
 
 // =============================================================================
 // Configuration
@@ -259,6 +260,32 @@ export function buildKnativeWorkspaceService(opts: BuildKnativeWorkspaceServiceO
   }
 }
 
+/**
+ * The member ids baked into a workspace runtime Service's env.
+ *
+ * `buildWorkspaceEnv` writes `WORKSPACE_PROJECT_IDS` into the same map the
+ * Service is built from, and `createWorkspace` bakes it once — so this is
+ * literally the member set the pods booted with. The `/pod-config` AI-proxy
+ * token refresh reads it instead of re-deriving a set from a chat session that
+ * may no longer exist (SHO-560). Pure, so it is tested without a cluster.
+ */
+export function workspaceMembersFromServiceSpec(service: any): string[] | null {
+  const containers = service?.spec?.template?.spec?.containers
+  if (!Array.isArray(containers)) return null
+  for (const container of containers) {
+    const env = container?.env
+    if (!Array.isArray(env)) continue
+    const entry = env.find((e: any) => e?.name === "WORKSPACE_PROJECT_IDS")
+    if (entry && typeof entry.value === "string") {
+      return entry.value
+        .split(",")
+        .map((id: string) => id.trim())
+        .filter(Boolean)
+    }
+  }
+  return null
+}
+
 // =============================================================================
 // KnativeWorkspaceManager
 // =============================================================================
@@ -366,7 +393,7 @@ export class KnativeWorkspaceManager {
       return this.getWorkspacePodUrl(workspaceId, anchorProjectId)
     }
 
-    const env = await buildWorkspaceEnv(workspaceId, attachedProjectIds, {
+    const env = await buildWorkspaceEnv(workspaceId, workspaceRuntimeMembers({ anchorProjectId, attachedProjectIds }), {
       logPrefix: "KnativeWorkspaceManager",
       anchorProjectId,
       readonlyProjectIds: opts.readonlyProjectIds,
@@ -438,6 +465,35 @@ export class KnativeWorkspaceManager {
     }
   }
 
+  /**
+   * The member set this workspace runtime booted with, read from its Service's
+   * baked env. null when the Service does not exist (a runtime that was never
+   * created here) or the read fails — the caller then refreshes with the anchor
+   * alone rather than guessing at a member list from another session.
+   */
+  async readBootedMembers(workspaceId: string, anchorProjectId?: string): Promise<string[] | null> {
+    try {
+      const api = getCustomApi()
+      const service = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        name: workspaceServiceName(workspaceId, anchorProjectId),
+      })
+      return workspaceMembersFromServiceSpec(service)
+    } catch (err: any) {
+      const statusCode = err?.code ?? err?.response?.statusCode ?? err?.statusCode
+      if (statusCode !== 404) {
+        console.warn(
+          `[KnativeWorkspaceManager] baked member read failed for ${workspaceId}:`,
+          err?.message ?? err,
+        )
+      }
+      return null
+    }
+  }
+
   async deleteWorkspace(workspaceId: string, anchorProjectId?: string): Promise<void> {
     const api = getCustomApi()
     try {
@@ -466,6 +522,18 @@ export function getKnativeWorkspaceManager(): KnativeWorkspaceManager {
     _manager = new KnativeWorkspaceManager()
   }
   return _manager
+}
+
+/**
+ * The member set a workspace runtime booted with, for the `/pod-config` token
+ * refresh (SHO-560). null when it cannot be read — callers fall back to the
+ * anchor alone.
+ */
+export async function readWorkspaceRuntimeMembers(
+  workspaceId: string,
+  anchorProjectId?: string,
+): Promise<string[] | null> {
+  return getKnativeWorkspaceManager().readBootedMembers(workspaceId, anchorProjectId)
 }
 
 /**

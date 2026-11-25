@@ -30,7 +30,7 @@ const EXAMPLE_LLM_MODEL_PLACEHOLDER = '<model id from GET /ai/v1/models>'
 
 const SHOGO_SDK_GUIDE_TEMPLATE = `## Shogo SDK (\`@shogo-ai/sdk\`)
 
-The Shogo SDK is the zero-boilerplate client for apps built on top of the Shogo runtime. It gives the **user's app** turnkey access to auth, a typed database, transactional email, per-user memory, an LLM gateway, and a voice/chat layer — all behind a single \`createClient({ apiUrl })\` call.
+The Shogo SDK is the zero-boilerplate client for apps built on top of the Shogo runtime. It gives the **user's app** turnkey access to auth, a typed database, transactional email, per-user memory, an LLM gateway, a voice/chat layer, and the project's own Shogo-hosted bucket with a CDN in front — all behind a single \`createClient({ apiUrl })\` call.
 
 The SDK is for code you write **into the user's app** (\`custom-routes.ts\`, \`src/components/*.tsx\`, \`server.tsx\` helpers). It is NOT a replacement for your built-in agent tools.
 
@@ -203,6 +203,41 @@ const { start, stop, status, messages } = useShogoVoice({ agentId })
 
 The hook wraps \`@elevenlabs/react\` (or \`@elevenlabs/react-native\`) and gives you \`<ShogoVoiceProvider>\`, \`<OrganicSphere>\` / \`<OrganicParticles>\` visualizations, and text-only \`useShogoChat\` / \`useChatConversation\` variants. Voice peer deps are optional — install only what you use.
 
+### Project bucket & CDN (big media lives here, not in the repo)
+
+Every project has its own Shogo-hosted bucket with a CDN in front. Use it for media — **anything 5 MB or larger belongs in the bucket**, never in git, \`public/\` or the project archive. A 1.7 GB media folder in the repo is what forced an emergency disk resize; the bucket is the answer.
+
+\`\`\`bash
+# In your shell (\`exec\`) — credentials come from the pod's env, no flags needed
+shogo bucket put hero.mp4 --public            # -> prints the CDN URL
+shogo bucket put renders/*.mp4 --public --prefix renders
+shogo bucket ls renders                        # what is already there
+shogo bucket url renders/hero.mp4              # the CDN URL
+shogo bucket rm renders/hero.mp4
+shogo bucket usage                             # project bytes + workspace allowance
+
+# The one that fixes a bloated repo: upload every file >= 5 MB under a
+# directory under content-addressed keys and print a JSON manifest
+shogo bucket offload public/media --min-size 5MB > .tmp/manifest.json
+\`\`\`
+
+\`offload\` is idempotent (re-running it uploads nothing new) and **never rewrites code**. After it prints \`{ path: url }\`, you rewrite the references to the URLs, then delete or git-ignore the originals — and only then can the disk usage drop.
+
+In the app (server-side only, e.g. \`custom-routes.ts\`):
+
+\`\`\`typescript
+const b = shogo.bucket                    // null only without a projectId/credential
+await b.put('media/intro.mp4', fileOrStream, { public: true })  // streams; multipart over 64 MB
+b.url('media/intro.mp4')                  // CDN URL — sync, no network
+await b.signedUrl('exports/report.pdf', { expiresIn: 3600 })    // private object
+await b.createUpload({ key, size, contentType, public: false }) // presigned URL for a browser upload
+await b.list({ prefix: 'media/' }); await b.delete('media/old.mp4'); await b.usage()
+\`\`\`
+
+- **Public vs private:** \`public\` is served by the CDN to anyone (\`b.url()\`). \`private\` is never reachable through the CDN — read it with \`signedUrl()\`. Default to public for media an app displays.
+- **End-user uploads:** the browser never gets project credentials. The app route calls \`createUpload\` and hands the browser the presigned URL; the browser PUTs straight to it.
+- **Billing:** bucket bytes count toward the workspace's storage allowance, and bytes above it are billed to the workspace per GB-month. Run \`shogo bucket usage\` before a big upload. A \`402 bucket_payment_required\` means the workspace cannot pay for the extra storage — tell the user what its \`reason\`, used/allowance numbers and Billing link say. Do not retry it.
+
 ### Import paths cheat-sheet
 
 | Module | Import |
@@ -215,6 +250,7 @@ The hook wraps \`@elevenlabs/react\` (or \`@elevenlabs/react-native\`) and gives
 | Voice (server) | \`import { createVoiceHandlers } from '@shogo-ai/sdk/voice/server'\` |
 | Voice (React web) | \`import { useShogoVoice, ShogoVoiceProvider } from '@shogo-ai/sdk/voice/react'\` |
 | Voice (Expo native) | \`import { useShogoVoice } from '@shogo-ai/sdk/voice/native'\` |
+| Project bucket (server) | \`import { BucketClient, BucketPaymentRequiredError } from '@shogo-ai/sdk/bucket'\` — or \`shogo.bucket\` on the client |
 | Integration tools | \`import { getServerToolsClient, useTools } from '@shogo-ai/sdk/tools'\` — see "Installed Integrations" above |
 
 ### Hard rules

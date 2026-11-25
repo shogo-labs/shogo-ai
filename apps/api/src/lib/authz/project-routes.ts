@@ -54,6 +54,7 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
     paths: [
       '/auth-config', '/auth-users/:userId', '/preferred-instance',
       '/github', '/github/authorize', '/github/connect',
+      '/channels/whatsapp/connect-link',
     ],
     permission: 'project.settings:manage',
   },
@@ -63,6 +64,12 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
     paths: ['/auth-config', '/auth-users', '/github/authorize', '/agent-proxy/agent/config'],
     permission: 'project.settings:manage',
   },
+  // The project bucket (SHO-491): the agent's `shogo bucket` CLI and the app's
+  // `shogo.bucket` SDK both go through these. Listing, metadata, read URLs and
+  // usage are reads; minting an upload, finishing it, aborting it and deleting
+  // an object are writes.
+  { methods: ['GET', 'HEAD'], paths: ['/bucket/objects', '/bucket/objects/*', '/bucket/usage'], permission: 'project:read' },
+  { methods: ['POST', 'PUT', 'DELETE'], paths: ['/bucket/uploads', '/bucket/uploads/*', '/bucket/objects/*'], permission: 'project:update' },
   // Direct database access and terminal state are editor tools, not reads.
   { methods: 'any', paths: ['/database/proxy', '/database/proxy/*'], permission: 'project:update' },
   { methods: ['GET'], paths: ['/database/url', '/terminal/sessions', '/terminal/commands'], permission: 'project:update' },

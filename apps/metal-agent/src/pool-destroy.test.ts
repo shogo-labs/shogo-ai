@@ -120,7 +120,7 @@ describe('pool.destroy / getProjectStatus', () => {
     const store = new FakeStore('test-id')
     const { pool, cfg } = makePool(dir, store)
     const a = seed(cfg, 'p1')
-    pool.rehydrate()
+    await pool.rehydrate()
 
     const report = await pool.destroy('p1')
     expect(report.removedLocal).toBe(true)
@@ -146,7 +146,7 @@ describe('pool.destroy / getProjectStatus', () => {
     // store=none path: no durable copy to remove.
     const { pool, cfg } = makePool(dir, { kind: 'none' } as unknown as SnapshotStore)
     seed(cfg, 'p1')
-    pool.rehydrate()
+    await pool.rehydrate()
     const report = await pool.destroy('p1')
     expect(report.removedLocal).toBe(true)
     expect(report.removedDurable).toBe(false)
@@ -156,7 +156,7 @@ describe('pool.destroy / getProjectStatus', () => {
     const store = new FakeStore('test-id')
     const { pool, cfg } = makePool(dir, store)
     seed(cfg, 'p1')
-    pool.rehydrate()
+    await pool.rehydrate()
 
     expect(pool.getProjectStatus('p1')).toMatchObject({ exists: true, ready: false, replicas: 0, state: 'suspended' })
     expect(pool.getProjectStatus('nope')).toEqual({ exists: false, ready: false, replicas: 0, state: 'none' })

@@ -207,9 +207,42 @@ export {
   DEFAULT_LFS_BUDGET_GB,
   lfsBudgetBytes,
   lfsOverBudget,
-  pruneLfsBudget,
+  lfsPushedTips,
+  evictLfsOverBudget,
+  type LfsEvictionResult,
+  lfsStats,
+  resetLfsStats,
+  type LfsStats,
+  withLfsLock,
+  listLocalLfsObjects,
+  lfsStoreBytes,
+  lfsObjectsDir,
+  headLfsObjectIds,
+  readManagedAttributePaths,
   type LfsRemoteConfig,
+  lfsTrackedPaths,
+  lfsPointerText,
+  findLfsPointerFiles,
+  materializeLfsPointersFromStore,
+  lfsObjectStoreFromEnv,
+  openLfsObjectStream,
+  etagMatches,
+  type LfsObjectStore,
+  type LfsPointerFile,
+  type LfsMaterializeResult,
+  type LfsObjectReadResult,
 } from './lfs'
+
+export {
+  S3_MULTIPART_THRESHOLD_BYTES,
+  S3_MULTIPART_PART_BYTES,
+  objectExists,
+  putFileToObjectStore,
+  headObject,
+  stampObjectMetadata,
+  isObjectNotFound,
+  type S3ObjectStore,
+} from './s3-object'
 
 export {
   isShogoRuntimeState,
@@ -343,7 +376,6 @@ export {
   usesMetroBundler,
   stackSeedsItself,
   isDockerTechStack,
-  getMinimumInstanceSize,
   getDeclaredPorts,
   type StackTarget,
   type StackRegistryEntry,
@@ -401,6 +433,7 @@ export {
 
 export {
   isContentHashedFilename,
+  sharedStaticAssetCacheControl,
   staticAssetCacheControl,
   shouldServeSpaFallback,
 } from './static-asset-cache'
@@ -445,8 +478,10 @@ export {
   quoteLiteral,
   buildSeedSql,
   countSeedRows,
+  dropOrphanedSeedRows,
   PublishSchemaError,
   type PublishSchema,
+  type SeedOrphan,
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
@@ -463,8 +498,15 @@ export {
   publishedImageRepository,
   publishedImageRepositoryOf,
   publishedImageTag,
+  publishedImageCommitTag,
   publishedImageTagRef,
   publishedImageDigestRef,
   isDigestPinnedImageRef,
   digestOfImageRef,
 } from './published-image-ref'
+
+export {
+  WHATSAPP_GRAPH_VERSION,
+  WHATSAPP_API_BASE,
+  verifyMetaSignature,
+} from './whatsapp-graph'

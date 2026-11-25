@@ -1229,7 +1229,7 @@ export default observer(function AllProjectsPage() {
                   'w-6 h-6 rounded border-2 items-center justify-center',
                   isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40',
                 )}>
-                  {isSelected && <Check size={14} color="#fff" />}
+                  {isSelected && <Check className="text-primary-foreground" size={14} />}
                 </View>
               </Pressable>
             )}
@@ -1389,7 +1389,7 @@ export default observer(function AllProjectsPage() {
           accessibilityLabel="Create your first project"
           className="flex-row items-center gap-2 bg-primary px-4 py-2 rounded-lg"
         >
-          <Plus size={16} color="#fff" />
+          <Plus className="text-primary-foreground" size={16} />
           <Text className="text-sm font-medium text-primary-foreground">Create project</Text>
         </Pressable>
       </View>
@@ -1419,7 +1419,7 @@ export default observer(function AllProjectsPage() {
               comfortable ? 'min-h-11 px-4' : 'h-10 px-3',
             )}
           >
-            <Plus size={comfortable ? 18 : 16} color="#fff" />
+            <Plus className="text-primary-foreground" size={comfortable ? 18 : 16} />
             <Text className={cn('font-semibold text-primary-foreground', comfortable ? 'text-sm' : 'text-xs')}>
               New project
             </Text>
@@ -2319,7 +2319,7 @@ export default observer(function AllProjectsPage() {
                     ? 'bg-primary border-primary'
                     : 'bg-primary/60 border-primary/60',
                 )}>
-                  <Check size={12} color="#fff" />
+                  <Check className="text-primary-foreground" size={12} />
                 </View>
                 <Text className="text-sm font-medium text-foreground">
                   {selectedIds.size} selected

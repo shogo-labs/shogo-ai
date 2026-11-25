@@ -19,7 +19,7 @@
  * Run: bun test apps/api/src/routes/__tests__/ai-proxy-streaming.test.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeAll, beforeEach, afterEach, mock } from 'bun:test'
 import {
   fetchAnthropicWithRetry,
   wrapSseForErrorVisibility,
@@ -27,10 +27,14 @@ import {
   parseRetryAfter,
   isRetryableNetworkError,
   proxyAnthropicStream,
+  proxyOpenAIStream,
+  proxySseWithEarlyHeaders,
+  __setEarlySseTimingForTests,
   type StreamErrorPayload,
   type ChatCompletionRequest,
   type ModelConfig,
 } from '../ai-proxy'
+import { ensureModelRegistryLoaded } from '../../services/model-registry.service'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -542,5 +546,497 @@ describe('proxyAnthropicStream → OpenAI conversion (usage relay + thinking)', 
 
     // The opaque thinking signature must never leak into the OpenAI stream.
     expect(sse).not.toContain('SIG-should-be-dropped')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Early SSE headers — SHO-517
+//
+// Cloudflare drops any request that has produced no response headers within
+// 125s (HTTP 524). A provider that is slow to its first byte (Gemini on a
+// 150k–340k context writing a whole file in one tool call) used to leave the
+// proxy silent for longer than that, so the client got HTML and the turn ended
+// with "the tool budget for this turn closed".
+//
+// The invariant is "headers before the provider answers", not the absolute
+// number, so the tests below prove it as *ordering*: the provider's fetch is a
+// gate the test holds open, and the proxy must answer while that gate is still
+// closed (SHO-547). Comparing elapsed time against the sleep length we chose
+// ourselves only raced the event loop — on a loaded runner the same test passed
+// at 120.98ms and failed at 246ms, and the merge queue dropped three PRs.
+// ──────────────────────────────────────────────────────────────────────────────
+
+const EARLY_GRACE_MS = 20
+const EARLY_KEEPALIVE_MS = 10
+
+/**
+ * Long enough that no regression-free run reaches it, short enough that a
+ * regression fails the test instead of hanging until bun's 5s timeout.
+ */
+const TEST_DEADLINE_MS = 3_000
+
+/**
+ * A regression must fail with its own message, never hang the suite. This is a
+ * deadlock guard, not a timing assertion: nothing under test races this number.
+ */
+function withDeadline<T>(work: Promise<T>, what: string, ms = TEST_DEADLINE_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`waited ${ms}ms for ${what} — the proxy is waiting on the provider`)),
+      ms,
+    )
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (err) => { clearTimeout(timer); reject(err) },
+    )
+  })
+}
+
+async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  let out = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) out += TD.decode(value, { stream: true })
+  }
+  return out
+}
+
+/**
+ * A provider whose first byte the test releases by hand. `settled()` stays
+ * false until `release()`/`fail()` is called, so "the client already has
+ * headers" and "the provider has said nothing yet" can be asserted together.
+ */
+function controllableFetch(response: () => Response) {
+  let calls = 0
+  let settled = false
+  let release!: () => void
+  let fail!: (err: unknown) => void
+  const gate = new Promise<Response>((resolve, reject) => {
+    release = () => {
+      settled = true
+      try {
+        resolve(response())
+      } catch (err) {
+        reject(err)
+      }
+    }
+    fail = (err) => {
+      settled = true
+      reject(err)
+    }
+  })
+  return {
+    /** `startUpstream` for proxySseWithEarlyHeaders, or a scriptFetch step. */
+    start: (_signal?: AbortSignal): Promise<Response> => {
+      calls++
+      return gate
+    },
+    calls: () => calls,
+    /** Has the provider answered at all? */
+    settled: () => settled,
+    release,
+    fail,
+  }
+}
+
+/** Resolves with `response` only after `delayMs`, i.e. slower than the grace. */
+function slowFetch(response: () => Response, delayMs: number) {
+  return () => new Promise<Response>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        resolve(response())
+      } catch (err) {
+        reject(err)
+      }
+    }, delayMs)
+  })
+}
+
+const ANTHROPIC_FULL_SSE =
+  'event: message_start\n' +
+  'data: {"type":"message_start","message":{"usage":{"input_tokens":40}}}\n\n' +
+  'event: content_block_start\n' +
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+  'event: content_block_delta\n' +
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"SPLIT_FILE_OK"}}\n\n' +
+  'event: message_delta\n' +
+  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n' +
+  'event: message_stop\n' +
+  'data: {"type":"message_stop"}\n\n'
+
+describe('early SSE headers keep a slow provider inside the edge timeout (SHO-517)', () => {
+  const origFetch = globalThis.fetch
+  // The Gemini path reads the model registry, and its first touch starts a
+  // cold Prisma load that can stall the event loop for 100ms+ on a CI runner.
+  // Servers prime the registry at startup; do the same here so the timed
+  // assertions measure header latency, not that one-off load.
+  beforeAll(async () => {
+    await ensureModelRegistryLoaded()
+  })
+  afterEach(() => {
+    globalThis.fetch = origFetch
+    __setEarlySseTimingForTests()
+  })
+
+  const anthropicRequest: ChatCompletionRequest = {
+    model: 'claude-opus-4-8',
+    messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+    stream: true,
+  }
+  const anthropicConfig: ModelConfig = {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
+  }
+
+  test('Anthropic: 200 text/event-stream goes out while the provider is still silent, keepalives flow, then the real stream', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const provider = controllableFetch(
+      () => new Response(ANTHROPIC_FULL_SSE, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    )
+    scriptFetch([provider.start])
+
+    const completions: Array<{ input: number; output: number }> = []
+    const res = await withDeadline(
+      proxyAnthropicStream(anthropicRequest, 'k', anthropicConfig, (input, output) => {
+        completions.push({ input, output })
+      }),
+      'response headers while the provider is still silent',
+    )
+
+    // The whole point, as ordering rather than a stopwatch: the provider was
+    // asked and has not answered, yet the client already holds a 200 SSE head.
+    expect(provider.calls()).toBe(1)
+    expect(provider.settled()).toBe(false)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+
+    provider.release()
+    const sse = await withDeadline(collect(res.body!), 'the provider stream to finish')
+    expect(sse).toContain(': keepalive')
+    expect(sse).toContain('SPLIT_FILE_OK')
+    expect(sse).toContain('data: [DONE]')
+    // Billing still runs exactly once, when the deferred stream completes.
+    expect(completions).toEqual([{ input: 40, output: 9 }])
+  })
+
+  test('OpenAI-compatible (Google): same early headers on the Gemini path', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const googleSse =
+      'data: {"choices":[{"delta":{"content":"GEMINI_OK"},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n' +
+      'data: [DONE]\n\n'
+    const provider = controllableFetch(
+      () => new Response(googleSse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    )
+    scriptFetch([provider.start])
+
+    const usageCalls: number[][] = []
+    const res = await withDeadline(
+      proxyOpenAIStream(
+        {
+          model: 'gemini-4-carbon',
+          messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+          stream: true,
+        },
+        'k',
+        { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+        (input, output) => usageCalls.push([input, output]),
+      ),
+      'response headers while the provider is still silent',
+    )
+
+    expect(provider.calls()).toBe(1)
+    expect(provider.settled()).toBe(false)
+    expect(res.status).toBe(200)
+
+    provider.release()
+    const sse = await withDeadline(collect(res.body!), 'the provider stream to finish')
+    expect(sse).toContain(': keepalive')
+    expect(sse).toContain('GEMINI_OK')
+    // A completed OpenAI stream must not be mistaken for a truncation.
+    expect(sse).not.toContain('upstream_truncated')
+    expect(usageCalls).toEqual([[11, 4]])
+  })
+
+  test('a provider that 500s after the early headers produces exactly one retryable frame (OpenAI dialect)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      slowFetch(
+        () => new Response('{"error":{"message":"overloaded"}}', { status: 500, headers: { 'Content-Type': 'application/json' } }),
+        80,
+      ),
+      { providerLabel: 'google', dialect: 'openai' },
+    )
+
+    expect(res.status).toBe(200)
+    const sse = await collect(res.body!)
+    const frames = sse.split('\n\n').filter((block) => block.includes('"stream_error"'))
+    expect(frames).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_5xx]')
+    // An OpenAI SDK throws on a `data: {"error": …}` chunk — that is the shape.
+    expect(frames[0]).toStartWith('data: {"type":"error"')
+    expect(frames[0]).not.toContain('event: error')
+  })
+
+  test('a 403 after the early headers is one non-retryable frame (Anthropic dialect)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      slowFetch(
+        () => new Response('{"error":{"message":"Your credit balance is too low"}}', { status: 403, headers: { 'Content-Type': 'application/json' } }),
+        80,
+      ),
+      { providerLabel: 'anthropic', dialect: 'anthropic' },
+    )
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=false;code=upstream_rejected]')
+    expect(sse).toContain('event: error')
+    expect(sse).toContain('credit balance is too low')
+  })
+
+  test('a connection that closes after the early headers produces one retryable network frame', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      () => new Promise<Response>((_resolve, reject) => {
+        setTimeout(() => reject(new TypeError('fetch failed')), 80)
+      }),
+      { providerLabel: 'google', dialect: 'openai' },
+    )
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=network_drop]')
+  })
+
+  test('a 429 answered inside the grace window keeps its real status (no early headers)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    // A rate limit is surfaced as a thrown provider error, which the route
+    // relays with the real 429 (see the chat-completions catch block). The
+    // Anthropic leg is not used here: `fetchAnthropicWithRetry` backs off and
+    // re-issues a 429, so the retry — not the first answer — is what the client
+    // would see arrive.
+    scriptFetch([new Response('{"error":{"message":"rate limited"}}', {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    })])
+
+    await expect(
+      proxyOpenAIStream(
+        { model: 'gemini-4-carbon', messages: [{ role: 'user', content: 'hi' }], stream: true },
+        'k',
+        { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+      ),
+    ).rejects.toThrow(/google API error \(429\)/)
+  })
+
+  test('a 400 answered inside the grace window keeps its real status (no early headers)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      async () => new Response('{"error":{"message":"bad request"}}', {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      { providerLabel: 'anthropic', dialect: 'anthropic' },
+    )
+
+    // Passed straight through: no 200, no SSE, no synthetic frame.
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('bad request')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SHO-529: flush the early headers at the grace window, and bound the wait for
+// a provider that never answers.
+//
+// Live evidence from SHO-517's check: the "early" 200 actually reached the
+// client at 25.3s (10s grace + one 15s keepalive tick, because Bun writes no
+// response head until the first body chunk), and a provider that never answered
+// left the stream open until some hop reset it — 300s of plain-text `request
+// timeout` on staging, a bare ECONNRESET at 465.7s through the desktop — with no
+// typed frame for the agent to act on.
+//
+// Windows are scaled down here (tens of ms) exactly as in the SHO-517 block: the
+// invariants are "the first byte goes out with the headers" and "the cap fires
+// before anything else does", not the absolute numbers. The flush is proven as
+// ordering too (SHO-547): a keepalive interval far beyond the test's reach and a
+// provider the test still holds open leave the flush as the only possible source
+// of that first chunk.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('early SSE: flush at the grace window, then cap the wait for headers (SHO-529)', () => {
+  const origFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = origFetch
+    __setEarlySseTimingForTests()
+  })
+
+  /** Resolves after `delayMs`, then rejects the way an aborted fetch does. */
+  function neverAnswer(): { start: (signal: AbortSignal) => Promise<Response>; aborted: () => boolean } {
+    let aborted = false
+    return {
+      start: (signal: AbortSignal) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted = true
+            reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }))
+          })
+        }),
+      aborted: () => aborted,
+    }
+  }
+
+  test('Anthropic: the first body chunk is a keepalive that lands with the headers, not one keepalive later', async () => {
+    const GRACE = 20
+    // Far longer than this test can take, so an interval tick cannot be what
+    // produces the first chunk — only the flush written with the head can.
+    const KEEPALIVE = 60_000
+    __setEarlySseTimingForTests({ graceMs: GRACE, keepaliveMs: KEEPALIVE })
+    const provider = controllableFetch(
+      () => new Response(ANTHROPIC_FULL_SSE, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    )
+    scriptFetch([provider.start])
+
+    const res = await withDeadline(
+      proxyAnthropicStream(
+        {
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+          stream: true,
+        },
+        'k',
+        { provider: 'anthropic', apiModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8' },
+      ),
+      'response headers while the provider is still silent',
+    )
+    expect(res.status).toBe(200)
+
+    // Bun sends no response head until a body chunk exists, so the head is
+    // really out only once this read resolves — and with the provider still
+    // silent and the next keepalive a minute away, this chunk can only be the
+    // one that went out with the head.
+    const reader = res.body!.getReader()
+    const first = await withDeadline(reader.read(), 'the first body chunk after the head')
+    expect(provider.settled()).toBe(false)
+    expect(TD.decode(first.value!)).toContain(': keepalive')
+
+    provider.release()
+    const rest = await withDeadline(drain(reader), 'the provider stream to finish')
+    expect(rest).toContain('SPLIT_FILE_OK')
+  })
+
+  test('OpenAI-compatible (Google): same immediate flush on the Gemini path', async () => {
+    const GRACE = 20
+    const KEEPALIVE = 60_000
+    __setEarlySseTimingForTests({ graceMs: GRACE, keepaliveMs: KEEPALIVE })
+    const googleSse =
+      'data: {"choices":[{"delta":{"content":"GEMINI_OK"},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n' +
+      'data: [DONE]\n\n'
+    const provider = controllableFetch(
+      () => new Response(googleSse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    )
+    scriptFetch([provider.start])
+
+    const res = await withDeadline(
+      proxyOpenAIStream(
+        {
+          model: 'gemini-4-carbon',
+          messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+          stream: true,
+        },
+        'k',
+        { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+      ),
+      'response headers while the provider is still silent',
+    )
+    expect(res.status).toBe(200)
+
+    const reader = res.body!.getReader()
+    const first = await withDeadline(reader.read(), 'the first body chunk after the head')
+    expect(provider.settled()).toBe(false)
+    expect(TD.decode(first.value!)).toContain(': keepalive')
+
+    provider.release()
+    const rest = await withDeadline(drain(reader), 'the provider stream to finish')
+    expect(rest).toContain('GEMINI_OK')
+  })
+
+  test('a provider that never answers gets exactly one upstream_timeout frame at the cap, and its fetch is aborted', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    const upstream = neverAnswer()
+
+    const res = await proxySseWithEarlyHeaders(upstream.start, {
+      providerLabel: 'google',
+      dialect: 'openai',
+    })
+    expect(res.status).toBe(200)
+
+    const sse = await collect(res.body!)
+    const frames = sse.split('\n\n').filter((block) => block.includes('"stream_error"'))
+    expect(frames).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_timeout]')
+    // The instruction the agent needs: the call that never started is too big.
+    expect(sse).toContain('Split large tool calls (e.g. write_file then append).')
+    // The upstream request does not keep running in the background.
+    expect(upstream.aborted()).toBe(true)
+    // Keepalives still flowed before the cap.
+    expect(sse).toContain(': keepalive')
+  })
+
+  test('the cap writes the Anthropic dialect too (event: error)', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    const upstream = neverAnswer()
+
+    const res = await proxySseWithEarlyHeaders(upstream.start, {
+      providerLabel: 'anthropic',
+      dialect: 'anthropic',
+    })
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('event: error')
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_timeout]')
+  })
+
+  test('a stream that starts before the cap is never cut, however long it then runs', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    // Headers at 100ms (before the 150ms cap), then 4 chunks × 60ms = 240ms of
+    // body — well past it.
+    scriptFetch([() => new Promise<Response>((resolve) => {
+      setTimeout(() => {
+        resolve(new Response(
+          sseStreamFrom([
+            'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"STILL"}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"_ALIVE"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ], { delayMsBetween: 60 }),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        ))
+      }, 100)
+    })])
+
+    const startedAt = Date.now()
+    const res = await proxyAnthropicStream(
+      {
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        stream: true,
+      },
+      'k',
+      { provider: 'anthropic', apiModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8' },
+      () => {},
+    )
+
+    const sse = await collect(res.body!)
+    expect(Date.now() - startedAt).toBeGreaterThan(150)
+    expect(sse).toContain('STILL')
+    expect(sse).toContain('_ALIVE')
+    expect(sse).not.toContain('upstream_timeout')
+    expect(sse).not.toContain('[shogo:retryable=')
   })
 })

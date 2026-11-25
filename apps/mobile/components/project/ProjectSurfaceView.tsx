@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { observer } from "mobx-react-lite";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RefreshCw } from "lucide-react-native";
 import { useAgentUrl } from "@shogo/shared-app/hooks";
 import { CanvasWebView } from "../canvas/CanvasWebView";
@@ -21,9 +20,11 @@ import {
   resolveCanvasGate,
 } from "../../lib/preview-gate";
 import { usePreviewGateTimers, usePreviewPhase } from "../../lib/use-preview-phase";
+import type { ProjectSurface } from "../../lib/project-surface-route";
 import { useWorkspaceBudgetToast } from "./WorkspaceBudgetNotice";
+import { Spinner } from '@/components/ui/spinner'
 
-export type ProjectSurface = "canvas" | "files" | "plans" | "settings";
+export type { ProjectSurface };
 
 function GateMessage({
   title,
@@ -176,7 +177,7 @@ function ProjectCanvasSurface({
   if (gate === "waiting-runtime") {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="mt-3 text-center text-sm text-muted-foreground">
           Connecting to agent runtime…
         </Text>
@@ -193,7 +194,7 @@ function ProjectCanvasSurface({
       : "Starting canvas…";
   return (
     <View className="flex-1 items-center justify-center px-6">
-      <ActivityIndicator size="large" />
+      <Spinner size="large" />
       <Text className="mt-3 text-center text-sm text-muted-foreground">{phaseLabel}</Text>
       {statusErrors >= 2 && lastStatusError && (
         <Text className="mt-2 text-center text-xs text-muted-foreground/70">
@@ -207,16 +208,15 @@ function ProjectCanvasSurface({
 export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   projectId,
   surface = "canvas",
-  padTopInset = false,
   header,
+  headerHeight = 0,
 }: {
   projectId: string | undefined;
   surface?: ProjectSurface;
-  /** Keep the surface below the status bar. Only for the full-screen route:
-   * the side pane already sits under its own header. */
-  padTopInset?: boolean;
   /** Rendered above the surface, below the status bar inset. */
   header?: ReactNode;
+  /** Height of a floating header, so the surface starts below the glass. */
+  headerHeight?: number;
 }) {
   const {
     agentUrl,
@@ -227,7 +227,6 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
     retry: retryRuntime,
   } = useAgentUrl(API_URL ?? "", projectId ?? "");
   useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
-  const insets = useSafeAreaInsets();
 
   const panel = useMemo(() => {
     if (!projectId) return null;
@@ -268,20 +267,20 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   if (!projectId) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     );
   }
 
   return (
-    <View
-      className="flex-1 bg-background"
-      style={padTopInset ? { paddingTop: insets.top } : undefined}
-    >
+    <View className="flex-1 bg-background">
       {header}
       {/* The files panel is absolutely filled, so it needs a parent of its own
-          for the padding above to apply. */}
-      <View className="flex-1">{panel}</View>
+          for the padding above to apply. A floating header sits over the
+          content, so the content clears it here. */}
+      <View className="flex-1" style={headerHeight ? { paddingTop: headerHeight } : undefined}>
+        {panel}
+      </View>
     </View>
   );
 });

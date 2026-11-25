@@ -143,7 +143,7 @@ export function withCrossWorkspaceParam<T extends AgentTool>(tool: T, ctx: ToolC
         workspace: {
           type: 'string',
           description:
-            'Another workspace you own or belong to: its name ("Samsara Game"), slug or id. Reads need no approval; every write asks the person first. An ambiguous name comes back with the candidates — pass one of their names or ids.',
+            'Another workspace you own or belong to: its name ("Samsara Game"), slug or id. Reads need no approval; every write asks the person first. An ambiguous name comes back with the candidates — pass one of their names or ids. A workspace that runs on a paired desktop may answer `device_connecting` with `retryAfterSeconds` while that desktop opens its connection: wait that long and call once more. `device_offline` means the machine is away — do not retry.',
         },
       },
     },
@@ -224,15 +224,21 @@ export async function resolveTargetWorkspace(
 
 function allow(w: CrossWorkspaceTargetSummary, callerWorkspaceId: string): ResolveTargetResult {
   if (!w.reachable) {
+    // `desktop_hosted` is a transport fact about *this* machine, not about the
+    // host's health (SHO-493). Whether the host is up is the API's answer to
+    // give, on the call it tries to forward — `device_offline` with its
+    // `lastSeenAt` — so nothing here guesses at it.
     const code =
       w.unreachableReason === 'desktop_hosted'
-        ? 'desktop_offline'
+        ? 'desktop_hosted'
         : w.unreachableReason === 'cloud_signed_out'
           ? 'cloud_signed_out'
           : 'cloud_unreachable'
     const why =
       w.unreachableReason === 'desktop_hosted'
-        ? `"${w.name}" runs on a desktop, and cross-workspace calls only reach it from that desktop itself.`
+        ? `"${w.name}" runs on ${w.host?.name ? `the desktop ${w.host.name}` : 'a paired desktop'}, which a call from here can only reach through Shogo Cloud${
+            w.host?.lastSeenAt ? ` (that desktop was last seen ${w.host.lastSeenAt})` : ''
+          }.`
         : `Shogo Cloud isn't reachable right now, so "${w.name}" can't be read from here.`
     return { ok: false, code, error: why }
   }

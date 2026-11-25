@@ -81,6 +81,8 @@ const prismaApi: any = {
     findFirst: async ({ where }: any) => subscriptions.find((s) => matches(s, where)) ?? null,
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async ({ where }: any) => assessments.get(where.userId) ?? null,
     findFirst: async ({ where }: any) => assessmentRows().find((r) => matches(r, where)) ?? null,
     count: async ({ where }: any) => assessmentRows().filter((r) => matches(r, where)).length,

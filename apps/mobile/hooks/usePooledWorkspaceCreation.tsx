@@ -27,11 +27,12 @@ import { setActiveWorkspaceId } from "../lib/workspace-store";
 import { useWorkspacePlans } from "./useWorkspacePlans";
 import {
   selectPooledWorkspaceParent,
+  selectAtCapWorkspaceParent,
   type PooledWorkspaceCandidate,
 } from "./pooledWorkspaceParent";
 
 /** Server rejections that mean "this user can't pool here; offer checkout instead". */
-const CHECKOUT_FALLBACK_CODES = new Set(["forbidden", "plan_required"]);
+const CHECKOUT_FALLBACK_CODES = new Set(["forbidden", "plan_required", "workspace_limit_reached"]);
 
 export function usePooledWorkspaceCreation({
   workspaces,
@@ -61,6 +62,10 @@ export function usePooledWorkspaceCreation({
   const parent = useMemo(
     () => selectPooledWorkspaceParent(workspaces, currentWorkspaceId, plans),
     [currentWorkspaceId, plans, workspaces],
+  );
+  const atCapParent = useMemo(
+    () => !parent ? selectAtCapWorkspaceParent(workspaces, currentWorkspaceId, plans) : null,
+    [currentWorkspaceId, parent, plans, workspaces],
   );
 
   const showError = useCallback(
@@ -134,5 +139,5 @@ export function usePooledWorkspaceCreation({
     ],
   );
 
-  return { parent, createPooledWorkspace };
+  return { parent, atCapParent, plans, createPooledWorkspace };
 }

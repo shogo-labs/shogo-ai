@@ -42,6 +42,7 @@ export const MIRROR_MODELS: readonly string[] = [
   'ProjectFolder',
   'ProjectAttachment',
   'ProjectCheckpoint',
+  'ProjectBucketObject',
   'AgentConfig',
   'ProjectAgent',
   'WorkspaceAgentProfile',
@@ -152,6 +153,7 @@ const NEVER_CREDENTIALS = [
   'SlackProjectRoutingRule',
   'ChatInstallation',
   'ChatIdentityLink',
+  'WhatsAppNumberBinding', // Meta business token; cloud owns the platform webhook
   'Invitation',
   'InviteLink',
   'WorkspaceGrant',
@@ -161,6 +163,7 @@ const NEVER_CREDENTIALS = [
   'PushSubscription',
   'MobilePushSubscription',
   'Notification', // the desktop's own inbox
+  'DeviceActiveDay',
   'DeviceVersionEvent',
   'SignupAttribution',
 ] as const
@@ -203,6 +206,10 @@ const NEVER_BILLING = [
   // is written where the row lives, so the Course board and its gate work on a
   // desktop but lesson progress is read from the cloud panel.
   'CourseEnrollment',
+  // learn.shogo.ai progress and badges: per person (no workspace), written only
+  // by the cloud /api/learn routes, so a desktop reads them from the cloud.
+  'LearnLessonCompletion',
+  'LearnBadge',
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',
@@ -223,6 +230,7 @@ const NEVER_BILLING = [
 
 const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
+  'AbuseFlag', // the cloud's trust-and-safety ban record
   'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
   'EventDelivery',
@@ -308,12 +316,27 @@ const NEVER_LIVE_CALL = [
   'HuddleWake', // which transcript line already woke the agent, for the call in progress
 ] as const
 
+// Shogo Mail: mail is received (provider webhook / IMAP poll) and sent by the
+// instance that holds the domain at its provider, and an IMAP account's password
+// must never travel. The mailbox's conversation and its messages still mirror.
+const NEVER_MAIL = [
+  'MailDomain',
+  'Mailbox',
+  'MailThread',
+  'MailMessage',
+  'MailSender',
+  'MailRule',
+  'MailSuppression',
+  'MailAccount',
+] as const
+
 const NEVER_REASONS: Array<[readonly string[], string]> = [
   [NEVER_CREDENTIALS, 'credentials, sign-in or identity linkage'],
   [NEVER_BILLING, 'billing, metering or marketplace money'],
   [NEVER_CLOUD_PLATFORM, 'cloud platform data (registry, events, social, evals)'],
   [NEVER_MACHINE_LOCAL, 'machine-local run state or derived index'],
   [NEVER_LIVE_CALL, 'live call signalling state'],
+  [NEVER_MAIL, 'mail is served by the instance that holds the domain at its provider'],
 ]
 
 /** `Model → why it never leaves the machine`. */

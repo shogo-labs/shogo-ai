@@ -84,16 +84,24 @@ function chatsPanel(page: Page) {
 }
 
 /**
- * Reveal the rows the panel keeps behind "Show more" — it renders five at a
- * time, so a chat seeded as three hours old sits below the fold.
+ * Reveal every row the panel will draw. The list grows as the panel nears its
+ * end (SHO-530 dropped the "Show more" row), so this scrolls the panel to its
+ * bottom until no new rows arrive.
  */
 async function expandChats(page: Page): Promise<void> {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const more = chatsPanel(page).getByLabel(/^Show more chats for/).first();
-    if ((await more.count()) === 0 || !(await more.isVisible())) return;
-    // The list re-renders as rows page in; a click that lands mid-render is not
-    // an error, the next pass sees the button again.
-    await more.click({ timeout: 5_000 }).catch(() => undefined);
+  const rows = chatsPanel(page).getByLabel(/^Chat: /);
+  let previous = -1;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const drawn = await rows.count();
+    if (drawn === previous) return;
+    previous = drawn;
+    await chatsPanel(page).evaluate((node) => {
+      let scroller: HTMLElement | null = node as HTMLElement;
+      while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+        scroller = scroller.parentElement;
+      }
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
     await page.waitForTimeout(200);
   }
 }
@@ -545,7 +553,7 @@ test.describe("workspace chat row state (local)", () => {
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Open chat sessions" }).click();
+    await page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ }).click();
     await expect(page.getByText("Chats", { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(
       page.getByLabel(`Chat: ${pinned.name}`, { exact: true }).getByLabel("Pinned").first(),

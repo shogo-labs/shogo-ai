@@ -3,7 +3,7 @@
 /**
  * Materialize the `workspace:*` `@shogo-ai/*` pins in a shipped/installed
  * copy of the runtime template (or an SDK example) into a concrete
- * `^X.Y.Z` range.
+ * `X.Y.Z` version — always exact, never a `^X.Y.Z` range (SHO-522).
  *
  * Why this exists
  * ---------------
@@ -17,35 +17,53 @@
  * `EUNSUPPORTEDPROTOCOL Unsupported URL Type "workspace:"`.
  *
  * So every boundary that ships the template to a pod or installs it
- * standalone runs this script first to rewrite `workspace:*` -> `^X.Y.Z`.
+ * standalone runs this script first to rewrite `workspace:*` -> `X.Y.Z`.
  *
- * Where X.Y.Z comes from — and the "SDK released first" guarantee
- * ----------------------------------------------------------------
- * The version is resolved from npm's `latest` dist-tag via
- * `npm view <name> version` (the exact approach proven in
- * .github/workflows/publish-shogo-worker.yml). Because the pin is read
- * *from* the registry, this script can only ever write a version that is
- * already published. That is the mechanism that makes "the SDK gets
- * released first" true by construction — there is no separate publish gate
- * to race. If `packages/sdk` has been bumped to a version that is not yet
- * on npm, the template simply pins the previous published version until
- * the SDK lands, never an unresolvable pin.
+ * Why EXACT, not `^X.Y.Z`
+ * -----------------------
+ * A caret range is resolved against npm *at install time*, so a pod or a
+ * publish build installing from an image that pinned `^2.6.0` silently got
+ * 2.6.1 the moment it was published — including the broken 2.6.1 that shipped
+ * without `bin/bucket-cli.mjs` (SHO-511). With an exact pin, the SDK a pod
+ * installs is the one its image was released with: a bad npm release cannot
+ * reach running apps until an image that pins it is released, and that image
+ * build runs the tarball gate (SHO-512).
+ *
+ * Where X.Y.Z comes from
+ * ----------------------
+ * 1. **Release-tag builds** pass the tag's own version (`SHOGO_SDK_PIN_VERSION`
+ *    / `--pin-version`). The SDK for a tag is published by `publish-sdk.yml`
+ *    *at the same time* as the image build starts, so the version may not be
+ *    on npm yet: `waitForPublishedVersion()` polls the registry until that
+ *    exact version appears (default 20 min) and the build FAILS if it never
+ *    does. It never falls back to `latest`, so a tag image can never pin the
+ *    previous release again (the v2.6.1 image pinned `^2.6.0`).
+ * 2. **Everything else** (main/staging pushes, local builds) resolves npm's
+ *    `latest` dist-tag, so the pin is always a version that is already
+ *    published.
  *
  * Offline / local-dev fallback
  * ----------------------------
- * `npm view` needs network. When it fails AND `ALLOW_UNPUBLISHED_SDK_PIN`
+ * Resolution needs network. When it fails AND `ALLOW_UNPUBLISHED_SDK_PIN`
  * is set, we fall back to the in-repo `packages/<pkg>/package.json` version
  * and emit a loud warning (the pin is unverified against npm). CI builds,
  * where the published-first guarantee matters, run online and never set the
- * flag, so they can never silently ship an unpublished pin.
+ * flag, so they can never silently ship an unpublished pin. The fallback is
+ * never used for an explicit `--pin-version` (a release must fail loudly
+ * instead of pinning something npm does not serve).
  *
  * Usage
  * -----
  *   bun run scripts/materialize-runtime-template.ts [<pkgJsonPath> ...]
+ *   bun run scripts/materialize-runtime-template.ts --pin-version 2.6.1 [<pkgJsonPath> ...]
+ *   bun run scripts/materialize-runtime-template.ts --wait-for @shogo-ai/sdk@2.6.1
+ *   bun run scripts/materialize-runtime-template.ts --print-pin @shogo-ai/sdk
  *
  * With no args it defaults to `templates/runtime-template/package.json`.
  * Each caller (bundle-api.mjs, copy-runtime-template-to-dist.ts, Docker/VM
  * builds) passes the concrete manifest it is about to ship or install.
+ * `SHOGO_SDK_PIN_VERSION` is honoured as an alternative to `--pin-version`
+ * so a Docker `ARG` can reach the script without rewriting the RUN line.
  *
  * Idempotent: a manifest with no `@shogo-ai/* : workspace:*` deps is left
  * untouched (no-op), so it is safe to run on an already-materialized copy.
@@ -61,9 +79,20 @@ const REPO_ROOT = resolve(__dirname, '..')
 
 const DEP_KEYS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const
 
+/** The one package a release pins to its own tag version. */
+export const SDK_PACKAGE = '@shogo-ai/sdk'
+
+const DEFAULT_WAIT_TIMEOUT_MS = 20 * 60 * 1000
+const DEFAULT_WAIT_POLL_MS = 15 * 1000
+
 const versionCache = new Map<string, string>()
 
 const NPM_REGISTRY = (process.env.npm_config_registry || 'https://registry.npmjs.org').replace(/\/+$/, '')
+
+function encodeName(name: string): string {
+  // Scoped names must be URL-encoded (@shogo-ai/sdk -> @shogo-ai%2Fsdk).
+  return name.replace('/', '%2F')
+}
 
 /**
  * Latest published version from the npm registry's `latest` dist-tag, fetched
@@ -73,9 +102,8 @@ const NPM_REGISTRY = (process.env.npm_config_registry || 'https://registry.npmjs
  */
 async function fetchLatestFromRegistry(name: string): Promise<string> {
   try {
-    // Scoped names must be URL-encoded (@shogo-ai/sdk -> @shogo-ai%2Fsdk).
-    const url = `${NPM_REGISTRY}/${name.replace('/', '%2F')}`
-    const res = await fetch(url, { headers: { accept: 'application/json' } })
+    const url = `${NPM_REGISTRY}/${encodeName(name)}`
+    const res = await fetch(url, { headers: { accept: 'application/json', 'cache-control': 'no-cache' } })
     if (!res.ok) return ''
     const body = (await res.json()) as { 'dist-tags'?: Record<string, string> }
     return body['dist-tags']?.latest ?? ''
@@ -94,6 +122,127 @@ function npmViewVersion(name: string): string {
   } catch {
     return ''
   }
+}
+
+/** True once the registry serves that exact version. Never cached — that is the whole point. */
+async function isPublishedOnRegistry(name: string, version: string): Promise<boolean> {
+  try {
+    // The per-version document is immutable once published (unlike the
+    // packument, whose CDN copy lagged long enough for v2.6.0/v2.6.1's
+    // `npm install --prefer-online` to keep answering ETARGET). Cache-busted
+    // so neither Bun's fetch cache nor an intermediate proxy can hide it.
+    const url = `${NPM_REGISTRY}/${encodeName(name)}/${version}?ts=${Date.now()}`
+    const res = await fetch(url, {
+      headers: { accept: 'application/json', 'cache-control': 'no-cache', pragma: 'no-cache' },
+      cache: 'no-store',
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export interface WaitForVersionOptions {
+  /** Total time to keep polling. Default 20 min (SHOGO_SDK_WAIT_TIMEOUT_MS). */
+  timeoutMs?: number
+  /** Delay between polls. Default 15s (SHOGO_SDK_WAIT_POLL_MS). */
+  pollIntervalMs?: number
+  /** Injectable probe so tests never touch the network. */
+  probe?: (name: string, version: string) => Promise<boolean>
+  /** Injectable clock/sleep so tests run instantly. */
+  sleep?: (ms: number) => Promise<void>
+}
+
+export interface WaitForVersionResult {
+  name: string
+  version: string
+  attempts: number
+  waitedMs: number
+}
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+/**
+ * Wait until the npm registry serves that **exact** version of a package.
+ *
+ * This is the fix for the release race (SHO-522): `publish-sdk.yml`'s smoke
+ * check went red on v2.6.0 and v2.6.1 because it started installing
+ * `@shogo-ai/sdk@<version>` seconds after `npm publish` returned, while the
+ * registry's packument still answered `ETARGET`. Polling the immutable
+ * per-version document is the reliable readiness signal.
+ *
+ * Throws — loudly, with the deadline in the message — when the version never
+ * appears. Callers must treat that as a failure; falling back to another
+ * version is exactly the bug this replaced.
+ */
+export async function waitForPublishedVersion(
+  name: string,
+  version: string,
+  opts: WaitForVersionOptions = {},
+): Promise<WaitForVersionResult> {
+  const timeoutMs = opts.timeoutMs ?? envMs('SHOGO_SDK_WAIT_TIMEOUT_MS', DEFAULT_WAIT_TIMEOUT_MS)
+  const pollIntervalMs = opts.pollIntervalMs ?? envMs('SHOGO_SDK_WAIT_POLL_MS', DEFAULT_WAIT_POLL_MS)
+  const probe = opts.probe ?? isPublishedOnRegistry
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+
+  const startedAt = Date.now()
+  let attempts = 0
+  // Always probe at least once, even with a zero timeout.
+  while (attempts === 0 || Date.now() - startedAt < timeoutMs) {
+    attempts++
+    if (await probe(name, version)) {
+      const waitedMs = Date.now() - startedAt
+      console.log(
+        `[materialize-runtime-template] ${name}@${version} is on npm ` +
+          `(after ${attempts} probe${attempts === 1 ? '' : 's'}, ${Math.round(waitedMs / 1000)}s)`,
+      )
+      return { name, version, attempts, waitedMs }
+    }
+    const elapsed = Date.now() - startedAt
+    if (elapsed >= timeoutMs) break
+    if (attempts === 1 || attempts % 4 === 0) {
+      console.log(
+        `[materialize-runtime-template] npm does not serve ${name}@${version} yet ` +
+          `(attempt ${attempts}, ${Math.round(elapsed / 1000)}s elapsed) — retrying in ${Math.round(pollIntervalMs / 1000)}s`,
+      )
+    }
+    await sleep(Math.min(pollIntervalMs, Math.max(0, timeoutMs - elapsed)))
+  }
+
+  const waited = Math.round((Date.now() - startedAt) / 1000)
+  throw new Error(
+    `[materialize-runtime-template] npm never served ${name}@${version} within ${waited}s ` +
+      `(${attempts} probe${attempts === 1 ? '' : 's'}). The release cannot pin a version npm does not ` +
+      `have — check the publish-sdk job for that tag, then re-run. Refusing to fall back to "latest": ` +
+      `that is what pinned the previous release's SDK (v2.6.1 image pinned ^2.6.0).`,
+  )
+}
+
+export interface MaterializeOptions {
+  /**
+   * Pin `@shogo-ai/sdk` to exactly this version (a release tag's version)
+   * instead of resolving npm `latest`, after waiting for npm to serve it.
+   * Defaults to `SHOGO_SDK_PIN_VERSION` when set.
+   */
+  pinVersion?: string
+  /** Forwarded to `waitForPublishedVersion` for the pin. */
+  waitTimeoutMs?: number
+  waitPollIntervalMs?: number
+  /** Injectable readiness probe (tests). */
+  probe?: (name: string, version: string) => Promise<boolean>
+  /** Injectable sleep (tests). */
+  sleep?: (ms: number) => Promise<void>
+}
+
+function resolvePin(explicit?: string): string {
+  const raw = explicit ?? process.env.SHOGO_SDK_PIN_VERSION ?? ''
+  const pin = raw.trim().replace(/^v/, '')
+  return pin
 }
 
 /**
@@ -160,8 +309,13 @@ type VersionResolver = (name: string) => string | Promise<string>
  * @param pkgJsonPath manifest to rewrite in place.
  * @param resolveFn   version resolver (defaults to the npm-registry resolver).
  *                    Injectable so tests can avoid network access.
+ * @param opts        pin override for release-tag builds (see `pinVersion`).
  */
-export async function materialize(pkgJsonPath: string, resolveFn: VersionResolver = resolveVersion): Promise<boolean> {
+export async function materialize(
+  pkgJsonPath: string,
+  resolveFn: VersionResolver = resolveVersion,
+  opts: MaterializeOptions = {},
+): Promise<boolean> {
   const abs = isAbsolute(pkgJsonPath) ? pkgJsonPath : resolve(process.cwd(), pkgJsonPath)
   if (!existsSync(abs)) {
     throw new Error(`[materialize-runtime-template] manifest not found: ${abs}`)
@@ -169,6 +323,24 @@ export async function materialize(pkgJsonPath: string, resolveFn: VersionResolve
 
   const raw = readFileSync(abs, 'utf8')
   const pkg = JSON.parse(raw)
+
+  const pin = resolvePin(opts.pinVersion)
+  const hasSdkWorkspaceDep = DEP_KEYS.some((key) => {
+    const spec = pkg[key]?.[SDK_PACKAGE]
+    return typeof spec === 'string' && spec.startsWith('workspace:')
+  })
+  // Wait for the release's own SDK before touching the manifest, so a build
+  // that never gets it fails before it writes a partial pin.
+  let pinnedVersion: string | null = null
+  if (pin && hasSdkWorkspaceDep) {
+    await waitForPublishedVersion(SDK_PACKAGE, pin, {
+      timeoutMs: opts.waitTimeoutMs,
+      pollIntervalMs: opts.waitPollIntervalMs,
+      probe: opts.probe,
+      sleep: opts.sleep,
+    })
+    pinnedVersion = pin
+  }
 
   let changed = false
   for (const key of DEP_KEYS) {
@@ -184,10 +356,12 @@ export async function materialize(pkgJsonPath: string, resolveFn: VersionResolve
             `is not an @shogo-ai/* package — cannot materialize to a published version.`,
         )
       }
-      const version = await resolveFn(name)
-      deps[name] = `^${version}`
+      const version = name === SDK_PACKAGE && pinnedVersion ? pinnedVersion : await resolveFn(name)
+      // Exact, deliberately: a range would be re-resolved against npm at
+      // install time and could pick up a newer (possibly broken) release.
+      deps[name] = version
       changed = true
-      console.log(`[materialize-runtime-template] ${name}: ${spec} -> ^${version} (${abs})`)
+      console.log(`[materialize-runtime-template] ${name}: ${spec} -> ${version} (${abs})`)
     }
   }
 
@@ -212,11 +386,68 @@ export async function materialize(pkgJsonPath: string, resolveFn: VersionResolve
   return changed
 }
 
+interface CliArgs {
+  targets: string[]
+  pinVersion?: string
+  waitFor: { name: string; version: string }[]
+  printPin?: string
+  waitTimeoutMs?: number
+  waitPollIntervalMs?: number
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  const args: CliArgs = { targets: [], waitFor: [] }
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    const next = () => {
+      const v = argv[++i]
+      if (!v) throw new Error(`[materialize-runtime-template] ${arg} needs a value`)
+      return v
+    }
+    if (arg === '--pin-version') args.pinVersion = next()
+    else if (arg === '--print-pin') args.printPin = next()
+    else if (arg === '--timeout-ms') args.waitTimeoutMs = Number(next())
+    else if (arg === '--poll-ms') args.waitPollIntervalMs = Number(next())
+    else if (arg === '--wait-for') {
+      const spec = next()
+      const at = spec.lastIndexOf('@')
+      if (at <= 0) throw new Error(`[materialize-runtime-template] --wait-for expects <name>@<version>, got "${spec}"`)
+      args.waitFor.push({ name: spec.slice(0, at), version: spec.slice(at + 1) })
+    } else if (arg.startsWith('-')) {
+      throw new Error(`[materialize-runtime-template] unknown flag ${arg}`)
+    } else {
+      args.targets.push(arg)
+    }
+  }
+  return args
+}
+
 async function main(): Promise<void> {
-  const args = process.argv.slice(2)
-  const targets = args.length > 0 ? args : [join(REPO_ROOT, 'templates', 'runtime-template', 'package.json')]
-  for (const target of targets) {
-    await materialize(target)
+  const args = parseArgs(process.argv.slice(2))
+
+  for (const { name, version } of args.waitFor) {
+    await waitForPublishedVersion(name, version, {
+      timeoutMs: args.waitTimeoutMs,
+      pollIntervalMs: args.waitPollIntervalMs,
+    })
+  }
+
+  if (args.printPin) {
+    // Repo-independent: used by workflows to learn the exact pin a main-push
+    // build will write, so it can be stamped on the image as a label.
+    const version = await resolveVersion(args.printPin)
+    process.stdout.write(`${version}\n`)
+  }
+
+  if (args.targets.length > 0 || (!args.printPin && args.waitFor.length === 0)) {
+    const targets = args.targets.length > 0 ? args.targets : [join(REPO_ROOT, 'templates', 'runtime-template', 'package.json')]
+    for (const target of targets) {
+      await materialize(target, resolveVersion, {
+        pinVersion: args.pinVersion,
+        waitTimeoutMs: args.waitTimeoutMs,
+        waitPollIntervalMs: args.waitPollIntervalMs,
+      })
+    }
   }
 }
 

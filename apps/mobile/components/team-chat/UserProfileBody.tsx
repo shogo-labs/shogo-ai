@@ -9,7 +9,7 @@
  * frame it.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native'
+import { Pressable, ScrollView, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
 import { Check, Clock, Copy, Headphones, Mail, MessageSquare, ShieldCheck } from 'lucide-react-native'
@@ -22,6 +22,8 @@ import { joinHuddleCall } from '../../lib/huddle-call'
 import { directConversations } from '../../lib/dm-list'
 import { UserAvatar } from './UserAvatar'
 import { openConversationTarget } from '../../lib/team-chat-nav'
+import { LearnProfileSection } from '../learn/LearnProfileSection'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -132,7 +134,7 @@ export function UserProfileBody({
         {failed ? (
           <Text className="px-6 text-center text-sm text-muted-foreground">Couldn’t load this profile.</Text>
         ) : (
-          <ActivityIndicator />
+          <Spinner />
         )}
       </View>
     )
@@ -204,6 +206,8 @@ export function UserProfileBody({
       ) : null}
 
       {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
+
+      <LearnProfileSection learn={card.learn} isSelf={card.isSelf} name={card.id} />
 
       <View className="gap-1">
         <Text className="text-[11px] font-semibold uppercase text-muted-foreground">Contact information</Text>

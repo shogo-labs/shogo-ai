@@ -67,4 +67,12 @@ export interface IngestMetersResult {
   idleSeconds: number
   /** Rows the agent sent with an unusable shape (an error, not a retry). */
   invalid: number
+  /**
+   * Rows whose reported increase exceeded the wall clock since their last
+   * heartbeat (or the 3600 s an hour row can hold) and were scaled back. Every
+   * clamp is also logged.
+   */
+  clamped: number
+  /** Rows that threw an unexpected error during metering (triggers no-ack). */
+  failed: number
 }

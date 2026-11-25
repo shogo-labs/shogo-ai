@@ -34,6 +34,38 @@ let publishedEnvs: Row[] = []
 let deployments: Row[] = []
 const substratePublishes: Array<{ projectId: string; subdomain: string; serverBacked: boolean }> = []
 
+/**
+ * Just enough of Prisma's `where` matcher for the conditional claims SHO-542
+ * makes with `updateMany`: an `OR` over a status column and its timestamp.
+ */
+function matchesClaimWhere(row: Row, where: Row): boolean {
+  if (!where.OR) return true
+  return (where.OR as Row[]).some((cond) => {
+    for (const [field, test] of Object.entries(cond)) {
+      const value = row[field]
+      if (test === null) {
+        if (value !== null && value !== undefined) return false
+        continue
+      }
+      const op = test as Row
+      if ('notIn' in op) {
+        if ((op.notIn as any[]).includes(value)) return false
+        continue
+      }
+      if ('in' in op) {
+        if (!(op.in as any[]).includes(value)) return false
+        continue
+      }
+      if ('lt' in op) {
+        if (value == null || new Date(value as any).getTime() >= new Date(op.lt as any).getTime()) return false
+        continue
+      }
+      return false
+    }
+    return true
+  })
+}
+
 const prismaApi = {
   project: {
     findUnique: async ({ where, select }: any) => {
@@ -72,6 +104,19 @@ const prismaApi = {
       if (!row) throw new Error(`no project ${where.id}`)
       Object.assign(row, data)
       return { ...row }
+    },
+    // SHO-542's in-flight lease: the claim is ONE conditional statement so two
+    // API pods cannot both start. Modelling the count is what makes the fake
+    // refuse a second publish the way the real row does.
+    updateMany: async ({ where, data }: any) => {
+      let count = 0
+      for (const row of Object.values(rows)) {
+        if (where.id && row.id !== where.id) continue
+        if (!matchesClaimWhere(row, where)) continue
+        Object.assign(row, typeof data === 'function' ? data(row) : data)
+        count++
+      }
+      return { count }
     },
   },
   localConfig: {

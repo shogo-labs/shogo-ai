@@ -37,6 +37,12 @@ import { startMachineSync, stopMachineSync } from './lib/machine-sync/local-sync
 import { registerLocalShutdownHandler } from './lib/local-shutdown'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
+import { installProcessErrorHandlers } from './lib/process-error-handlers'
+
+// Before anything else: Bun exits on an unhandled rejection, so without these a
+// single escaped promise from the dispatcher kills the desktop API and the
+// supervisor restarts it into the same failure (SHO-482).
+installProcessErrorHandlers('LocalAPI')
 
 const API_PORT = resolveLocalApiPort()
 // Desktop provisions SECRETS_ENCRYPTION_KEY at API-bootstrap time; docker and

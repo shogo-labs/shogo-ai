@@ -20,6 +20,7 @@
 
 import { prisma } from '../lib/prisma'
 import { PROJECT_CALL_MESSAGE_AGENT } from '@shogo/shared-runtime/project-call-chat'
+import { agentChatMessageWhere } from './agent-chat.service'
 import { classifyAudience, type MessageAudience } from '../lib/engagement-compute'
 
 const db = prisma as any
@@ -238,18 +239,9 @@ export async function getMemberMessages(
     ...belowCursor(cursor),
   }
   const agentChatWhere = {
-    role: 'user',
-    agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+    ...agentChatMessageWhere(workspaceId, userId),
     ...(Object.keys(window).length ? { createdAt: window } : {}),
     ...belowCursor(cursor),
-    AND: [
-      {
-        session: {
-          OR: [{ workspaceId }, { project: { workspaceId } }],
-        },
-      },
-      { OR: [{ authorUserId: userId }, { authorUserId: null, session: { createdByUserId: userId } }] },
-    ],
   }
 
   // The audience filter is computed, not stored, so a filtered export reads in

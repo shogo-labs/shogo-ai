@@ -229,7 +229,7 @@ export function modelSupportsAudioInput(id: string): boolean {
 }
 
 /**
- * Whether a model accepts `video_url` content blocks natively (see
+ * Whether a model accepts video input natively (see
  * `ModelCapabilities.supportsVideoInput`). Unknown/unrated models (incl.
  * DB-defined and OpenRouter models not in the static catalog) return
  * `false` — callers must not send video bytes to them.
@@ -342,20 +342,82 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-6-sol':     { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 10.00 },
   'gpt-6-luna':    { inputPerMillion: 0.10,  cacheWritePerMillion: 0.125, cachedInputPerMillion: 0.01, outputPerMillion: 0.50 },
   'gpt-live-1':    { inputPerMillion: 0, cacheWritePerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
-  // Google-published rates (ai.google.dev/gemini-api/docs/pricing, Oct 2026).
+  // Google-published rates (ai.google.dev/gemini-api/docs/pricing, Nov 2026).
   // Gemini caches implicitly and has no cache-write charge, so the write rate
   // is the 1.25x-of-input convention the OpenAI buckets use. `gemini-3-1-pro`
   // is the ≤200k-input tier; above 200k Google charges $4/$18, which this flat
   // shape cannot express — the catalog entry caps its `contextWindow` at 200k
   // so that tier is never served.
-  'gemini-3-1-pro':        { inputPerMillion: 2.00, cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20,  outputPerMillion: 12.00 },
-  // Argon is $2/$10/$0.10 until 2026-11-30, then $4/$20/$0.20. Same treatment
-  // as 3.8 Flash below: bill the rate Google charges today.
-  'gemini-4-argon':        { inputPerMillion: 2.00, cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.10,  outputPerMillion: 10.00 },
-  // Promotional rates through 2026-12-31; on 2027-01-01 they double to
-  // $1.50 in / $7.50 out / $0.15 cached.
-  'gemini-3-8-flash':      { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 3.75 },
-  'gemini-3-5-flash-lite': { inputPerMillion: 0.30, cacheWritePerMillion: 0.375, cachedInputPerMillion: 0.03,  outputPerMillion: 2.50 },
+  'gemini-3-1-pro':        { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,   cachedInputPerMillion: 0.20,  outputPerMillion: 12.00 },
+  // Carbon and Argon are $2/$10/$0.10 until 2026-11-30 (2026-12-01T08:00Z),
+  // then $4/$20/$0.20. The step is in MODEL_PRICE_STEPS; `getModelDollarCosts`
+  // picks the right rate for the current time. These base entries bill the
+  // pre-step rate for any call that cannot supply an `at` date.
+  'gemini-4-argon':        { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,   cachedInputPerMillion: 0.10,  outputPerMillion: 10.00 },
+  // Carbon is $2/$10/$0.10 until 2026-11-30, then $4/$20/$0.20 (same step).
+  'gemini-4-carbon':       { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,   cachedInputPerMillion: 0.10,  outputPerMillion: 10.00 },
+  // Neon: $3/$15/$0.15, no price step.
+  'gemini-4-neon':         { inputPerMillion: 3.00,  cacheWritePerMillion: 3.75,   cachedInputPerMillion: 0.15,  outputPerMillion: 15.00 },
+  // Hydrogen: $1.50/$7.50/$0.075, no price step.
+  'gemini-4-hydrogen':     { inputPerMillion: 1.50,  cacheWritePerMillion: 1.875,  cachedInputPerMillion: 0.075, outputPerMillion: 7.50  },
+  // Flash: promotional rates through 2026-12-31; on 2027-01-01 they step to
+  // $1.50/$7.50/$0.15. The step is in MODEL_PRICE_STEPS.
+  'gemini-3-8-flash':      { inputPerMillion: 0.75,  cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 3.75  },
+  'gemini-3-5-flash-lite': { inputPerMillion: 0.30,  cacheWritePerMillion: 0.375,  cachedInputPerMillion: 0.03,  outputPerMillion: 2.50  },
+}
+
+/** Rates shape used by `MODEL_PRICE_STEPS` and `getModelDollarCosts`. */
+export type ModelPriceRates = {
+  inputPerMillion: number
+  cacheWritePerMillion: number
+  cachedInputPerMillion: number
+  outputPerMillion: number
+}
+
+/**
+ * Dated price steps for models whose published list price changes on a known
+ * date. Each entry is an array of `{ from: ISO-8601, rates }` objects, sorted
+ * ascending. `getModelDollarCosts` applies the latest step whose `from` is on
+ * or before the requested `at` time, falling back to `MODEL_DOLLAR_COSTS`.
+ *
+ * All UTC timestamps: Google price changes take effect at 2026-12-01T08:00Z
+ * (midnight PT = 00:00 PT = 08:00 UTC).
+ */
+export const MODEL_PRICE_STEPS: Partial<Record<BillingModel, Array<{ from: string; rates: ModelPriceRates }>>> = {
+  // Carbon & Argon: $2/$10/$0.10 until 2026-11-30, then $4/$20/$0.20.
+  'gemini-4-carbon': [
+    { from: '2026-12-01T08:00:00Z', rates: { inputPerMillion: 4.00, cacheWritePerMillion: 5.00, cachedInputPerMillion: 0.20, outputPerMillion: 20.00 } },
+  ],
+  'gemini-4-argon': [
+    { from: '2026-12-01T08:00:00Z', rates: { inputPerMillion: 4.00, cacheWritePerMillion: 5.00, cachedInputPerMillion: 0.20, outputPerMillion: 20.00 } },
+  ],
+  // Flash: promotional rates through 2026-12-31, then $1.50/$7.50/$0.15.
+  'gemini-3-8-flash': [
+    { from: '2027-01-01T08:00:00Z', rates: { inputPerMillion: 1.50, cacheWritePerMillion: 1.875, cachedInputPerMillion: 0.15, outputPerMillion: 7.50 } },
+  ],
+}
+
+/**
+ * Return the per-token cost rates for `billing` as of `at` (default: now).
+ *
+ * Checks `MODEL_PRICE_STEPS` first: if a step's `from` time is on or before
+ * `at`, the latest such step's rates are used; otherwise (or when no step
+ * exists) the flat `MODEL_DOLLAR_COSTS` entry is returned.
+ *
+ * **This is the single gateway to model pricing.** Every caller that used to
+ * read `MODEL_DOLLAR_COSTS[billing]` directly must go through here so dated
+ * price changes are automatically applied everywhere.
+ */
+export function getModelDollarCosts(billing: string, at: Date = new Date()): ModelPriceRates {
+  const steps = MODEL_PRICE_STEPS[billing as BillingModel]
+  if (steps && steps.length > 0) {
+    const atMs = at.getTime()
+    // Walk from most-recent to oldest; return first step whose `from` <= at.
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (Date.parse(steps[i]!.from) <= atMs) return steps[i]!.rates
+    }
+  }
+  return MODEL_DOLLAR_COSTS[billing as BillingModel] ?? MODEL_DOLLAR_COSTS.sonnet
 }
 
 /**
@@ -363,6 +425,8 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
  * Resolves the model to its billing bucket first.
  *
  * `inputTokens` = non-cached input. Pass cached/write counts separately.
+ * Pass `at` to price at a specific point in time (default: now), which lets
+ * callers or tests override the Dec-1 / Jan-1 price steps deterministically.
  */
 export function calculateDollarCost(
   modelOrAgentMode: string | undefined,
@@ -370,9 +434,10 @@ export function calculateDollarCost(
   outputTokens: number,
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
+  at: Date = new Date(),
 ): number {
   const billing = modelOrAgentMode ? getModelBillingModel(modelOrAgentMode) : 'sonnet'
-  const costs = MODEL_DOLLAR_COSTS[billing] ?? MODEL_DOLLAR_COSTS.sonnet
+  const costs = getModelDollarCosts(billing, at)
   return (
     (inputTokens * costs.inputPerMillion / 1_000_000) +
     (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +

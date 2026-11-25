@@ -38,6 +38,18 @@ const prismaApi = {
       if (projectRow && projectRow.id === where.id) Object.assign(projectRow, data)
       return { ...projectRow }
     },
+    // The in-flight lease (SHO-542): one row becomes `building` unless a publish
+    // for it is already running.
+    updateMany: async ({ where, data }: any) => {
+      if (!projectRow || projectRow.id !== where.id) return { count: 0 }
+      const inFlight = ['building', 'uploading', 'configuring'].includes(projectRow.publishStatus)
+      const at = (projectRow as any).publishStatusAt instanceof Date ? (projectRow as any).publishStatusAt.getTime() : 0
+      const stale = !at || Date.now() - at > 30 * 60_000
+      if (inFlight && !stale) return { count: 0 }
+      updateCalls.push({ where, data })
+      Object.assign(projectRow, data)
+      return { count: 1 }
+    },
   },
   publishedEnvironment: {
     findUnique: async () => (productionEnv ? { ...productionEnv } : null),
@@ -196,11 +208,19 @@ describe('republish always-on clamp', () => {
     return app.request('/projects/p1/republish', { method: 'POST' })
   }
 
+  /** The publish is accepted (202) and finished in the background (SHO-542). */
+  async function settle() {
+    for (let i = 0; i < 200 && projectRow?.publishStatus !== 'live'; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+
   it('clamps publishedAlwaysOn to false when no longer entitled', async () => {
     projectRow!.publishedAlwaysOn = true
     gateResult = { allowed: false, planAllows: true, allowance: 1, used: 1 }
     const res = await republish()
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
+    await settle()
     expect(projectRow?.publishedAlwaysOn).toBe(false)
   })
 
@@ -208,7 +228,8 @@ describe('republish always-on clamp', () => {
     projectRow!.publishedAlwaysOn = true
     gateResult = { allowed: true, planAllows: true, allowance: 2, used: 1 }
     const res = await republish()
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
+    await settle()
     expect(projectRow?.publishedAlwaysOn).toBe(true)
   })
 })

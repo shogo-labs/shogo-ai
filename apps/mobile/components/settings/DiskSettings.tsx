@@ -21,12 +21,13 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, Pressable, ScrollView } from 'react-native'
 import { useRouter } from 'expo-router'
 import { HardDrive, Minus, Plus } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type ProjectDiskState } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 interface DiskSettingsProps {
   /** Which drive this panel edits. */
@@ -106,7 +107,7 @@ export function DiskSettings({ scope, projectId, workspaceId, http }: DiskSettin
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center py-10">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -256,7 +257,7 @@ export function DiskSettings({ scope, projectId, workspaceId, http }: DiskSettin
             className={cn('rounded-md py-2 items-center', canSave ? 'bg-primary' : 'bg-muted')}
           >
             {saving ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Text className={cn('text-sm font-medium', canSave ? 'text-primary-foreground' : 'text-muted-foreground')}>
                 Save disk size

@@ -82,6 +82,46 @@ export const DEFAULT_PUBLISHED_SCALE: PublishedScaleSettings = {
   size: 's',
 }
 
+/**
+ * The max-scale a Postgres environment gets on its first publish (SHO-551 §F).
+ *
+ * Russell, 2026-11-24: "1 replica normally, scale out under load and during
+ * deploys." 1 is the floor the autoscaler returns to, not a ceiling — this is
+ * the ceiling, and it has to be above 1 or Knative can never start the second
+ * pod that a deploy (new revision ready before the old one drains) or a traffic
+ * spike needs.
+ */
+export const POSTGRES_DEFAULT_MAX_REPLICAS = 5
+
+/**
+ * The scale a published environment should run at after this publish.
+ *
+ * - SQLite: returned unchanged. Two replicas would serve two different
+ *   `prisma/dev.db` files, so those environments stay pinned to one pod.
+ * - Postgres, always-on: min-scale is at least 1; otherwise the plan's
+ *   scale-to-zero is preserved (min-scale 0).
+ * - Postgres, max-scale: raised to {@link POSTGRES_DEFAULT_MAX_REPLICAS} only
+ *   when it is still 1, so a value the user or the plan already set — including
+ *   the plan's own cap — is never overridden upward.
+ *
+ * Pure, so the decision can be tested without a database. The caller persists
+ * the result through `setEnvironmentScale`, which applies the plan cap and the
+ * local-state guard.
+ */
+export function postgresScaleTarget(
+  current: PublishedScaleSettings,
+  opts: { alwaysOn?: boolean; dbProvider: 'sqlite' | 'postgres'; defaultMaxReplicas?: number },
+): PublishedScaleSettings {
+  if (opts.dbProvider !== 'postgres') return current
+  const defaultMax = opts.defaultMaxReplicas ?? POSTGRES_DEFAULT_MAX_REPLICAS
+  return {
+    minReplicas:
+      opts.alwaysOn === true ? Math.max(current.minReplicas, 1) : Math.max(0, current.minReplicas),
+    maxReplicas: current.maxReplicas > 1 ? current.maxReplicas : defaultMax,
+    size: current.size,
+  }
+}
+
 export function normalizePublishedSize(value: unknown): PublishedSize {
   const v = typeof value === 'string' ? value.trim().toLowerCase() : ''
   return (PUBLISHED_SIZE_ORDER as string[]).includes(v) ? (v as PublishedSize) : 's'

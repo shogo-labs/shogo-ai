@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, isMirroredModel, MIRROR_MODELS } from './models'
 import { incomingWins } from './ingest-lww'
+import { announceLiveWrites, newLiveWrites, recordLiveWrite } from './live-events'
 
 export { incomingWins }
 import {
@@ -197,6 +198,51 @@ function filler(type: ScalarType): unknown {
   }
 }
 
+function isPlainObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+/**
+ * Every NUL byte removed, at any depth.
+ *
+ * SQLite stores `\u0000` in a text column; Postgres refuses it in `text`
+ * (`22021`) and, once a `Json` column is serialised, in `jsonb` too (`22P05`).
+ * One such value used to fail the whole page, and the desktop resends a failed
+ * page unchanged — so a machine's sync stopped for good (SHO-562). Object keys
+ * are cleaned as well, since a key reaches `jsonb` exactly like a value.
+ * `Date`, numbers, booleans, null and bytes are left alone; a `Bytes` column is
+ * never passed here, because a NUL in `bytea` is content.
+ */
+export function stripNul<T>(value: T): T {
+  return stripNulValue(value) as T
+}
+
+function stripNulValue(value: unknown): unknown {
+  if (typeof value === 'string') return value.includes('\u0000') ? value.replace(/\u0000/g, '') : value
+  if (Array.isArray(value)) {
+    let changed = false
+    const cleaned = value.map((item) => {
+      const clean = stripNulValue(item)
+      if (clean !== item) changed = true
+      return clean
+    })
+    return changed ? cleaned : value
+  }
+  if (value && typeof value === 'object' && isPlainObject(value)) {
+    let changed = false
+    const cleaned: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const cleanKey = stripNulValue(key) as string
+      const clean = stripNulValue(item)
+      if (cleanKey !== key || clean !== item) changed = true
+      cleaned[cleanKey] = clean
+    }
+    return changed ? cleaned : value
+  }
+  return value
+}
+
 /** Keep the columns the cloud has; drop the rest. Fill what a batch omitted. */
 export function normaliseRow(
   model: string,
@@ -207,6 +253,7 @@ export function normaliseRow(
   if (typeof id !== 'string' || !id) return null
 
   const out: Record<string, unknown> = {}
+  const fieldsByName = new Map(meta.model.fields.map((field) => [field.name, field]))
   const listFields = new Set(
     meta.model.fields.filter((field) => field.isList).map((field) => field.name),
   )
@@ -218,12 +265,16 @@ export function normaliseRow(
   for (const [key, value] of Object.entries(row)) {
     if (!meta.columns.has(key)) continue
     if (value === undefined) continue
+    // A NUL is damage in text and Json, but real content in `bytea` (SHO-562).
+    // Read from the schema, not from the value's shape: a `Bytes` column can
+    // arrive as text, and a `Json` column can arrive as anything.
+    const bytes = fieldsByName.get(key)?.typeName === 'Bytes'
     // The desktop's SQLite client JSON-parses some columns by name alone
     // (`create-prisma-client.ts`), so a column that is a plain String here can
     // arrive as an object or array — `Meeting.transcript` did, and every
     // snapshot from that machine died on it (PERF-12). Store the text form.
     if (stringFields.has(key) && value !== null && typeof value === 'object' && !(value instanceof Date)) {
-      out[key] = JSON.stringify(value)
+      out[key] = stripNul(JSON.stringify(value))
       continue
     }
     // A list column is an array on Postgres but a JSON string on the desktop;
@@ -231,13 +282,13 @@ export function normaliseRow(
     if (listFields.has(key) && !Array.isArray(value)) {
       try {
         const parsed = JSON.parse(String(value))
-        out[key] = Array.isArray(parsed) ? parsed : []
+        out[key] = Array.isArray(parsed) ? stripNul(parsed) : []
       } catch {
         out[key] = []
       }
       continue
     }
-    out[key] = value
+    out[key] = bytes ? value : stripNul(value)
   }
   for (const field of meta.required) {
     if (out[field.name] === undefined || out[field.name] === null) {
@@ -327,6 +378,34 @@ export function uniqueClashFields(err: unknown): string[] | null {
 }
 
 /**
+ * The Postgres SQLSTATE on a failed statement, or null.
+ *
+ * Postgres reports a value it cannot store as a *data exception* (SQLSTATE
+ * class `22`): `22021` for a NUL byte in `text`, `22P05` for one in `jsonb`,
+ * `22001` for an over-long value. The pg driver adapter hands it over on the
+ * error's `cause` (`{ code, originalCode }`), and Prisma's own codes (`P2002`, …)
+ * never look like one, so a clash is never mistaken for bad data.
+ */
+export function dataException(err: unknown): string | null {
+  return sqlStateOf(err, 0)
+}
+
+function sqlStateOf(value: unknown, depth: number): string | null {
+  if (!value || typeof value !== 'object' || depth > 5) return null
+  const node = value as Record<string, unknown>
+  for (const key of ['originalCode', 'code', 'sqlState']) {
+    const code = node[key]
+    if (typeof code === 'string' && /^22[0-9A-Za-z]{3}$/.test(code)) return code
+  }
+  const meta = node.meta as Record<string, unknown> | undefined
+  for (const child of [node.cause, meta, meta?.driverAdapterError]) {
+    const found = sqlStateOf(child, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/**
  * Write one row the host sent, resolving a clash with a cloud row that holds
  * the same natural key under another id: a channel the cloud seeded, or a
  * session↔project link the cloud made before the host's own arrived.
@@ -337,7 +416,8 @@ export function uniqueClashFields(err: unknown): string[] | null {
  * names two different rows, so the cloud row moves to the end instead.
  * A clash that cannot be resolved skips this one row; it never fails the batch,
  * because a failed batch is retried unchanged and stops every later row from
- * syncing.
+ * syncing. A row Postgres refuses as bad data (SQLSTATE 22) is skipped for the
+ * same reason (SHO-562).
  */
 export async function upsertHostRow(
   tx: any,
@@ -346,7 +426,7 @@ export async function upsertHostRow(
   recordId: string,
   row: Record<string, unknown>,
   mayTake: (holder: Record<string, unknown>) => Promise<boolean>,
-): Promise<'applied' | 'unique_clash' | 'not_hosted'> {
+): Promise<'applied' | 'unique_clash' | 'not_hosted' | 'invalid_row'> {
   const delegate = tx[delegateName(model)]
   if (typeof tx.$executeRawUnsafe !== 'function') {
     await delegate.upsert({ where: { id: recordId }, create: row, update: row })
@@ -362,7 +442,22 @@ export async function upsertHostRow(
     } catch (err) {
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT host_row')
       const fields = uniqueClashFields(err)
-      if (!fields || fields.includes('id')) throw err
+      if (!fields) {
+        // SQLite stores what Postgres refuses — a NUL byte, an over-long value,
+        // a bad numeric. The row comes across again the next time it changes on
+        // the desktop; the rest of the page still applies. Everything that is
+        // not bad data (an outage, a missing parent) still fails loudly.
+        const sqlState = dataException(err)
+        if (sqlState) {
+          const message = (err as { message?: string })?.message ?? String(err)
+          console.warn(
+            `[MachineSync] skipped ${model}/${recordId}: Postgres rejected the row (SQLSTATE ${sqlState}: ${message})`,
+          )
+          return 'invalid_row'
+        }
+        throw err
+      }
+      if (fields.includes('id')) throw err
       const where: Record<string, unknown> = { id: { not: recordId } }
       for (const field of fields) where[field] = row[field] ?? null
       const holder = (await delegate.findFirst({ where })) as Record<string, unknown> | null
@@ -511,6 +606,10 @@ export async function applyBatch(
   let deleted = 0
   let skipped = 0
   let newWorkspaces = 0
+  // Rows the cloud's screens have to hear about (SHO-486): written after the
+  // transaction commits, so a client never sees an event for a batch that rolled
+  // back. Synced rows are final — no mentions or wakes are derived from them.
+  const liveWrites = newLiveWrites()
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -627,6 +726,7 @@ export async function applyBatch(
             skipped++
             continue
           }
+          recordLiveWrite(liveWrites, entry.model, existing ? 'updated' : 'created', recordId, rewritten, existing)
           applied++
         }
       }
@@ -674,6 +774,11 @@ export async function applyBatch(
     if (failure) return failure
     throw err
   }
+
+  // After the commit, not inside it: a rolled-back batch must never have told
+  // anyone about a row. A hosted workspace's channel reply reaches the cloud's
+  // screens here (SHO-486).
+  await announceLiveWrites(liveWrites)
 
   return {
     ok: true,

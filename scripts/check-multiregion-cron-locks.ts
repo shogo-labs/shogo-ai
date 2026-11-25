@@ -105,6 +105,10 @@ const ANALYTICS_DIGEST_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/analytics-digest-collector.ts',
 )
+const ABUSE_CHECK_JOB_PATH = join(
+  REPO_ROOT,
+  'apps/api/src/lib/abuse-check-job.ts',
+)
 const GLOBAL_JOB_LOCK_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/global-job-lock.ts',
@@ -301,6 +305,13 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- project object storage (SHO-491) -----------------------------------
+  {
+    key: 'ProjectBucketObject.(key,projectId,visibility)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One object per key per visibility per project, written by `prisma.projectBucketObject.upsert` on this key from the upload-complete route; a project lives in one workspace and only requests pinned to that project write it, so the two regions never write the same row.',
+  },
   // --- native release (SHO-323) -------------------------------------------
   {
     key: 'NativeApp.projectId',
@@ -387,6 +398,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       '`region` is part of the unique key, so two regions can never mint the same key: the row written in US is (us-ashburn-1, device, version) and the one in EU is (eu-*, device, version). A peer\'s row is a second tag for the same (device, version) rather than a conflict, and the analytics reader collapses tags through a `Set` (analytics.service.ts adoption series). Before 2026-10-22 the key was (deviceId, version) — an insert/insert there aborts the apply worker, which is exactly what took `sub_from_us` down (SHO-142) and why this is no longer "a conflict is deduped by the unique index".',
+  },
+  {
+    key: 'DeviceActiveDay.(day,deviceId,region)',
+    category: 'request_scoped',
+    reason:
+      '`region` is part of the unique key, so two regions can never mint the same key: a device active in US writes (us-ashburn-1, device, day) and the same device active again from EU writes (eu-*, device, day). A peer row is a second tag for the same (device, day) rather than a conflict, and the analytics reader collapses tags per (device, day), keeping the newest `lastSeenAt` (analytics.service.ts getDeviceActivityTimeseries). Written from the same request paths that gate DeviceVersionEvent — heartbeat proxy touch, resolveApiKey and mint.',
   },
   {
     key: 'Huddle.roomName',
@@ -618,6 +635,16 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
   },
+  // --- WhatsApp Embedded Signup (SHO-463) ----------------------------------
+  {
+    key: 'WhatsAppNumberBinding.phoneNumberId',
+    category: 'external_global_id',
+    reason:
+      'channels-whatsapp.ts connect-link callback: upserts a binding keyed on the Meta-assigned phone_number_id. ' +
+      'The id is global and unique within Meta, assigned before the Shogo row is created. ' +
+      'Two concurrent inserts for the same number would require the same user to complete two Embedded Signup ' +
+      'flows for the same WABA number simultaneously — not a cron writer and not a cross-region leader-election path.',
+  },
   // --- Solo Founder course (SHO-428) ---------------------------------------
   {
     key: 'CourseEnrollment.stripeCheckoutSessionId',
@@ -630,6 +657,19 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'One enrollment per user per course, upserted by `soloFounderService.enroll()`; a user is homed to one region and both writers (`checkout.session.completed` and `customer.subscription.created`) resolve to that same home.',
+  },
+  // --- learn.shogo.ai progress + badges -------------------------------------
+  {
+    key: 'LearnLessonCompletion.(courseId,lessonId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Written only by the learner's own POST /api/learn/progress (+ /progress/import, /certificate). The route inserts missing rows and treats P2002 as already-done, so a cross-region retry converges on the one row; no cron writes it.",
+  },
+  {
+    key: 'LearnBadge.(badgeId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Awarded inside the learner's own learn request (progress, import, certificate, /me) after recomputing from their rows; insert-if-missing with P2002 ignored, so a duplicate award from a retry is a no-op. No cron writes it.",
   },
   {
     key: 'LiveSessionMeter.sessionId',
@@ -734,6 +774,14 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'creator-gamification.service.ts:189 creates; non-atomic check-then-create. P2 follow-up.',
+  },
+  // --- Abuse detection (SHO-459) -------------------------------------------
+  {
+    key: 'AbuseFlag.(category,runDate,userId)',
+    category: 'cron_locked',
+    reason:
+      'One flag per user per category per day, written only by runAbuseCheck which runs under withGlobalJobLock(abuse-check-daily); single-region scheduler (shouldScheduleAbuseCheck) pins to the main region.',
+    writer: 'abuse-check-daily',
   },
   // --- Native MLM affiliate program -----------------------------------------
   {
@@ -995,6 +1043,51 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'chat-providers/installations.ts linkIdentity upserts on the provider user id from a single user-initiated account-link callback.',
+  },
+  {
+    key: 'MailDomain.(domain,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Add-domain under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (workspace, domain).',
+  },
+  {
+    key: 'Mailbox.(domainId,localPart)',
+    category: 'single_tenant_upsert',
+    reason: 'Create-mailbox under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (domain, local part).',
+  },
+  {
+    key: 'Mailbox.conversationId',
+    category: 'request_scoped',
+    reason: 'The conversation is created in the same request that creates the mailbox (home region), so its id is fresh.',
+  },
+  {
+    key: 'MailThread.rootMessageId',
+    category: 'request_scoped',
+    reason: 'Written once when the thread root message is posted; inbound mail is forwarded to the workspace home region before it is stored (services/mail/mail-inbound.ts).',
+  },
+  {
+    key: 'MailMessage.(mailboxId,rfcMessageId)',
+    category: 'external_global_id',
+    reason: 'RFC Message-IDs are globally unique by construction (ours are <uuid@domain>); inbound replays are create-or-ignore in the home region.',
+  },
+  {
+    key: 'MailMessage.conversationMessageId',
+    category: 'request_scoped',
+    reason: 'Set in the same home-region request that posts the conversation message it describes.',
+  },
+  {
+    key: 'MailSender.(address,mailboxId)',
+    category: 'single_tenant_upsert',
+    reason: 'Screener decision upsert under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region).',
+  },
+  {
+    key: 'MailSuppression.(address,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Upserted by the provider event handler after the event is routed to the workspace home region, or by an admin under the mail routes.',
+  },
+  {
+    key: 'MailAccount.(address,mailboxId)',
+    category: 'single_tenant_upsert',
+    reason: 'Connect-account under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (mailbox, address).',
   },
   {
     key: 'ConversationMember.(conversationId,userId)',
@@ -1330,6 +1423,7 @@ function enumerateCronEntries(): CronEntry[] {
   const extras: Array<{ fn: string; file: string }> = [
     { fn: 'recalculateAllStorageUsage', file: STORAGE_SERVICE_PATH },
     { fn: 'generateDigest', file: ANALYTICS_DIGEST_PATH },
+    { fn: 'runAbuseCheck', file: ABUSE_CHECK_JOB_PATH },
   ]
   for (const extra of extras) {
     if (!existsSync(extra.file)) continue

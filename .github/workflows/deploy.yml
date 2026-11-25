@@ -73,6 +73,16 @@ on:
         required: false
         default: false
         type: boolean
+      emergency_skip_ci_gate:
+        description: 'Production only, outages: do not wait for the full CI suite (Lint, Typecheck, Test) on this commit. Requires emergency_reason. Combine with skip_staging_e2e_gate + force_rebuild_production for a hotfix branch.'
+        required: false
+        default: false
+        type: boolean
+      emergency_reason:
+        description: 'Required with emergency_skip_ci_gate: the incident and the PR being forced through (recorded on the run).'
+        required: false
+        default: ''
+        type: string
 
 # Production runs are serialized per ref here. Staging runs get a group of
 # their own so builds for successive commits overlap; the staging-rollout job
@@ -112,7 +122,35 @@ jobs:
       # run (which tested this exact commit on the queue's ref) and the push
       # run are re-read on every poll: a commit can arrive here while its
       # merge-queue run is still finishing.
+      - name: Emergency bypass of the CI gate
+        id: emergency
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.emergency_skip_ci_gate == 'true'
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          REASON: ${{ github.event.inputs.emergency_reason }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" != "production" ]; then
+            echo "::error::emergency_skip_ci_gate is production-only (staging deploys always wait for CI)"; exit 1
+          fi
+          if [ "${#REASON}" -lt 10 ]; then
+            echo "::error::emergency_skip_ci_gate needs emergency_reason (the incident and PR being forced through)"; exit 1
+          fi
+          echo "::warning title=CI gate bypassed::$ACTOR deployed $REF@${SHA:0:9} to production without waiting for CI: $REASON"
+          {
+            echo "## ⚠️ CI gate bypassed (emergency)"
+            echo ""
+            echo "- **Who:** $ACTOR"
+            echo "- **Ref:** \`$REF\` @ \`$SHA\`"
+            echo "- **Reason:** $REASON"
+            echo ""
+            echo "CI for this commit was still running or not yet green. Land the same change on main through the merge queue."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Wait for CI to pass for this commit
+        if: steps.emergency.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -237,6 +275,7 @@ jobs:
       docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
       base_tag: ${{ steps.set-matrix.outputs.base_tag }}
       promote: ${{ steps.set-matrix.outputs.promote }}
+      release_sdk_pin: ${{ steps.set-matrix.outputs.release_sdk_pin }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -260,6 +299,42 @@ jobs:
           IS_PRODUCTION: ${{ needs.setup.outputs.is_production }}
           FORCE_REBUILD_PRODUCTION: ${{ github.event.inputs.force_rebuild_production || 'false' }}
         run: |
+          # The SDK version a production release must ship (SHO-522). Releases
+          # publish `@shogo-ai/sdk@X.Y.Z` from the same `vX.Y.Z` tag, so the
+          # tag names the exact pin every runtime image of this release must
+          # carry. Empty on staging/main and on a non-release tag.
+          RELEASE_SDK_PIN=""
+          if [ "$IS_PRODUCTION" = "true" ] && [ "$IS_TAG_PUSH" = "true" ]; then
+            if [[ "$CURRENT_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+              RELEASE_SDK_PIN="${BASH_REMATCH[1]}"
+              echo "::notice::release tag $CURRENT_TAG — runtime images must pin @shogo-ai/sdk@$RELEASE_SDK_PIN"
+            fi
+          fi
+          echo "release_sdk_pin=$RELEASE_SDK_PIN" >> "$GITHUB_OUTPUT"
+
+          # Content-hash tag for the runtime base image. Hash exactly the
+          # inputs that define the base (the same files that drive
+          # runtime_base_changed above): Dockerfile.base, both Expo starter
+          # package.json files that feed the Bun prewarm, and the SDK
+          # examples. The base is built and pushed under
+          # shogo-runtime-base:<base_tag> only when this tag is absent in
+          # OCIR, and the runtime image is built FROM that exact tag. So the
+          # heavy base layers stay byte-identical until these inputs actually
+          # change (and a revert reuses the previously built tag).
+          #
+          # Computed for the promote path too: rebuild-release-runtime rebuilds
+          # the runtime chain on a tag and needs the same base (SHO-522).
+          BASE_HASH=$(
+            {
+              sha256sum packages/agent-runtime/Dockerfile.base \
+                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
+                        packages/agent-runtime/tech-stacks/expo-app/starter/package.json 2>/dev/null
+              find packages/sdk/examples -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null
+            } | sha256sum | cut -c1-16
+          )
+          echo "base_tag=base-$BASE_HASH" >> $GITHUB_OUTPUT
+          echo "Runtime base content tag: base-$BASE_HASH"
+
           # Production promotes the images staging already built and tested
           # for this commit (promote-images) instead of rebuilding them. Every
           # service gets the release tag; resolve-release-images.sh skips the
@@ -275,7 +350,6 @@ jobs:
               echo "docs_changed=true"
               echo "runtime_changed=true"
               echo "runtime_base_changed=false"
-              echo "base_tag="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -375,26 +449,6 @@ jobs:
           echo "runtime_changed=$RUNTIME_CHANGED" >> $GITHUB_OUTPUT
           echo "runtime_base_changed=$RUNTIME_BASE_CHANGED" >> $GITHUB_OUTPUT
           echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
-
-          # Content-hash tag for the runtime base image. Hash exactly the
-          # inputs that define the base (the same files that drive
-          # runtime_base_changed above): Dockerfile.base, both Expo starter
-          # package.json files that feed the Bun prewarm, and the SDK
-          # examples. The base is built and pushed under
-          # shogo-runtime-base:<base_tag> only when this tag is absent in
-          # OCIR, and the runtime image is built FROM that exact tag. So the
-          # heavy base layers stay byte-identical until these inputs actually
-          # change (and a revert reuses the previously built tag).
-          BASE_HASH=$(
-            {
-              sha256sum packages/agent-runtime/Dockerfile.base \
-                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
-                        packages/agent-runtime/tech-stacks/expo-app/starter/package.json 2>/dev/null
-              find packages/sdk/examples -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null
-            } | sha256sum | cut -c1-16
-          )
-          echo "base_tag=base-$BASE_HASH" >> $GITHUB_OUTPUT
-          echo "Runtime base content tag: base-$BASE_HASH"
 
           ENTRIES=""
           add_entry() {
@@ -564,12 +618,138 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          # On a release tag this pins the tag's own SDK and waits for npm to
+          # serve it (SHO-522); empty everywhere else, which pins npm `latest`.
+          build-args: |
+            SHOGO_SDK_PIN_VERSION=${{ needs.detect-changes.outputs.release_sdk_pin }}
           tags: |
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:latest
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:${{ github.sha }}
           # Durable in-region OCIR registry cache (see build-base-image).
           cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps
           cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps,mode=max,image-manifest=true,oci-mediatypes=true
+
+  # ===========================================================================
+  # Stage 1.6: Rebuild the release's runtime images for its own SDK (SHO-522)
+  # ===========================================================================
+  # A production deploy promotes images built on `main`, i.e. BEFORE the tag
+  # existed — so the promoted runtime chain pins whatever `@shogo-ai/sdk` was
+  # `latest` then, which for a release is the PREVIOUS release's SDK. That is
+  # how the v2.6.1 image shipped pinning `^2.6.0`.
+  #
+  # Promotion cannot deliver a new pin, so on a `vX.Y.Z` tag the two images in
+  # the runtime chain are rebuilt here instead of promoted:
+  #   - shogo-workspace-deps (materializes templates/runtime-template and is
+  #     the carrier of the pin for the api image too), and
+  #   - shogo-runtime (the pod image; COPYs the template from workspace-deps).
+  # Both are rebuilt with SHOGO_SDK_PIN_VERSION=<tag>, which BLOCKS until npm
+  # serves that exact version and fails the deploy if it never does — never a
+  # silent fallback to the previous release.
+  #
+  # api / web / docs are still promoted untouched (their bytes are the ones
+  # staging e2e tested, and only workspace-deps/runtime carry the pin).
+  # Registry cache keeps the rebuild to the layers above the template install.
+  #
+  # It waits on build-base-image: the runtime build is FROM
+  # shogo-runtime-base:<base_tag>, and that tag is only pushed (or confirmed
+  # present) by that job. Running the two in parallel would race a pull of a
+  # tag that does not exist yet; `skipped` is fine (has_changes=false, so the
+  # tag already exists).
+  # ===========================================================================
+  rebuild-release-runtime:
+    name: Rebuild runtime images pinned to the release SDK
+    runs-on: ubuntu-24.04-arm
+    needs: [resolve-config, detect-changes, build-base-image]
+    if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      needs.detect-changes.outputs.promote == 'true' &&
+      needs.detect-changes.outputs.release_sdk_pin != '' &&
+      needs.resolve-config.outputs.dry_run != 'true'
+    environment: production-us
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space (runtime image is ~14GB)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build + push workspace-deps with the release SDK pin
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/workspace-deps/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            SHOGO_SDK_PIN_VERSION=${{ needs.detect-changes.outputs.release_sdk_pin }}
+          tags: ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:production-${{ github.sha }}
+          cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps
+          cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps,mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build + push the runtime image with the release SDK pin
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-${{ github.sha }}
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-latest
+          build-args: |
+            BASE_IMAGE=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime-base:${{ needs.detect-changes.outputs.base_tag }}
+            WORKSPACE_DEPS=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:production-${{ github.sha }}
+            SHOGO_RUNTIME_REVISION=${{ github.sha }}
+          cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:runtime
+          cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:runtime,mode=max,image-manifest=true,oci-mediatypes=true
+
+      # The acceptance evidence: read the pin straight out of the image this
+      # release will run. Nothing else in the pipeline proves the promoted
+      # artifact carries the release's own SDK.
+      - name: Verify the runtime image pins the release's SDK
+        env:
+          PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
+          RUNTIME_IMAGE: ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          GOT="$(docker run --rm --entrypoint cat "$RUNTIME_IMAGE" \
+            /app/templates/runtime-template/package.json | jq -r '.dependencies["@shogo-ai/sdk"]')"
+          echo "\`templates/runtime-template/package.json\` pins \`@shogo-ai/sdk\` **${GOT}** (release: **${PIN}**)"
+          {
+            echo "## Runtime SDK pin"
+            echo ""
+            echo "| Image | \`@shogo-ai/sdk\` | Release |"
+            echo "|---|---|---|"
+            echo "| \`shogo-runtime:production-${{ github.sha }}\` | \`${GOT}\` | \`${PIN}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOT" != "$PIN" ]; then
+            echo "::error::The release runtime image pins @shogo-ai/sdk '${GOT}', not the release's '${PIN}' — refusing to deploy an image that installs a different SDK than this release published."
+            exit 1
+          fi
 
   # ===========================================================================
   # Stage 2: Build and Push Docker Images to OCIR (in parallel)
@@ -757,8 +937,18 @@ jobs:
   promote-images:
     name: Promote staging images
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes]
-    if: needs.detect-changes.outputs.promote == 'true' && needs.resolve-config.outputs.dry_run != 'true'
+    needs: [resolve-config, detect-changes, rebuild-release-runtime]
+    # always(): rebuild-release-runtime depends on build-base-image, which is
+    # skipped on a tag. Without it the implicit success() sees that skipped
+    # ancestor and skips this job even when the rebuild succeeded, so deploy-us
+    # finds no production-<sha> image (v2.6.5, run 45447860619).
+    if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.promote == 'true' &&
+      needs.resolve-config.outputs.dry_run != 'true' &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')
     environment: production-us
     # 75 > IMAGE_GATE_TIMEOUT_MS (60) so the gate's own timeout message wins.
     timeout-minutes: 75
@@ -769,6 +959,10 @@ jobs:
       OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
       SRC_TAG: staging-${{ github.sha }}
       DST_TAG: production-${{ github.sha }}
+      # When rebuild-release-runtime ran, it already pushed the tag-pinned
+      # shogo-runtime (SHO-522) — promoting the staging one would overwrite it
+      # with an image carrying the previous release's SDK.
+      RELEASE_SDK_PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -795,6 +989,12 @@ jobs:
         run: |
           set -euo pipefail
           REPOS="shogo-api shogo-web shogo-docs shogo-runtime"
+          # shogo-runtime comes from rebuild-release-runtime on a release tag:
+          # its SDK pin is the release's, not the one staging built (SHO-522).
+          if [ -n "$RELEASE_SDK_PIN" ]; then
+            REPOS="shogo-api shogo-web shogo-docs"
+            echo "::notice::shogo-runtime is built by rebuild-release-runtime (pinned to @shogo-ai/sdk ${RELEASE_SDK_PIN}) — not promoting the staging one"
+          fi
           # Belt-and-braces: 'Wait for the staging tag set' already blocked on
           # these tags, so this must never fire. If it does, the gate has a bug.
           MISSING=""
@@ -830,10 +1030,11 @@ jobs:
   replicate-images:
     name: Replicate to ${{ matrix.target_region.region }}
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push, promote-images]
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push, promote-images, rebuild-release-runtime]
     if: |
       always() &&
       needs.resolve-config.outputs.is_production == 'true' &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped') &&
       needs.resolve-config.outputs.dry_run != 'true' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
@@ -1159,7 +1360,7 @@ jobs:
   deploy-us:
     name: Deploy to US (primary)
     runs-on: ubuntu-latest
-    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, promote-images, staging-e2e-gate]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, promote-images, staging-e2e-gate, rebuild-release-runtime]
     if: |
       always() &&
       needs.setup.outputs.build_only != 'true' &&
@@ -1170,7 +1371,8 @@ jobs:
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped')
+      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped') &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')
     environment: production-us
     # deploy-eu refreshes the US subscription after EU publishes new tables.
     outputs:
@@ -1281,6 +1483,12 @@ jobs:
           if [ -n "${{ secrets.SLACK_SIGNING_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}"); fi
           # Not read by the API today; plumbed for the future api_app_id check.
           if [ -n "${{ secrets.SLACK_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_APP_ID="${{ secrets.SLACK_APP_ID }}"); fi
+          # WhatsApp Tech Provider (Embedded Signup flow — SHO-463). Unset keeps
+          # /api/channels/whatsapp/connect answering 412 instead of 503.
+          if [ -n "${{ secrets.WHATSAPP_META_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_ID="${{ secrets.WHATSAPP_META_APP_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_META_APP_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_SECRET="${{ secrets.WHATSAPP_META_APP_SECRET }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_ES_CONFIG_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_ES_CONFIG_ID="${{ secrets.WHATSAPP_ES_CONFIG_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_WEBHOOK_VERIFY_TOKEN="${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1411,6 +1619,41 @@ jobs:
             psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
             || { echo "::error::Could not install Postgres extensions on US"; exit 1; }
 
+      # Published apps' database (SHO-308 §1, SHO-514). A region whose
+      # `projects-pg` does not exist silently keeps every new server app on
+      # SQLite, so the cluster is deployed HERE rather than by hand: apply the
+      # PriorityClass, the cluster, wait for it, then the pooler and its
+      # deployment — all BEFORE the API manifests, so the API never starts with
+      # PROJECTS_DB_POOLER_HOST pointing at a Service with no endpoints.
+      #
+      # A Pod that names a PriorityClass which does not exist is rejected, so
+      # the class must land before the cluster. The cluster also needs the
+      # existing `cnpg-s3-credentials` Secret: the backup stanza is evaluated at
+      # bootstrap, and the check below names it when it is missing.
+      #
+      # Idempotent on a re-run: `apply` is a no-op once converged and `wait`
+      # returns as soon as the cluster is already Ready.
+      - name: Deploy projects-pg (published apps' database)
+        run: |
+          set -euo pipefail
+          # The backup stanza is evaluated at bootstrap: without this Secret the
+          # cluster sits in "Setting up primary" and the 15m wait below fails
+          # with no clue why. Name the cause here instead.
+          if ! kubectl get secret cnpg-s3-credentials -n "$NS_SYSTEM" >/dev/null 2>&1; then
+            echo "::error::Secret cnpg-s3-credentials is missing in $NS_SYSTEM on US — projects-pg cannot bootstrap its backups. Create it first (docs/runbooks/published-postgres.md)."
+            exit 1
+          fi
+          kubectl apply -f "k8s/overlays/${ENVIRONMENT}/priority-classes.yaml" \
+            || { echo "::error::Could not apply the shogo-db-critical PriorityClass on US"; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-cluster.yaml" \
+            || { echo "::error::Could not apply the projects-pg cluster on US"; exit 1; }
+          kubectl wait --for=condition=Ready cluster/projects-pg -n "$NS_SYSTEM" --timeout=15m \
+            || { echo "::error::projects-pg did not become Ready within 15m on US"; kubectl describe cluster projects-pg -n "$NS_SYSTEM" || true; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-pooler.yaml" \
+            || { echo "::error::Could not apply the projects-pg pooler on US"; exit 1; }
+          kubectl rollout status deployment/projects-pg-pooler-rw -n "$NS_SYSTEM" --timeout=5m \
+            || { echo "::error::projects-pg-pooler-rw did not roll out on US"; exit 1; }
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -1454,6 +1697,22 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s and is
+      # armed per request by queue-proxy, which never disarms it on a hijacked
+      # (WebSocket) stream — so a desktop tunnel that opened cleanly was closed
+      # from behind at exactly 5:00 (`1006` on the client), whatever the
+      # revision's own `timeoutSeconds` (1800 on the api) said.
+      # The other 300s candidates are already off or ruled out: kourier
+      # `stream-idle-timeout: 0s` (patched above), the OCI LB's
+      # `oci-load-balancer-connection-idle-timeout` is 1800, and the kourier
+      # access log records `dur=300001` at each cut. 0 disables the
+      # response-start bound; the revision request timeout still bounds a
+      # request, and `revision-idle-timeout-seconds: 0` keeps a live stream alive.
+      - name: Ensure Knative queue-proxy does not cut hijacked WebSocket streams at 5 minutes
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"revision-response-start-timeout-seconds":"0"}}' || true
 
       # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
       # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
@@ -1637,6 +1896,22 @@ jobs:
           if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
             echo "::warning::US api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
+
+      # Object storage is NOT liveness: the api serves pages fine with no bucket,
+      # so /api/health would stay 200 while every upload failed `NoSuchBucket` at
+      # users (SHO-491 — a bucket merged, never applied, found hours later). The
+      # api probes its configured buckets and reports them on /api/health.storage;
+      # this gate makes an absence a red deploy instead of a quiet outage.
+      - name: Verify publish buckets exist
+        run: |
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          BODY_FILE=$(mktemp)
+          if [ -n "$KOURIER_IP" ]; then
+            curl -s --connect-timeout 5 --max-time 20 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          else
+            curl -s --connect-timeout 5 --max-time 20 "https://${{ env.DOMAIN }}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          fi
+          bash .github/scripts/verify-storage-health.sh US "$BODY_FILE"
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only
       # prod (see staging block). Metal is authoritative for project runtimes;
@@ -1960,6 +2235,12 @@ jobs:
           if [ -n "${{ secrets.SLACK_SIGNING_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}"); fi
           # Not read by the API today; plumbed for the future api_app_id check.
           if [ -n "${{ secrets.SLACK_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_APP_ID="${{ secrets.SLACK_APP_ID }}"); fi
+          # WhatsApp Tech Provider (Embedded Signup flow — SHO-463). Unset keeps
+          # /api/channels/whatsapp/connect answering 412 instead of 503.
+          if [ -n "${{ secrets.WHATSAPP_META_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_ID="${{ secrets.WHATSAPP_META_APP_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_META_APP_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_SECRET="${{ secrets.WHATSAPP_META_APP_SECRET }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_ES_CONFIG_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_ES_CONFIG_ID="${{ secrets.WHATSAPP_ES_CONFIG_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_WEBHOOK_VERIFY_TOKEN="${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -2091,6 +2372,42 @@ jobs:
             psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
             || { echo "::error::Could not install Postgres extensions on EU"; exit 1; }
 
+      # Published apps' database (SHO-308 §1, SHO-514). A region whose
+      # `projects-pg` does not exist silently keeps every new server app on
+      # SQLite, so the cluster is deployed HERE rather than by hand: apply the
+      # PriorityClass, the cluster, wait for it, then the pooler and its
+      # deployment — all BEFORE the API manifests, so the API never starts with
+      # PROJECTS_DB_POOLER_HOST pointing at a Service with no endpoints.
+      #
+      # A Pod that names a PriorityClass which does not exist is rejected, so
+      # the class must land before the cluster. The cluster also needs the
+      # existing `cnpg-s3-credentials` Secret: the backup stanza is evaluated at
+      # bootstrap, and the check below names it when it is missing.
+      #
+      # Idempotent on a re-run: `apply` is a no-op once converged and `wait`
+      # returns as soon as the cluster is already Ready. Published app databases
+      # are region-local: EU's cluster holds only the apps published in EU.
+      - name: Deploy projects-pg (published apps' database)
+        run: |
+          set -euo pipefail
+          # The backup stanza is evaluated at bootstrap: without this Secret the
+          # cluster sits in "Setting up primary" and the 15m wait below fails
+          # with no clue why. Name the cause here instead.
+          if ! kubectl get secret cnpg-s3-credentials -n "$NS_SYSTEM" >/dev/null 2>&1; then
+            echo "::error::Secret cnpg-s3-credentials is missing in $NS_SYSTEM on EU — projects-pg cannot bootstrap its backups. Create it first (docs/runbooks/published-postgres.md)."
+            exit 1
+          fi
+          kubectl apply -f "k8s/overlays/${ENVIRONMENT}/priority-classes.yaml" \
+            || { echo "::error::Could not apply the shogo-db-critical PriorityClass on EU"; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-cluster.yaml" \
+            || { echo "::error::Could not apply the projects-pg cluster on EU"; exit 1; }
+          kubectl wait --for=condition=Ready cluster/projects-pg -n "$NS_SYSTEM" --timeout=15m \
+            || { echo "::error::projects-pg did not become Ready within 15m on EU"; kubectl describe cluster projects-pg -n "$NS_SYSTEM" || true; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-pooler.yaml" \
+            || { echo "::error::Could not apply the projects-pg pooler on EU"; exit 1; }
+          kubectl rollout status deployment/projects-pg-pooler-rw -n "$NS_SYSTEM" --timeout=5m \
+            || { echo "::error::projects-pg-pooler-rw did not roll out on EU"; exit 1; }
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -2134,6 +2451,22 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s and is
+      # armed per request by queue-proxy, which never disarms it on a hijacked
+      # (WebSocket) stream — so a desktop tunnel that opened cleanly was closed
+      # from behind at exactly 5:00 (`1006` on the client), whatever the
+      # revision's own `timeoutSeconds` (1800 on the api) said.
+      # The other 300s candidates are already off or ruled out: kourier
+      # `stream-idle-timeout: 0s` (patched above), the OCI LB's
+      # `oci-load-balancer-connection-idle-timeout` is 1800, and the kourier
+      # access log records `dur=300001` at each cut. 0 disables the
+      # response-start bound; the revision request timeout still bounds a
+      # request, and `revision-idle-timeout-seconds: 0` keeps a live stream alive.
+      - name: Ensure Knative queue-proxy does not cut hijacked WebSocket streams at 5 minutes
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"revision-response-start-timeout-seconds":"0"}}' || true
 
       # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
       # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
@@ -2612,6 +2945,22 @@ jobs:
             echo "::warning::EU api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
 
+      # Object storage is NOT liveness: the api serves pages fine with no bucket,
+      # so /api/health would stay 200 while every upload failed `NoSuchBucket` at
+      # users (SHO-491 — a bucket merged, never applied, found hours later). The
+      # api probes its configured buckets and reports them on /api/health.storage;
+      # this gate makes an absence a red deploy instead of a quiet outage.
+      - name: Verify publish buckets exist
+        run: |
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; object storage cannot be verified"
+            exit 1
+          fi
+          BODY_FILE=$(mktemp)
+          curl -s --connect-timeout 5 --max-time 20 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          bash .github/scripts/verify-storage-health.sh EU "$BODY_FILE"
+
       # (removed) Knative warm-pool health gate — vestigial under metal-only
       # prod (see staging block). Metal is authoritative for project runtimes;
       # the Knative project/warm-pool ksvcs churn and were failing the deploy
@@ -2680,7 +3029,9 @@ jobs:
   metal-runtime-image:
     name: Prod metal runtime image
     runs-on: ubuntu-latest
-    needs: [resolve-config, deploy-us, deploy-eu, metal-fleet-eu]
+    # detect-changes: its `release_sdk_pin` is what the promotion must preserve
+    # in the guest image (SHO-522).
+    needs: [resolve-config, detect-changes, deploy-us, deploy-eu, metal-fleet-eu]
     # metal-fleet-eu is deliberately not required to succeed: a missing EU
     # fleet reading only makes the gate rebuild.
     if: |
@@ -2730,6 +3081,10 @@ jobs:
           SHA: ${{ github.sha }}
           REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
           FORCE_BUILD: ${{ github.event.inputs.force_rebuild_production || 'false' }}
+          # On a release tag the promoted guest image must pin this release's
+          # SDK; the script prefers this tag's own build and refuses an older
+          # image that pins a different SDK (SHO-522).
+          SDK_PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
           OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
           OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
           OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}

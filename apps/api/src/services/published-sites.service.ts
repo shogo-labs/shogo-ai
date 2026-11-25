@@ -33,13 +33,18 @@ import { prisma } from '../lib/prisma'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import {
   ACCESS_LEVELS,
-  publishProject,
+  markPublishInterrupted,
+  resolveReportedPublishStatus,
   resolveSitePasswordHash,
+  splitPublishError,
+  startPublish,
   syncSitePasswordKv,
   unpublishProject,
   type AccessLevel,
   type PublishProjectResult,
+  type StartPublishResult,
 } from '../routes/publish'
+import { publishFailureMessage } from '@shogo/shared-runtime/publish-status'
 
 /** A build bundle the desktop produced, base64 per file (the shape `/agent/dist-files` returns). */
 export interface UploadedSiteFile {
@@ -99,6 +104,8 @@ interface HostProjectRow {
   accessLevel?: string | null
   sitePasswordHash?: string | null
   publishStatus?: string | null
+  publishError?: string | null
+  publishStatusAt?: Date | null
 }
 
 /** The desktop project id a hidden host row was created for, if it is one. */
@@ -258,7 +265,7 @@ export function buildUploadFileMap(
  * when the user says "publish it again".
  */
 export async function publishUploadedSite(input: PublishUploadedSiteInput): Promise<
-  PublishProjectResult & { hostProjectId?: string }
+  StartPublishResult & { hostProjectId?: string }
 > {
   const { workspaceId, sourceProjectId, upload } = input
   if (!sourceProjectId || typeof sourceProjectId !== 'string') {
@@ -283,7 +290,11 @@ export async function publishUploadedSite(input: PublishUploadedSiteInput): Prom
     }
   }
 
-  const result = await publishProject(
+  // Same runner as the cloud's own publishes, only the bytes differ: it
+  // validates synchronously, records `building` and returns, so this upload no
+  // longer holds one HTTP request through upload + configure (SHO-542). The
+  // desktop polls `GET /published-sites/:id` for the outcome.
+  const result = await startPublish(
     host.id,
     {
       subdomain,
@@ -395,10 +406,19 @@ export async function getUploadedSiteState(input: {
       accessLevel: null,
       hasPassword: false,
       publishStatus: null,
+      publishError: null,
+      publishErrorMessage: null,
       hostProjectId: null,
     }
   }
   const host = resolved.project
+  // A desktop publish is a background job too, so an in-flight status past its
+  // lease is a publish whose API pod went away — report (and persist) it as
+  // interrupted rather than leaving the desktop polling forever (SHO-542 §1.4).
+  const reported = resolveReportedPublishStatus(host)
+  if (reported.interrupted) await markPublishInterrupted(host.id)
+  const storedError = reported.interrupted ? reported.error : (host.publishError ?? null)
+  const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
   return {
     ok: true as const,
     published: !!host.publishedSubdomain,
@@ -406,7 +426,10 @@ export async function getUploadedSiteState(input: {
     publishedAt: host.publishedAt ? new Date(host.publishedAt).getTime() : null,
     accessLevel: host.accessLevel ?? null,
     hasPassword: !!host.sitePasswordHash,
-    publishStatus: host.publishStatus ?? null,
+    publishStatus: reported.status,
+    publishError,
+    // The failing step's own reason when it recorded one, else the code's sentence.
+    publishErrorMessage: publishError ? (publishErrorDetail ?? publishFailureMessage(publishError)) : null,
     hostProjectId: host.id,
   }
 }

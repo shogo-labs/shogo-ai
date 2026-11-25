@@ -16,7 +16,6 @@ import {
   FlatList,
   Pressable,
   TextInput,
-  ActivityIndicator,
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
@@ -34,6 +33,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
 import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -399,7 +399,7 @@ export default function AdminGrantsPage() {
         />
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         )}
       </View>

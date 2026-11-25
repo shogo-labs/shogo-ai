@@ -81,7 +81,6 @@ const billingStub = () => ({
   getUsageWallet: async () => null,
   getUsageWindows: async () => null,
   ensureSystemWorkspace: async () => ({}),
-  canRunTechStackOnInstanceSize: async () => ({ ok: true }),
   syncFromStripe: async () => ({}),
   allocateMonthlyIncluded: async () => ({}),
 })

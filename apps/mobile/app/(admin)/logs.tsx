@@ -10,7 +10,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   Platform,
   useWindowDimensions,
 } from 'react-native'
@@ -24,6 +23,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { getRuntimeApiUrl } from '../../lib/runtime-env'
+import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 function getApiBaseUrl(): string {
   const port = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
@@ -95,7 +96,7 @@ export default function AdminLogsPage() {
       setLogPath(data.path || null)
       setTotalLines(data.total || 0)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -154,7 +155,7 @@ export default function AdminLogsPage() {
   if (loading && lines.length === 0) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="text-muted-foreground mt-3 text-sm">Loading logs...</Text>
       </View>
     )

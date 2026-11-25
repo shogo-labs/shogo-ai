@@ -28,7 +28,15 @@ export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
 export type VideoProvider = 'higgsfield' | 'google'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
+/**
+ * Every model family, as a runtime array so consumers that *validate* against
+ * it (the super-admin catalog API, the admin form's segmented control) share
+ * one list with the {@link ModelFamily} type instead of hand-copying it. A
+ * hand-copied copy silently loses a member — `gemini` went missing that way
+ * and every Gemini edit was rejected with a 400 (SHO-558).
+ */
+export const MODEL_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'gemini', 'other'] as const
+export type ModelFamily = (typeof MODEL_FAMILIES)[number]
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
@@ -36,6 +44,7 @@ export type BillingModel =
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
   | 'claude-opus-5-5' | 'claude-haiku-5-5'
   | 'gemini-3-1-pro' | 'gemini-3-8-flash' | 'gemini-3-5-flash-lite' | 'gemini-4-argon'
+  | 'gemini-4-carbon' | 'gemini-4-neon' | 'gemini-4-hydrogen'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -74,10 +83,14 @@ export interface ModelCapabilities {
    */
   supportsAudioInput?: boolean
   /**
-   * Whether this model accepts `video_url` content blocks natively over the
-   * OpenAI-compatible chat/completions wire format (OpenRouter's video-input
-   * shape). Absent/`undefined` means "no native video input" — callers must
-   * not send video bytes to it.
+   * Whether this model accepts video input natively. Absent/`undefined` means
+   * "no native video input" — callers must not send video bytes to it.
+   *
+   * Two wire shapes satisfy this flag: OpenRouter's `video_url` block, and
+   * Google's OpenAI-compatible endpoint, which decodes video from the same
+   * `image_url` + `data:video/*` block pi-ai already emits (probed 2026-11-21,
+   * SHO-495). The proxy picks the shape from the model's provider; callers
+   * only decide whether video may leave the process.
    */
   supportsVideoInput?: boolean
 }
@@ -674,6 +687,22 @@ export const MODEL_CATALOG = {
   // steps up above 200k input tokens ($4/$18 per 1M vs $2/$12) and
   // `MODEL_DOLLAR_COSTS` is a flat per-bucket table, so serving the long
   // context would be billed at the short-context rate. Cap it instead.
+  'gemini-4-carbon': {
+    id: 'gemini-4-carbon',
+    provider: 'google',
+    apiModel: 'gemini-4-carbon',
+    displayName: 'Gemini 4 Carbon',
+    shortDisplayName: 'Carbon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-carbon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: "Google's strongest reasoner: deep maths, complex software engineering and long-horizon agentic tasks.",
+    capabilities: { supportsVideoInput: true },
+  },
   'gemini-4-argon': {
     id: 'gemini-4-argon',
     provider: 'google',
@@ -685,9 +714,42 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'gemini-4-argon',
     contextWindow: 1_048_576,
-    maxOutputTokens: 1_048_576,
+    maxOutputTokens: 65_536,
     reasoningEffort: 'high',
-    description: 'Google\'s flagship reasoner: complex software engineering, deep maths and long-decode generation up to 1M tokens.',
+    description: "Google's flagship reasoner: complex software engineering, deep maths and multimodal analysis.",
+    capabilities: { supportsVideoInput: true },
+  },
+  'gemini-4-neon': {
+    id: 'gemini-4-neon',
+    provider: 'google',
+    apiModel: 'gemini-4-neon',
+    displayName: 'Gemini 4 Neon',
+    shortDisplayName: 'Neon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-neon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: 'Fast frontier model: low-latency reasoning for time-sensitive agent turns.',
+    capabilities: { supportsVideoInput: true },
+  },
+  'gemini-4-hydrogen': {
+    id: 'gemini-4-hydrogen',
+    provider: 'google',
+    apiModel: 'gemini-4-hydrogen',
+    displayName: 'Gemini 4 Hydrogen',
+    shortDisplayName: 'Hydrogen',
+    tier: 'standard',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-hydrogen',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'low',
+    description: 'Everyday workhorse: fast, affordable, and capable enough for most agent sub-tasks.',
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-3.1-pro-preview': {
     id: 'gemini-3.1-pro-preview',
@@ -720,6 +782,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: 'The current Gemini Flash: fast and cheap enough for everyday agent turns, with a 1M-token window.',
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-3.5-flash-lite': {
     id: 'gemini-3.5-flash-lite',

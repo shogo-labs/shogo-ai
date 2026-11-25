@@ -17,7 +17,6 @@ import {
   TextInput,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   Alert,
   Modal,
@@ -44,6 +43,8 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter"
+import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -200,7 +201,7 @@ async function triggerProject(projectId: string): Promise<{ ok: boolean; error?:
     if (!res.ok) return { ok: false, error: json?.error?.message || `HTTP ${res.status}` }
     return json.data ?? { ok: true }
   } catch (err: any) {
-    return { ok: false, error: err.message }
+    return { ok: false, error: errorMessage(err) }
   }
 }
 
@@ -227,7 +228,7 @@ async function patchProject(
     }
     return { ok: true }
   } catch (err: any) {
-    return { ok: false, error: err.message }
+    return { ok: false, error: errorMessage(err) }
   }
 }
 
@@ -417,7 +418,7 @@ function SchedulerCard({
           )}
         >
           {busy ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : stats.paused ? (
             <Play size={13} className="text-green-400" />
           ) : (
@@ -779,7 +780,7 @@ function EditModal({
               )}
             >
               {saving ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Save size={12} className="text-primary-foreground" />
               )}
@@ -972,7 +973,7 @@ export default function HeartbeatsPage() {
       <View className="flex-1 bg-background px-4 items-center justify-center">
         <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
           <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
           <Text className="text-sm font-semibold text-foreground mt-3">Preparing scheduler signal</Text>
           <Text className="text-xs text-muted-foreground mt-1 text-center">

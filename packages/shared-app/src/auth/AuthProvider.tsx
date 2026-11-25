@@ -133,8 +133,9 @@ export interface AuthProviderProps {
    * `false` (default — native): `@better-auth/expo` opens the OAuth browser
    * sheet and awaits it, so `signIn.social` resolves **after** the round trip —
    * but it also resolves that way when the sheet was merely dismissed, which is
-   * why a native miss is only reported once the sheet was open for
-   * `MIN_NATIVE_OAUTH_SHEET_MS`.
+   * why a native miss is only reported when the client says a hand-back
+   * arrived (`data.nativeHandback`), or — for a client that does not say — once
+   * the sheet was open for `MIN_NATIVE_OAUTH_SHEET_MS`.
    *
    * `true` (web): the client sets `window.location.href` to the provider URL.
    * The page navigates, but the promise still resolves first — so the session
@@ -150,21 +151,29 @@ function isWebUrl(url: string): boolean {
 }
 
 /**
- * How long the native OAuth sheet has to stay up before a round trip that ends
- * without a session is believed.
+ * Fallback for a native client that does not say whether the sheet handed back:
+ * how long the sheet has to stay up before a round trip that ends without a
+ * session is believed.
  *
- * A dismissed sheet and a broken hand-back are the same thing from here:
- * `ASWebAuthenticationSession` resolves `{ type: 'cancel' }`, `@better-auth/expo`
- * returns from its `onSuccess` hook without touching the response
- * (`dist/client.js`, `if (result.type !== "success") return`), and
- * `signIn.social` resolves with the provider URL and no user either way. The
- * only remaining signal is how long the sheet was open.
+ * The real signal is the client's own verdict (`data.nativeHandback`, stamped by
+ * `withOAuthRedirectCapture` from the session token in the plugin's cookie jar).
+ * A jar that never changed means the sheet was dismissed and there was no round
+ * trip to find a session for, so nothing is reported however long the person
+ * looked at Google's screen — which is what Play's pre-launch robot did when it
+ * backed out after 2–24 s (SHO-527).
  *
- * Nobody crosses Google's account screen in two seconds, but the App Review
- * crawler that tapped on a strict 2 s rhythm did — those are the iOS
- * `session_missing` events that were really dismissals (SHO-430).
+ * Only when that field is missing (web, or an older binary over the air) does
+ * sheet time have to stand in for it: `ASWebAuthenticationSession` resolves
+ * `{ type: 'cancel' }` and `@better-auth/expo` returns from its `onSuccess` hook
+ * without touching the response, so the two cases arrive identically here. The
+ * App Review crawler that tapped on a strict 2 s rhythm is what this catches
+ * (SHO-430).
  */
 export const MIN_NATIVE_OAUTH_SHEET_MS = 2000
+
+/** What the person is told when the sheet closed without finishing. */
+const SHEET_CLOSED_MESSAGE =
+  'Google sign-in was closed before it finished. Tap Continue with Google to try again.'
 
 export function AuthProvider({ authClient, children, onSignOut, onAuthError, socialSignInNavigatesPage = false }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null)
@@ -300,7 +309,13 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       if (result?.error) {
         console.error('[Auth] Google sign-in error:', result.error)
         setError(result.error.message || 'Google sign-in failed')
-        onAuthError?.(result.error, { provider: 'google', stage: 'sign_in' })
+        // The provider's failure comes through as a plain object; wrapping it
+        // keeps the status and code, so `auth.status` is tagged and an expected
+        // refusal is not reported as a defect (SHO-527).
+        const failure = toAuthRequestError(result.error, 'Google sign-in failed')
+        if (shouldReportAuthError(failure)) {
+          onAuthError?.(failure, { provider: 'google', stage: 'sign_in' })
+        }
         return
       }
       if (result?.data?.user) {
@@ -329,14 +344,21 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
         return
       }
       if (!socialSignInNavigatesPage) {
-        // Native: the sheet has already opened and closed. Under two seconds it
-        // was dismissed — the crawler taps, or a person backing out — and there
-        // is no round trip to read a session for. Reporting that as
-        // `session_missing` is what put an App Review tap in Sentry, and saying
-        // nothing is what made the sheet look broken (SHO-430).
+        // Native: the sheet has already opened and closed. Whether the hand-back
+        // reached the app is the client's verdict, not sheet time: a jar that
+        // never changed is a dismissal — a robot's tap, or a person backing
+        // out — and there is no round trip to read a session for. Reporting
+        // that as `session_missing` is what put both in Sentry (SHO-430,
+        // SHO-527). Sheet time is only the fallback for a client that does not
+        // report it.
+        const handback = (result?.data as { nativeHandback?: unknown } | undefined)?.nativeHandback
+        if (handback === 'none') {
+          setError(SHEET_CLOSED_MESSAGE)
+          return
+        }
         const sheetMs = Date.now() - sheetStartedAt
-        if (sheetMs < MIN_NATIVE_OAUTH_SHEET_MS) {
-          setError('Google sign-in was closed before it finished. Tap Continue with Google to try again.')
+        if (handback !== 'received' && sheetMs < MIN_NATIVE_OAUTH_SHEET_MS) {
+          setError(SHEET_CLOSED_MESSAGE)
           return
         }
       }
@@ -349,7 +371,9 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       }
       // The provider round trip reported success but no session reached the
       // device. Nothing throws here, so without this the failure is invisible —
-      // and without the message the person sees a tap that did nothing.
+      // and without the message the person sees a tap that did nothing. This is
+      // the real SHO-414-class defect: a hand-back landed (or the client could
+      // not say) and the session is still missing.
       setError('Google sign-in completed without a session. Tap Continue with Google to try again.')
       onAuthError?.(
         new Error('Google sign-in completed without a session'),

@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, TextInput, Pressable, ScrollView } from 'react-native'
 import { Globe, Lock, Mail, Trash2, Users, X } from 'lucide-react-native'
 import { PROJECT_ROLES, ROLE_LABELS, type ProjectRole, type WorkspaceRole } from '@shogo/authz'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -26,6 +26,7 @@ import {
   type ProjectMembersData,
   type ProjectVisibility,
 } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ProjectAccessPanelProps {
   projectId: string
@@ -205,7 +206,7 @@ export function ProjectAccessPanel({ projectId, embedded = false, onVisibilityCh
   if (loading) {
     return (
       <View className={cn('items-center', embedded ? 'py-6' : 'flex-1 justify-center')}>
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -257,7 +258,7 @@ export function ProjectAccessPanel({ projectId, embedded = false, onVisibilityCh
                 <Text className="text-sm font-medium text-foreground">{title}</Text>
                 <Text className="text-[11px] text-muted-foreground mt-0.5">{copy}</Text>
               </View>
-              {busyId === 'visibility' && active ? <ActivityIndicator size="small" /> : null}
+              {busyId === 'visibility' && active ? <Spinner size="small" /> : null}
             </Pressable>
           )
         })}
@@ -333,7 +334,7 @@ export function ProjectAccessPanel({ projectId, embedded = false, onVisibilityCh
             )}
           >
             {adding ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <Text
                 className={cn(

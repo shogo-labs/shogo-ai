@@ -66,18 +66,10 @@ export interface StackRegistryEntry {
    */
   vmClass?: 'standard' | 'docker'
   /**
-   * Smallest instance size (`apps/api/src/config/instance-sizes.ts`
-   * `InstanceSizeName`) this stack should be billed/provisioned at. Mirrors
-   * `TechStackMeta.runtime.minimumInstanceSize`. Unlike the mobile floor
-   * (`applyTechStackFloor`), this floor is BILLED, not just a free headroom
-   * bump — see `applyDockerStackFloor`.
-   */
-  minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
-  /**
    * Ports the stack's services expose, mirroring
    * `TechStackMeta.runtime.ports` (see `workspace-defaults.ts`) for the same
-   * reason `vmClass`/`minimumInstanceSize` are mirrored: apps/api can't read
-   * `stack.json` at runtime, but needs this to validate `PATCH .../ports/:port`
+   * reason `vmClass` is mirrored: apps/api can't read `stack.json` at
+   * runtime, but needs this to validate `PATCH .../ports/:port`
    * (a project can only toggle visibility on a port its stack actually
    * declares — never an arbitrary guest port) and to seed
    * `Project.settings.exposedPorts` defaults.
@@ -128,7 +120,6 @@ export const TECH_STACK_REGISTRY: Record<string, StackRegistryEntry> = {
     target: 'data',
     seedsOwnTemplate: true,
     vmClass: 'docker',
-    minimumInstanceSize: 'large',
     ports: [
       { port: 8000, label: 'app', protocol: 'http', defaultVisibility: 'preview' },
       { port: 5432, label: 'postgres', protocol: 'tcp', defaultVisibility: 'tunnel' },
@@ -187,13 +178,6 @@ export function stackSeedsItself(techStackId: string | null | undefined): boolea
  */
 export function isDockerTechStack(techStackId: string | null | undefined): boolean {
   return getStackEntry(techStackId)?.vmClass === 'docker'
-}
-
-/** The stack's declared minimum instance size, or `null` if it doesn't set one. */
-export function getMinimumInstanceSize(
-  techStackId: string | null | undefined,
-): StackRegistryEntry['minimumInstanceSize'] | null {
-  return getStackEntry(techStackId)?.minimumInstanceSize ?? null
 }
 
 /**

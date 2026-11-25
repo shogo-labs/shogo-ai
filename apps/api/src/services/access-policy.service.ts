@@ -371,6 +371,16 @@ export async function allowedModelIdsFor(workspaceId: string, userId: string): P
  * The auto tier map with every tier mapped to a model the member may use: the
  * configured model when it is allowed, else the next allowed model in the same
  * tier, else the cheapest allowed one. `null` when nothing is allowed.
+ *
+ * An id this instance's catalog does not know at all is passed through
+ * untouched. A cloud-connected desktop resolves its tiers from Shogo Cloud, and
+ * a cloud model id may not be in the local catalog (the registry mirrors the
+ * cloud lazily, and may not have it yet). The local catalog cannot judge that
+ * id, and substituting a local model for it silently replaced the cloud's
+ * configured tier — that is what sent desktop Auto's complex tier to Sonnet
+ * (SHO-481). The cloud already capped the id to the key holder's grant and its
+ * proxy still enforces it, so passing it through is the safe answer; only an id
+ * the catalog knows and the grant excludes is narrowed.
  */
 export async function allowedAutoTiers(
   workspaceId: string,
@@ -390,6 +400,10 @@ export async function allowedAutoTiers(
   const out: Record<string, string> = {}
   for (const [tier, configured] of Object.entries(autoTiers)) {
     if (configured && allowed.some((m) => m.id === configured)) {
+      out[tier] = configured
+      continue
+    }
+    if (configured && !catalog.some((m) => m.id === configured)) {
       out[tier] = configured
       continue
     }

@@ -295,12 +295,24 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     total: number
     activity: { agentRuns: number; backgroundCommands: number } | null
   }> => ipcRenderer.invoke('get-live-activity'),
-  /** "Restarting when idle — N working", and the counts under it. */
+  /**
+   * "Restarting when idle — N working", and the counts under it. Returns a
+   * per-listener unsubscribe: the banner and Settings → Updates both listen, so
+   * the shared `removeAllListeners` would cut the other one off (SHO-510).
+   */
   onRestartDrain: (
     callback: (data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null }) => void,
   ) => {
-    ipcRenderer.on('desktop-restart-drain', (_event, data) => callback(data))
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null },
+    ) => callback(data)
+    ipcRenderer.on('desktop-restart-drain', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-restart-drain', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeRestartDrainListener: () => {
     ipcRenderer.removeAllListeners('desktop-restart-drain')
   },
@@ -310,16 +322,41 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   dismissInterruptedNotice: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('dismiss-interrupted-notice'),
   onInterruptedNotice: (callback: (data: { notice: string | null }) => void) => {
-    ipcRenderer.on('desktop-interrupted-notice', (_event, data) => callback(data))
+    const listener = (_event: Electron.IpcRendererEvent, data: { notice: string | null }) => callback(data)
+    ipcRenderer.on('desktop-interrupted-notice', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-interrupted-notice', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeInterruptedNoticeListener: () => {
     ipcRenderer.removeAllListeners('desktop-interrupted-notice')
   },
   onUpdateStatus: (
-    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null; channel?: 'stable' | 'beta' }) => void,
+    callback: (data: {
+      status: string
+      releaseName: string | null
+      availableVersion: string | null
+      channel?: 'stable' | 'beta'
+      error?: string | null
+    }) => void,
   ) => {
-    ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: {
+        status: string
+        releaseName: string | null
+        availableVersion: string | null
+        channel?: 'stable' | 'beta'
+        error?: string | null
+      },
+    ) => callback(data)
+    ipcRenderer.on('desktop-update-status', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-update-status', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeUpdateListener: () => {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },
@@ -342,6 +379,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   }) => ipcRenderer.invoke('show-chat-notification', args),
   islandUpdate: (snapshot: unknown) => {
     ipcRenderer.send('island:update', snapshot)
+  },
+  /** Publishes the menu-bar dropdown's model (see apps/desktop/src/tray-protocol.ts). */
+  trayUpdate: (model: unknown) => {
+    ipcRenderer.send('tray:update', model)
+  },
+  /** Tray actions that only the app can carry out (new chat, clear dots). */
+  onTrayAction: (callback: (action: { type: 'new-chat' } | { type: 'clear-notifications' }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, action: unknown) => {
+      if (!action || typeof action !== 'object') return
+      const type = (action as { type?: unknown }).type
+      if (type === 'new-chat' || type === 'clear-notifications') callback({ type })
+    }
+    ipcRenderer.on('tray-action', listener)
+    return () => {
+      ipcRenderer.removeListener('tray-action', listener)
+    }
   },
   onIslandAction: (callback: (action: unknown) => void) => {
     ipcRenderer.on('island-action', (_event, action) => callback(action))
@@ -872,6 +925,15 @@ if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
     },
     getActiveSurface() {
       return document.querySelector('[data-shogo-terminal-surface="true"]') !== null
+    },
+    /** The menu-bar dropdown as plain lines, built by main from the real
+     * template. See apps/desktop/e2e/tray-menu.spec.ts. */
+    getTrayMenu(): Promise<string[]> {
+      return ipcRenderer.invoke('tray:debug-menu')
+    },
+    /** Click a dropdown row by label, exactly as a person would. */
+    clickTrayItem(label: string): Promise<boolean> {
+      return ipcRenderer.invoke('tray:debug-click', label)
     },
   })
 }

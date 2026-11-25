@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { PlatformApi, type ResolvedVisibleModels } from '@shogo-ai/sdk'
-import { AUTO_MODEL_ID, type ModelTier } from '@shogo/model-catalog'
+import { AUTO_MODEL_ID, resolveModelId, type ModelTier } from '@shogo/model-catalog'
 import { createHttpClient } from './api'
 import { getActiveWorkspaceId } from './workspace-store'
 
@@ -153,6 +153,13 @@ function indexServerCatalog(data: ResolvedVisibleModels): void {
 // immediately, with no bundled-catalog flicker.
 const cache = new Map<string, ResolvedVisibleModels>()
 const inflight = new Map<string, Promise<ResolvedVisibleModels>>()
+/**
+ * Snapshots this process fetched *for that key*, as opposed to ones painted from
+ * storage. Reconciling a selection needs the confirmed-current-key list: the
+ * cached paint can be another workspace's set (or a month-old one), and resetting
+ * a valid selection against it silently rewrites the picker (SHO-497).
+ */
+const revalidated = new Map<string, ResolvedVisibleModels>()
 
 {
   const key = activeCacheKey()
@@ -189,6 +196,7 @@ function revalidate(cacheKey: string): Promise<ResolvedVisibleModels> {
     pending = fetcher
       .then((data) => {
         cache.set(cacheKey, data)
+        revalidated.set(cacheKey, data)
         // Only re-index the global metadata map when this key is still the
         // active one, so a background refresh for a now-inactive workspace
         // doesn't clobber the active workspace's metadata.
@@ -213,6 +221,14 @@ export function invalidateVisibleModelsCache(workspaceId?: string): void {
   const key = workspaceId ?? activeCacheKey()
   inflight.delete(key)
   void revalidate(key)
+}
+
+/** Test-only: forget every cached, in-flight and confirmed snapshot. */
+export function __resetVisibleModelsCacheForTests(): void {
+  cache.clear()
+  inflight.clear()
+  revalidated.clear()
+  serverModelMeta.clear()
 }
 
 // ===========================================================================
@@ -415,13 +431,49 @@ export function useModelPickerList(): PickerModel[] {
 // ===========================================================================
 
 /**
+ * The snapshot a reconciliation may act on: the one this process fetched for
+ * the *current* key. `null` while that fetch is still in flight (or failed) —
+ * the cached paint is the last-known list for some key, not authority for this
+ * one.
+ */
+function confirmedSnapshot(): ResolvedVisibleModels | null {
+  return revalidated.get(activeCacheKey()) ?? null
+}
+
+/** The ids a picker can offer from this snapshot. */
+function pickableIds(visible: ResolvedVisibleModels): Set<string> {
+  return new Set<string>([
+    ...(visible.catalogModels ?? []).map((m) => m.id),
+    ...(visible.openrouterModels ?? []).map((m) => m.id),
+  ])
+}
+
+/**
+ * The catalog id a saved selection is an alias/slug of, or `null` when it names
+ * nothing this picker can offer.
+ *
+ * Two sources, because a selection can predate two different renames: the
+ * serving payload's `aliases` (a DB model that used to be keyed by a slug, now
+ * a UUID) and the bundled catalog's alias table (a static model that used to
+ * be keyed by a shorthand). Either way the person picked a real model, so the
+ * selection is re-pointed at it rather than thrown away.
+ */
+function aliasTargetId(selected: string, known: Set<string>, visible: ResolvedVisibleModels): string | null {
+  for (const m of visible.catalogModels ?? []) {
+    if (m.aliases?.includes(selected) && known.has(m.id)) return m.id
+  }
+  const canonical = resolveModelId(selected)
+  if (canonical !== selected && known.has(canonical)) return canonical
+  return null
+}
+
+/**
  * Decide whether a stored selection is stale against the live catalog. Returns
  * the id to reset to, or `null` when no reset is needed — i.e. the selection is
- * `Auto`/a known catalog id, or the catalog hasn't loaded yet (so a valid
- * selection is never reset before metadata arrives). If the requested
- * `fallback` itself isn't visible or isn't present in the active server
- * metadata index, returns `AUTO_MODEL_ID` so we never swap one unrenderable
- * slug for another.
+ * `Auto`/a known catalog id, it is an alias of one (remapped, not reset), or the
+ * catalog hasn't loaded yet (so a valid selection is never reset before
+ * metadata arrives). If the requested `fallback` isn't visible either, returns
+ * `AUTO_MODEL_ID` so we never swap one unrenderable id for another.
  */
 export function reconcileModelSelection(
   selected: string,
@@ -429,21 +481,24 @@ export function reconcileModelSelection(
   visible: ResolvedVisibleModels | null,
 ): string | null {
   if (!visible) return null
-  const known = new Set<string>([
-    ...(visible.catalogModels ?? []).map((m) => m.id),
-    ...(visible.openrouterModels ?? []).map((m) => m.id),
-  ])
+  const known = pickableIds(visible)
   if (known.size === 0) return null
   if (selected === AUTO_MODEL_ID || known.has(selected)) return null
-  return known.has(fallback) && serverModelMeta.has(fallback) ? fallback : AUTO_MODEL_ID
+  const remapped = aliasTargetId(selected, known, visible)
+  if (remapped) return remapped
+  return known.has(fallback) ? fallback : AUTO_MODEL_ID
 }
 
 /**
  * Reset a stale stored model selection to `fallback` once the catalog loads.
  * `onReset` should route through the owner's normal model-change handler so the
- * corrected id is persisted (and any runtime config re-synced). Pass
- * `enabled = false` to skip reconciliation (e.g. when a parent already owns and
- * reconciles the selection).
+ * corrected (or remapped) id is persisted — and any runtime config re-synced.
+ * Pass `enabled = false` to skip reconciliation (e.g. when a parent already
+ * owns and reconciles the selection).
+ *
+ * Only a snapshot fetched for the current key is allowed to decide: a cached
+ * paint can belong to another workspace, and an id missing from it is not gone
+ * (SHO-497).
  */
 export function useReconcileStaleModelSelection(
   selected: string,
@@ -452,9 +507,12 @@ export function useReconcileStaleModelSelection(
   enabled = true,
 ): void {
   const visible = useVisibleModels()
+  // Recompute when the painted snapshot changes; the confirmed one is read
+  // during render so the effect below sees the fetch that just landed.
+  const confirmed = useMemo(() => confirmedSnapshot(), [visible])
   useEffect(() => {
     if (!enabled) return
-    const next = reconcileModelSelection(selected, fallback, visible)
+    const next = reconcileModelSelection(selected, fallback, confirmed)
     if (next && next !== selected) onReset(next)
-  }, [visible, selected, fallback, onReset, enabled])
+  }, [confirmed, selected, fallback, onReset, enabled])
 }

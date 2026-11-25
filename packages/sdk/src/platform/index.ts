@@ -20,6 +20,10 @@
 
 import type { HttpClient } from '../http/client.js'
 import type { ShogoResponse } from '../types.js'
+// The one `ModelFamily` definition — the catalog's — so an admin-surface type
+// can never list a family the API rejects (SHO-558: `gemini` was missing here
+// too). Type-only, so nothing is pulled into a browser bundle.
+import type { ModelFamily } from '@shogo-ai/agent/model-catalog'
 
 /** Convert an unknown boundary error into a user-facing message. */
 export function toErrorMessage(error: unknown, fallback = ''): string {
@@ -323,6 +327,14 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   /** Reasoning effort applied when the model runs (drives thinkingLevel). */
   reasoningEffort?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Slugs this model used to answer to. A saved selection that matches one of
+   *  these is re-pointed at `id` rather than reset. Optional for back-compat
+   *  with API servers that predate this field. */
+  aliases?: string[]
+  /** Whether the model accepts video input natively. A desktop mirroring this
+   *  catalog has no way to classify a cloud UUID, so the flag has to ride
+   *  along or its runtime drops the clip (SHO-495). */
+  supportsVideoInput?: boolean
 }
 
 /** Admin-curated allowlist of models that surface in the user picker.
@@ -405,7 +417,7 @@ export interface ModelDefinition {
   displayName: string
   shortDisplayName: string
   tier: 'economy' | 'standard' | 'premium'
-  family: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  family: ModelFamily
   generation: 'current' | 'legacy'
   maxOutputTokens: number
   enabled: boolean
@@ -449,7 +461,7 @@ export interface ModelDefinitionInput {
   displayName?: string
   shortDisplayName?: string
   tier?: 'economy' | 'standard' | 'premium'
-  family?: 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+  family?: ModelFamily
   generation?: 'current' | 'legacy'
   maxOutputTokens?: number
   enabled?: boolean

@@ -27,7 +27,7 @@ import { fitChatImage } from "./image-sizing"
 import { useNaturalImageSize } from "./image-natural-size"
 import { useMeasuredWidth } from "./use-measured-width"
 import { WorkedForGroup } from "./WorkedForGroup"
-import { ContextCompactionDivider } from "./ContextCompactionDivider"
+import { ContextCompactionDivider, ContextCompactingRow } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -35,6 +35,7 @@ import {
   groupWorkParts,
   partitionTurn,
   extractTurnTiming,
+  isTodoTool,
   shouldShowPlanningStatus,
 } from "./turnShaping"
 import { buildFallbackWorkedLabel } from "./workSummary"
@@ -527,8 +528,8 @@ export const AssistantContent = memo(
     const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
 
     const orderedParts = useMemo(
-      () => extractOrderedParts(throttledMessage, partReuseRef.current),
-      [throttledMessage],
+      () => extractOrderedParts(throttledMessage, partReuseRef.current, { streaming: isStreaming }),
+      [throttledMessage, isStreaming],
     )
 
     // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
@@ -536,11 +537,7 @@ export const AssistantContent = memo(
       // A work log shown inside a channel is read-only history; it must not feed a project's panels.
       if (bare) return
       for (const part of orderedParts) {
-        if (
-          part.type === "tool" &&
-          (part.tool.toolName === "TodoWrite" ||
-            part.tool.toolName === "todo_write")
-        ) {
+        if (part.type === "tool" && isTodoTool(part.tool.toolName)) {
           const todos = parseTodosForStore(part.tool.args)
           if (todos.length > 0) {
             todoStateStore.registerWrite(part.tool.id, todos)
@@ -730,6 +727,10 @@ export const AssistantContent = memo(
         return <ContextCompactionDivider key={part.id} part={part} />
       }
 
+      if (part.type === "compaction-pending") {
+        return <ContextCompactingRow key={part.id} chunks={part.chunks} />
+      }
+
       if (part.type === "tool") {
         if (TEAM_TOOL_NAMES.has(part.tool.toolName)) {
           return <TeamCard key={part.id} tool={part.tool} />
@@ -762,10 +763,7 @@ export const AssistantContent = memo(
           return <AskUserAskedRow key={part.id} tool={part.tool} />
         }
 
-        if (
-          part.tool.toolName === "TodoWrite" ||
-          part.tool.toolName === "todo_write"
-        ) {
+        if (isTodoTool(part.tool.toolName)) {
           return <TodoRow key={part.id} tool={part.tool} />
         }
 

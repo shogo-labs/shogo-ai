@@ -75,9 +75,16 @@ mock.module("../../../../lib/native-phone-layout", () => ({
 mock.module("../../../../lib/agent-image-source", () => ({
   useAgentImageSource: (url: string) => ({ uri: url }),
 }))
+/** Every checklist snapshot the turn handed the dock's Tasks panel store. */
+const registeredTodos: Array<[string, unknown[]]> = []
+
 mock.module("../../../../lib/todo-state-store", () => ({
-  useTodoStateStore: () => ({ setTodos: () => {}, updateFromTool: () => {} }),
-  parseTodos: () => [],
+  useTodoStateStore: () => ({
+    setTodos: () => {},
+    updateFromTool: () => {},
+    registerWrite: (toolId: string, todos: unknown[]) => registeredTodos.push([toolId, todos]),
+  }),
+  parseTodos: (args: any) => (Array.isArray(args?.todos) ? args.todos : []),
 }))
 mock.module("../../../../lib/file-change-store", () => ({
   useFileChangeStore: () => ({ recordChange: () => {} }),
@@ -161,5 +168,34 @@ describe("AssistantContent pinned work", () => {
     expect(screen.getByText("Worked for")).toBeTruthy()
     expect(screen.queryByText("work-group")).toBeNull()
     expect(screen.queryByText("Connect GitHub")).toBeNull()
+  })
+
+  test("a todo inside the run still feeds the dock's Tasks panel (SHO-574)", () => {
+    registeredTodos.length = 0
+    const todoWrite = {
+      type: "dynamic-tool",
+      toolCallId: "todo-1",
+      toolName: "todo_write",
+      state: "output-available",
+      input: { todos: [{ content: "Ship it", status: "in_progress" }] },
+      output: "ok",
+    }
+    render(
+      createElement(AssistantContent, {
+        message: {
+          id: "m2",
+          role: "assistant",
+          parts: [{ type: "data-turn-start", data: { startedAt: 1_000 } }, readFile, todoWrite],
+        } as any,
+        isStreaming: true,
+      }),
+    )
+    // Folded into the work run (the group renders, the standalone todo row does not)…
+    expect(screen.getByText("work-group")).toBeTruthy()
+    expect(screen.queryByText("todo")).toBeNull()
+    // …and the checklist store got the snapshot regardless of grouping.
+    expect(registeredTodos).toHaveLength(1)
+    expect(registeredTodos[0]![0]).toBe("todo-1")
+    expect(registeredTodos[0]![1]).toHaveLength(1)
   })
 })

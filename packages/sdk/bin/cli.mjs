@@ -13,8 +13,25 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { execSync, execFileSync } from 'child_process'
 import { parseArgs } from 'util'
-import { pathToFileURL } from 'url'
-import { runThreeDCommand } from './three-d-cli.mjs'
+import { pathToFileURL, fileURLToPath } from 'url'
+
+/**
+ * Subcommand CLIs (`3d`, `bucket`) are loaded on demand. A missing
+ * `bin/*-cli.mjs` must never break `shogo generate` or `--help`: importing
+ * them at the top of this file took down every command when one of them was
+ * left out of `package.json` "files" (2.6.1 — SHO-511).
+ */
+async function loadSubcommand(name, file) {
+  const url = new URL(file, import.meta.url)
+  if (!existsSync(fileURLToPath(url))) {
+    console.error(
+      `[shogo] \`shogo ${name}\` is unavailable in this install: ${file.replace('./', 'bin/')} is missing from @shogo-ai/sdk. ` +
+        'Reinstall the SDK (`npm i -D @shogo-ai/sdk@latest`) to restore it.'
+    )
+    process.exit(1)
+  }
+  return import(url.href)
+}
 
 // ============================================================================
 // CLI Parsing
@@ -65,13 +82,26 @@ Usage:
   shogo deploy [--prune] [--dry-run]      Reconcile shogo.config.json#agents with cloud
   shogo 3d <subcommand>                   3D models through the AI proxy
                                           (generate | edit | status | upload | models)
+  shogo bucket <subcommand>               This project's object storage + CDN
+                                          (put | ls | rm | url | usage | offload)
   shogo help                              Show this help message
 `)
   process.exit(0)
 }
 
 if (command === '3d') {
+  const { runThreeDCommand } = await loadSubcommand('3d', './three-d-cli.mjs')
   process.exit(await runThreeDCommand(positionals.slice(1), values))
+}
+
+if (command === 'bucket') {
+  // Hand the bucket CLI the RAW argv after `bucket`. The outer parseArgs above
+  // declares no bucket options, so with `strict: false` it swallows every
+  // bucket flag into `values`/`positionals` and the subcommand would never see
+  // `--private`, `--key`, `--prefix`, `--min-size`, `--json`, `--overwrite`,
+  // `--dry-run`, `--signed` or `--expires`. `bucketMain` parses argv itself.
+  const { bucketMain } = await loadSubcommand('bucket', './bucket-cli.mjs')
+  await bucketMain(process.argv.slice(2).slice(1))
 }
 
 if (command === 'deploy') {
@@ -146,7 +176,7 @@ if (command === 'deploy') {
 
 if (command !== 'generate') {
   console.error(`Unknown command: ${command}`)
-  console.error('Available commands: generate, deploy, help')
+  console.error('Available commands: generate, deploy, 3d, bucket, help')
   process.exit(1)
 }
 

@@ -252,6 +252,50 @@ export function serializeMessage(row: any) {
 export type SerializedMessage = ReturnType<typeof serializeMessage>
 
 /**
+ * Announce message rows a machine sync just wrote (SHO-486).
+ *
+ * A hosted workspace is written by both sides. The cloud's own `postMessage`
+ * publishes to the conversation bus, but everything the desktop writes arrives
+ * as synced rows — and the sync used to land them silently, so a reply posted or
+ * run on the desktop only appeared to a cloud client after a refresh. This
+ * republishes exactly what `postMessage` would have, from rows that are already
+ * final: no seq allocation, no mentions, no wakes, no hooks.
+ *
+ * `created` are messages this side had never seen; `updated` are messages whose
+ * row (or reactions, or a thread root's counters) changed under them.
+ */
+export async function announceSyncedMessages(
+  writes: { created?: Iterable<string>; updated?: Iterable<string> },
+): Promise<number> {
+  const createdIds = [...new Set(writes.created ?? [])]
+  const created = new Set(createdIds)
+  const updatedIds = [...new Set(writes.updated ?? [])].filter((id) => !created.has(id))
+  const ids = [...createdIds, ...updatedIds]
+  if (!ids.length) return 0
+
+  const rows = await db.conversationMessage.findMany({ where: { id: { in: ids } }, include: MESSAGE_INCLUDE })
+  if (!rows.length) return 0
+  const conversationIds = [...new Set(rows.map((row: any) => String(row.conversationId)))]
+  const conversations = new Map<string, { id: string; kind: string; workspaceId: string }>(
+    (
+      (await db.conversation.findMany({
+        where: { id: { in: conversationIds } },
+        select: { id: true, kind: true, workspaceId: true },
+      })) as Array<{ id: string; kind: string; workspaceId: string }>
+    ).map((conversation) => [conversation.id, conversation]),
+  )
+
+  let published = 0
+  for (const row of rows) {
+    const conversation = conversations.get(String(row.conversationId))
+    if (!conversation) continue
+    await publish(conversation, { type: created.has(row.id) ? 'message.created' : 'message.updated', message: serializeMessage(row) }, row)
+    published++
+  }
+  return published
+}
+
+/**
  * Re-send a message after something it carries was filled in later. Used when a
  * shared file's text extraction finishes after the message went out: the first
  * `message.created` had no preview, so the client receives it here and patches
@@ -1312,6 +1356,12 @@ export interface PostMessageInput {
   agentChain?: AgentChain | null
   /** Record mentions (and notify) on a system message. Off by default so join/leave notices stay quiet. */
   systemMentions?: boolean
+  /**
+   * Store the text as written: no `@Name` resolution and no mention rows. For
+   * content written outside Shogo (an email), where an `@` must never page a
+   * person or wake an agent.
+   */
+  skipMentions?: boolean
   createdAt?: Date
 }
 
@@ -1337,7 +1387,7 @@ async function resolveForInsert(
   conversation: { workspaceId: string; provider?: string | null },
   text: string,
 ): Promise<{ text: string; warnings: string[] }> {
-  if (conversation.provider !== 'shogo' || input.authorType === 'system' || !text.includes('@')) {
+  if (conversation.provider !== 'shogo' || input.authorType === 'system' || input.skipMentions || !text.includes('@')) {
     return { text, warnings: [] }
   }
   try {
@@ -1428,7 +1478,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
   }
   const resolved = await resolveForInsert(input, conversation, text)
   const storedText = resolved.text
-  const mentions = input.authorType === 'system' && !input.systemMentions
+  const mentions = input.skipMentions || (input.authorType === 'system' && !input.systemMentions)
     ? []
     : await expandGroupMentions(conversation.workspaceId, parseMentions(storedText))
 
@@ -1852,6 +1902,51 @@ export async function getMessage(messageId: string, userId: string) {
   return {
     ...serializeMessage(row),
     conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+  }
+}
+
+/** Most messages one quote batch may ask for. */
+export const MESSAGE_BATCH_LIMIT = 50
+
+/**
+ * Several messages at once, for quote cards: a channel that links eight
+ * messages opens with one request instead of eight. Each message is checked
+ * exactly as {@link getMessage} checks it, and one the reader may not see —
+ * deleted, elsewhere, or never existed — is listed in `missing` without saying
+ * which, the same neutral answer the single read gives.
+ */
+export async function getMessages(messageIds: string[], userId: string) {
+  const ids = [...new Set(messageIds.filter((id) => typeof id === 'string' && id.length > 0))]
+  if (ids.length > MESSAGE_BATCH_LIMIT) {
+    throw new ConversationError(400, 'too_many_ids', `At most ${MESSAGE_BATCH_LIMIT} messages per request`)
+  }
+  if (ids.length === 0) return { messages: [], missing: [] as string[] }
+  const rows = await db.conversationMessage.findMany({ where: { id: { in: ids } }, include: MESSAGE_INCLUDE })
+  const accessByConversation = new Map<string, Promise<ConversationAccess | null>>()
+  const accessFor = (conversationId: string) => {
+    let pending = accessByConversation.get(conversationId)
+    if (!pending) {
+      pending = loadAccess(conversationId, userId).catch((err) => {
+        if (err instanceof ConversationError) return null
+        throw err
+      })
+      accessByConversation.set(conversationId, pending)
+    }
+    return pending
+  }
+  const byId = new Map<string, any>()
+  for (const row of rows) {
+    const access = await accessFor(row.conversationId)
+    if (!access || !canSeeMessage(row, userId)) continue
+    const { conversation } = access
+    byId.set(row.id, {
+      ...serializeMessage(row),
+      conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+    })
+  }
+  return {
+    messages: ids.filter((id) => byId.has(id)).map((id) => byId.get(id)),
+    missing: ids.filter((id) => !byId.has(id)),
   }
 }
 

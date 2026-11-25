@@ -24,8 +24,10 @@
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
+import { workspaceRuntimeMembers } from './runtime/workspace-runtime-members'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
 import { metrics } from '@opentelemetry/api'
+import { getBillingWorkspaceTrustHold } from './signup-trust'
 
 const spawnLeaseWait = metrics.getMeter('shogo-metal-pool').createHistogram('metal.wake_phase_ms', {
   description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
@@ -251,6 +253,13 @@ export async function resolveWorkspaceRuntimeUrl(
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
   }
+  // Refuse to wake a runtime whose workspace owner is banned.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const hold = await getBillingWorkspaceTrustHold(workspaceId)
+    if (hold === 'account_banned') {
+      throw new Error(`[WorkspaceRuntime] workspace ${workspaceId} is owned by a banned account`)
+    }
+  }
   // Cloud runtimes are region-local: never boot or claim one outside the
   // workspace's home region (see runtime-home-region-guard.ts).
   if (process.env.SHOGO_LOCAL_MODE !== 'true' && (isMetalEnabled() || isKubernetes())) {
@@ -306,7 +315,8 @@ export async function resolveWorkspaceRuntimeUrl(
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
     // On metal a project is online only in its own `ws:proj:<id>` runtime;
     // other runtimes reach it through the remote-tool channel, never a mount.
-    const metalMembers = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    // One definition, shared with the `/pod-config` token refresh (SHO-560).
+    const metalMembers = workspaceRuntimeMembers({ anchorProjectId: opts.anchorProjectId, forMetal: true })
     const leaseStartedAt = performance.now()
     const url = await spawnLease(leaseKey, () => {
       spawnLeaseWait.record(performance.now() - leaseStartedAt, { phase: 'api.spawn_lease', mode: 'workspace' })

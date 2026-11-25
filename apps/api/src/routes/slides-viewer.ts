@@ -17,74 +17,42 @@
  *
  * The bundle is inlined: one cached document, no second request, and nothing
  * the page could fetch even if it tried.
+ *
+ * HTTP boilerplate (CSP, cache-control, compression, 503) lives in
+ * `office-viewer.ts`; this file is what is unique to the slides format.
  */
 
-import { Hono } from 'hono'
-import { compress } from 'hono/compress'
+import { type Hono } from 'hono'
 import { createRequire } from 'module'
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
+import {
+  OFFICE_VIEWER_CSP,
+  OFFICE_VIEWER_CACHE_CONTROL,
+  OFFICE_VIEWER_UNCACHED,
+  createOfficeViewer,
+  inlineRendererExports,
+} from './office-viewer'
 
 /** Where the page lives. Public: it is a static asset that knows no tenant. */
 export const SLIDES_VIEWER_PATH = '/api/viewers/slides'
 
 /**
- * Opaque origin, no network. `img-src blob: data:` and `font-src data:` are
- * what the renderer needs for embedded media and fonts; scripts and styles are
- * inline because the whole page is one document.
+ * Re-export the shared constants under the slides-specific names so callers
+ * that import directly from this module (tests, mobile protocol) need not
+ * know about office-viewer.
  */
-export const SLIDES_VIEWER_CSP =
-  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; " +
-  "style-src 'unsafe-inline'; img-src blob: data:; font-src data:; connect-src 'none'"
-
-/** A pinned renderer is cached forever; `?v=` is the version it was built from. */
-export const SLIDES_VIEWER_CACHE_CONTROL = 'public, max-age=31536000, immutable'
-export const SLIDES_VIEWER_UNCACHED = 'no-cache'
+export const SLIDES_VIEWER_CSP = OFFICE_VIEWER_CSP
+export const SLIDES_VIEWER_CACHE_CONTROL = OFFICE_VIEWER_CACHE_CONTROL
+export const SLIDES_VIEWER_UNCACHED = OFFICE_VIEWER_UNCACHED
 
 /** The package's standalone browser build: one file, no imports to resolve. */
 const RENDERER_ENTRY = '@aiden0z/pptx-renderer/browser'
 /** The exports the page cannot work without. */
 const REQUIRED_EXPORTS = ['PptxViewer', 'RECOMMENDED_ZIP_LIMITS'] as const
 
-interface SlidesViewerDocument {
-  html: string
-  version: string
-}
-
-let document: SlidesViewerDocument | null = null
-let documentError: string | null = null
-
 function requireFromHere(): NodeRequire {
   return createRequire(import.meta.url)
-}
-
-/**
- * Inline the ESM bundle and hand its exports to the page.
- *
- * The build ends with a single `export { local as exported, … }` list. An
- * inline module cannot be imported, so that list is rewritten into an object
- * the page's own code reads. A build without it is refused loudly at startup
- * rather than shipped as a page that silently renders nothing.
- */
-function inlineRendererExports(source: string): string {
-  const match = /export\s*\{([\s\S]*?)\}\s*;?\s*$/.exec(source)
-  if (!match) throw new Error(`${RENDERER_ENTRY} has no trailing export list to inline`)
-  const pairs = match[1]
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const [local, exported] = entry.split(/\s+as\s+/).map((part) => part.trim())
-      return `${exported ?? local}: ${local}`
-    })
-  const exported = new Set(
-    pairs.map((pair) => pair.slice(0, pair.indexOf(':')).replace(/["']/g, '')),
-  )
-  for (const name of REQUIRED_EXPORTS) {
-    if (!exported.has(name)) throw new Error(`${RENDERER_ENTRY} no longer exports ${name}`)
-  }
-  const body = source.slice(0, match.index)
-  return `${body}\nconst __shogoPptx = { ${pairs.join(', ')} };\n`
 }
 
 /** The page's own code: receive bytes, render, report. No network, ever. */
@@ -230,7 +198,10 @@ send({ type: 'ready' })
 
 export function buildSlidesViewerHtml(rendererSource: string): string {
   // A `</script>` inside the bundle would end the inline script early.
-  const inlined = inlineRendererExports(rendererSource).replace(/<\/script/gi, '<\\/script')
+  const inlined = inlineRendererExports(rendererSource, REQUIRED_EXPORTS, '__shogoPptx').replace(
+    /<\/script/gi,
+    '<\\/script',
+  )
   return `<!doctype html>
 <html data-theme="dark">
 <head>
@@ -264,63 +235,36 @@ ${VIEWER_SCRIPT}
 </html>`
 }
 
+const _factory = createOfficeViewer({
+  routePath: 'slides',
+  logTag: 'slides-viewer',
+  buildHtml(): string {
+    const entry = requireFromHere().resolve(RENDERER_ENTRY)
+    return buildSlidesViewerHtml(readFileSync(entry, 'utf8'))
+  },
+  getVersion(): string {
+    const entry = requireFromHere().resolve(RENDERER_ENTRY)
+    const manifest = JSON.parse(
+      readFileSync(join(dirname(entry), '..', 'package.json'), 'utf8'),
+    ) as { version?: string }
+    return typeof manifest.version === 'string' ? manifest.version : '0'
+  },
+})
+
 /**
  * Read the installed renderer and build the page once. Returns null (with the
  * reason kept for the route's 503) when the package is missing, which is a
  * deployment error rather than a request error.
  */
-export function slidesViewerDocument(): SlidesViewerDocument | null {
-  if (document) return document
-  if (documentError) return null
-  try {
-    const entry = requireFromHere().resolve(RENDERER_ENTRY)
-    const source = readFileSync(entry, 'utf8')
-    const manifest = JSON.parse(readFileSync(join(dirname(entry), '..', 'package.json'), 'utf8')) as {
-      version?: string
-    }
-    document = {
-      html: buildSlidesViewerHtml(source),
-      version: typeof manifest.version === 'string' ? manifest.version : '0',
-    }
-    return document
-  } catch (error: any) {
-    documentError = error?.message || String(error)
-    console.error('[slides-viewer] renderer unavailable:', documentError)
-    return null
-  }
+export function slidesViewerDocument(): { html: string; version: string } | null {
+  return _factory.viewerDocument()
 }
 
 /** Test seam: forget the built page so a test can inspect a fresh build. */
 export function resetSlidesViewerCache(): void {
-  document = null
-  documentError = null
+  _factory.resetViewerCache()
 }
 
 export function slidesViewerRoutes(): Hono {
-  const app = new Hono()
-
-  // The inlined renderer makes this the largest HTML document the API serves
-  // (2.4 MB, ~470 KB compressed). Nothing else in the app compresses, so the
-  // page asks for it itself.
-  app.use('/slides', compress())
-
-  app.get('/slides', (c) => {
-    const page = slidesViewerDocument()
-    if (!page) {
-      return c.text('Slides preview is unavailable in this build.', 503, { 'Cache-Control': 'no-store' })
-    }
-    const requested = c.req.query('v')
-    return c.body(page.html, 200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': SLIDES_VIEWER_CSP,
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer',
-      // Only a request that named this build's version may be cached forever;
-      // a bare or stale `v` still gets the page, freshly.
-      'Cache-Control': requested === page.version ? SLIDES_VIEWER_CACHE_CONTROL : SLIDES_VIEWER_UNCACHED,
-      'X-Robots-Tag': 'noindex',
-    })
-  })
-
-  return app
+  return _factory.viewerRoutes()
 }

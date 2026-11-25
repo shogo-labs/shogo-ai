@@ -48,7 +48,6 @@ import {
   Platform,
   StyleSheet,
   type ViewStyle,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
   type NativeScrollEvent,
@@ -77,6 +76,7 @@ import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
 import { useAuthOptional, getAuthUserSnapshot } from "../../contexts/auth"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { setStorageItem } from '@/lib/storage'
 import {
   extractTextContent,
   formatErrorMessage,
@@ -178,11 +178,11 @@ import {
 } from "./retry-triage"
 import {
   computeRecoveryBackoff,
+  decideStallGiveUp,
   decideStallTrip,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
-  turnEndedOnServer,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { followNextTurn } from "./next-turn-follow"
@@ -298,7 +298,7 @@ import {
   useChatDockStore,
   type DockPanelDescriptor,
 } from "../../lib/chat-dock-store"
-import { useDockPanel } from "./dock/useDockPanel"
+import { useDockPanel, useHostDockPanels } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
@@ -314,6 +314,7 @@ import {
 } from "../../lib/agent-mode-preference"
 import {
   composerMemoryKey,
+  lastUserModelStamp,
   resolveChatModel,
   useChatComposerMemory,
 } from "../../lib/chat-composer-memory"
@@ -385,7 +386,7 @@ import {
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
-import { agentFetch } from "../../lib/agent-fetch"
+import { agentFetch, authedCredentials, authedFetchInit } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
@@ -421,6 +422,7 @@ import {
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app"
 import { openExternalLink } from "../../lib/open-external-link";
+import { Spinner } from '@/components/ui/spinner'
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
@@ -679,6 +681,20 @@ export interface ChatPanelProps {
    */
   phoneTranscriptTopPadding?: "chrome" | "floating-agent"
   /**
+   * Dock panels the *host* screen wants above this chat's composer, e.g. the
+   * workspace chat's "Working set" (SHO-484). A screen that renders the chat
+   * cannot register with its dock store itself — the store is created inside
+   * `ChatPanel` — so it hands descriptors down here instead.
+   *
+   * Registered after the session-change reset (so switching chats re-registers
+   * them instead of dropping them) and re-registered on every render, which is
+   * how a fresh `render`/`headerActions` closure reaches the dock. Pass a new
+   * array only when the panels themselves change; each descriptor is upserted
+   * by id and the store only re-renders the dock when something it shows
+   * actually changed.
+   */
+  dockPanels?: DockPanelDescriptor[]
+  /**
    * The lifecycle notification this chat was opened from, when it was opened
    * from one (SHO-266). Set only for the arrival that came from the push's
    * deep link, so the "Continue <project>" chip greets that person and nobody
@@ -698,6 +714,13 @@ export interface ChatPanelProps {
 
 const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
 
+/**
+ * Stable empty list for `dockPanels` so a host that has no panels (or that
+ * omits the prop) does not hand the registration effect a new array on every
+ * render.
+ */
+const EMPTY_DOCK_PANELS: DockPanelDescriptor[] = []
+
 // ============================================================
 // AsyncStorage Helpers
 // ============================================================
@@ -713,7 +736,7 @@ async function getStoredCollapsed(): Promise<boolean> {
 
 async function setStoredCollapsed(collapsed: boolean): Promise<void> {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY_COLLAPSED, String(collapsed))
+    await setStorageItem(STORAGE_KEY_COLLAPSED, String(collapsed))
   } catch {
     // Silently ignore storage errors
   }
@@ -966,6 +989,11 @@ const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
  * spinner forever.
  */
 const REJOIN_ATTACH_TIMEOUT_MS = 8_000
+/**
+ * How long a stream error waits for automatic recovery before it is reported
+ * as unrecovered. Longer than the recovery poll (12 probes, ≈50 s).
+ */
+const STREAM_ERROR_REPORT_DELAY_MS = 90_000
 
 /**
  * A `/turn` answer this fresh is reused instead of probing again: the probe
@@ -1193,6 +1221,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
+  dockPanels: hostDockPanels = EMPTY_DOCK_PANELS,
   arrivedFromLifecycle,
   continueProjectName,
 }: ChatPanelProps) {
@@ -1417,18 +1446,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
           return Array.isArray(response.data?.results) ? response.data.results : []
         }
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
         const params = new URLSearchParams(search)
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
             workspaceId,
           )}/history/search?${params}`,
-          {
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+          authedFetchInit() as any,
         )
         if (!response.ok) return []
         const data = await response.json()
@@ -1472,13 +1495,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!url) return
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
-      const headers: Record<string, string> = nativeHeaders
-        ? nativeHeaders()
-        : {}
-      const res = await fetchFn(`${url}/agent/quick-actions`, {
-        headers,
-        credentials: Platform.OS === "web" ? "include" : undefined,
-      } as any)
+      const res = await fetchFn(`${url}/agent/quick-actions`, authedFetchInit() as any)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data?.actions)) {
@@ -2129,6 +2146,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     chatDockStore.reset()
   }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore])
 
+  // Dock panels handed down by the host screen (SHO-484). Declared *after* the
+  // reset above so a session switch clears the dock and re-registers them in
+  // the same commit — see `useHostDockPanels`.
+  useHostDockPanels(hostDockPanels, chatDockStore)
+
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
   // restored chat tab don't each fire their own request on mount. Uses
@@ -2328,13 +2350,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!tasksUrl) return null
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
-      const headers: Record<string, string> = nativeHeaders
-        ? nativeHeaders()
-        : {}
-      const init = {
-        headers,
-        credentials: Platform.OS === "web" ? "include" : undefined,
-      } as any
+      const init = authedFetchInit() as any
       let res = await fetchFn(tasksUrl, init)
       // Runtimes that predate tasks only list shell processes.
       if (res.status === 404) {
@@ -2368,14 +2384,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setKillingProcesses((prev) => new Set(prev).add(runId))
       try {
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
-        const init = {
-          method: "POST",
-          headers,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any
+        const init = authedFetchInit({ method: "POST" }) as any
         let res = await fetchFn(
           `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(runId)}/cancel`,
           init,
@@ -2415,10 +2424,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!base || !currentSessionId) return null
       try {
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
         const res = await fetchFn(
           `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(taskId)}/output`,
-          { headers, credentials: Platform.OS === "web" ? "include" : undefined } as any,
+          authedFetchInit() as any,
         )
         if (!res.ok) return null
         const data = await res.json()
@@ -2495,6 +2503,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
   // detect a session switch and bail before reattaching to a stale stream.
   const recoveredTurnIdRef = useRef<string | null>(null)
+  const recoveryBudgetRef = useRef<{ count: number; seq: number | null }>({ count: 0, seq: null })
+  // A stream error is reported once automatic recovery has had its say, so
+  // `recovered` in Sentry is the truth rather than always `false` (it was set
+  // before recovery ran, JAVASCRIPT-REACT-46 / ANDROID-5 / IOS-4 / DESKTOP-G).
+  const pendingStreamErrorRef = useRef<{
+    err: unknown
+    ctx: NonNullable<Parameters<typeof buildChatStreamErrorReport>[1]>
+    timer: ReturnType<typeof setTimeout>
+  } | null>(null)
+  const flushStreamErrorReportRef = useRef<(recovered: boolean) => void>(() => {})
+  flushStreamErrorReportRef.current = (recovered: boolean) => {
+    const pending = pendingStreamErrorRef.current
+    if (!pending) return
+    pendingStreamErrorRef.current = null
+    clearTimeout(pending.timer)
+    try {
+      const report = buildChatStreamErrorReport(pending.err, { ...pending.ctx, recovered })
+      if (report) {
+        Sentry.captureException(pending.err, {
+          level: report.level,
+          tags: report.tags,
+          extra: report.extra,
+          fingerprint: report.fingerprint,
+        })
+      }
+    } catch (reportErr) {
+      console.warn("[ChatPanel] failed to report stream error to Sentry:", reportErr)
+    }
+  }
   const renderDepthErrorTurnIdRef = useRef<string | null>(null)
   const stallRecoveryRef = useRef<(() => void) | null>(null)
   // One `/turn` probe at a time from the stall watchdog: the 15 s tick would
@@ -2763,28 +2800,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         return
       }
-      try {
-        const report = buildChatStreamErrorReport(err, {
+      // Held until automatic recovery settles (see `flushStreamErrorReportRef`);
+      // the timer is the backstop for a recovery that never reports back.
+      flushStreamErrorReportRef.current(false)
+      pendingStreamErrorRef.current = {
+        err,
+        ctx: {
           turnId: currentTurnIdRef.current,
           sessionId: currentSessionIdRef.current,
           projectId: projectId ?? null,
           lastSeq: turnLastSeqRef.current,
           userInitiatedStop: userInitiatedStopRef.current,
           phase: "stream",
-        })
-        if (report) {
-          Sentry.captureException(err, {
-            level: report.level,
-            tags: report.tags,
-            extra: report.extra,
-            fingerprint: report.fingerprint,
-          })
-        }
-      } catch (reportErr) {
-        console.warn(
-          "[ChatPanel] failed to report stream error to Sentry:",
-          reportErr,
-        )
+        },
+        timer: setTimeout(() => flushStreamErrorReportRef.current(false), STREAM_ERROR_REPORT_DELAY_MS),
       }
 
       // A render-depth error is React refusing to keep re-rendering, not a
@@ -4528,14 +4557,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (cancelled) return
         try {
           const fetchFn = expoFetch ?? globalThis.fetch
-          const hdrs: Record<string, string> = nativeHeaders
-            ? nativeHeaders()
-            : {}
-          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
-            headers: hdrs,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-            signal: AbortSignal.timeout(5000),
-          } as any)
+          const res = await fetchFn(
+            `${localAgentUrl}/agent/health`,
+            authedFetchInit({ signal: AbortSignal.timeout(5000) }) as any,
+          )
           if (res.ok) {
             if (!cancelled) {
               setTunnelReconnecting(false)
@@ -4805,8 +4830,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
             chatWorkspaceId,
           ),
           fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
+          // A getter: after a refused credential the probe re-establishes the
+          // session and asks again, and the retry has to carry the refreshed
+          // cookie rather than the dead one (SHO-564).
+          headers: nativeHeaders ?? undefined,
+          credentials: authedCredentials(),
+          // A 401 on this probe used to read as `unknown`, so the rejoin gave up
+          // and the live reply never came back. Refresh the session once and
+          // retry instead; if the refresh fails the snapshot comes back
+          // `refused` and we say the session is gone rather than pretending the
+          // chat is idle.
+          onRefused: () => reauthorizeChatRef.current(),
           retryDelaysMs: opts.retryDelaysMs,
           signal: controller.signal,
         })
@@ -4815,6 +4849,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (SHO-287) and the "Rejoining live reply…" row (SHO-297). Scoped to the
         // chat on screen: a probe for a chat the person has left says nothing
         // about this one.
+        if (snapshot.refused && sessionId === currentSessionIdRef.current) {
+          setSessionExpired(true)
+        }
         if (sessionId === currentSessionIdRef.current) {
           const live = isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current)
           setLiveTurnActive(live)
@@ -4889,7 +4926,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               `${API_URL}/api/chat-messages?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
-                credentials: Platform.OS === "web" ? "include" : undefined,
+                credentials: authedCredentials(),
               } as any,
             )
               .then((response) => (response.ok ? response.json().catch(() => null) : null))
@@ -5182,6 +5219,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
 
   /**
+   * The runtime answered that it holds no turn for this session, so there is
+   * nothing to reattach to. Paint saved history and report whether it still
+   * ends on the prompt (no reply was written) — only then is Retry honest.
+   */
+  const settleFromSavedHistory = useCallback(async (): Promise<{ replyMissing: boolean }> => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return { replyMissing: false }
+    await catchUpAfterTurnEnded()
+    if (currentSessionIdRef.current !== sessionId) return { replyMissing: false }
+    const tail = await probePersistedTail(sessionId)
+    return { replyMissing: tail ? persistedTailAwaitsReply(tail) : true }
+  }, [catchUpAfterTurnEnded, probePersistedTail])
+  const settleFromSavedHistoryRef = useRef(settleFromSavedHistory)
+  settleFromSavedHistoryRef.current = settleFromSavedHistory
+
+  /**
    * A turn started or ended in another window, on another device, or on the
    * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
    * else tells a window that stayed visible, so this is what keeps two windows
@@ -5345,7 +5398,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             url: turnUrl,
             fetch: expoFetch,
             headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
+            credentials: authedCredentials(),
           })
         ).status
       },
@@ -5425,7 +5478,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             url: turnUrl,
             fetch: expoFetch,
             headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
+            credentials: authedCredentials(),
           })
         ).status
       },
@@ -5490,16 +5543,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (that's an intentional terminal state, not a dropped connection),
         // and fire at most once per turn so we never loop.
         const stalledTurnId = currentTurnIdRef.current
+        const sameTurn = recoveredTurnIdRef.current === stalledTurnId
         if (
           shouldAutoRecoverStalledTurn({
             stalledTurnId,
             recoveredTurnId: recoveredTurnIdRef.current,
             renderDepthErrorTurnId: renderDepthErrorTurnIdRef.current,
             userInitiatedStop: userInitiatedStopRef.current,
+            recoveriesThisTurn: recoveryBudgetRef.current.count,
+            seqAtLastRecovery: recoveryBudgetRef.current.seq,
+            lastSeq: turnLastSeqRef.current,
           })
         ) {
           recoveredTurnIdRef.current = stalledTurnId
+          recoveryBudgetRef.current = {
+            count: sameTurn ? recoveryBudgetRef.current.count + 1 : 1,
+            seq: turnLastSeqRef.current,
+          }
           stallRecoveryRef.current?.()
+        } else {
+          // Nothing will try to reattach: the stream error is final.
+          flushStreamErrorReportRef.current(false)
         }
       }
     }
@@ -5937,7 +6001,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               `${API_URL}${path}?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
-                credentials: Platform.OS === "web" ? "include" : undefined,
+                credentials: authedCredentials(),
               } as any,
             )
               .then((response) =>
@@ -6080,7 +6144,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the transcript paints, the local array must hold that many rows — a
       // shorter one is repaired with the full first page instead of staying
       // hidden until the next reopen.
-      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE) {
+      //
+      // Guard skipped when the caller has no prior messages (current.length === 0):
+      // the client cannot assess whether rows are missing from an empty starting
+      // point, and firing the guard here sends an unnecessary full reload on the
+      // warm-reopen path before the in-memory cache is populated (SHO-450).
+      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE && current.length > 0) {
         const seen = new Set(current.map((m) => String(m.id)))
         for (const row of items) if (row?.id) seen.add(String(row.id))
         if (seen.size < body.total) return false
@@ -6595,22 +6664,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     historyHydrationTick,
   ])
 
-  // This chat's last-used model: the most recent loaded message carrying a
-  // `model` value (assistant rows are stamped server-side). MST `.all` is
-  // observed here, so this recomputes when the session's messages settle.
-  const lastSessionModelStamp = (() => {
-    const all = sessionMessages?.all as any[] | undefined
-    if (!all || all.length === 0) return null
-    let latest: { createdAt: number; model: string } | null = null
-    for (const m of all) {
-      const mdl = typeof m.model === "string" ? m.model.trim() : ""
-      if (!mdl) continue
-      const createdAt = (m.createdAt as number) || 0
-      if (!latest || createdAt >= latest.createdAt)
-        latest = { createdAt, model: mdl }
-    }
-    return latest
-  })()
+  // This chat's last-used model: the most recent model *the person's own send*
+  // recorded. Only user rows count — an assistant row is stamped with what the
+  // run actually used (an Auto tier, or a role downgrade), and letting that
+  // rewrite the picker is exactly what turned a picked Opus back into Auto
+  // (SHO-497). `advanced` is a legacy agent-mode sentinel, never a pick.
+  const lastSessionModelStamp = lastUserModelStamp(sessionMessages?.all as any[] | undefined)
   const lastSessionModel = lastSessionModelStamp?.model ?? null
 
   // The model this chat should show: an explicit pick made here wins unless a
@@ -7971,7 +8030,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: probeUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           }
         } catch {
@@ -8087,6 +8146,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // History-only reload: the turn is over, so there is no live turn
             // to probe for (`refreshHistoryRef` skips that probe by design).
             refreshHistoryRef.current()
+          }, 500)
+          return
+        }
+
+        if (decision === "stop-and-verify") {
+          // The runtime answered and has no turn for this session: the body
+          // is reading nothing that will ever arrive. Paint what was saved and
+          // only offer Retry when no reply was written.
+          console.warn(
+            `[ChatPanel] stall watchdog: runtime holds no turn for ${stalledSessionId} — painting saved history`,
+          )
+          stallWatchdogTrippedRef.current = false
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          setTimeout(() => {
+            if (currentSessionIdRef.current !== stalledSessionId) return
+            void settleFromSavedHistoryRef.current().then(({ replyMissing }) => {
+              if (!replyMissing || currentSessionIdRef.current !== stalledSessionId) return
+              setErrorDismissed(false)
+              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+            })
           }, 500)
           return
         }
@@ -9112,7 +9195,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           ).status
         } catch {
@@ -9219,7 +9302,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           } catch {
             snapshot = { status: "unknown", turnId: null, answered: false }
@@ -9243,6 +9326,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             console.log(
               `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
             )
+            flushStreamErrorReportRef.current(true)
             guardedAutoResumeStream("stall-recovery")
             return
           }
@@ -9258,13 +9342,53 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // the reason it failed) is saved, so paint it instead of claiming
             // the runtime is unreachable and asking for a Retry that would
             // start the work again.
-            const ended = snapshot.answered && turnEndedOnServer(turnStatus)
-            if (ended) {
+            const outcome = decideStallGiveUp({
+              turnStatus,
+              answered: snapshot.answered,
+            })
+            const ended = outcome !== "show-retry"
+            if (outcome === "reload-history") {
               console.log(
                 `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
               )
+              flushStreamErrorReportRef.current(true)
               void catchUpAfterTurnEndedRef.current?.()
+            } else if (outcome === "reload-then-check-reply") {
+              // The runtime answered every probe with "no turn here": nothing
+              // is running to reattach to. The reply is normally saved already,
+              // so paint it; Retry only when history still ends on the prompt.
+              console.log(
+                `[ChatPanel] auto-recovery: runtime holds no turn for ${recoverySessionId} — painting saved history`,
+              )
+              const { replyMissing } = await settleFromSavedHistoryRef.current()
+              flushStreamErrorReportRef.current(!replyMissing)
+              if (replyMissing && currentSessionIdRef.current === recoverySessionId) {
+                try {
+                  Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                    level: "warning",
+                    tags: {
+                      projectId: projectId ?? "(none)",
+                      chatSessionId: recoverySessionId,
+                      turnStatus,
+                    },
+                    extra: {
+                      attempt,
+                      maxAttempts: MAX_ATTEMPTS,
+                      turnId: recoveryTurnId,
+                      fromSeq: fromSeqAtStall,
+                      isLocalAgent: !!localAgentUrl,
+                      probeAnswered: true,
+                      replyMissing: true,
+                    },
+                  })
+                } catch (err) {
+                  console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+                }
+                setErrorDismissed(false)
+                setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+              }
             } else {
+              flushStreamErrorReportRef.current(false)
               // The stall watchdog reports its own trips; this give-up path
               // (stream ended without turn-complete and could not be
               // reattached) shows the same banner, so report it separately.
@@ -10524,7 +10648,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             )}
           >
             {reconnecting ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <RefreshCw
                 size={12}
@@ -10758,6 +10882,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             recentTools={recentToolsList}
             waiting={taskWait}
             agentIdle={!isStreaming}
+            sessionId={currentSessionId}
             loadOutput={loadTaskOutput}
             onOpenTask={(proc) =>
               void openTaskThread(proc.id ?? proc.runId, {
@@ -10950,7 +11075,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       className="py-2 items-center"
                     >
                       {sessionMessages.isLoadingMore ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Text className="text-sm text-primary">
                           Load earlier messages

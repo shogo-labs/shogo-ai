@@ -36,7 +36,6 @@
 import { generateProxyToken } from '../ai-proxy-token'
 import {
   INSTANCE_SIZES,
-  meetsMinimumInstanceSize,
   accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
@@ -277,16 +276,14 @@ export async function buildWorkspaceEnv(
     // member has to request the docker VM here or it lands on a standard
     // guest with no dockerd. One member that needs docker lifts the whole
     // VM: a standard project can run there, a compose project cannot run
-    // on a standard one.
+    // on a standard one. The platform flag is the only gate — docker is a VM
+    // class, not a compute tier (instance-size purchases were retired in
+    // SHO-424), so any workspace size may run it.
     const dockerStackId = Object.values(techStacks).find((id) => isDockerTechStack(id))
     if (dockerStackId) {
       if (!isDockerClassEnabled()) {
         console.error(
           `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but the platform gate is off — assigning a standard VM`,
-        )
-      } else if (!meetsMinimumInstanceSize(workspaceInstanceSize, dockerStackId)) {
-        console.error(
-          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but instance size '${workspaceInstanceSize}' is below the stack minimum — assigning a standard VM`,
         )
       } else {
         env.SHOGO_RUNTIME_CLASS = 'docker'
@@ -297,7 +294,7 @@ export async function buildWorkspaceEnv(
       Object.assign(
         env,
         metalVmSizeEnv(
-          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks), env.SHOGO_RUNTIME_CLASS === 'docker'),
+          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks)),
         ),
       )
       // Workspace-drive size (SHO-349). A project-anchored runtime gets its own
@@ -541,6 +538,15 @@ export async function buildWorkspaceEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
   env.SHOGO_API_URL = apiBase
+  // Security policy for a runtime on this computer (SHO-494). A workspace
+  // runtime serves several projects at once, so it carries the owner's own mode
+  // and local-access rules rather than one project's overrides; without this a
+  // hosted workspace's runtime — the one a cloud client talks to — booted at the
+  // built-in default and `balanced` mode never asked for anything.
+  if (process.env.SHOGO_LOCAL_MODE === 'true') {
+    const { localSecurityPolicy } = await import('../security-policy')
+    env.SECURITY_POLICY = await localSecurityPolicy()
+  }
   // Web search / Composio / embeddings proxy. Must end in `/api/tools` (see
   // buildToolsProxyUrl). Mirrors buildProjectEnv so workspace runtimes assigned
   // purely from this env (e.g. metal) can reach the tools proxy instead of

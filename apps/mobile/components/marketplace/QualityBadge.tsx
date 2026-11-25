@@ -26,7 +26,7 @@ export function QualityBadge({ size = 'md', iconOnly = false, className }: Quali
           size === 'sm' ? 'w-5 h-5' : 'w-6 h-6'
         } ${className ?? ''}`}
       >
-        <ShieldCheck size={iconSize} color="#e27927" />
+        <ShieldCheck className="text-primary" size={iconSize} />
       </View>
     )
   }
@@ -36,7 +36,7 @@ export function QualityBadge({ size = 'md', iconOnly = false, className }: Quali
         size === 'sm' ? 'px-1.5 py-0.5' : 'px-2 py-1'
       } ${className ?? ''}`}
     >
-      <ShieldCheck size={iconSize} color="#e27927" />
+      <ShieldCheck className="text-primary" size={iconSize} />
       <Text
         className={`font-semibold text-primary ${
           size === 'sm' ? 'text-[10px]' : 'text-[11px]'

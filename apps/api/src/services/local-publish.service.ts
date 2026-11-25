@@ -34,6 +34,15 @@ const LOCAL_PUBLISH_BUILD_TIMEOUT_MS = 180_000
 const LOCAL_PUBLISH_DOWNLOAD_TIMEOUT_MS = 120_000
 const LOCAL_PUBLISH_UPLOAD_TIMEOUT_MS = 180_000
 const LOCAL_PUBLISH_PROBE_TIMEOUT_MS = 15_000
+/**
+ * How long the desktop follows a cloud publish before it reports the step it is
+ * stuck on. The cloud finishes the publish in the background now (SHO-542) and
+ * a server-backed app can legitimately spend 15+ minutes in configure (image
+ * build included), so this is a stall budget, not a per-request timeout.
+ */
+const LOCAL_PUBLISH_POLL_TIMEOUT_MS = 20 * 60_000
+const LOCAL_PUBLISH_POLL_INTERVAL_MS = 2_000
+const LOCAL_PUBLISH_POLL_MAX_INTERVAL_MS = 5_000
 
 /** localConfig key: local project id → cloud host project id. */
 const PUBLISH_HOSTS_KEY = 'CLOUD_PUBLISH_HOSTS'
@@ -70,6 +79,13 @@ export interface LocalPublishDeps {
   cloudKey(): Promise<string | null>
   cloudUrl(): string
   fetch: typeof fetch
+  /**
+   * Poll cadence while following the cloud's background publish (SHO-542).
+   * Only tests set this — nobody wants to spend the real 2 s → 5 s ramp per
+   * assertion, or wait out the 20-minute budget to see what happens when it
+   * expires.
+   */
+  publishPoll?: { startDelayMs?: number; maxDelayMs?: number; timeoutMs?: number }
 }
 
 const defaultDeps: LocalPublishDeps = {
@@ -476,9 +492,27 @@ export async function localPublishProject(
     return failure
   }
 
+  // The cloud accepted the bundle and finishes hosting it in the background
+  // (SHO-542), so it answers 202 with the subdomain: follow `publishStatus`
+  // until it is live (or failed) before reporting to the desktop's own panel.
+  const followed = await waitForCloudPublish(projectId, cloudKey, deps)
+  if (!followed.ok) {
+    // A budget expiry is not a failed publish: the cloud is still configuring
+    // the site, so the local row stays in flight. Marking it failed made the
+    // panel offer Publish again, and that upload was then refused with 409.
+    if (!followed.stillRunning) {
+      await setLocalPublishStatus(projectId, 'failed', followed.code ?? 'publish_failed')
+    }
+    return followed
+  }
+  const state = followed.state
+
   const publishedAt = new Date()
-  const liveSubdomain = typeof body?.subdomain === 'string' && body.subdomain ? body.subdomain : subdomain
-  const liveAccessLevel = (body?.accessLevel as LocalPublishAccessLevel) ?? accessLevel
+  const liveSubdomain =
+    (typeof state.subdomain === 'string' && state.subdomain) ||
+    (typeof body?.subdomain === 'string' && body.subdomain) ||
+    subdomain
+  const liveAccessLevel = ((state.accessLevel ?? body?.accessLevel) as LocalPublishAccessLevel) ?? accessLevel
   const hash = await mirrorPublishState(projectId, {
     subdomain: liveSubdomain,
     accessLevel: liveAccessLevel,
@@ -489,18 +523,101 @@ export async function localPublishProject(
     existingSubdomain: (project.publishedSubdomain as string | null) ?? null,
     publishedAt,
   })
-  if (typeof body?.hostProjectId === 'string' && body.hostProjectId) {
-    await writePublishHost(projectId, body.hostProjectId)
-  }
+  const hostProjectId =
+    (typeof state.hostProjectId === 'string' && state.hostProjectId) ||
+    (typeof body?.hostProjectId === 'string' ? body.hostProjectId : null)
+  if (hostProjectId) await writePublishHost(projectId, hostProjectId)
 
   return {
     ok: true,
     status: 200,
-    url: typeof body?.url === 'string' && body.url ? body.url : `https://${liveSubdomain}.${process.env.PUBLISH_DOMAIN || 'shogo.one'}`,
+    url: `https://${liveSubdomain}.${process.env.PUBLISH_DOMAIN || 'shogo.one'}`,
     subdomain: liveSubdomain,
     publishedAt: publishedAt.getTime(),
     accessLevel: liveAccessLevel,
     hasPassword: !!hash,
+  }
+}
+
+/** What the cloud's `GET /published-sites/:id` reports while/after hosting. */
+interface CloudPublishState {
+  publishStatus?: string | null
+  publishError?: string | null
+  publishErrorMessage?: string | null
+  subdomain?: string | null
+  accessLevel?: string | null
+  hasPassword?: boolean
+  hostProjectId?: string | null
+}
+
+/**
+ * Follow an accepted cloud publish until it settles.
+ *
+ * The upload POST now returns 202 (SHO-542): configuring the published service
+ * — the minutes-long step — happens server-side. Polling keeps this desktop
+ * route's own contract unchanged for its panel while the cloud does the work.
+ * A failed poll is not a failed publish, so a transient GET error is retried;
+ * only the publish's own status ends the loop.
+ */
+async function waitForCloudPublish(
+  projectId: string,
+  cloudKey: string,
+  deps: LocalPublishDeps,
+): Promise<
+  // Not `LocalPublishResult` for the failure arm: its `ok: boolean` would stop
+  // `if (!followed.ok)` from narrowing, and the caller needs `state`.
+  | { ok: true; state: CloudPublishState }
+  | { ok: false; status: number; code: string; message: string; stillRunning?: boolean }
+> {
+  const deadline = Date.now() + (deps.publishPoll?.timeoutMs ?? LOCAL_PUBLISH_POLL_TIMEOUT_MS)
+  const maxDelayMs = deps.publishPoll?.maxDelayMs ?? LOCAL_PUBLISH_POLL_MAX_INTERVAL_MS
+  let delayMs = deps.publishPoll?.startDelayMs ?? LOCAL_PUBLISH_POLL_INTERVAL_MS
+  let lastStatus: string | null = null
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    delayMs = Math.min(maxDelayMs, delayMs + 1_000)
+
+    let state: CloudPublishState | null = null
+    try {
+      const res = await deps.fetch(
+        `${deps.cloudUrl().replace(/\/$/, '')}/api/published-sites/${encodeURIComponent(projectId)}`,
+        {
+          method: 'GET',
+          headers: { authorization: `Bearer ${cloudKey}` },
+          signal: AbortSignal.timeout(LOCAL_PUBLISH_PROBE_TIMEOUT_MS),
+        },
+      )
+      if (res.ok) state = ((await res.json().catch(() => null)) as CloudPublishState | null) ?? null
+    } catch {
+      continue
+    }
+    if (!state) continue
+
+    lastStatus = state.publishStatus ?? null
+    if (lastStatus === 'live') return { ok: true, state }
+    if (lastStatus === 'failed') {
+      const code = state.publishError ?? 'publish_failed'
+      return {
+        ok: false,
+        status: 502,
+        code,
+        message: state.publishErrorMessage ?? `Publishing to Shogo Cloud failed (${code}).`,
+      }
+    }
+  }
+
+  // Still running: say which step, not "failed" — the publish may well finish,
+  // and a second upload would be refused while it is.
+  return {
+    ok: false,
+    status: 504,
+    code: 'upload_timeout',
+    stillRunning: true,
+    message:
+      `Shogo Cloud is still publishing this site (last status: ${lastStatus ?? 'unknown'}) ` +
+      `after ${Math.round(LOCAL_PUBLISH_POLL_TIMEOUT_MS / 60_000)} minutes. It may still finish — ` +
+      'check the published URL before publishing again.',
   }
 }
 

@@ -43,18 +43,38 @@ export function livePartsOf(tools: Array<{ name: string; done: boolean }>): Mess
 }
 
 /** The live status of a running reply. */
-export function AgentWorkingStatus({ tools, compact = false }: { tools: Array<{ name: string; done: boolean }>; compact?: boolean }) {
+export function AgentWorkingStatus({
+  tools,
+  summarizing = false,
+  compact = false,
+}: {
+  tools: Array<{ name: string; done: boolean }>
+  /** The run is summarizing its context before it can carry on (SHO-556). */
+  summarizing?: boolean
+  compact?: boolean
+}) {
   const parts = useMemo(() => livePartsOf(tools), [tools])
   const groups = useMemo(() => groupWorkParts(parts), [parts])
   const lastGroup = groups[groups.length - 1]
   // A dock row has one line for this: the label of the run it is in right now,
   // not the whole run's tally and not a row per group.
   if (compact) {
-    const label = lastGroup?.type === 'work-group' ? summarizeWork(lastGroup.items, 'present').label : null
+    // Summarizing is not a tool: it is the reason nothing else can happen, so
+    // it wins over whatever tool label the row would otherwise repeat.
+    const label = summarizing
+      ? 'Summarizing…'
+      : lastGroup?.type === 'work-group' ? summarizeWork(lastGroup.items, 'present').label : null
     return (
       <Text className="text-xs text-muted-foreground" numberOfLines={1} testID="agent-working-status-compact">
         {label || 'Working…'}
       </Text>
+    )
+  }
+  if (summarizing) {
+    return (
+      <View className="flex-row items-center gap-1.5" testID="agent-working-status-summarizing">
+        <Text className="text-xs text-muted-foreground">Summarizing…</Text>
+      </View>
     )
   }
   return (

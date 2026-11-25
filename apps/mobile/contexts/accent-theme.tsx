@@ -4,9 +4,11 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
 import { safeGetItem, safeSetItem, safeRemoveItem } from '../lib/safe-storage'
+import { useResolvedTheme } from './theme'
 import {
   ACCENT_PRESETS,
   DEFAULT_ACCENT,
+  accentTripletToRgb,
   type AccentThemeName,
 } from '../lib/accent-themes'
 
@@ -115,5 +117,26 @@ export function getAccentVars(name: AccentThemeName, mode: 'light' | 'dark') {
     '--color-primary': values.primary,
     '--color-primary-foreground': values.primaryForeground,
     '--color-ring': values.ring,
+  }
+}
+
+/**
+ * The live accent as concrete `rgb()` strings, for props and RN styles that
+ * cannot take a `className` (WebView chrome, `selectionColor`, canvas bars).
+ * Anything that can take a class should use `bg-primary` / `text-primary`
+ * instead — those follow the CSS vars without a re-render.
+ */
+export function useAccentColors(): {
+  primary: string
+  primaryForeground: string
+  ring: string
+} {
+  const { accent } = useAccentTheme()
+  const mode = useResolvedTheme()
+  const values = mode === 'dark' ? ACCENT_PRESETS[accent].dark : ACCENT_PRESETS[accent].light
+  return {
+    primary: accentTripletToRgb(values.primary),
+    primaryForeground: accentTripletToRgb(values.primaryForeground),
+    ring: accentTripletToRgb(values.ring),
   }
 }

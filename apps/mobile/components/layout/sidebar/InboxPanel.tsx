@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
-  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -13,6 +12,7 @@ import { Inbox, X } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { isInvitationExpired } from "../../../lib/api";
 import { NativePhoneSheet } from "../../phone/NativePhoneSheet";
+import { Spinner } from '@/components/ui/spinner'
 
 export type InviteProcessingState = {
   id: string;
@@ -119,7 +119,7 @@ function InboxContent({
                     )}
                   >
                     {isAccepting ? (
-                      <ActivityIndicator size="small" color="white" />
+                      <Spinner tone="onPrimary" size="small" />
                     ) : (
                       <Text
                         className={cn(
@@ -142,7 +142,7 @@ function InboxContent({
                     )}
                   >
                     {isDeclining ? (
-                      <ActivityIndicator size="small" />
+                      <Spinner size="small" />
                     ) : (
                       <Text className="text-xs font-medium text-card-foreground">
                         {expired ? "Dismiss" : "Decline"}

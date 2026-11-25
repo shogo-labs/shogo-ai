@@ -185,7 +185,9 @@ describe.skipIf(!url)('agent reply slots on Redis', () => {
     // run-a is only waiting on a tool: it gives the slot back.
     first.park()
     expect(first.state()).toBe('waiting')
-    expect(await otherPod!.zscore(holdersKey(ws), 'run-a')).toBeNull()
+    // park() sends its ZREM on the service's own connection; this reads on
+    // another one, so the read can reach Redis first.
+    await until(async () => (await otherPod!.zscore(holdersKey(ws), 'run-a')) === null)
 
     await until(() => second.state() === 'running')
     expect((await slotSnapshot(ws)).running).toBe(1)

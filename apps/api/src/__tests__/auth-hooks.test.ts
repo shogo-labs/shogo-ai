@@ -145,7 +145,7 @@ mock.module('../services/project-auth-config.service', () => ({
   },
 }))
 
-const riskState: { upserts: any[] } = { upserts: [] }
+const riskState: { upserts: any[]; failTimes: number } = { upserts: [], failTimes: 0 }
 
 // The credit grant pulls the whole billing graph in; the hook test only cares
 // that the assessment ran, so it is stubbed (SHO-440).
@@ -163,7 +163,13 @@ mock.module('../lib/prisma', () => ({
     // device-id path can be asserted end to end (SHO-440).
     signupRiskAssessment: {
       count: async () => 0,
+      // SHO-459: the banned-linked count resolves linked user ids first.
+      findMany: async () => [],
       upsert: async (args: any) => {
+        if (riskState.failTimes > 0) {
+          riskState.failTimes--
+          throw new Error('db blip')
+        }
         riskState.upserts.push(args)
         return args.create
       },
@@ -203,6 +209,7 @@ beforeEach(() => {
   allowState.recordCalls.length = 0
   allowState.recordShouldThrow = false
   riskState.upserts.length = 0
+  riskState.failTimes = 0
   delete process.env.SHOGO_AFFILIATES_NATIVE
   delete process.env.NODE_ENV
   delete process.env.SHOGO_LOG_PASSWORD_RESET_URL
@@ -562,6 +569,7 @@ describe('databaseHooks.user.create.after', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(errLogged).toContain('Welcome email failed')
   })
+
 })
 
 // ===========================================================================

@@ -14,7 +14,10 @@ import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getMergedModelEntrySync, resolveModelLabel, resolveModelLabelSync } from './model-registry.service'
 import { recordAccessEvent, allowedAutoTiers, resolveRunModelFor } from './access-policy.service'
-import { resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
+import {
+  resolveInstanceAgentModelDefaults,
+  type AgentModelEntry,
+} from '../lib/runtime/agent-model-defaults'
 import { getRbacMode } from '../lib/authz/mode'
 
 const db = prisma as any
@@ -78,20 +81,27 @@ export interface RunModelResolution {
    * The Auto tier map narrowed to this person, or `null` when the run is not on
    * Auto. The runtime's process-wide `AGENT_AUTO_TIER_MAP` is one map for the
    * whole workspace, so a per-person cap has to ride on the turn: with this
-   * map, `resolveAutoDowngrade` can only walk models the person may use.
+   * map, `resolveAutoDowngrade` can only walk models the person may use. Each
+   * tier carries its provider so an opaque (cloud) id keeps its routing.
    */
-  autoTiers: Record<string, string> | null
+  autoTiers: Record<string, AgentModelEntry> | null
 }
 
 /**
  * The model a run should use for one person, with the run-start downgrade
  * applied.
  *
- * When the agent's configured model is outside the acting person's effective
- * set, the run uses that person's default model **for this run only** — the
- * agent's saved config is untouched. In `shadow` mode the run keeps the
- * configured model and only an audit row is written, so an admin can see what
- * would have happened before enforcing.
+ * A direct chat's per-message model pick is the starting point when it sends
+ * one (SHO-497): that is the model the person chose for *this* turn, and the
+ * agent's configured model is only the fallback. A channel run
+ * (`conversation-agent-dispatcher`) passes nothing, so it keeps starting from
+ * the agent's model.
+ *
+ * When the model the run would start with is outside the acting person's
+ * effective set, the run uses that person's default model **for this run
+ * only** — the agent's saved config is untouched. In `shadow` mode the run keeps
+ * that model and only an audit row is written, so an admin can see what would
+ * have happened before enforcing.
  *
  * `null` when the person has no allowed model at all: the caller fails the run
  * with `model_not_allowed` and "ask an admin".
@@ -100,28 +110,59 @@ export async function resolveAgentRunModelFor(
   projectId: string | null,
   workspaceId: string | undefined,
   actingUserId: string | null | undefined,
+  /** The model the person picked for this turn (`agentMode` on a direct chat). */
+  requestedModel?: string | null,
 ): Promise<RunModelResolution | null> {
   // This runs on the chat hot path, so a resolution failure must not 500 the
-  // turn: fall back to the configured model with no downgrade and let the proxy
-  // gate the request as it always did.
+  // turn: fall back to the requested-or-configured model with no downgrade and
+  // let the proxy gate the request as it always did.
   try {
-    return await resolveRunModelForActor(projectId, workspaceId, actingUserId)
+    return await resolveRunModelForActor(projectId, workspaceId, actingUserId, requestedModel)
   } catch (err) {
     console.warn('[rbac] run model resolution failed:', (err as Error)?.message ?? err)
-    return { model: AUTO_MODEL_ID, downgrade: null, autoTiers: null }
+    return {
+      model: normalizeRequestedModel(requestedModel) ?? AUTO_MODEL_ID,
+      downgrade: null,
+      autoTiers: null,
+    }
   }
+}
+
+function normalizeRequestedModel(requestedModel?: string | null): string | null {
+  const trimmed = typeof requestedModel === 'string' ? requestedModel.trim() : ''
+  return trimmed || null
 }
 
 async function resolveRunModelForActor(
   projectId: string | null,
   workspaceId: string | undefined,
   actingUserId: string | null | undefined,
+  requestedModel?: string | null,
 ): Promise<RunModelResolution | null> {
   const configured = await resolveAgentRunModel(projectId, workspaceId)
-  if (!workspaceId || !actingUserId) return { model: configured, downgrade: null, autoTiers: null }
+  // The person's pick for this turn wins; the agent's configured model is the
+  // fallback for a surface with no picker (a channel run) or a body with no
+  // `agentMode`. An alias or old slug resolves to the id the catalog and the
+  // proxy know, so a pick saved before a rename still runs on that model.
+  const requested = normalizeRequestedModel(requestedModel)
+  const requestedEntry =
+    requested && requested !== AUTO_MODEL_ID ? getMergedModelEntrySync(requested) : undefined
+  const target = requestedEntry?.id ?? requested ?? configured
+  if (!workspaceId || !actingUserId) return { model: target, downgrade: null, autoTiers: null }
 
-  const autoTiers = await autoTiersFor(workspaceId, actingUserId, configured)
-  const resolved = await resolveRunModelFor(workspaceId, actingUserId, configured)
+  // A pick this instance's catalog does not know at all is passed through
+  // untouched, the rule `allowedAutoTiers` already follows for a cloud tier: a
+  // desktop resolves its picker from Shogo Cloud, and a cloud model id may not
+  // be mirrored into the local registry yet, so the local catalog cannot judge
+  // it. The cloud already capped it to the key holder's grant and the proxy
+  // still enforces it; substituting the person's default here would silently run
+  // a different model than the one they picked (the SHO-481 lesson).
+  if (requested && requested !== AUTO_MODEL_ID && !requestedEntry) {
+    return { model: requested, downgrade: null, autoTiers: null }
+  }
+
+  const autoTiers = await autoTiersFor(workspaceId, actingUserId, target)
+  const resolved = await resolveRunModelFor(workspaceId, actingUserId, target)
   if (!resolved) return null
   if (!resolved.downgrade) return { model: resolved.model, downgrade: null, autoTiers }
 
@@ -146,7 +187,7 @@ async function resolveRunModelForActor(
       from: resolved.downgrade.from,
       to: resolved.downgrade.to,
     })
-    return { model: configured, downgrade: null, autoTiers }
+    return { model: target, downgrade: null, autoTiers }
   }
   return { model: resolved.model, downgrade: withLabels(resolved.downgrade), autoTiers }
 }
@@ -173,22 +214,37 @@ function withLabels(downgrade: { from: string; to: string }): {
 
 /**
  * The Auto tier map for this person, or `null` when the run is not on Auto.
- * Every tier maps to a model they may use, so an Auto fallback cannot land
+ * Resolved from the *instance's* defaults — the connected cloud's on a desktop
+ * (SHO-481: the local map used to win and send complex straight to Sonnet) —
+ * and every tier maps to a model they may use, so an Auto fallback cannot land
  * outside their set (AC3).
  */
 async function autoTiersFor(
   workspaceId: string,
   actingUserId: string,
   configured: string,
-): Promise<Record<string, string> | null> {
+): Promise<Record<string, AgentModelEntry> | null> {
   if (configured !== AUTO_MODEL_ID) return null
-  const defaults = await resolveEffectiveAgentModelDefaults(workspaceId).catch(() => null)
+  const defaults = await resolveInstanceAgentModelDefaults(workspaceId).catch(() => null)
   if (!defaults) return null
   const configuredTiers: Record<string, string> = {}
   for (const [tier, entry] of Object.entries(defaults.autoTiers)) {
     if (entry?.id) configuredTiers[tier] = entry.id
   }
-  return allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
+  const narrowed = await allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
+  if (!narrowed) return null
+  const out: Record<string, AgentModelEntry> = {}
+  for (const [tier, id] of Object.entries(narrowed)) {
+    const source = (defaults.autoTiers as Record<string, AgentModelEntry | undefined>)[tier]
+    out[tier] = source?.id === id
+      ? {
+          id,
+          ...(source.provider ? { provider: source.provider } : {}),
+          ...(source.upstream ? { upstream: source.upstream } : {}),
+        }
+      : { id }
+  }
+  return out
 }
 
 /**

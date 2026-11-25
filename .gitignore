@@ -155,6 +155,10 @@ apps/mobile/ios/
 *.png
 !apps/mobile/assets/*.png
 !apps/desktop/resources/icon.png
+# Menu-bar artwork (SHO-555): small, committed, and regenerated with
+# `node apps/desktop/scripts/make-tray-icons.mjs`. Without these the packaged
+# app has no tray icon at all.
+!apps/desktop/resources/tray/*.png
 # PWA install icons the web manifest points at (/manifest.json, SHO-405).
 !apps/mobile/public/icon-*.png
 tests/

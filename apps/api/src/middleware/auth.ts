@@ -36,6 +36,8 @@ import { verifyWorkspaceRuntimeToken } from "../lib/workspace-runtime-token"
 import type { Permission } from "@shogo/authz"
 import { authorize, decide, denialResponse, getAccess } from "../lib/authz"
 import { projectRoutePermission } from "../lib/authz/project-routes"
+import { getSignupTrustHold, signupTrustHoldPayload } from "../lib/signup-trust"
+import { isPublicChannelIngressPath } from "./api-auth-gate"
 
 /**
  * Auth context set by middleware
@@ -269,6 +271,11 @@ export async function authMiddleware(c: Context, next: Next) {
       const result = await resolveApiKey(key, deviceAppVersion ? { deviceAppVersion } : undefined)
       c.set("apiKeyResolution", { key, result })
       if (result) {
+        // Refuse banned users on the API-key path with the hold payload.
+        const hold = await getSignupTrustHold(result.userId)
+        if (hold === 'account_banned') {
+          return c.json(signupTrustHoldPayload('account_banned'), 403)
+        }
         c.set("auth", {
           userId: result.userId,
           workspaceId: result.workspaceId,
@@ -301,11 +308,17 @@ export async function authMiddleware(c: Context, next: Next) {
   //    requested project matches `authCtx.projectId`. The token embedding
   //    the scope does NOT replace that check — it only supplies the scope
   //    to this middleware without relying on path introspection.
-  const runtimeToken =
-    c.req.header("x-runtime-token") ??
-    (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
-      ? authHeader.slice(7)
-      : undefined)
+  // Public channel ingress paths (Teams, WhatsApp) carry their own auth headers
+  // (Bot Framework JWT, HMAC-SHA256). Do not attempt to parse them as runtime
+  // tokens — that would only produce spurious "runtime-token verify failed"
+  // warnings for every inbound activity.
+  const skipRuntimeToken = isPublicChannelIngressPath(c.req.path)
+  const runtimeToken = skipRuntimeToken
+    ? undefined
+    : c.req.header("x-runtime-token") ??
+      (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
+        ? authHeader.slice(7)
+        : undefined)
   if (runtimeToken) {
     // Legacy-fallback projectId: only used when the token itself is
     // pre-v1 bare-hex and thus doesn't carry its own scope. v1 tokens
@@ -380,6 +393,11 @@ export async function authMiddleware(c: Context, next: Next) {
     })
 
     if (session?.user) {
+      // Refuse banned users on the session path.
+      const hold = await getSignupTrustHold(session.user.id)
+      if (hold === 'account_banned') {
+        return c.json(signupTrustHoldPayload('account_banned'), 403)
+      }
       c.set("auth", {
         userId: session.user.id,
         email: session.user.email,
@@ -464,10 +482,11 @@ export const PUBLIC_PATTERNS: RegExp[] = [
   // tenant data. Matching the exact path keeps the rest of `/api/social/*`
   // (accounts, posts, inbox) behind `requireAuth`.
   /^\/api\/social\/connect\/return$/,
-  // The slides viewer is a static page with an opaque origin and no network:
-  // it renders the bytes the app posts into it, so there is no tenant data to
-  // gate (SHO-426). Matching the exact path keeps `/api/viewers/*` closed.
+  // Office viewers are static pages with an opaque origin and no network:
+  // they render the bytes the app posts into them, so there is no tenant data
+  // to gate (SHO-426, SHO-467). Exact-path matching keeps `/api/viewers/*` closed.
   /^\/api\/viewers\/slides$/,
+  /^\/api\/viewers\/document$/,
 ]
 
 /** True when `path` is public for `requireAuth` (prefix or pattern list). */

@@ -7,7 +7,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   TextInput,
   FlatList,
   useWindowDimensions,
@@ -49,6 +48,7 @@ import {
   getAccentColor,
   getInitial,
 } from '../../../../../components/marketplace'
+import { Spinner } from '@/components/ui/spinner'
 
 const PRICING_MODELS = [
   { value: 'free', label: 'Free', description: 'Anyone can install at no cost' },
@@ -561,7 +561,7 @@ export default observer(function EditListingScreen() {
             accessibilityRole="button"
             accessibilityLabel="Go back"
           >
-            <ArrowLeft size={18} color="#71717a" />
+            <ArrowLeft className="text-muted-foreground" size={18} />
           </Pressable>
           <View className="flex-1">
             <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
@@ -581,7 +581,7 @@ export default observer(function EditListingScreen() {
               Select the agent project you want to introduce to the marketplace.
             </Text>
             <View className="mt-5 flex-row items-center bg-card border border-input rounded-2xl px-4 h-12">
-              <Search size={16} color="#71717a" />
+              <Search className="text-muted-foreground" size={16} />
               <TextInput
                 className="flex-1 ml-2 text-sm text-foreground web:outline-none"
                 placeholder="Search your agents…"
@@ -597,11 +597,11 @@ export default observer(function EditListingScreen() {
         </View>
         {projectsLoading ? (
           <View className="flex-1 items-center justify-center">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         ) : filteredProjects.length === 0 ? (
           <View className="flex-1 items-center justify-center px-6">
-            <Bot size={40} color="#a1a1aa" />
+            <Bot className="text-muted-foreground" size={40} />
             <Text className="text-foreground font-medium mt-3 mb-1">
               {projectSearch ? 'No matching agents' : 'No agents found'}
             </Text>
@@ -636,7 +636,7 @@ export default observer(function EditListingScreen() {
                 className="mx-auto w-full max-w-3xl p-4 rounded-2xl border border-border bg-card active:bg-muted flex-row items-center gap-3"
               >
                 <View className="w-10 h-10 rounded-xl bg-primary/10 items-center justify-center">
-                  <Bot size={18} color="#e27927" />
+                  <Bot className="text-primary" size={18} />
                 </View>
                 <View className="flex-1">
                   <Text
@@ -654,7 +654,7 @@ export default observer(function EditListingScreen() {
                     </Text>
                   ) : null}
                 </View>
-                <ChevronRight size={16} color="#71717a" />
+                <ChevronRight className="text-muted-foreground" size={16} />
               </Pressable>
             )}
           />
@@ -666,7 +666,7 @@ export default observer(function EditListingScreen() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -727,7 +727,7 @@ export default observer(function EditListingScreen() {
             className="flex-row items-center gap-3 p-4 rounded-2xl border border-primary/20 bg-primary/5 mb-5 active:opacity-80"
           >
             <View className="w-10 h-10 rounded-xl bg-primary/15 items-center justify-center">
-              <Bot size={17} color="#e27927" />
+              <Bot className="text-primary" size={17} />
             </View>
             <View className="flex-1 min-w-0">
               <Text className="text-[10px] font-semibold uppercase tracking-[1px] text-primary mb-0.5">
@@ -892,7 +892,7 @@ export default observer(function EditListingScreen() {
         {/* Live pricing preview using PriceTag/PricingCards */}
         <View className="mt-4 rounded-xl border border-dashed border-border p-3 gap-3">
           <View className="flex-row items-center gap-2">
-            <Eye size={12} color="#71717a" />
+            <Eye className="text-muted-foreground" size={12} />
             <Text className="text-[11px] uppercase font-semibold text-muted-foreground" style={{ letterSpacing: 0.5 }}>
               Buyer sees
             </Text>
@@ -1009,7 +1009,7 @@ export default observer(function EditListingScreen() {
                     {KNOWN_INTEGRATIONS[t.toLowerCase()]?.label ?? t}
                   </Text>
                   <Pressable onPress={() => removeTag(t)} hitSlop={4}>
-                    <X size={12} color="#71717a" />
+                    <X className="text-muted-foreground" size={12} />
                   </Pressable>
                 </View>
               ))}
@@ -1036,7 +1036,7 @@ export default observer(function EditListingScreen() {
                     onPress={() => addTag(s)}
                     className="flex-row items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 active:opacity-70"
                   >
-                    <Plus size={11} color="#71717a" />
+                    <Plus className="text-muted-foreground" size={11} />
                     <Text className="text-xs text-foreground">
                       {KNOWN_INTEGRATIONS[s].label}
                     </Text>
@@ -1101,7 +1101,7 @@ export default observer(function EditListingScreen() {
         {!isNew && (existingStatus === 'draft' || existingStatus === 'rejected') && (
           <View className="rounded-xl border border-border bg-card px-4 py-3 mb-3 gap-3">
             <View className="flex-row items-center gap-2">
-              <ShieldCheck size={14} color="#e27927" />
+              <ShieldCheck className="text-primary" size={14} />
               <Text className="text-xs font-semibold text-foreground uppercase" style={{ letterSpacing: 0.4 }}>
                 Pre-submit audit
               </Text>
@@ -1137,9 +1137,9 @@ export default observer(function EditListingScreen() {
               )}
             >
               {auditing ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
-                <ShieldCheck size={14} color="#e27927" />
+                <ShieldCheck className="text-primary" size={14} />
               )}
               <Text className="text-xs font-semibold text-primary">
                 {auditing ? 'Auditing…' : 'Run audit'}
@@ -1175,7 +1175,7 @@ export default observer(function EditListingScreen() {
         )}
 
         <View className="flex-row items-start gap-2 px-3 py-2.5 rounded-xl bg-primary/5">
-          <Info size={14} color="#e27927" style={{ marginTop: 1 }} />
+          <Info className="text-primary" size={14} style={{ marginTop: 1 }} />
           <Text className="text-xs text-foreground/80 flex-1 leading-4">
             All listings require human approval before going live. Submit for review when
             you're ready and an admin will review your submission.
@@ -1190,7 +1190,7 @@ export default observer(function EditListingScreen() {
   const previewColumn = (
     <View className="bg-muted/20 border-l border-border">
       <View className="flex-row items-center gap-2 px-5 pt-5 pb-3">
-        <Eye size={14} color="#71717a" />
+        <Eye className="text-muted-foreground" size={14} />
         <Text className="text-[11px] uppercase font-semibold text-muted-foreground flex-1" style={{ letterSpacing: 0.5 }}>
           Live preview
         </Text>
@@ -1298,7 +1298,7 @@ export default observer(function EditListingScreen() {
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <ArrowLeft size={18} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={18} />
         </Pressable>
         <View className="flex-1">
           <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
@@ -1316,9 +1316,9 @@ export default observer(function EditListingScreen() {
             accessibilityLabel="Toggle preview"
           >
             {previewVisible ? (
-              <EyeOff size={18} color="#71717a" />
+              <EyeOff className="text-muted-foreground" size={18} />
             ) : (
-              <Eye size={18} color="#71717a" />
+              <Eye className="text-muted-foreground" size={18} />
             )}
           </Pressable>
         )}
@@ -1360,10 +1360,10 @@ export default observer(function EditListingScreen() {
           )}
         >
           {saving ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <>
-              <Save size={14} color="#71717a" />
+              <Save className="text-muted-foreground" size={14} />
               <Text className="text-sm font-semibold text-foreground">
                 {isNew ? 'Save draft' : 'Save changes'}
               </Text>
@@ -1382,10 +1382,10 @@ export default observer(function EditListingScreen() {
             )}
           >
             {submitting ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <>
-                <Send size={14} color="#fff" />
+                <Send className="text-primary-foreground" size={14} />
                 <Text className="text-sm font-semibold text-primary-foreground">
                   Submit for review
                 </Text>
@@ -1395,7 +1395,7 @@ export default observer(function EditListingScreen() {
         )}
         {!isNew && existingStatus === 'pending_review' && (
           <View className="flex-1 flex-row items-center justify-center gap-2 py-3 rounded-xl bg-blue-500/10">
-            <ActivityIndicator size="small" color="#2563eb" />
+            <Spinner size="small" />
             <Text className="text-sm font-semibold text-blue-600">
               Awaiting admin review
             </Text>
@@ -1411,7 +1411,7 @@ export default observer(function EditListingScreen() {
             )}
           >
             {unlisting ? (
-              <ActivityIndicator size="small" color="#dc2626" />
+              <Spinner tone="destructive" size="small" />
             ) : (
               <>
                 <EyeOff size={14} color="#dc2626" />
@@ -1468,7 +1468,7 @@ function Section({
         </View>
         <ChevronDown
           size={16}
-          color="#71717a"
+          
           style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }}
         />
       </Pressable>

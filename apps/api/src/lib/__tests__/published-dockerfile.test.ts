@@ -38,10 +38,26 @@ describe('publishedDockerfile', () => {
   it('installs dependencies only when a lockfile exists, and recovers a stale one', () => {
     const install = publishedDockerfile()
       .split('\n')
-      .find((line) => line.includes('bun install'))
+      .find((line) => line.startsWith('RUN ') && line.includes('bun install'))
     expect(install).toContain('bun install --production --frozen-lockfile')
     // A stale lockfile resolves from the manifest instead of failing the publish.
     expect(install).toContain('elif ! bun install --production --frozen-lockfile')
+  })
+
+  it('removes the stale lockfile before recovering, because --production is frozen too', () => {
+    const install = publishedDockerfile()
+      .split('\n')
+      .find((line) => line.startsWith('RUN ') && line.includes('bun install'))!
+
+    // Bun 1.4.4 treats `--production` as implicitly frozen once a lockfile
+    // exists, so the recovery only works if the stale file is gone first.
+    const rmAt = install.indexOf('rm -f bun.lock bun.lockb')
+    const recoveryAt = install.indexOf('bun install --production; fi')
+    expect(rmAt).toBeGreaterThan(-1)
+    expect(recoveryAt).toBeGreaterThan(rmAt)
+
+    // The frozen attempt still comes first, so a matching lockfile is honoured.
+    expect(install.indexOf('--frozen-lockfile')).toBeLessThan(rmAt)
   })
 
   it('bakes the prebuilt marker so the pod skips install and build', () => {

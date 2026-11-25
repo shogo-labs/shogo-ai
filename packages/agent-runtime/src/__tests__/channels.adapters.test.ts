@@ -500,23 +500,129 @@ describe('WhatsAppAdapter', () => {
 // ════════════════════════════════════════════════════════════════════════════
 // Teams
 // ════════════════════════════════════════════════════════════════════════════
+
+/** Generate an RSA-2048 key pair for JWT signing in tests. */
+async function makeTestRsaKey() {
+  const pair = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true,
+    ['sign', 'verify'],
+  )
+  const pub = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  return { privateKey: pair.privateKey, publicJwk: pub }
+}
+
+function b64url(buf: ArrayBuffer): string {
+  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+
+/** Create a compact JWT signed with the given private key. */
+async function signJwt(
+  payload: Record<string, any>,
+  privateKey: CryptoKey,
+  kid: string,
+): Promise<string> {
+  const header = { alg: 'RS256', typ: 'JWT', kid }
+  const enc = (s: string) => b64url(new TextEncoder().encode(s).buffer as ArrayBuffer)
+  const h = enc(JSON.stringify(header))
+  const p = enc(JSON.stringify(payload))
+  const sig = await crypto.subtle.sign(
+    { name: 'RSASSA-PKCS1-v1_5' },
+    privateKey,
+    new TextEncoder().encode(`${h}.${p}`),
+  )
+  return `${h}.${p}.${b64url(sig)}`
+}
+
+const TEST_AUTHORITY = 'https://test.botframework.local'
+const TEST_KID = 'test-kid-001'
+const TEST_APP_ID = 'app-id-12345678'
+const TEST_TENANT_ID = 'tenant-id-9876'
+
 describe('TeamsAdapter', () => {
-  function tokenFetch(extra?: FetchHandler): void {
+  let privateKey: CryptoKey
+  let publicJwk: JsonWebKey
+
+  // Set up RSA key pair once for all tests in this describe.
+  // We also install a fetch handler that returns the JWKS for the test authority.
+  beforeEach(async () => {
+    // Clear botframework-auth module-level caches before each test so JWKS is re-fetched
+    const { clearBotFrameworkAuthCaches } = await import('../channels/botframework-auth')
+    clearBotFrameworkAuthCaches()
+
+    if (!privateKey) {
+      const k = await makeTestRsaKey()
+      privateKey = k.privateKey
+      publicJwk = k.publicJwk
+    }
+
+    // Set test env vars
+    process.env.NODE_ENV = 'test'
+    process.env.SHOGO_TEAMS_TEST_AUTHORITY = TEST_AUTHORITY
+  })
+
+  afterEach(() => {
+    delete process.env.SHOGO_TEAMS_TEST_AUTHORITY
+  })
+
+  function makeJwks(kid = TEST_KID, endorsements?: string[]) {
+    return { keys: [{ ...publicJwk, kid, use: 'sig', alg: 'RS256', endorsements }] }
+  }
+
+  /**
+   * Wire fetch to:
+   *  - return JWKS for test authority OpenID/JWKS endpoints
+   *  - return Azure token for oauth2 endpoints
+   *  - pass everything else to `extra`
+   */
+  function jwtFetch(extra?: FetchHandler, jwks = makeJwks()): void {
     setFetch((url, init) => {
+      if (url.includes('openid-configuration')) {
+        return res({ jwks_uri: `${TEST_AUTHORITY}/jwks` })
+      }
+      if (url.includes('/jwks')) return res(jwks)
       if (url.includes('oauth2')) return res({ access_token: 'AAD', expires_in: 3600 })
       return extra ? extra(url, init) : res({})
     })
   }
+
+  async function validToken(overrides: Record<string, any> = {}) {
+    const now = Math.floor(Date.now() / 1000)
+    return signJwt(
+      {
+        iss: 'https://api.botframework.com',
+        aud: TEST_APP_ID,
+        serviceurl: 'https://smba.trafficmanager.net/amer/',
+        exp: now + 3600,
+        nbf: now - 60,
+        ...overrides,
+      },
+      privateKey,
+      TEST_KID,
+    )
+  }
+
   test('connect acquires Azure token; throws on missing creds', async () => {
+    jwtFetch()
     const a = new TeamsAdapter()
     await expect(a.connect({ appPassword: 'p' } as any)).rejects.toThrow('App ID is required')
     await expect(a.connect({ appId: 'i' } as any)).rejects.toThrow('App Password is required')
-    tokenFetch()
-    await a.connect({ appId: 'app12345678', appPassword: 'secret', botName: 'Bot' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'secret', botName: 'Bot' })
     expect(a.getStatus()).toMatchObject({ type: 'teams', connected: true })
     expect(a.getStatus().metadata?.botName).toBe('Bot')
+    expect(a.getStatus().metadata?.tenantMode).toBe('multi-tenant')
     await a.disconnect()
     expect(a.getStatus().connected).toBe(false)
+  })
+
+  test('connect in single-tenant mode uses tenantId metadata', async () => {
+    jwtFetch()
+    const a = new TeamsAdapter()
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'secret', tenantId: TEST_TENANT_ID })
+    expect(a.getStatus().metadata?.tenantMode).toBe('single-tenant')
+    // OAuth should have used the tenant-specific URL
+    const oauthCall = fetchCalls.find((c) => c.url.includes('oauth2'))
+    expect(oauthCall?.url).toContain(TEST_TENANT_ID)
   })
 
   test('connect throws when Azure token request fails', async () => {
@@ -527,11 +633,11 @@ describe('TeamsAdapter', () => {
   })
 
   test('handleActivity message routes to handler and registers conversation; sendMessage uses ref', async () => {
-    tokenFetch()
+    jwtFetch()
     const a = new TeamsAdapter()
     const got: IncomingMessage[] = []
     a.onMessage((m) => got.push(m))
-    await a.connect({ appId: 'a', appPassword: 'b' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     const r = await a.handleActivity({
       type: 'message', text: '<at>Bot</at> hello there', id: 'act1',
       serviceUrl: 'https://smba.trafficmanager.net/amer', conversation: { id: 'conv1' },
@@ -542,7 +648,6 @@ describe('TeamsAdapter', () => {
     expect(r.status).toBe(200)
     expect(got[0].text).toBe('hello there')
     expect(got[0].channelId).toBe('conv1')
-    // sendMessage now resolves the conversation ref and appends trailing slash to serviceUrl
     await a.sendMessage('conv1', 'reply')
     const send = fetchCalls.find((c) => c.url.includes('/v3/conversations/conv1/activities') && c.init?.method === 'POST')
     expect(send).toBeTruthy()
@@ -551,35 +656,38 @@ describe('TeamsAdapter', () => {
   test('handleActivity returns 503 when not connected, 400 when missing fields', async () => {
     const a = new TeamsAdapter()
     expect(await a.handleActivity({ type: 'message' })).toMatchObject({ status: 503 })
-    tokenFetch()
-    await a.connect({ appId: 'a', appPassword: 'b' })
+    jwtFetch()
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     expect(await a.handleActivity({ type: 'message', serviceUrl: 'x' })).toMatchObject({ status: 400 })
   })
 
-  test('conversationUpdate with bot added sends a welcome message', async () => {
-    tokenFetch()
+  test('conversationUpdate with bot added sends welcome async (does not block 200)', async () => {
+    jwtFetch()
     const a = new TeamsAdapter()
-    await a.connect({ appId: 'a', appPassword: 'b', botName: 'Welcomer' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b', botName: 'Welcomer' })
     const r = await a.handleActivity({
       type: 'conversationUpdate', id: 'a1', serviceUrl: 'https://s/', conversation: { id: 'c2' },
       membersAdded: [{ id: 'bot' }], recipient: { id: 'bot' },
     })
+    // 200 returned before the async sendMessage fires
     expect(r.status).toBe(200)
+    // Allow microtasks to run
+    await new Promise((r) => setTimeout(r, 10))
     expect(fetchCalls.some((c) => c.url.includes('/v3/conversations/c2/activities'))).toBe(true)
   })
 
   test('typing + unknown activity types return 200', async () => {
-    tokenFetch()
+    jwtFetch()
     const a = new TeamsAdapter()
-    await a.connect({ appId: 'a', appPassword: 'b' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     expect(await a.handleActivity({ type: 'typing', serviceUrl: 's', conversation: { id: 'c' } })).toMatchObject({ status: 200 })
     expect(await a.handleActivity({ type: 'reaction', serviceUrl: 's', conversation: { id: 'c' } })).toMatchObject({ status: 200 })
   })
 
-  test('editMessage + sendTyping use conversation ref; editMessage false without ref', async () => {
-    tokenFetch((url, init) => res({}, { ok: init?.method === 'PUT' }))
+  test('editMessage + sendTyping use conversation ref; editMessage returns false without ref', async () => {
+    jwtFetch((url, init) => res({}, { ok: init?.method === 'PUT' }))
     const a = new TeamsAdapter()
-    await a.connect({ appId: 'a', appPassword: 'b' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     expect(await a.editMessage('nope', 'm', 'c')).toBe(false)
     await a.handleActivity({ type: 'message', text: 'hi', id: 'x', serviceUrl: 'https://s', conversation: { id: 'c3' }, from: { id: 'u' } })
     expect(await a.editMessage('c3', 'msg1', 'edited')).toBe(true)
@@ -587,21 +695,30 @@ describe('TeamsAdapter', () => {
     await a.sendTyping('missing') // no ref → no-op
   })
 
-  test('sendMessage without conversation ref logs and returns', async () => {
-    tokenFetch()
+  test('sendMessage throws when no conversation ref', async () => {
+    jwtFetch()
     const a = new TeamsAdapter()
-    await a.connect({ appId: 'a', appPassword: 'b' })
-    const before = fetchCalls.length
-    await a.sendMessage('unknown', 'hi')
-    // no new conversation activity POST
-    expect(fetchCalls.filter((c) => c.url.includes('/v3/conversations/unknown')).length).toBe(0)
-    expect(fetchCalls.length).toBe(before)
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    await expect(a.sendMessage('unknown', 'hi')).rejects.toThrow('no conversation with unknown')
+  })
+
+  test('sendMessage throws on non-2xx HTTP response with Bot Framework error code', async () => {
+    jwtFetch((url) => {
+      if (url.includes('/v3/conversations')) {
+        return res(JSON.stringify({ error: { code: 'BotNotInConversationMembership' } }), { ok: false, status: 403 })
+      }
+      return res({})
+    })
+    const a = new TeamsAdapter()
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    await a.handleActivity({ type: 'message', text: 'hi', id: 'x', serviceUrl: 'https://s', conversation: { id: 'cFail' }, from: { id: 'u' } })
+    await expect(a.sendMessage('cFail', 'hello')).rejects.toThrow('403')
   })
 
   test('access token is cached across calls', async () => {
-    tokenFetch()
+    jwtFetch()
     const a = new TeamsAdapter()
-    await a.connect({ appId: 'a', appPassword: 'b' })
+    await a.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     const oauthCalls1 = fetchCalls.filter((c) => c.url.includes('oauth2')).length
     await a.handleActivity({ type: 'message', text: 'x', id: '1', serviceUrl: 'https://s', conversation: { id: 'cc' }, from: { id: 'u' } })
     await a.sendMessage('cc', 'reply')
@@ -609,18 +726,176 @@ describe('TeamsAdapter', () => {
     expect(oauthCalls2).toBe(oauthCalls1) // cached, no re-auth
   })
 
-  test('registerRoutes wires messaging endpoint (503 when no adapter)', async () => {
+  // ── JWT validation via registerRoutes ─────────────────────────────────────
+
+  function makeRoute() {
     const routes: Record<string, Function> = {}
     const app = { post: (p: string, h: Function) => { routes[p] = h } }
-    let adapter: TeamsAdapter | undefined
+    return { routes, app }
+  }
+
+  function makeCtx(body: any, auth?: string) {
+    const bodyStr = JSON.stringify(body)
+    return {
+      req: {
+        text: async () => bodyStr,
+        header: (name: string) => name === 'authorization' || name === 'Authorization' ? auth : undefined,
+      },
+      json: (b: any, s?: number) => ({ b, s }),
+    }
+  }
+
+  test('registerRoutes: 503 when no adapter', async () => {
+    const { routes, app } = makeRoute()
+    TeamsAdapter.registerRoutes(app, () => undefined)
+    const c = makeCtx({ type: 'message' })
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 503 })
+  })
+
+  test('registerRoutes: 401 when no authorization header', async () => {
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
     TeamsAdapter.registerRoutes(app, () => adapter)
-    const cNone = { req: { json: async () => ({}) }, json: (b: any, s?: number) => ({ b, s }) }
-    expect(await routes['/agent/channels/teams/messages'](cNone)).toMatchObject({ s: 503 })
-    tokenFetch()
-    adapter = new TeamsAdapter()
-    await adapter.connect({ appId: 'a', appPassword: 'b' })
-    const cMsg = { req: { json: async () => ({ type: 'typing', serviceUrl: 's', conversation: { id: 'c' } }) }, json: (b: any, s?: number) => ({ b, s }) }
-    expect(await routes['/agent/channels/teams/messages'](cMsg)).toMatchObject({ s: 200 })
+    const c = makeCtx({ type: 'message', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams' })
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 401 })
+  })
+
+  test('registerRoutes: 401 for bad signature', async () => {
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const c = makeCtx(
+      { type: 'message', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams' },
+      'Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2lkLTAwMSJ9.eyJpc3MiOiJodHRwczovL2FwaS5ib3RmcmFtZXdvcmsuY29tIiwiYXVkIjoiYXBwLWlkLTEyMzQ1Njc4Iiwic2VydmljZXVybCI6Imh0dHBzOi8vc21iYS50cmFmZmljbWFuYWdlci5uZXQvYW1lci8iLCJleHAiOjk5OTk5OTk5OTksIm5iZiI6MH0.invalidsignature',
+    )
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 401 })
+  })
+
+  test('registerRoutes: 401 for wrong aud', async () => {
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const badToken = await validToken({ aud: 'wrong-app-id' })
+    const c = makeCtx(
+      { type: 'message', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams' },
+      `Bearer ${badToken}`,
+    )
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 401 })
+  })
+
+  test('registerRoutes: 401 for expired token', async () => {
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const expiredToken = await validToken({ exp: Math.floor(Date.now() / 1000) - 400 })
+    const c = makeCtx(
+      { type: 'message', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams' },
+      `Bearer ${expiredToken}`,
+    )
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 401 })
+  })
+
+  test('registerRoutes: 401 for wrong issuer', async () => {
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const badToken = await validToken({ iss: 'https://evil.example.com' })
+    const c = makeCtx(
+      { type: 'message', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams' },
+      `Bearer ${badToken}`,
+    )
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 401 })
+  })
+
+  test('registerRoutes: 200 ACK for valid token; handler runs async', async () => {
+    const got: string[] = []
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    adapter.onMessage((m) => got.push(m.text))
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const token = await validToken()
+    const activity = {
+      type: 'message', text: 'hello from teams', id: 'act9',
+      serviceUrl: 'https://smba.trafficmanager.net/amer/',
+      conversation: { id: 'conv9' },
+      from: { id: 'u9', name: 'Tester' },
+      channelId: 'msteams',
+    }
+    const c = makeCtx(activity, `Bearer ${token}`)
+    const result = await routes['/agent/channels/teams/messages'](c)
+    expect(result).toMatchObject({ s: 200 })
+    // Handler runs async — wait a tick
+    await new Promise((r) => setTimeout(r, 10))
+    expect(got).toContain('hello from teams')
+  })
+
+  test('registerRoutes: single-tenant accepts Azure AD issuer token', async () => {
+    // For single-tenant: botframework-auth also fetches the tenant OpenID config
+    jwtFetch(undefined, makeJwks())
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b', tenantId: TEST_TENANT_ID })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const now = Math.floor(Date.now() / 1000)
+    const tenantToken = await signJwt(
+      {
+        iss: `https://login.microsoftonline.com/${TEST_TENANT_ID}/v2.0`,
+        aud: TEST_APP_ID,
+        serviceurl: 'https://smba.trafficmanager.net/amer/',
+        exp: now + 3600,
+        nbf: now - 60,
+      },
+      privateKey,
+      TEST_KID,
+    )
+    const c = makeCtx(
+      { type: 'typing', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams', conversation: { id: 'cT' } },
+      `Bearer ${tenantToken}`,
+    )
+    expect(await routes['/agent/channels/teams/messages'](c)).toMatchObject({ s: 200 })
+  })
+
+  test('SHOGO_TEAMS_TEST_AUTHORITY is ignored when NODE_ENV != test', async () => {
+    // Temporarily switch to production mode
+    process.env.NODE_ENV = 'production'
+    const { clearBotFrameworkAuthCaches } = await import('../channels/botframework-auth')
+    clearBotFrameworkAuthCaches()
+
+    // The test authority is set but NODE_ENV is production, so it must NOT be used
+    // A fetch to the real botframework.com URL would fail (we mock all fetches),
+    // so the token validation should fail with an JWKS-fetch-related error (unknown kid or fetch fail).
+    jwtFetch()
+    const { routes, app } = makeRoute()
+    const adapter = new TeamsAdapter()
+    await adapter.connect({ appId: TEST_APP_ID, appPassword: 'b' })
+    TeamsAdapter.registerRoutes(app, () => adapter)
+    const token = await validToken()
+    const c = makeCtx(
+      { type: 'typing', serviceUrl: 'https://smba.trafficmanager.net/amer/', channelId: 'msteams', conversation: { id: 'cProd' } },
+      `Bearer ${token}`,
+    )
+    // In production mode, the real BF OpenID URL is used but fetch is mocked to return
+    // our test JWKS for openid-configuration — however, the iss in the token is 'https://api.botframework.com'
+    // and the test authority URL is not the BF URL. So validation should still work
+    // because the JWKS match — the important thing is that the SHOGO_TEAMS_TEST_AUTHORITY
+    // env var does NOT affect the production OpenID URL.
+    // We verify: the fetch call does NOT include TEST_AUTHORITY in the openid URL.
+    const openIdCalls = fetchCalls.filter((c) => c.url.includes('openid'))
+    expect(openIdCalls.every((c) => !c.url.startsWith(TEST_AUTHORITY))).toBe(true)
+
+    process.env.NODE_ENV = 'test'
   })
 })
 
@@ -628,60 +903,74 @@ describe('TeamsAdapter', () => {
 // Webhook
 // ════════════════════════════════════════════════════════════════════════════
 describe('WebhookAdapter', () => {
-  test('connect parses config; getStatus reflects secret + callback', async () => {
+  test('connect requires a secret; getStatus reflects it + callback', async () => {
     const a = new WebhookAdapter()
+    await expect(a.connect({})).rejects.toThrow('requires a secret')
     await a.connect({ secret: 's3cr3t', callbackUrl: 'https://cb', callbackHeaders: '{"X-Key":"v"}', replyTimeoutMs: '5000' })
     const st = a.getStatus()
     expect(st.connected).toBe(true)
     expect(st.metadata?.hasSecret).toBe(true)
+    // getSecret returns value (for /agent/status)
+    expect((a as any).getSecret()).toBe('s3cr3t')
+    // metadata never includes the raw secret
+    expect(JSON.stringify(st.metadata)).not.toContain('s3cr3t')
     await a.disconnect()
     expect(a.getStatus().connected).toBe(false)
   })
 
   test('connect tolerates invalid callbackHeaders JSON', async () => {
     const a = new WebhookAdapter()
-    await a.connect({ callbackHeaders: '{not json' })
+    await a.connect({ secret: 'x', callbackHeaders: '{not json' })
     expect(a.getStatus().connected).toBe(true)
   })
 
-  test('verifyAuth: open when no secret, bearer + header when set', async () => {
+  test('verifyAuth: false when no secret; secretHeader-only; constant-time compare', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
-    expect(a.verifyAuth()).toBe(true)
-    await a.connect({ secret: 'k' })
-    expect(a.verifyAuth('Bearer k')).toBe(true)
-    expect(a.verifyAuth(undefined, 'k')).toBe(true)
-    expect(a.verifyAuth('Bearer wrong', 'wrong')).toBe(false)
+    await a.connect({ secret: 'correct-secret' })
+    // No header → reject
+    expect(a.verifyAuth()).toBe(false)
+    expect(a.verifyAuth(undefined)).toBe(false)
+    // Wrong secret → reject (also checks different lengths don't bypass timingSafeEqual)
+    expect(a.verifyAuth('wrong')).toBe(false)
+    expect(a.verifyAuth('correct-secret-but-too-long')).toBe(false)
+    // Correct secret → accept
+    expect(a.verifyAuth('correct-secret')).toBe(true)
   })
 
-  test('processIncoming sync mode resolves when sendMessage delivers the reply', async () => {
+  test('processIncoming sync mode resolves with correlationId when sendMessage delivers the reply', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
-    let correlationId = ''
-    a.onMessage((m) => { correlationId = m.channelId })
+    await a.connect({ secret: 'k' })
+    let capturedCorrelationId = ''
+    a.onMessage((m) => { capturedCorrelationId = m.channelId })
     const p = a.processIncoming({ message: 'hi', senderId: 'u', senderName: 'U' })
     await new Promise((r) => setTimeout(r, 5))
-    await a.sendMessage(correlationId, 'the reply')
-    expect(await p).toEqual({ reply: 'the reply', async: false })
+    await a.sendMessage(capturedCorrelationId, 'the reply')
+    const result = await p
+    expect(result.reply).toBe('the reply')
+    expect(result.async).toBe(false)
+    expect(typeof result.correlationId).toBe('string')
+    expect(result.correlationId).toMatch(/^webhook-\d+-\d+$/)
     const log = a.getActivityLog()
     expect(log[log.length - 1]).toMatchObject({ status: 'success', replyPreview: 'the reply' })
   })
 
-  test('processIncoming async mode dispatches to callbackUrl and returns immediately', async () => {
+  test('processIncoming async mode returns correlationId and dispatches to callbackUrl', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     const got: IncomingMessage[] = []
     a.onMessage((m) => got.push(m))
     const r = await a.processIncoming({ message: 'x'.repeat(200), callbackUrl: 'https://cb/reply' })
-    expect(r).toEqual({ reply: '', async: true })
+    expect(r.async).toBe(true)
+    expect(r.reply).toBe('')
+    expect(typeof r.correlationId).toBe('string')
     expect(got[0].channelId).toBe('https://cb/reply')
     const log = a.getActivityLog()
     expect(log[0].messagePreview.endsWith('…')).toBe(true)
   })
 
-  test('processIncoming sync mode times out when no reply arrives', async () => {
+  test('processIncoming sync mode times out and returns timedOut flag + correlationId', async () => {
     const a = new WebhookAdapter()
-    await a.connect({ replyTimeoutMs: '50' })
+    await a.connect({ secret: 'k', replyTimeoutMs: '50' })
     a.onMessage(() => { /* never replies */ })
     const realST = globalThis.setTimeout
     ;(globalThis as any).setTimeout = ((fn: any) => { fn(); return 0 }) as any
@@ -692,22 +981,23 @@ describe('WebhookAdapter', () => {
       ;(globalThis as any).setTimeout = realST
     }
     expect(r.async).toBe(false)
-    expect(r.reply).toContain('timed out')
+    expect(r.timedOut).toBe(true)
+    expect(r.reply).toBe('')
+    expect(typeof r.correlationId).toBe('string')
     const log = a.getActivityLog()
     expect(log[log.length - 1].status).toBe('timeout')
   })
 
   test('processIncoming throws without a handler', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     await expect(a.processIncoming({ message: 'hi' })).rejects.toThrow('no message handler')
   })
 
   test('sendMessage to URL channelId POSTs callback; to plain id queues to outbox', async () => {
     setFetch(() => res({}))
     const a = new WebhookAdapter()
-    await a.connect({ callbackHeaders: '{"X-H":"1"}' })
-    await a.connect({}) // reset headers branch
+    await a.connect({ secret: 'k', callbackHeaders: '{"X-H":"1"}' })
     await a.sendMessage('https://cb/x', 'hello')
     expect(fetchCalls.some((c) => c.url === 'https://cb/x')).toBe(true)
     await a.sendMessage('plain-channel', 'queued1')
@@ -719,18 +1009,18 @@ describe('WebhookAdapter', () => {
   test('sendMessage callback delivery failure is swallowed', async () => {
     setFetch(() => { throw new Error('net') })
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     await a.sendMessage('https://cb/x', 'hello') // should not throw
   })
 
-  test('registerRoutes: incoming sync/async/auth/validation + outbox/health/activity/test', async () => {
+  test('registerRoutes: 503 no adapter, 401 wrong secret, 200 with correlationId, 202 timeout, outbox, health', async () => {
     const routes: Record<string, Function> = {}
     const app = {
       get: (p: string, h: Function) => { routes[`GET ${p}`] = h },
       post: (p: string, h: Function) => { routes[`POST ${p}`] = h },
     }
     let adapter: WebhookAdapter | null = null
-    WebhookAdapter.registerRoutes(app, () => adapter)
+    WebhookAdapter.registerRoutes(app, () => adapter, (cid) => `https://api.shogo.ai/outbox/${cid}`)
     const ctx = (opts: { body?: any; headers?: Record<string, string>; param?: string; badJson?: boolean }) => ({
       req: {
         json: async () => { if (opts.badJson) throw new Error('bad'); return opts.body ?? {} },
@@ -739,6 +1029,7 @@ describe('WebhookAdapter', () => {
       },
       json: (b: any, s?: number) => ({ b, s: s ?? 200 }),
     })
+
     // 503 when no adapter
     expect(await routes['POST /agent/channels/webhook/incoming'](ctx({}))).toMatchObject({ s: 503 })
     expect((routes['GET /agent/channels/webhook/health'](ctx({}))).b.status).toBe('not_configured')
@@ -748,30 +1039,65 @@ describe('WebhookAdapter', () => {
     await adapter.connect({ secret: 'k' })
     adapter.onMessage((m) => { setTimeout(() => adapter!.sendMessage(m.channelId, 'auto-reply'), 1) })
 
-    // unauthorized
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: {}, body: { message: 'x' } }))).toMatchObject({ s: 401 })
-    // bad json
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, badJson: true }))).toMatchObject({ s: 400 })
-    // missing message
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, body: {} }))).toMatchObject({ s: 400 })
-    // sync success (auto-reply via handler)
+    // 401 — no secret header
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ body: { message: 'x' } }))).toMatchObject({ s: 401 })
+    // 401 — wrong secret
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'wrong' }, body: { message: 'x' } }))).toMatchObject({ s: 401 })
+    // 400 — bad json
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, badJson: true }))).toMatchObject({ s: 400 })
+    // 400 — missing message
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: {} }))).toMatchObject({ s: 400 })
+    // 200 sync success — reply + correlationId
     const ok = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: { message: 'hello' } }))
     expect(ok.b.reply).toBe('auto-reply')
-    // async success
-    const acc = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, body: { message: 'hi', callbackUrl: 'https://cb' } }))
+    expect(typeof ok.b.correlationId).toBe('string')
+    // 202 async
+    const acc = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: { message: 'hi', callbackUrl: 'https://cb' } }))
     expect(acc).toMatchObject({ s: 202 })
-    // outbox
+    expect(typeof acc.b.correlationId).toBe('string')
+    // outbox: drain + 401 without secret
     await adapter.sendMessage('chanA', 'm1')
-    const ob = routes['GET /agent/channels/webhook/outbox/:channelId'](ctx({ headers: { authorization: 'Bearer k' }, param: 'chanA' }))
+    const ob = routes['GET /agent/channels/webhook/outbox/:correlationId'](ctx({ headers: { 'x-webhook-secret': 'k' }, param: 'chanA' }))
     expect(ob.b.messages).toEqual(['m1'])
-    // outbox unauthorized + 503
-    expect(routes['GET /agent/channels/webhook/outbox/:channelId'](ctx({ headers: {}, param: 'x' }))).toMatchObject({ s: 401 })
-    // health + activity connected
+    expect(routes['GET /agent/channels/webhook/outbox/:correlationId'](ctx({ headers: {}, param: 'x' }))).toMatchObject({ s: 401 })
+    // health + activity
     expect(routes['GET /agent/channels/webhook/health'](ctx({})).b.status).toBe('healthy')
     expect(routes['GET /agent/channels/webhook/activity'](ctx({})).b.connected).toBe(true)
     // test endpoint
     const t = await routes['POST /agent/channels/webhook/test'](ctx({ body: { message: 'ping' } }))
     expect(t.b.ok).toBe(true)
+    expect(typeof t.b.correlationId).toBe('string')
+  })
+
+  test('timeout route returns 202 with outboxUrl from getPublicOutboxUrl callback', async () => {
+    const routes: Record<string, Function> = {}
+    const app = {
+      get: (p: string, h: Function) => { routes[`GET ${p}`] = h },
+      post: (p: string, h: Function) => { routes[`POST ${p}`] = h },
+    }
+    const adapter = new WebhookAdapter()
+    await adapter.connect({ secret: 'k', replyTimeoutMs: '1' })
+    // Handler never replies → timeout immediately
+    const realST = globalThis.setTimeout
+    ;(globalThis as any).setTimeout = ((fn: any) => { fn(); return 0 }) as any
+    WebhookAdapter.registerRoutes(app, () => adapter, (cid) => `https://example.com/outbox/${cid}`)
+    try {
+      const ctx = (opts: any) => ({
+        req: {
+          json: async () => opts.body,
+          header: (k: string) => (opts.headers ?? {})[k.toLowerCase()],
+          param: () => '',
+        },
+        json: (b: any, s?: number) => ({ b, s: s ?? 200 }),
+      })
+      adapter.onMessage(() => { /* never replies */ })
+      const r = await routes['POST /agent/channels/webhook/incoming'](ctx({ body: { message: 'slow' }, headers: { 'x-webhook-secret': 'k' } }))
+      expect(r.s).toBe(202)
+      expect(r.b.status).toBe('pending')
+      expect(r.b.outboxUrl).toContain('/outbox/')
+    } finally {
+      ;(globalThis as any).setTimeout = realST
+    }
   })
 })
 

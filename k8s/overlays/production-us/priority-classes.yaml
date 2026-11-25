@@ -1,0 +1,28 @@
+# =============================================================================
+# PriorityClasses (production-us) — protect the data plane from runtime pods
+# =============================================================================
+# Under node memory pressure the kubelet evicts pods in order of QoS class and
+# then Pod priority. Without an explicit hierarchy every workload sits at the
+# default priority (0), so nothing guarantees CNPG Postgres survives a warm-pool
+# burst — staging learned this in the 2026-07-01 incident, where the node died
+# with the database on it.
+#
+# This is the same hierarchy staging uses; only the classes the product cluster
+# and its pooler reference are defined here, so deploying it cannot reschedule
+# anything that is already running.
+#     shogo-db-critical (1e6)  >  default (0)  >  shogo-workspace-low (-10)
+#
+# Cluster-scoped, like the staging file. Applied by deploy-us before the
+# projects-pg cluster (see .github/workflows/deploy.yml); a Pod that names a
+# PriorityClass which does not exist is rejected, so ordering matters.
+# =============================================================================
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: shogo-db-critical
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  CNPG Postgres + PgBouncer (platform-pg and projects-pg). Highest priority:
+  never evicted or preempted in favour of API or workspace/runtime pods.

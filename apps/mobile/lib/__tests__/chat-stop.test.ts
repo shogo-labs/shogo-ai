@@ -88,7 +88,9 @@ describe('buildStopRequest', () => {
       expect(result).not.toBeNull()
       expect(result!.url).toBe(`${API_BASE}/api/projects/proj-456/chat/stop`)
       expect((result!.init.headers as Record<string, string>).Cookie).toBe('session=native-token')
-      expect(result!.init.credentials).toBeUndefined()
+      // `'omit'`, not undefined: expo/fetch reads undefined as `'include'`, and
+      // iOS then adds the shared cookie jar on top of this header (SHO-564).
+      expect(result!.init.credentials).toBe('omit')
     })
 
     test('includes Cookie header from getCookie on Android', () => {
@@ -179,7 +181,8 @@ describe('buildStopRequest', () => {
         instanceId: 'inst-1',
       })
       expect((result!.init.headers as Record<string, string>).Cookie).toBe('session=native')
-      expect(result!.init.credentials).toBeUndefined()
+      // Same rule as stop itself — both builders omit on native (SHO-564).
+      expect(result!.init.credentials).toBe('omit')
     })
 
     test('omits Cookie when getCookie returns null', () => {

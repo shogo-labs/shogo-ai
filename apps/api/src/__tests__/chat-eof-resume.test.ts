@@ -45,6 +45,7 @@ type PersistedMessage = {
 let persistedMessages: PersistedMessage[] = []
 let persistedToolCalls: any[] = []
 let projectUpdates: any[] = []
+let deletedJournalTurnIds: string[] = []
 let messageIdCounter = 0
 let firstAssistantPersisted: Promise<void>
 let resolveFirstAssistantPersisted: () => void
@@ -82,6 +83,12 @@ const mockPrisma = {
     update: mock(async (args: any) => {
       projectUpdates.push(args)
       return { id: args.where.id, ...args.data }
+    }),
+  },
+  chatTurnFrame: {
+    deleteMany: mock(async (args: any) => {
+      if (args?.where?.turnId) deletedJournalTurnIds.push(args.where.turnId)
+      return { count: 1 }
     }),
   },
 }
@@ -554,6 +561,7 @@ describe('trackUsageFromStream — reattach options and result', () => {
     persistedMessages = []
     persistedToolCalls = []
     projectUpdates = []
+    deletedJournalTurnIds = []
     consumeUsageCalls = []
     messageIdCounter = 0
   })
@@ -683,5 +691,21 @@ describe('trackUsageFromStream — reattach options and result', () => {
     })
     expect(consumeUsageCalls).toHaveLength(1)
     expect(persistedMessages).toHaveLength(1)
+  })
+
+  test('journalTurnId deletes frames keyed by activityTurnId even when data-turn-start carries a distinct runtime turnId', async () => {
+    const stream = makeSseStream([
+      dataFrame({ type: 'data-turn-start', data: { turnId: 'runtime-turn-uuid', startedAt: 1_000_000 } }),
+      dataFrame({ type: 'text-delta', delta: 'done' }),
+      dataFrame({ type: 'data-turn-complete', data: { status: 'completed', completedAt: 1_001_000 } }),
+    ])
+
+    await trackUsageFromStream(stream, { chatSessionId: 'sess-journal', agentMode: 'sonnet' }, null, {
+      chatSessionId: 'sess-journal',
+      journalTurnId: 'activity-turn-uuid',
+    })
+    await Promise.resolve()
+
+    expect(deletedJournalTurnIds).toEqual(['activity-turn-uuid', 'runtime-turn-uuid'])
   })
 })

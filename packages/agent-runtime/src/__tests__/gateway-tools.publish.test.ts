@@ -16,6 +16,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { resolveAbilities } from '@shogo/authz'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
@@ -464,6 +465,49 @@ describe('publish tool', () => {
     expect(details.error).toMatch(/settings/i)
     expect(details.error).toMatch(/nothing was deployed/i)
   })
+
+  // SHO-539 acceptance 2: the server decides `project:publish` per project. Its
+  // refusal must arrive as the same named answer `withAbilityGate` gives, not a
+  // raw 403 — and nothing may be deployed.
+  const ABILITY_DENIAL = {
+    ok: false,
+    status: 403,
+    code: 'ability_not_allowed',
+    error: 'Ask a workspace admin for project:publish.',
+  }
+
+  test('a project viewer gets a named project:publish refusal from publish', async () => {
+    publishProjectImpl = async () => ABILITY_DENIAL
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.error).toBe('ability_not_allowed')
+    expect(details.permission).toBe('project:publish')
+    expect(details.message).toMatch(/publish access to this project/i)
+    expect(details.ok).toBeUndefined()
+  })
+
+  test('a project viewer gets the same refusal from ops_action and domain_action', async () => {
+    publishOpsImpl = async () => ABILITY_DENIAL
+    const ops = await run(baseCtx(), { ops_action: 'status' })
+    expect(ops.error).toBe('ability_not_allowed')
+    expect(ops.permission).toBe('project:publish')
+
+    addCustomDomainImpl = async () => ABILITY_DENIAL
+    const domain = await run(baseCtx(), { domain_action: 'add', domain: 'example.com' })
+    expect(domain.error).toBe('ability_not_allowed')
+    expect(domain.permission).toBe('project:publish')
+    expect(publishCalls).toEqual([])
+  })
+
+  // SHO-539 acceptance 1, through the real gateway tool list: a turn with a
+  // known ability set must still advertise `publish`, because the server — not
+  // the per-turn workspace gate — decides the project permission.
+  for (const role of ['owner', 'admin', 'member', 'viewer'] as const) {
+    test(`createTools advertises publish for a ${role} ability set`, () => {
+      const abilities = new Set<string>(resolveAbilities(role, []))
+      const names = createTools({ ...baseCtx(), abilities } as ToolContext).map((t) => t.name)
+      expect(names).toContain('publish')
+    })
+  }
 
   test('maps server_backed_requires_cloud_project to "sync then publish in the cloud"', async () => {
     publishProjectImpl = async () => ({
@@ -1059,6 +1103,25 @@ describe('publish — destructive schema change (SHO-308 §1)', () => {
     expect(publishCalls).toHaveLength(1)
     // It never re-published with the flag set.
     expect(publishCalls[0]?.opts.allowDataLoss).toBe(false)
+  })
+
+  test("data: 'empty' reaches the publish pipeline, and is absent by default (§G4)", async () => {
+    publishProjectImpl = async () => ({
+      ok: false,
+      status: 500,
+      code: 'publish_failed',
+      error: 'boom',
+    })
+
+    await run(baseCtx(), { subdomain: 'my-site', data: 'empty' })
+
+    expect(publishCalls[0]?.opts.data).toBe('empty')
+
+    publishCalls = []
+    await run(baseCtx(), { subdomain: 'my-site' })
+
+    // Not coerced into an empty start: a normal publish still seeds.
+    expect(publishCalls[0]?.opts.data).toBeUndefined()
   })
 
   test('allow_data_loss is forwarded only when the agent passes it', async () => {

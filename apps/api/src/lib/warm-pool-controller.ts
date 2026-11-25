@@ -32,6 +32,7 @@ import * as databaseService from '../services/database.service'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
+import { derivePoolBootstrapSecret, POOL_BOOTSTRAP_HEADER } from './runtime-token'
 
 const poolTracer = trace.getTracer('shogo-warm-pool')
 const meter = metrics.getMeter('shogo-warm-pool')
@@ -987,7 +988,10 @@ export class WarmPoolController {
         try {
           const response = await fetch(`${pod.url}/pool/assign`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              [POOL_BOOTSTRAP_HEADER]: derivePoolBootstrapSecret(pod.serviceName),
+            },
             body: JSON.stringify({ projectId, env: envVars }),
             signal: AbortSignal.timeout(60000),
           })
@@ -2514,6 +2518,7 @@ export class WarmPoolController {
       ...extraEnvEntries,
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
+      { name: 'POOL_BOOTSTRAP_SECRET', value: derivePoolBootstrapSecret(serviceName) },
       // KNATIVE_SERVICE_NAME exposes the pod's stable identity (the ksvc
       // it belongs to) into the runtime via the Kubernetes Downward API.
       // This survives container restarts, OOM kills, node drains, and

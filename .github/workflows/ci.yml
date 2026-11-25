@@ -344,6 +344,13 @@ jobs:
           TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
 
+      # apps/api is in run-typecheck.ts's EXPECTED_FAIL set, so the step above
+      # skips it. This gates it on *new* errors against a baseline of the
+      # existing debt (SHO-459 shipped invalid Prisma queries that tsc flags).
+      - name: Typecheck apps/api/src (no new errors vs baseline)
+        if: needs.prelude.outputs.verified != 'true'
+        run: bun scripts/ci/api-typecheck-ratchet.ts
+
       - name: Higgsfield docs drift
         if: needs.prelude.outputs.verified != 'true'
         # The committed vendor snapshot is the contract for every media endpoint
@@ -380,6 +387,9 @@ jobs:
         # timeout there reds the release (SHO-275). Cover it on every PR.
         run: bash .github/scripts/test/prisma_migrate_retry_test.sh
 
+      - name: Storage-health deploy gate (SHO-514)
+        run: bash .github/scripts/test/verify_storage_health_test.sh
+
       # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
       - name: Shogo Code extension (typecheck, phase checks)
         run: |
@@ -399,6 +409,23 @@ jobs:
       - name: Check hosted e2e quarantine entries are owned and unexpired
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:e2e-quarantine
+
+      - name: Check no test file hard-codes a date without pinning the clock
+        if: needs.prelude.outputs.verified != 'true'
+        # SHO-505: a suite seeded rows dated 2026-11-18 and compared them to
+        # `Date.now()`, so it passed on the day it was written and turned every
+        # commit on main red ~72h later. Existing offenders are baselined
+        # (scripts/test-clock-baseline.json) and only new ones fail; the nightly
+        # future-clock.yml runs the suites at +7/+30/+90 to find the armed ones.
+        run: bun run check:test-clock
+
+      - name: Check no function handed `now` reads the live clock
+        if: needs.prelude.outputs.verified != 'true'
+        # The other half of SHO-505: `reconcile()` took `now` from its caller and
+        # still called `Date.now()`. Uses the TypeScript compiler API because
+        # apps/api has no ESLint (the root `lint` script is a no-op). Baselined
+        # in scripts/injected-clock-baseline.json.
+        run: bun run check:injected-clock
 
       - name: Verify SDK license isolation (no AGPL leak)
         if: needs.prelude.outputs.verified != 'true'
@@ -622,12 +649,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: 'E2E (local mode) (1/6)', shard: '1/6' }
-          - { name: 'E2E (local mode) (2/6)', shard: '2/6' }
-          - { name: 'E2E (local mode) (3/6)', shard: '3/6' }
-          - { name: 'E2E (local mode) (4/6)', shard: '4/6' }
-          - { name: 'E2E (local mode) (5/6)', shard: '5/6' }
-          - { name: 'E2E (local mode) (6/6)', shard: '6/6' }
+          - { name: 'E2E (local mode) (1/5)', shard: '1/5' }
+          - { name: 'E2E (local mode) (2/5)', shard: '2/5' }
+          - { name: 'E2E (local mode) (3/5)', shard: '3/5' }
+          - { name: 'E2E (local mode) (4/5)', shard: '4/5' }
+          - { name: 'E2E (local mode) (5/5)', shard: '5/5' }
+          # chat-return-to-live-chat (SHO-450): the two heaviest non-fake-model
+          # files in shard 2/5 on run 44494233963 were chat-return-to-live-chat
+          # (5.5m) and chat-resume-replay-storm (3.1m), leaving only 0.9m of
+          # headroom. Moving them to their own jobs drops shard 2/5 from 34.1m
+          # to ≈25m and gives each of their own jobs ≈13m (5–6m test + ≈8m
+          # boot), well within the 35m cap. Neither spec needs the fake model:
+          # both mock the turn at the browser level.
+          - { name: 'E2E (chat return to live)', spec: 'chat-return-to-live-chat' }
+          - { name: 'E2E (chat resume storm)', spec: 'chat-resume-replay-storm' }
           # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
@@ -726,23 +761,23 @@ jobs:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
     # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
-    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
-    # and still halves the worst case. One number for the whole matrix on
+    # on green PR run 44494233963: shards 16–34 min (1/5 20.0m, 2/5 34.1m,
+    # 3/5 17.3m, 4/5 22.5m, 5/5 16.1m), so after the SHO-450 rebalance that
+    # moves the two heaviest shard-2 files to own jobs, the expected range drops
+    # to 16–26m with ≥ 9 min of headroom. One number for the whole matrix on
     # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
     # 39 min until its run was superseded. Keep this a literal.
     #
-    # The shards are SIX, not three, since 2026-11-19 (SHO-383): the local
+    # The shards are FIVE, not three, since 2026-11-19 (SHO-383): the local
     # suite grew to ~378 tests and every one of the three shards was at this cap
     # in the same run — 1/3 passed at 33m49s, 2/3 at 30m05s, and 3/3 was
     # cancelled at 35m18s with 23 of its 126 tests never reached. That is not a
     # hang: a local test measures ~17–20 s plus ~5 min of stack boot, so the
-    # third of the suite that each job got simply cost more than 35 min. Five
-    # shards left shard 2 at the cap on the next run, so six shards keep the
-    # biggest one below 30 min and leave room for retries. Same cap,
-    # more jobs: raising the number would put the merge queue back in the hole
-    # this comment opens with.
+    # third of the suite that each job got simply cost more than 35 min. SHO-450
+    # rebalanced shard 2/5 (measured at 34.1m, 0.9m headroom) by moving its two
+    # heaviest files to own-entry jobs; the five-shard count stays the same.
     timeout-minutes: 35
 
     steps:
@@ -805,10 +840,11 @@ jobs:
         if: ${{ !matrix.spec }}
         env:
           E2E_LOCAL_START_STACK: '1'
-          # Specs that have their own entry in this matrix skip themselves when
-          # this is set, so they are not also run (and not also red) inside a
-          # shard. `slides-preview` and `chat-send-body-size` are the two today;
-          # a new own-entry spec goes on that list in its own file.
+          # Specs that have their own entry in this matrix are listed in
+          # `OWN_ENTRY_SPECS` in e2e/local/playwright.config.ts, which adds
+          # them to `testIgnore` when this is set so they are neither run nor
+          # counted in the shard's file total. Add a new own-entry spec there,
+          # not in the spec file itself (SHO-450).
           E2E_SHARD: ${{ matrix.shard }}
         run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 
@@ -1123,7 +1159,9 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
-    # ~10 min since SHO-257 added the machine parity suite and its web build.
+    # ~7 min for the RBAC, Postgres and paired-desktop suites; the live
+    # remote-workspace files and the UI suite moved to `rbac-live` (SHO-502).
+    # Headroom for a cold runner that rebuilds the workspace packages.
     timeout-minutes: 25
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
@@ -1216,7 +1254,7 @@ jobs:
         env:
           REQUIRE_PG_INTEGRATION: '1'
         run: |
-          for f in src/__tests__/advisory-lock-pool.integration.test.ts src/__tests__/monitor-rollout-grace.integration.test.ts src/__tests__/machine-sync-acceptance.test.ts; do
+          for f in src/__tests__/advisory-lock-pool.integration.test.ts src/__tests__/monitor-rollout-grace.integration.test.ts src/__tests__/machine-sync-acceptance.test.ts src/__tests__/vm-meter-cursor-overflow.integration.test.ts; do
             echo "::group::$f"
             bun --no-env-file test "$f" || exit 1
             echo "::endgroup::"
@@ -1282,22 +1320,167 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/sho285-hosted-workspace.e2e.test.ts --timeout 300000
 
-      # …and the same, in the cloud studio UI: the web build served in front of
-      # the cloud process, driven by Playwright (e2e/machine-vm).
+      # SHO-486: everything a hosted workspace's sync writes must reach the
+      # screens watching the cloud — a channel reply appears live instead of on
+      # the next refresh, a phone-posted message reaches the desktop, the cloud
+      # sees a desktop-run turn and can rejoin its stream, a mid-turn send is
+      # queued, and a share_file link resolves. The insert point is pinned by the
+      # unit suite above it, which needs the cloud schema, so it runs here too.
+      # One file per process: a combined run was OOM-killed (exit 137).
+      - name: Hosted workspace live events (ingest, Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/machine-sync-live-events.test.ts
+
+      - name: Hosted workspace seen from the cloud (two processes, Postgres + Redis)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/hosted-workspace-live.e2e.test.ts --timeout 300000
+
+      # The SHO-488 live remote-workspace files and the machine workspace UI
+      # suite run in `rbac-live` below, in parallel with this job (SHO-502).
+
+  # SHO-502: the slow half of RBAC, split across runners. Run serially inside
+  # `rbac-postgres` these were ~22 of its 29 minutes and the whole merge queue's
+  # critical path. Every leg is required through the `ci` gate below.
+  rbac-live:
+    name: RBAC (Postgres) · ${{ matrix.name }}
+    needs: prelude
+    if: needs.prelude.outputs.verified != 'true'
+    # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    timeout-minutes: 25
+    strategy:
+      # Every leg reports, so one red file does not hide another.
+      fail-fast: false
+      matrix:
+        include:
+          # SHO-488: the hosted workspace checked **live** instead of by polling
+          # a GET until the data appears — the polling suites in `rbac-postgres`
+          # (and the parity one, SHO-257) pass with a broken push path, which is
+          # how "the reply only shows after a refresh" reached production. Every
+          # file opens the real socket and asserts the event arrives with no GET
+          # between. Shards are balanced by measured time (~300 s each).
+          #
+          # One file per process on purpose: a single `bun test` over several of
+          # these boots four runtimes per file and is OOM-killed on a 2-core
+          # runner (exit 137). Each file is its own bug surface (chat, boards,
+          # files, …), so a failure names the broken feature in its log group.
+          - name: live 1/3
+            suite: live
+            files: workspace-chat schedules team-chat
+          - name: live 2/3
+            suite: live
+            files: approvals preview offline-reconnect
+          - name: live 3/3
+            suite: live
+            files: boards files projects activity access
+          # …and the same, in the cloud studio UI: the web build served in front
+          # of the cloud process, driven by Playwright (e2e/machine-vm).
+          - name: machine workspace UI
+            suite: ui
+            files: ''
+    env:
+      CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+      CI_REQUIRE_MACHINE_INFRA: '1'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: shogo
+          POSTGRES_PASSWORD: shogo
+          POSTGRES_DB: shogo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shogo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: rbac-prepared-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
+
+      - name: Install dependencies
+        # Same rationale as the `typecheck` job's install step.
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        if: steps.rbac-prepared-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Remote workspace, checked live (one file per process)
+        if: matrix.suite == 'live'
+        working-directory: apps/api
+        env:
+          FILES: ${{ matrix.files }}
+        run: |
+          set -e
+          for f in $FILES; do
+            echo "::group::remote workspace · $f"
+            bun --no-env-file test "src/__tests__/remote-workspace/$f.e2e.test.ts" --timeout 600000
+            echo "::endgroup::"
+          done
+
       - name: Cloud web build (for the machine workspace UI suite)
+        if: matrix.suite == 'ui'
         working-directory: apps/mobile
         env:
           EXPO_NO_DOTENV: '1'
         run: bun run build
 
       - name: Install Playwright Chromium (machine workspace UI suite)
+        if: matrix.suite == 'ui'
         run: npx playwright install --with-deps chromium
 
       - name: Machine workspace in the cloud UI (paired desktop)
+        if: matrix.suite == 'ui'
         run: npx playwright test --config e2e/machine-vm/playwright.config.ts
 
       - name: Upload machine workspace UI report
-        if: failure()
+        if: failure() && matrix.suite == 'ui'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: machine-vm-ui-report
@@ -1469,7 +1652,7 @@ jobs:
   # clearer signal in the PR checks UI than "skipped").
   ci:
     name: Lint, Typecheck, Test
-    needs: [prelude, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint, metal-agent-bundle]
+    needs: [prelude, typecheck, typecheck-mobile, test, rbac-postgres, rbac-live, test-windows, workflow-lint, metal-agent-bundle]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1482,6 +1665,7 @@ jobs:
           TYPECHECK_MOBILE: ${{ needs.typecheck-mobile.result }}
           TEST: ${{ needs.test.result }}
           RBAC_POSTGRES: ${{ needs.rbac-postgres.result }}
+          RBAC_LIVE: ${{ needs.rbac-live.result }}
           TEST_WINDOWS: ${{ needs.test-windows.result }}
           WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
           METAL_AGENT_BUNDLE: ${{ needs.metal-agent-bundle.result }}
@@ -1491,11 +1675,12 @@ jobs:
           echo "typecheck-mobile: ${TYPECHECK_MOBILE}"
           echo "test: ${TEST}"
           echo "rbac-postgres: ${RBAC_POSTGRES}"
+          echo "rbac-live: ${RBAC_LIVE}"
           echo "test-windows: ${TEST_WINDOWS}"
           echo "workflow-lint: ${WORKFLOW_LINT}"
           echo "metal-agent-bundle: ${METAL_AGENT_BUNDLE}"
           # Jobs a queue-verified push skips outright; anywhere else they must pass.
           skippable() { [ "$1" == "success" ] || { [ "$VERIFIED" == "true" ] && [ "$1" == "skipped" ]; }; }
-          if [ "$PRELUDE" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
+          if [ "$PRELUDE" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$RBAC_LIVE" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
             exit 1
           fi

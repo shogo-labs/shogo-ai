@@ -30,8 +30,11 @@ import {
   classifyLfsFailure,
   hasLocalLfsObject,
   lfsObjectsInRange,
+  lfsPushedTips,
   lfsPushIncremental,
   lfsRemoteConfigFromEnv,
+  lfsStats,
+  LfsPushRunner,
   localLfsObjectPath,
   parseLfsPointer,
   writeManagedGitAttributes,
@@ -247,9 +250,11 @@ describe('lfsPushIncremental', () => {
     expect(first.pushed).toBe(3)
     expect(first.missing).toEqual([])
     expect(first.skipped).toBe(0)
-    // The whole 200-object history was not walked: one batch, three oids.
-    expect(lfs.batches).toHaveLength(1)
-    expect(lfs.batches[0].oids).toHaveLength(3)
+    // The whole 200-object history was not walked. Two batch calls, each about
+    // the three new oids: ours ("does the server have these?") and git-lfs's own
+    // upload negotiation. Neither ever mentions the 200 older objects.
+    expect(lfs.batches.length).toBeLessThanOrEqual(2)
+    for (const b of lfs.batches) expect(b.oids).toHaveLength(3)
     expect(lfs.uploads).toHaveLength(3)
 
     // Nothing new since those tips -> nothing pushed, no batch call.
@@ -284,9 +289,11 @@ describe('lfsPushIncremental', () => {
 
     const result = await lfsPushIncremental(cfg, { tips: null })
     expect(result.missing).toEqual([])
-    expect(result.skipped).toBe(all.length - headObjects.length)
-    expect(result.pushed).toBe(headObjects.length)
-    // The server already held every byte, so git-lfs's own dedup moved none.
+    // Every object is either absent locally but on the server, or present
+    // locally and already on the server. Both count as skipped, and NOTHING is
+    // uploaded: a local cache is not evidence that the server lacks the bytes.
+    expect(result.skipped).toBe(all.length)
+    expect(result.pushed).toBe(0)
     expect(lfs.uploads).toEqual([])
   }, 90_000)
 
@@ -323,6 +330,86 @@ describe('lfsPushIncremental', () => {
     const err = await lfsPushIncremental(cfgAuth, { tips: null }).catch((e) => e)
     expect(err?.reason).toBe('auth')
     expect(String(err?.stderr)).toContain('Bad credentials')
+  }, 90_000)
+})
+
+describe('a range base the repo no longer has (SHO-540)', () => {
+  // The sha from the production 503: a host manifest tip that no longer
+  // resolves in the guest, which made `rev-list` exit 128 on every retry.
+  const GONE = '754b54bcec9f49f05ef0c142c8d0378c74e59667'
+
+  it('ignores a gone tip and still walks what is new, instead of failing the export', async () => {
+    const { dir } = makeMediaRepo()
+    const tip = git(dir, ['rev-parse', 'HEAD']).trim()
+    for (let i = 0; i < 2; i++) writeFileSync(join(dir, `post-${i}.png`), Buffer.alloc(1024, 40 + i))
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'after the tip'])
+
+    // Git itself dies on that range — this is the production failure, not a mock.
+    expect(() => git(dir, ['rev-list', '--objects', '--all', '--not', GONE])).toThrow()
+
+    const objects = await lfsObjectsInRange(dir, [GONE, tip])
+    expect(objects.map((o) => o.paths[0]).sort()).toEqual(['post-0.png', 'post-1.png'])
+  }, 60_000)
+
+  it('falls back to the pushed-tips marker when every caller tip is gone', async () => {
+    const { dir, cfg } = makeMediaRepo()
+    // A completed push records the marker at HEAD.
+    await lfsPushIncremental(cfg, { tips: null })
+    const pushedAt = git(dir, ['rev-parse', 'HEAD']).trim()
+    expect(lfsPushedTips(dir)).toEqual([pushedAt])
+
+    writeFileSync(join(dir, 'via-marker.png'), Buffer.alloc(1024, 71))
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'marker range'])
+
+    const objects = await lfsObjectsInRange(dir, [GONE])
+    expect(objects.map((o) => o.paths[0])).toEqual(['via-marker.png'])
+  }, 90_000)
+
+  it('scans everything when the caller tip and the marker are both gone', async () => {
+    const { dir } = makeMediaRepo()
+    const markerPath = join(dir, '.git', 'shogo', 'lfs-pushed-tips')
+    mkdirSync(join(dir, '.git', 'shogo'), { recursive: true })
+    writeFileSync(markerPath, JSON.stringify({ tips: [GONE], at: Date.now() }))
+    expect(lfsPushedTips(dir)).toEqual([GONE])
+
+    const objects = await lfsObjectsInRange(dir, [GONE])
+    expect(objects.length).toBe(COMMITS * FILES_PER_COMMIT + LARGE_FILES)
+  }, 60_000)
+
+  it('pushes through a gone tip instead of refusing, and advances the marker', async () => {
+    const { dir, lfs, cfg } = makeMediaRepo()
+    for (let i = 0; i < 2; i++) writeFileSync(join(dir, `late-${i}.png`), Buffer.alloc(1024, 55 + i))
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'push past a gone tip'])
+
+    const before = lfsStats().unknownTips
+    const result = await lfsPushIncremental(cfg, { tips: [GONE] })
+    // The full history went up (the base was unusable), not an error.
+    expect(result.pushed).toBe(COMMITS * FILES_PER_COMMIT + LARGE_FILES + 2)
+    expect(result.missing).toEqual([])
+    expect(lfs.uploads.length).toBe(result.pushed)
+    expect(lfsStats().unknownTips).toBe(before + 1)
+    expect(lfsPushedTips(dir)).toEqual([git(dir, ['rev-parse', 'HEAD']).trim()])
+  }, 120_000)
+
+  it('keys the push job by the filtered base, so a stale sha joins the live job', async () => {
+    const { dir, cfg } = makeMediaRepo()
+    await lfsPushIncremental(cfg, { tips: null })
+    const marker = lfsPushedTips(dir)
+    expect(marker).toEqual([git(dir, ['rev-parse', 'HEAD']).trim()])
+    writeFileSync(join(dir, 'keyed.png'), Buffer.alloc(1024, 99))
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'keyed'])
+
+    const runner = new LfsPushRunner({ logger: { log() {}, warn() {}, error() {} } })
+    // Every named tip is gone -> the marker is the base; the caller that names
+    // the live marker must join the very same job, not start a second one.
+    const stale = await runner.run(cfg, [GONE])
+    const live = await runner.run(cfg, marker!)
+    expect(live).toBe(stale)
+    await stale.settled
   }, 90_000)
 })
 

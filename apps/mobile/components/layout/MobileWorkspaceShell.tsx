@@ -16,7 +16,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Modal,
@@ -36,6 +35,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  MessagesSquare,
   Folder,
   Menu,
   Pencil,
@@ -104,6 +104,7 @@ import {
   MobileWorkspaceSwitcherRow,
   MobileWorkspaceSwitcherSheet,
 } from "./MobileWorkspaceSwitcher";
+import { Spinner } from '@/components/ui/spinner'
 
 interface MobileWorkspaceShellProps {
   children: ReactNode;
@@ -122,8 +123,6 @@ type ProjectChatState = {
   loading: boolean;
 };
 
-// Drawer rows use 16px text with 6px vertical padding: six whole 36px rows.
-const DRAWER_CHAT_LIST_MAX_HEIGHT = 216;
 
 export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspaceShellProps) {
   const router = useRouter();
@@ -212,6 +211,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   // carries Back and the project name here: swiping open the drawer to leave
   // the project was the only way out.
   const isProjectChatRoute = showChatChrome && /\/project-chat\//.test(pathname);
+  // On agent routes the drawer is the agent's full chat history; Projects live on Home.
+  const isAgentRoute = showChatChrome && !isProjectChatRoute;
   const projectChatName = isProjectChatRoute
     ? projects.all.find((project: any) => project.id === activeProjectId)?.name
     : undefined;
@@ -764,7 +765,11 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                 feedback={haptics.selection}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  sessionsOpen ? "Close chat sessions" : "Open chat sessions"
+                  sessionsOpen
+                    ? "Close chats"
+                    : isAgentRoute
+                    ? "Chats"
+                    : "Open chat sessions"
                 }
                 aria-expanded={sessionsOpen}
                 onPress={() =>
@@ -947,13 +952,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         </Pressable>
                       }
                     >
-                      <ScrollView
-                        nestedScrollEnabled
-                        keyboardShouldPersistTaps="handled"
-                        showsVerticalScrollIndicator={sideChats.length > 6}
-                        style={{ maxHeight: DRAWER_CHAT_LIST_MAX_HEIGHT }}
-                      >
-                        <ChatSessionList
+                      <ChatSessionList
                           sessions={sideChats}
                           archivedSessions={[]}
                           renderAll
@@ -981,7 +980,6 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                           textClassName="text-base font-medium"
                           inactiveTextClassName="text-foreground"
                         />
-                      </ScrollView>
                       {archivedSideChats.length > 0 ? (
                         <View className="mt-1">
                           <Pressable
@@ -1011,16 +1009,6 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             </Text>
                           </Pressable>
                           {showArchivedSideChats ? (
-                            <ScrollView
-                              nestedScrollEnabled
-                              keyboardShouldPersistTaps="handled"
-                              showsVerticalScrollIndicator={
-                                archivedSideChats.length > 6
-                              }
-                              style={{
-                                maxHeight: DRAWER_CHAT_LIST_MAX_HEIGHT,
-                              }}
-                            >
                               <ChatSessionList
                                 sessions={archivedSideChats}
                                 archivedSessions={[]}
@@ -1045,14 +1033,28 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                 textClassName="text-base font-medium"
                                 inactiveTextClassName="text-foreground"
                               />
-                            </ScrollView>
                           ) : null}
                         </View>
                       ) : null}
                     </WorkspaceSidebarSection>
+                    {isAgentRoute ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="All chats"
+                        onPress={() => {
+                          closeSessions();
+                          router.push("/(app)/chats" as any);
+                        }}
+                        className="mt-1 flex-row items-center gap-2 rounded-xl px-3 py-2.5 active:bg-muted"
+                      >
+                        <MessagesSquare size={16} className="text-muted-foreground" />
+                        <Text className="flex-1 text-base text-muted-foreground">All chats</Text>
+                        <ChevronRight size={16} className="text-muted-foreground" />
+                      </Pressable>
+                    ) : null}
                   </View>
 
-                  {workspaceExperience.showProjectsTree ? (
+                  {workspaceExperience.showProjectsTree && isProjectChatRoute ? (
                     <View className="mt-3">
                     <WorkspaceSidebarSection
                       label="Projects"
@@ -1235,7 +1237,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                               <View className="ml-5 pl-2">
                                 {chats?.loading ? (
                                   <View className="px-2 py-2">
-                                    <ActivityIndicator size="small" />
+                                    <Spinner size="small" />
                                   </View>
                                 ) : (
                                   <>
@@ -1248,7 +1250,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                         }
                                         style={{
                                           maxHeight:
-                                            DRAWER_CHAT_LIST_MAX_HEIGHT,
+                                            216,
                                         }}
                                       >
                                         {activeChats.map((chat) => (
@@ -1353,7 +1355,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                             }
                                             style={{
                                               maxHeight:
-                                                DRAWER_CHAT_LIST_MAX_HEIGHT,
+                                                216,
                                             }}
                                           >
                                             {archivedChats.map((chat) => (

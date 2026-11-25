@@ -23,7 +23,7 @@ import type { Permission } from '@shogo/authz'
 import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { decide, enforceAbility, loadAccess, principalOf, resolveAgentActor, type AgentCaller, type Principal } from '../lib/authz'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
-import { listActiveChatTurns } from '../services/chat-turn-state.service'
+import { listActiveChatTurns, peekActiveChatTurn } from '../services/chat-turn-state.service'
 import {
   EventSubscriptionError,
   createSubscription,
@@ -958,6 +958,15 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const chats = await listActiveChatTurns(auth.workspaceId, { viewerUserId: auth.userId })
     return c.json({ chats })
+  })
+
+  router.get('/workspaces/:workspaceId/active-chats/:chatSessionId/peek', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const { chatSessionId } = c.req.param()
+    const peek = await peekActiveChatTurn(auth.workspaceId, chatSessionId, auth.userId ?? null)
+    if (!peek) return c.json({ error: 'not_running' }, 404)
+    return c.json(peek)
   })
 
   return router

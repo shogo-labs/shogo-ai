@@ -936,48 +936,64 @@
         "date": "2026-10-10",
         "version": "2.3.6",
         "channel": "stable",
+        "client": "desktop",
+        "os": "macos",
         "devices": 1
       },
       {
         "date": "2026-10-05",
         "version": "2.2.27",
         "channel": "stable",
+        "client": "desktop",
+        "os": "windows",
         "devices": 1
       },
       {
         "date": "2026-10-04",
         "version": "2.2.27",
         "channel": "stable",
+        "client": "desktop",
+        "os": "windows",
         "devices": 1
       },
       {
         "date": "2026-10-03",
         "version": "2.3.6-beta.20261020t083308",
         "channel": "beta",
+        "client": "desktop",
+        "os": "macos",
         "devices": 1
       },
       {
         "date": "2026-10-03",
         "version": "2.2.27",
         "channel": "stable",
+        "client": "desktop",
+        "os": "macos",
         "devices": 1
       },
       {
         "date": "2026-10-02",
         "version": "shogo-cli/unknown",
         "channel": "stable",
+        "client": "cli",
+        "os": "unknown",
         "devices": 1
       },
       {
         "date": "2026-10-02",
         "version": "2.2.27",
         "channel": "stable",
+        "client": "desktop",
+        "os": "windows",
         "devices": 1
       },
       {
         "date": "2026-10-01",
         "version": "2.2.27",
         "channel": "stable",
+        "client": "desktop",
+        "os": "windows",
         "devices": 1
       }
     ]

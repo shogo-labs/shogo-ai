@@ -11,7 +11,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -26,6 +25,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 interface MeetingConfig {
   enabled: boolean
@@ -205,7 +205,7 @@ export default function AdminMeetingsPage() {
       <View className="flex-1 bg-background px-4 items-center justify-center">
         <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
           <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
           <Text className="text-sm font-semibold text-foreground mt-3">Loading meeting controls</Text>
           <Text className="text-xs text-muted-foreground mt-1 text-center">
@@ -338,7 +338,7 @@ export default function AdminMeetingsPage() {
 
             {(installing || transcriptionStatus.install?.state === 'installing') && (
               <View className="rounded-lg bg-primary/10 p-3 flex-row items-center gap-2">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-xs text-foreground flex-1">
                   Setting up on-device transcription in the background...
                 </Text>
@@ -546,7 +546,7 @@ function ContextHeader({ isWide, saving }: { isWide: boolean; saving: boolean })
         </View>
         {saving ? (
           <View className="flex-row items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-[11px] text-muted-foreground">Saving</Text>
           </View>
         ) : (

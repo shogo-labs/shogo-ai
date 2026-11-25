@@ -11,7 +11,7 @@
  * phones keep the sheet + full-page route they have always had.
  */
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
-import { createElement, forwardRef } from "react"
+import { createElement, forwardRef, useState } from "react"
 import { createReactNativeMock } from "../../../test/react-native-mock"
 
 const viewport = { width: 1440 }
@@ -66,10 +66,32 @@ const pressable = forwardRef(function Pressable(props: any, ref: any) {
 })
 
 const host = (tag: string) => (props: any) => {
-  const { testID, accessibilityLabel, children, className } = props
+  const {
+    testID,
+    accessibilityLabel,
+    children,
+    className,
+    style,
+    onPointerDown,
+    onPointerEnter,
+    onPointerLeave,
+  } = props
+  // The right-hand panes carry their width in `style`, which a DOM host would
+  // otherwise drop — publish it so a test can read the pane's width. Only the
+  // pointer handlers react-native-web actually forwards to the DOM are copied
+  // across, so the harness can never stand in for a prop the browser drops.
+  const width = Array.isArray(style) ? undefined : style?.width
   return createElement(
     tag,
-    { "data-testid": testID, "aria-label": accessibilityLabel, className },
+    {
+      "data-testid": testID,
+      "aria-label": accessibilityLabel,
+      className,
+      "data-width": typeof width === "number" ? String(width) : undefined,
+      onPointerDown,
+      onPointerEnter,
+      onPointerLeave,
+    },
     children,
   )
 }
@@ -196,8 +218,58 @@ const pane = mock((props: any) =>
   }),
 )
 mock.module("../../team-chat/ProjectSidePane", () => ({ ProjectSidePane: pane }))
+/**
+ * The Working set is a chat-dock panel now (SHO-484), so this stands in for
+ * `ChatDock`: one card per descriptor the screen hands `ChatPanel`, with the
+ * real header fields (title, summary, header actions) and a toggle that mounts
+ * the descriptor's body — `defaultExpanded: false` keeps it collapsed until
+ * then, exactly like the real dock.
+ */
+const DockPanelStandIn = ({ descriptor }: { descriptor: any }) => {
+  const [expanded, setExpanded] = useState(descriptor.defaultExpanded === true)
+  return createElement(
+    "div",
+    { "data-testid": `dock-panel-${descriptor.id}` },
+    createElement(
+      "div",
+      { "data-testid": `dock-header-${descriptor.id}` },
+      createElement("span", null, descriptor.title),
+      descriptor.summary
+        ? createElement(
+            "span",
+            { "data-testid": `dock-summary-${descriptor.id}` },
+            descriptor.summary,
+          )
+        : null,
+      descriptor.headerActions ?? null,
+      createElement(
+        "button",
+        {
+          type: "button",
+          "aria-label": `Toggle ${descriptor.title}`,
+          onClick: () => setExpanded((open: boolean) => !open),
+        },
+        "toggle",
+      ),
+    ),
+    expanded
+      ? createElement(
+          "div",
+          { "data-testid": `dock-body-${descriptor.id}` },
+          descriptor.render({ expanded: true }),
+        )
+      : null,
+  )
+}
 mock.module("../../chat/ChatPanel", () => ({
-  ChatPanel: () => createElement("div", { "data-testid": "chat-panel" }),
+  ChatPanel: (props: any) =>
+    createElement(
+      "div",
+      { "data-testid": "chat-panel" },
+      ...(props.dockPanels ?? []).map((descriptor: any) =>
+        createElement(DockPanelStandIn, { key: descriptor.id, descriptor }),
+      ),
+    ),
 }))
 mock.module("../../chat/PlanStreamContext", () => ({
   PlanStreamProvider: host("div"),
@@ -254,10 +326,13 @@ mock.module("../use-file-link-arrival", () => ({
   }),
 }))
 
-const { cleanup, fireEvent, render, screen, waitFor } = await import(
+const { cleanup, fireEvent, render, screen, waitFor, within } = await import(
   "@testing-library/react"
 )
 const { WorkspaceAgentChatScreen } = await import("../WorkspaceAgentChatScreen")
+const { safeGetItem, safeRemoveItem, safeSetItem } = await import(
+  "../../../lib/safe-storage"
+)
 
 beforeEach(() => {
   push.mockClear()
@@ -266,7 +341,7 @@ beforeEach(() => {
   viewport.width = 1440
 })
 
-/** Mounts the screen and waits for the working set it loads from the API. */
+/** Mounts the screen and waits for the dock panel the API's attachments add. */
 const openScreen = async () => {
   render(createElement(WorkspaceAgentChatScreen, {}))
   await waitFor(() => {
@@ -274,21 +349,42 @@ const openScreen = async () => {
   })
 }
 
+/** The dock card the screen hands `ChatPanel`, and its collapsed header. */
+const dockPanel = () => screen.getByTestId("dock-panel-working-set")
+const summary = () =>
+  screen.getByTestId("dock-summary-working-set").textContent
+const expandPanel = () =>
+  fireEvent.click(screen.getByLabelText("Toggle Working set"))
+
 const chip = (name: string) => screen.getByLabelText(`${name} project`)
 const paneShown = () => screen.queryByTestId("project-side-pane")
 
-test("each project in the working set gets its own chip on a wide screen", async () => {
+test("the working set is one dock panel, collapsed above the composer", async () => {
   await openScreen()
 
+  expect(dockPanel()).toBeInTheDocument()
+  // Collapsed header: the focused project and how many follow it.
+  expect(summary()).toBe("Alpha +1")
+  // The chips live in the panel's body, so they are not on screen yet — and
+  // the old always-visible row above the transcript is gone.
+  expect(screen.queryByLabelText("Alpha project")).toBeNull()
+  expect(paneShown()).toBeNull()
+})
+
+test("expanding the panel lists every attached project as a chip", async () => {
+  await openScreen()
+
+  expandPanel()
+
+  expect(screen.getByTestId("working-set-projects")).toBeInTheDocument()
   expect(chip("Alpha")).toBeInTheDocument()
   expect(chip("Beta")).toBeInTheDocument()
-  // The old strip collapsed everything after the first into "+N".
-  expect(screen.queryByText("+1")).toBeNull()
   expect(paneShown()).toBeNull()
 })
 
 test("a chip opens the project beside the chat, leaving the chat mounted", async () => {
   await openScreen()
+  expandPanel()
 
   fireEvent.click(chip("Alpha"))
 
@@ -308,6 +404,7 @@ test("a chip opens the project beside the chat, leaving the chat mounted", async
 
 test("a second chip swaps the pane, the same chip closes it", async () => {
   await openScreen()
+  expandPanel()
 
   fireEvent.click(chip("Alpha"))
   await waitFor(() => expect(paneShown()).not.toBeNull())
@@ -322,6 +419,15 @@ test("a second chip swaps the pane, the same chip closes it", async () => {
 
   fireEvent.click(chip("Beta"))
   await waitFor(() => expect(paneShown()).toBeNull())
+})
+
+test("the dock header's Manage button opens the scope sheet without expanding", async () => {
+  await openScreen()
+
+  // Reachable while the panel is collapsed.
+  expect(screen.queryByLabelText("Alpha project")).toBeNull()
+  fireEvent.click(screen.getByLabelText("Manage project scope"))
+  await waitFor(() => expect(screen.getByText("Project scope")).toBeInTheDocument())
 })
 
 test("the scope sheet's Open puts the project in the pane and closes the sheet", async () => {
@@ -341,6 +447,7 @@ test("the scope sheet's Open puts the project in the pane and closes the sheet",
 
 test("detaching the project shown in the pane closes it", async () => {
   await openScreen()
+  expandPanel()
 
   fireEvent.click(chip("Alpha"))
   await waitFor(() => expect(paneShown()).not.toBeNull())
@@ -355,12 +462,28 @@ test("detaching the project shown in the pane closes it", async () => {
   await waitFor(() => expect(paneShown()).toBeNull())
 })
 
-test("on a phone the chip still opens the sheet and Open still routes to the project page", async () => {
+test("on a phone the panel's chip opens the project page instead of a pane", async () => {
+  viewport.width = 800
+  await openScreen()
+  expandPanel()
+
+  fireEvent.click(chip("Alpha"))
+
+  expect(push).toHaveBeenCalledWith({
+    pathname: "/(app)/projects/[id]",
+    params: {
+      id: "proj-a",
+      chatSessionId: "session-1",
+      chatScope: "workspace",
+    },
+  })
+  expect(paneShown()).toBeNull()
+})
+
+test("on a phone the scope sheet and its Open route still work", async () => {
   viewport.width = 800
   await openScreen()
 
-  // One chip plus the sheet, exactly as before: no pane, no per-project chips.
-  expect(screen.queryByLabelText("Alpha project")).toBeNull()
   fireEvent.click(screen.getByLabelText("Manage project scope"))
   await waitFor(() => expect(screen.getByText("Project scope")).toBeInTheDocument())
 
@@ -377,4 +500,86 @@ test("on a phone the chip still opens the sheet and Open still routes to the pro
   expect(paneShown()).toBeNull()
 })
 
-afterEach(() => cleanup())
+/** The wrapper the screen puts around the project pane — its width lives here. */
+const paneHost = () => screen.getByTestId("workspace-project-pane")
+
+const openProjectPaneFor = async (name = "Alpha") => {
+  await openScreen()
+  expandPanel()
+  fireEvent.click(chip(name))
+  await waitFor(() => expect(paneShown()).not.toBeNull())
+}
+
+test("the project pane offers a resize handle and takes its width from storage", async () => {
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "560")
+  await openProjectPaneFor()
+
+  expect(paneHost().getAttribute("data-width")).toBe("560")
+  expect(within(paneHost()).getByLabelText("Resize panel")).toBeInTheDocument()
+})
+
+test("with nothing saved the pane keeps 45% of the row", async () => {
+  await openProjectPaneFor()
+
+  // happy-dom reports no row layout, so the pane measures the window: 45% of 1440.
+  expect(paneHost().getAttribute("data-width")).toBe("648")
+})
+
+test("dragging the handle widens the pane live and remembers it", async () => {
+  await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
+
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerMove(document, { clientX: 700 })
+  expect(paneHost().getAttribute("data-width")).toBe("848")
+
+  fireEvent.pointerUp(document)
+  expect(safeGetItem("shogo.workspaceChat.projectPaneWidth")).toBe("848")
+})
+
+test("a saved width never squeezes the chat below 480px", async () => {
+  // 1440 - 480 leaves the pane at most 960, however wide it was dragged.
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "1400")
+  await openProjectPaneFor()
+
+  expect(paneHost().getAttribute("data-width")).toBe("960")
+})
+
+test("double-clicking the handle restores the 45% default", async () => {
+  safeSetItem("shogo.workspaceChat.projectPaneWidth", "560")
+  await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
+
+  // A click is a press released in place, and two of those in a row is the
+  // double-click the handle has to recognise itself: react-native-web never
+  // delivers `dblclick` to a View, and the drag overlay takes the pointerup
+  // that would make the browser count a second `click`.
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerUp(document)
+  fireEvent.pointerDown(handle, { clientX: 900 })
+
+  expect(paneHost().getAttribute("data-width")).toBe("648")
+  expect(safeGetItem("shogo.workspaceChat.projectPaneWidth")).toBeNull()
+})
+
+test("a drag released in place is not the first half of a double-click", async () => {
+  await openProjectPaneFor()
+  const handle = within(paneHost()).getByLabelText("Resize panel")
+
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerMove(document, { clientX: 800 })
+  fireEvent.pointerUp(document)
+  expect(paneHost().getAttribute("data-width")).toBe("748")
+
+  // Pressing again straight after a drag starts a new drag, it does not reset.
+  fireEvent.pointerDown(handle, { clientX: 900 })
+  fireEvent.pointerUp(document)
+  expect(paneHost().getAttribute("data-width")).toBe("748")
+})
+
+afterEach(() => {
+  cleanup()
+  safeRemoveItem("shogo.workspaceChat.projectPaneWidth")
+  safeRemoveItem("shogo.workspaceChat.planPaneWidth")
+  safeRemoveItem("shogo.workspaceChat.filePaneWidth")
+})

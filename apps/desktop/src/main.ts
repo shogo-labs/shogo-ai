@@ -44,6 +44,7 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
+import { appendMainLogLineSync, formatLogLine, formatLogMessage, resolveMainLogDir } from './main-log'
 import { getWebDir, getBunPath, getDbPath, getWorkspacesDir, getWorkspacesDirDecision, getDataDir } from './paths'
 import { listProjectRoots } from './git/projectRoots'
 import { resolveAllowedLocalFile } from './local-file-roots'
@@ -79,7 +80,7 @@ import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
 import { EXTENSION_IPC_CHANNELS } from './extensions/channels'
 import { registerLazyChannels } from './lazy-ipc'
-import { createTray, destroyTray } from './tray'
+import { createTray, destroyTray, refreshTray, setTrayModel, describeTrayMenuForTests, clickTrayItemForTests } from './tray'
 import { WindowManager } from './window-manager'
 import { IslandWindow } from './island-window'
 import { HuddleHostWindow } from './huddle-window'
@@ -128,21 +129,13 @@ interface CloudLoginBody {
 //     when the buggy v1.7.8 release auto-quit after a failed migration,
 //     leaving only `[Desktop] === Shogo starting ===` in the log and
 //     nothing else to diagnose from.
-const logDir = process.platform === 'win32'
-  ? path.join(app.getPath('userData'), 'logs')
-  : path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
+const logDir = resolveMainLogDir({
+  userDataDir: app.getPath('userData'),
+  homeDir: app.getPath('home'),
+})
 fs.mkdirSync(logDir, { recursive: true })
 const logFile = path.join(logDir, 'main.log')
 const logStream = fs.createWriteStream(logFile, { flags: 'a' })
-
-function formatLogMessage(args: unknown[]): string {
-  return args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
-}
-
-function formatLogLine(level: string, args: unknown[]): string {
-  const ts = new Date().toISOString()
-  return `${ts} [${level}] ${formatLogMessage(args)}\n`
-}
 
 function toDesktopLogLevel(level: string): DesktopLogLevel {
   return level === 'ERROR' ? 'ERROR'
@@ -160,13 +153,10 @@ function writeLog(level: string, ...args: unknown[]): void {
 }
 
 function writeLogSync(level: string, ...args: unknown[]): void {
-  try {
-    fs.appendFileSync(logFile, formatLogLine(level, args))
-  } catch {
-    // If even the sync write fails (full disk, EACCES from a virus
-    // scanner) there is nothing useful we can do — the process is
-    // already on its way out.
-  }
+  // If even the sync write fails (full disk, EACCES from a virus
+  // scanner) there is nothing useful we can do — the process is
+  // already on its way out.
+  appendMainLogLineSync(logFile, level, ...args)
 }
 
 const origLog = console.log
@@ -1419,7 +1409,10 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('set-island-config', (_event, patch: unknown) => {
     if (!islandWindow) return { ok: false, error: 'Island is unavailable', config: readConfig().island }
-    return islandWindow.updateConfig(patch)
+    const result = islandWindow.updateConfig(patch)
+    // The tray shows "Show Island", so a change made in Settings has to reach it.
+    if (result.ok) refreshTray()
+    return result
   })
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
@@ -2149,6 +2142,32 @@ app.whenReady().then(async () => {
     if (process.env.SHOGO_E2E_API_PORT) setExternalApiPort(Number(process.env.SHOGO_E2E_API_PORT))
   }
 
+  // The dropdown's model is published by every window, so it has to be
+  // listening before the first window exists: the renderer publishes its first
+  // model as soon as it mounts, and a publish that arrived before the listener
+  // would leave the menu empty until a chat changed (SHO-555).
+  const trayModels = new Map<number, { model: unknown; at: number }>()
+  const publishTrayModel = (): void => {
+    const focused = windowManager.getFocusedWindowRecord()?.browserWindow.id
+    const chosen =
+      (focused !== undefined ? trayModels.get(focused) : undefined) ??
+      [...trayModels.values()].sort((a, b) => b.at - a.at)[0]
+    if (chosen) setTrayModel(chosen.model)
+  }
+  ipcMain.on('tray:update', (event, raw: unknown) => {
+    const window = windowManager.getWindowForWebContents(event.sender)
+    if (!window) return
+    if (!trayModels.has(window.id)) {
+      const windowId = window.id
+      window.once('closed', () => {
+        trayModels.delete(windowId)
+        publishTrayModel()
+      })
+    }
+    trayModels.set(window.id, { model: raw, at: Date.now() })
+    publishTrayModel()
+  })
+
   createWindow()
   maybeShowSpotlightHint(workspacesDecision)
   void loadDictation().then((service) => service.start(readConfig().dictation))
@@ -2169,13 +2188,51 @@ app.whenReady().then(async () => {
     loadApp: (window) => loadAppWindow(window, '/huddle'),
   })
 
+  // The menu-bar item exists in both modes: the chat list it shows is the same
+  // everywhere, and only Meetings is local.
+  createTray({
+    localMode: !isCloudMode,
+    openChat: (row) => {
+      void islandWindow?.openChat(row)
+    },
+    // Only the window that takes the new chat should create one, so this goes
+    // to the primary window; a new chat made in every window would make N.
+    newChat: () => {
+      windowManager.focusAndSendToPrimaryWindow('tray-action', { type: 'new-chat' })
+    },
+    // Clearing has to reach every window: each one owns its own "unopened" set.
+    clearNotifications: () => {
+      windowManager.sendToAllWindows('tray-action', { type: 'clear-notifications' })
+    },
+    openApp: () => {
+      if (windowManager.focusPrimaryWindow()) return
+      // No window to focus (all closed): make the app the active app so its
+      // dock icon or taskbar button is in front.
+      if (process.platform === 'darwin') app.focus({ steal: true })
+    },
+    openSettings: () => {
+      windowManager.focusAndNavigatePrimaryWindow('/settings')
+    },
+    ...(isCloudMode
+      ? {}
+      : {
+          openMeetings: () => {
+            windowManager.focusAndNavigatePrimaryWindow('/meetings')
+          },
+          setIslandEnabled: (enabled: boolean) => {
+            islandWindow?.updateConfig({ enabled })
+          },
+        }),
+  })
+
+  if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
+    ipcMain.handle('tray:debug-menu', () => describeTrayMenuForTests())
+    ipcMain.handle('tray:debug-click', (_event, label: unknown) =>
+      typeof label === 'string' ? clickTrayItemForTests(label) : false,
+    )
+  }
+
   if (!isCloudMode) {
-    createTray({
-      openMeetings: () => {
-        windowManager.focusAndNavigatePrimaryWindow('/meetings')
-      },
-      setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
-    })
     recording.initMeetingConfig()
     startCloudLoginHeartbeat()
     void recording.startRecordingHttpBridge()
@@ -2345,6 +2402,7 @@ app.on('before-quit', (event) => {
   huddleHostWindow?.destroy()
   huddleHostWindow = null
   if (isCloudMode) {
+    destroyTray()
     disposeIdeIfLoaded()
     return
   }

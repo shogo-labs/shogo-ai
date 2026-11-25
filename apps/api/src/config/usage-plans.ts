@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { MARKUP_MULTIPLIER } from '../lib/usage-cost'
 import { isLegacyBusinessPriceId, isLegacyPlanPriceId } from './stripe-prices'
+export { WORKSPACE_LIMITS, nextWorkspaceTier } from './workspace-limits'
 /**
  * Central Usage Plan Configuration
  *

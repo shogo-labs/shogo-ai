@@ -23,6 +23,7 @@ export {
   HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
+  MODEL_FAMILIES,
   type ModelEntry,
   type ImageModelEntry,
   type ImageModelCapabilities,
@@ -85,10 +86,13 @@ export {
   isOpenRouterModel,
   stripOpenRouterPrefix,
   MODEL_DOLLAR_COSTS,
+  MODEL_PRICE_STEPS,
+  getModelDollarCosts,
   calculateDollarCost,
   getSubagentOrchestrationReliability,
   type AvailableModelFilter,
   type CapabilityRating,
+  type ModelPriceRates,
 } from './helpers'
 
 export { ADAPTIVE_THINKING_MODEL_MARKERS, supportsAdaptiveThinking } from './thinking'

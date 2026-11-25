@@ -142,4 +142,26 @@ describe("FileContentView", () => {
     expect(preview.getAttribute("data-kind")).toBe("slides")
     expect(preview.getAttribute("data-url")).toBe("blob:deck")
   })
+
+  test("a Word document hands the URL to the document preview (SHO-467)", () => {
+    render(<FileContentView kind="document" name="report.docx" path="report.docx" url="blob:doc" />)
+
+    const preview = query("file-preview")!
+    expect(preview.getAttribute("data-kind")).toBe("document")
+    expect(preview.getAttribute("data-url")).toBe("blob:doc")
+  })
+
+  test("a legacy doc format names the way out instead of a generic refusal (SHO-467)", () => {
+    render(
+      <FileContentView
+        kind="binary"
+        name="old.doc"
+        download={<button data-testid="host-download">Download</button>}
+      />,
+    )
+
+    expect(screen.getByText(/Word 97–2003 documents can't be previewed/)).toBeTruthy()
+    expect(screen.getByText(/save as \.docx/)).toBeTruthy()
+    expect(query("host-download")).toBeTruthy()
+  })
 })

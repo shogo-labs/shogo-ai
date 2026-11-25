@@ -17,6 +17,7 @@ import { localProjectMetadataRoutes } from '../routes/local-project-metadata'
 import { localHeartbeatRoutes } from '../routes/local-heartbeat'
 import { localFilesRoutes } from '../routes/local-files'
 import { slidesViewerRoutes } from '../routes/slides-viewer'
+import { documentViewerRoutes } from '../routes/document-viewer'
 import { externalPreviewRoutes } from '../routes/external-preview'
 import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
@@ -27,6 +28,7 @@ import { workspaceMoveRoutes } from '../routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
+import { mailRoutes } from '../routes/mail'
 import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from '../services/conversation-agent-dispatcher'
 import { sweepDeadTurnsOnLocalBoot } from '../services/chat-turn-state.service'
 import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
@@ -77,6 +79,7 @@ import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '..
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
 import { authenticateRuntimeToken } from '../routes/internal-runtime-auth'
+import { authenticateHostedForward } from '../lib/cross-workspace'
 
 const VITE_PORT = Number(process.env.VITE_PORT || 8081)
 
@@ -140,7 +143,12 @@ export function createLocalApp(): LocalAppBundle {
   app.route(
     '/api/internal',
     runtimeInternalRoutes({
-      authenticate: authenticateRuntimeToken,
+      // A call the cloud forwards here because the workspace is hosted on this
+      // desktop arrives with no runtime token — only the tunnel's own headers
+      // (SHO-493). `authenticateHostedForward` accepts exactly that, on exactly
+      // one path shape, and nothing else.
+      authenticate: async (c, projectId) =>
+        (await authenticateHostedForward(c, projectId)) ?? (await authenticateRuntimeToken(c, projectId)),
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
       resolveSharedFileTarget: (scope) => resolveLocalSharedFileTarget({ ...scope, workspacesDir }),
@@ -166,6 +174,8 @@ export function createLocalApp(): LocalAppBundle {
   // The slides viewer page (SHO-426). Mounted here as well as in the cloud
   // composer so a deck previews the same on desktop as it does in the browser.
   app.route('/api/viewers', slidesViewerRoutes())
+  // The document viewer page (SHO-467). Same pattern: desktop must match cloud.
+  app.route('/api/viewers', documentViewerRoutes())
   app.route('/api/projects', externalPreviewRoutes())
   // Project export (.shogo / source .zip) and import. The slim-local refactor
   // moved this behind the cloud-only lazy island in server.ts, so desktop
@@ -196,12 +206,13 @@ export function createLocalApp(): LocalAppBundle {
     )
     .catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
   // Frames whose turn nobody can recover any more (a session deleted mid-turn,
-  // an app closed before recovery ran) must not accumulate forever (SHO-274).
-  void import('../services/chat-turn-journal')
-    .then(({ sweepTurnFrames }) => sweepTurnFrames())
-    .catch((err) => console.warn('[ChatTurnJournal] boot sweep failed:', err?.message ?? err))
+  // an app closed before recovery ran) are swept by `runTurnFrameSweep`, which
+  // starts a minute after boot — never here. On a large backlog the delete used
+  // to block the event loop past the desktop's health window, so the API was
+  // killed mid-sweep on every relaunch (SHO-482).
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+  app.route('/api', mailRoutes({ resolveUserId: getAuthUserId }))
   app.post('/api/webhooks/livekit', async (c) => {
     const { handleLiveKitWebhook } = await import('../services/huddle.service')
     const result = await handleLiveKitWebhook({ rawBody: await c.req.text(), authorization: c.req.header('authorization') })

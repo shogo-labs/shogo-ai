@@ -421,7 +421,9 @@ export async function getUserOwnedWorkspaceCount(
       role: 'owner',
       workspaceId: { not: null },
       projectId: null,
-      ...(kind ? { workspace: { kind } } : {}),
+      // Child workspaces (parentWorkspaceId set) do not count toward the
+      // owner's free top-level slot (SHO-474).
+      workspace: { parentWorkspaceId: null, ...(kind ? { kind } : {}) },
     },
   });
 }

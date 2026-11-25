@@ -61,6 +61,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',
@@ -115,7 +116,7 @@ mock.module('../lib/prisma', () => ({
     chatSession: {
       findUnique: async (args: any) => {
         prismaCalls.chatSessionFindUnique.push(args)
-        return chatSessionFixture
+        return chatSessionFixture && { contextType: 'project', contextId: 'p-1', ...chatSessionFixture }
       },
       update: async () => ({}),
     },
@@ -478,6 +479,21 @@ describe('trackUsageFromStream — processLine branches', () => {
     expect(parts.filter((p: any) => p.type === 'data-context-summarized')).toHaveLength(1)
     const types = parts.map((p: any) => p.type)
     expect(types.indexOf('data-context-summarized')).toBeGreaterThan(types.indexOf('text'))
+  })
+
+  test('does not persist data-context-summarizing: the status row must not survive a reload (SHO-556)', async () => {
+    chatSessionFixture = { id: 's-compact-live' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"working on it"}\n',
+      'data: {"type":"data-context-summarizing","data":{"trigger":"mid-turn","tokensBefore":348000,"chunks":4}}\n',
+      'data: {"type":"data-context-summarized","data":{"trigger":"auto","tokensBefore":348000,"tokensAfter":38000,"messagesBefore":121,"messagesAfter":6,"summaryChars":900}}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-compact-live' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    // The spinner is live-only; the divider is the transcript row.
+    expect(parts.some((p: any) => p.type === 'data-context-summarizing')).toBe(false)
+    expect(parts.filter((p: any) => p.type === 'data-context-summarized')).toHaveLength(1)
   })
 
   test('ignores [DONE], event:, id:, retry:, blank lines, and garbage non-JSON', async () => {

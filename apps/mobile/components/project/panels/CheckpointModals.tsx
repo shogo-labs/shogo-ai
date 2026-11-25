@@ -6,10 +6,11 @@
 // checkpoint graph can both reuse them. These are React Native components,
 // so they render on both web (react-native-web) and native.
 import { useState } from 'react'
-import { View, Text, Pressable, TextInput, ActivityIndicator, Modal } from 'react-native'
+import { View, Text, Pressable, TextInput, Modal } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { type Checkpoint } from '@shogo/shared-app/hooks'
 import { BookmarkPlus, X, AlertTriangle } from 'lucide-react-native'
+import { Spinner } from '@/components/ui/spinner'
 
 export function CreateCheckpointModal({
   visible,
@@ -111,7 +112,7 @@ export function CreateCheckpointModal({
               className={cn('px-4 py-2 rounded-lg', canSubmit ? 'bg-primary active:opacity-80' : 'bg-muted')}
             >
               {isMutating ? (
-                <ActivityIndicator size="small" color="white" />
+                <Spinner tone="onPrimary" size="small" />
               ) : (
                 <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
                   Create Checkpoint
@@ -188,7 +189,7 @@ export function RollbackConfirmModal({
               className={cn('px-4 py-2 rounded-lg', isMutating ? 'bg-muted' : 'bg-amber-600 active:opacity-80')}
             >
               {isMutating ? (
-                <ActivityIndicator size="small" color="white" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <Text className="text-sm font-medium text-white">Rollback</Text>
               )}

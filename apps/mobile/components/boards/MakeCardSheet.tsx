@@ -5,10 +5,12 @@
  * rest of the workspace) and the message becomes a card linked back to it.
  */
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native'
+import { Modal, Pressable, Text, View } from 'react-native'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { ITEM_TYPE_LABELS, workBoardsApi, type Board, type WorkItem } from '../../lib/work-boards-api'
 import { OptionSheet } from './OptionSheet'
+import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 
@@ -31,7 +33,7 @@ export function MakeCardSheet({ workspaceId, conversationId, message, onCreated,
         const here = all.filter((b) => b.conversationId === conversationId)
         setBoards([...here, ...all.filter((b) => b.conversationId !== conversationId)])
       })
-      .catch((err: Error) => live && setError(err.message))
+      .catch((err: unknown) => live && setError(errorMessage(err)))
     return () => {
       live = false
     }
@@ -43,7 +45,7 @@ export function MakeCardSheet({ workspaceId, conversationId, message, onCreated,
         <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
           <View className="w-full max-w-sm items-center gap-3 rounded-xl bg-card p-5">
             {!boards && !error ? (
-              <ActivityIndicator />
+              <Spinner />
             ) : (
               <Text className="text-center text-sm text-muted-foreground">
                 {error ?? 'There are no boards yet. Add one from a channel\u2019s tabs, or ask the workspace agent to set one up.'}

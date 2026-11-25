@@ -42,6 +42,11 @@ COPY --from=workspace /app/packages/agent-runtime ./packages/agent-runtime
 # `Cannot find module '@shogo/pty-core'`. Same omission pattern as 27619a00.
 COPY --from=workspace /app/packages/pty-core ./packages/pty-core
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
+# access-gate.ts imports `@shogo/authz` (SHO-539). Without it the gateway never
+# starts (`Cannot find package '@shogo/authz'`) and every chat answers
+# "Agent gateway still starting". scripts/__tests__/runtime-image-contract.test.ts
+# fails CI when a workspace dependency of agent-runtime is missing here.
+COPY --from=workspace /app/packages/authz ./packages/authz
 COPY --from=workspace /app/packages/sdk ./packages/sdk
 COPY --from=workspace /app/packages/shogo-worker ./packages/shogo-worker
 # SDK split-out packages (3a2798abc "refactor(sdk): split monorepo into focused

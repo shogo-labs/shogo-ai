@@ -202,19 +202,15 @@ describe('RuntimeManager.getProjectInfo', () => {
   })
 })
 
-describe('RuntimeManager private project runtime metadata helpers', () => {
-  function managerWithPrivateHelpers() {
-    return new RuntimeManager() as unknown as {
-      buildSecurityPolicy: (projectId: string) => Promise<string | null>
-    }
-  }
-
-  function decodePolicy(encoded: string | null) {
+describe("localSecurityPolicy — the policy a computer's runtimes spawn with", () => {
+  async function policyFor(project: unknown = null) {
+    const { localSecurityPolicy } = await import('../lib/security-policy')
+    const encoded = await localSecurityPolicy(project as any)
     expect(encoded).toBeTruthy()
-    return JSON.parse(Buffer.from(encoded!, 'base64').toString('utf8'))
+    return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))
   }
 
-  test('buildSecurityPolicy merges user prefs with non-escalating project overrides', async () => {
+  test('merges user prefs with non-escalating project overrides', async () => {
     localConfigResult = {
       value: JSON.stringify({
         mode: 'balanced',
@@ -222,7 +218,7 @@ describe('RuntimeManager private project runtime metadata helpers', () => {
         overrides: { shellCommands: { deny: ['rm -rf /'] } },
       }),
     }
-    projectResult = {
+    const project = {
       settings: {
         security: {
           mode: 'strict',
@@ -231,26 +227,23 @@ describe('RuntimeManager private project runtime metadata helpers', () => {
       },
     }
 
-    const policy = decodePolicy(await managerWithPrivateHelpers().buildSecurityPolicy('p1'))
+    const policy = await policyFor(project)
 
     expect(policy).toMatchObject({ mode: 'strict', approvalTimeoutSeconds: 30 })
     expect(policy.overrides.shellCommands.deny).toEqual(['rm -rf /', 'curl evil.example'])
   })
 
-  test('buildSecurityPolicy blocks project-level escalation and tolerates malformed reads', async () => {
+  test('blocks project-level escalation and tolerates malformed reads', async () => {
     localConfigResult = {
       value: JSON.stringify({ mode: 'strict', approvalTimeoutSeconds: 10 }),
     }
-    projectResult = {
-      settings: JSON.stringify({ security: { mode: 'full_autonomy' } }),
-    }
+    const project = { settings: JSON.stringify({ security: { mode: 'full_autonomy' } }) }
 
-    let policy = decodePolicy(await managerWithPrivateHelpers().buildSecurityPolicy('p2'))
+    let policy = await policyFor(project)
     expect(policy.mode).toBe('strict')
 
     localConfigError = new Error('no local config')
-    projectFindError = new Error('project settings unavailable')
-    policy = decodePolicy(await managerWithPrivateHelpers().buildSecurityPolicy('p3'))
+    policy = await policyFor(project)
     expect(policy).toMatchObject({ mode: 'full_autonomy', approvalTimeoutSeconds: 60 })
   })
 })

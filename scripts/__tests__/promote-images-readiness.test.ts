@@ -152,3 +152,32 @@ describe('promote-images readiness (fixtures)', () => {
     ])
   })
 })
+
+// rebuild-release-runtime needs build-base-image, which a tag skips. A job
+// that needs the rebuild without `always()` gets the implicit success(), which
+// treats that skipped ancestor as a reason to skip — so on v2.6.5 promote-images
+// was skipped after a green rebuild and deploy-us found no production image.
+describe('jobs downstream of rebuild-release-runtime opt out of skip propagation', () => {
+  const content = readFileSync(join(root, WORKFLOW), 'utf8')
+  const downstream = [...content.matchAll(/^  ([\w-]+):\s*$/gm)]
+    .map((m) => m[1])
+    .filter((job) => {
+      const needs = (jobBlock(content, job) ?? []).find((l) => /^    needs:/.test(l)) ?? ''
+      return /\brebuild-release-runtime\b/.test(needs)
+    })
+
+  it('finds promote-images among them', () => {
+    expect(downstream).toContain('promote-images')
+  })
+
+  for (const job of downstream) {
+    it(`${job} uses always() in its if:`, () => {
+      const block = jobBlock(content, job) ?? []
+      const start = block.findIndex((l) => /^    if:/.test(l))
+      expect(start).toBeGreaterThan(-1)
+      let end = start + 1
+      while (end < block.length && /^      /.test(block[end])) end++
+      expect(block.slice(start, end).join('\n')).toContain('always()')
+    })
+  }
+})

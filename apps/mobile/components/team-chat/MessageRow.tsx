@@ -37,6 +37,8 @@ import { ShogoAvatar } from './ShogoAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { WorkItemCard } from './WorkItemCard'
+import { EmailCard } from './EmailCard'
+import { emailBlockOf } from '../../lib/mail-api'
 import { QuestionCardView } from './QuestionCard'
 import { AudienceQuestionCardView, PollCardView } from './PollCard'
 import { QueuedWakeRow, wakeQueuedOf } from './QueuedWakeRow'
@@ -141,6 +143,9 @@ export interface MessageRowProps {
   onMakeCard?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
   highlighted?: boolean
+  /** In a filtered list, show "replied to a thread" for all thread replies
+   * (not only `alsoSentToChannel` ones) and make the badge tappable. */
+  showThreadContext?: boolean
 }
 
 /**
@@ -229,6 +234,8 @@ function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => vo
 }
 
 function authorName(message: ChatMessage): string {
+  const email = emailBlockOf(message)
+  if (email?.direction === 'inbound') return email.from.name || email.from.address
   if (message.authorType === 'agent') return message.authorAgent?.name ?? 'Agent'
   if (message.authorType === 'system') return 'Shogo'
   if (message.authorType === 'bot') return 'Bot'
@@ -849,6 +856,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   // Board cards are posted by the system, so this is deliberately author-agnostic.
   const workItem = running || deleted ? null : workItemOf(message)
+  const email = deleted ? null : emailBlockOf(message)
   // Polls and audience questions (from a huddle's thread) replace the text, which only summarises them.
   const pollBlock = running || deleted ? null : pollOf(message)
   const audienceQuestion = running || deleted || pollBlock ? null : audienceQuestionOf(message)
@@ -1258,11 +1266,24 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         )}
 
-        {message.threadRootId && message.alsoSentToChannel && !inThread && (
-          <View className="flex-row items-center gap-1">
-            <CornerDownRight size={11} className="text-muted-foreground" />
-            <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
-          </View>
+        {message.threadRootId && (message.alsoSentToChannel || props.showThreadContext) && !inThread && (
+          props.showThreadContext && props.onReply ? (
+            <Pressable
+              onPress={() => props.onReply!(message)}
+              accessibilityRole="button"
+              accessibilityLabel="Replied to a thread — tap to open"
+              testID={"thread-context-" + message.id}
+              className="flex-row items-center gap-1 self-start"
+            >
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </Pressable>
+          ) : (
+            <View className="flex-row items-center gap-1">
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </View>
+          )
         )}
 
         {deleted ? (
@@ -1279,6 +1300,14 @@ function MessageRowImpl(props: MessageRowProps) {
           />
         ) : (
           <>
+            {email ? (
+              <EmailCard
+                email={email}
+                workspaceId={props.workspaceId ?? message.workspaceId}
+                body={message.text}
+                canAct={!message.pending}
+              />
+            ) : null}
             {workItem ? (
               <WorkItemCard item={workItem} onPress={() => openWorkItem(workItem)} />
             ) : card ? (

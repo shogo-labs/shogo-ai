@@ -152,16 +152,39 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page).toHaveURL(/\/more/)
     const more = page.getByTestId("more-screen")
     await expect(more).toBeVisible()
-    // Analytics is the one row every workspace kind gets (`moreItems` pushes it
+    const rows = more.getByRole("link")
+    // SHO-570: the phone More screen lists Projects first, because the full
+    // Projects screen has no tab of its own on a phone. Analytics follows it —
+    // the one row every workspace kind gets (`moreItems` pushes it
     // unconditionally); the Tasks row this used to assert is behind
     // TASKS_NAV_HIDDEN, which is `true` on main.
-    const rows = more.getByRole("link")
-    await expect(rows.first()).toHaveAccessibleName("Analytics")
+    await expect(rows.first()).toHaveAccessibleName("Projects")
+    await expect(rows.first()).toContainText("Every project in this workspace")
+    await expect(rows.nth(1)).toHaveAccessibleName("Analytics")
     // SHO-7: the overflow screen names Settings, and it is always the last row.
     await expect(rows.last()).toHaveAccessibleName("Settings")
     await expect(rows.last()).toContainText("Account, workspace, integrations and billing")
     await more.getByRole("link", { name: "Analytics" }).click()
     await expect(page).toHaveURL(/\/analytics/)
+  })
+
+  test("Projects from More opens the full Projects screen, with the dock on More and Back to More", async ({ page }) => {
+    await tab(page, "More").click()
+    await page.getByTestId("more-screen").getByRole("link", { name: "Projects" }).click()
+    // The full screen, not the Home feed's section: it has the search box and
+    // the sort / view controls.
+    await expect(page).toHaveURL(/\/projects(\?|$)/)
+    await expect(page.getByLabel("Search projects").first()).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByLabel(/^Sort projects: /).first()).toBeVisible()
+    // SHO-570: the Projects list belongs to the More tab, so the dock says so.
+    await expect(tab(page, "More")).toHaveAttribute("aria-selected", "true")
+    await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "false")
+    // The header's leading control is the standard glass Back, not the sidebar
+    // menu, and it returns to More.
+    await expect(page.getByRole("button", { name: "Open menu" })).toHaveCount(0)
+    await page.getByTestId("phone-back-button").click()
+    await expect(page).toHaveURL(/\/more/, { timeout: 30_000 })
+    await expect(page.getByTestId("more-screen")).toBeVisible()
   })
 
   test("the Settings row in More opens the settings screen", async ({ page }) => {

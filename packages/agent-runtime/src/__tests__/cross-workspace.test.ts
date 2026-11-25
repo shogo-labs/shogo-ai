@@ -34,6 +34,28 @@ const TARGETS = [
     source: 'desktop',
     reachable: false,
     unreachableReason: 'desktop_hosted',
+    host: {
+      instanceId: 'inst-mac',
+      name: 'samasra',
+      online: true,
+      lastSeenAt: '2026-11-21T11:40:00.000Z',
+    },
+  },
+  {
+    // The same desktop, reached from the cloud (SHO-493): reported as online,
+    // and the call itself is what finds out otherwise.
+    id: 'ws-hosted',
+    name: 'Hosted Ops',
+    slug: 'hosted-ops',
+    kind: 'team',
+    source: 'desktop',
+    reachable: true,
+    host: {
+      instanceId: 'inst-mac',
+      name: 'samasra',
+      online: true,
+      lastSeenAt: '2026-11-21T11:40:00.000Z',
+    },
   },
 ] as const
 
@@ -150,10 +172,19 @@ describe('resolveTargetWorkspace', () => {
     expect(r.code).toBe('workspace_not_found')
   })
 
-  test('a workspace hosted on a desktop is desktop_offline, not an empty answer', async () => {
+  test('a workspace hosted on a desktop is desktop_hosted, not an empty answer', async () => {
     const r: any = await resolveTargetWorkspace(ctx(), 'Serendipity', OWN)
     expect(r.ok).toBe(false)
-    expect(r.code).toBe('desktop_offline')
+    expect(r.code).toBe('desktop_hosted')
+    // Names the machine, and does not claim to know whether it is up.
+    expect(r.error).toContain('samasra')
+    expect(r.error).toContain('Shogo Cloud')
+    expect(r.error).not.toContain('only reach it from that desktop itself')
+  })
+
+  test('a hosted workspace the cloud can forward to resolves like any other', async () => {
+    const r: any = await resolveTargetWorkspace(ctx(), 'Hosted Ops', OWN)
+    expect(r).toEqual({ ok: true, workspaceId: 'ws-hosted', name: 'Hosted Ops', same: false })
   })
 })
 

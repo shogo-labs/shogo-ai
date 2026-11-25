@@ -179,7 +179,12 @@ describe('timeline', () => {
       messages: [msg({ id: 'a1', seq: 4, authorType: 'agent', agentStatus: 'running', text: '' })], hasMore: false,
     }, 'initial')
     state = applyTimelineEvent(state, { type: 'agent.delta', conversationId: 'c1', messageId: 'a1', text: 'Work', tool: 'query_db' }, channel)
-    expect(state.streaming.a1).toEqual({ text: 'Work', tool: 'query_db' })
+    expect(state.streaming.a1).toEqual({ text: 'Work', tool: 'query_db', summarizing: false })
+    // The runtime is compacting, so the dock says "Summarizing…" (SHO-556).
+    state = applyTimelineEvent(state, { type: 'agent.delta', conversationId: 'c1', messageId: 'a1', text: '', tool: null, summarizing: true }, channel)
+    expect(state.streaming.a1).toMatchObject({ summarizing: true })
+    state = applyTimelineEvent(state, { type: 'agent.delta', conversationId: 'c1', messageId: 'a1', text: 'Work', tool: 'query_db', summarizing: false }, channel)
+    expect(state.streaming.a1).toMatchObject({ summarizing: false, text: 'Work' })
     state = applyTimelineEvent(state, { type: 'agent.delta', conversationId: 'c1', messageId: 'zzz', text: 'x', tool: null }, channel)
     expect(state.streaming.zzz).toBeUndefined()
     state = applyTimelineEvent(state, {

@@ -92,6 +92,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',
@@ -113,7 +114,6 @@ mock.module('@shogo/shared-runtime', () => ({
   // knative-project-manager) re-exports these — no fixture here uses a
   // mobile or docker-class stack, so plain no-op stubs are correct.
   isMobileTechStack: (_techStackId: string | null | undefined) => false,
-  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
 }))
 
 // ──────────────────────────────────────────────────────────────────

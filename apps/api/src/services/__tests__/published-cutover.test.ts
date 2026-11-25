@@ -29,6 +29,7 @@ import {
   isArchiveFresh,
   isMidCutoverStatus,
   prepareCutoverSite,
+  publishedImageDbProvider,
   rehearsalDatabaseName,
   rehearsalServiceName,
   rehearseCutoverSite,
@@ -218,6 +219,22 @@ describe('isMidCutoverStatus', () => {
   it('never widens to a substring: a status that merely contains it stays live', () => {
     expect(isMidCutoverStatus('not-switching')).toBe(false)
     expect(isMidCutoverStatus('switching-soon')).toBe(false)
+  })
+})
+
+describe('publishedImageDbProvider', () => {
+  // The cutover rolled the SQLite image into a Postgres environment because it
+  // passed no `dbProvider` at all, so the variant has to come from the row.
+  it('asks for the pg build of a Postgres environment', () => {
+    expect(publishedImageDbProvider('postgres')).toBe('postgres')
+  })
+
+  it('leaves every other environment on the SQLite build', () => {
+    expect(publishedImageDbProvider('sqlite')).toBe('sqlite')
+    // A never-migrated row: explicitly SQLite, never an omitted argument.
+    expect(publishedImageDbProvider(null)).toBe('sqlite')
+    expect(publishedImageDbProvider(undefined)).toBe('sqlite')
+    expect(publishedImageDbProvider('')).toBe('sqlite')
   })
 })
 

@@ -223,7 +223,10 @@ export function startTokenRefreshLoop(options: TokenRefreshOptions): TokenRefres
         headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
       }
 
-      const url = `${apiUrl}/api/internal/pod-config/${projectId}`
+      // A workspace runtime's identity is a workspace key (`ws:<workspaceId>` /
+      // `ws:proj:<anchor>`), so the colon — and anything else the key may carry
+      // — is percent-encoded rather than assumed path-safe (SHO-560).
+      const url = `${apiUrl}/api/internal/pod-config/${encodeURIComponent(projectId)}`
       const startedAt = Date.now()
       const res = await fetch(url, {
         method: 'GET',

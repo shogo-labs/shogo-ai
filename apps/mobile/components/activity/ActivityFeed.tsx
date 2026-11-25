@@ -9,7 +9,7 @@
  * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Square, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -26,7 +26,9 @@ import { ACTIVITY_FILTERS, buildFeed, canStopRunningChat, groupFeed, relativeTim
 import { stopRunningChat } from '../../lib/stop-running-chat'
 import { AgentAvatar } from '../team-chat/AgentAvatar'
 import type { AgentTask } from '../../lib/api'
+import { RunPeekHover } from './RunPeekHover'
 import type { InboxKind } from '../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const KIND_ICON: Record<InboxKind, typeof AtSign> = {
   mention: AtSign,
@@ -199,7 +201,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
               </Pressable>
             ) : null}
             {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} onStop={stop} workspaceId={workspaceId} />}
-            {loading ? <ActivityIndicator className="mt-8" /> : null}
+            {loading ? <Spinner className="mt-8" /> : null}
             {stopError && filter !== 'sent' ? <Text className="px-4 pt-2 text-sm text-destructive">{stopError}</Text> : null}
             {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
             {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
@@ -229,7 +231,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
         ListFooterComponent={
           paging.loadingMore ? (
             <View className="items-center py-3">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : paging.hasMore ? (
             <Pressable
@@ -317,52 +319,52 @@ export function RunningNow({
         const chat = entry.agent?.chat
         const second = [entry.context, entry.preview].filter((part) => !!part).join(' · ')
         return (
-          <Pressable
-            key={entry.id}
-            accessibilityRole="button"
-            accessibilityLabel={`${entry.title}, ${entry.agent?.state === 'queued' ? 'queued' : 'running'}`}
-            onPress={() => onOpen(entry)}
-            className="flex-row items-center gap-2.5 rounded-md px-1 py-1.5 active:bg-accent/50"
-          >
-            {chat ? (
-              // The agent's own avatar, so six runs are six agents at a glance.
-              <View
-                className={cn('rounded-lg', entry.agent?.state === 'running' && 'border border-primary/60')}
-                testID={`running-avatar-${entry.id}`}
-              >
-                <AgentAvatar
-                  name={chat.agentName || chat.projectName || 'Agent'}
-                  projectId={chat.projectId}
-                  workspaceId={workspaceId ?? null}
-                  size={30}
-                />
+          <RunPeekHover key={entry.id} workspaceId={workspaceId} chat={chat ?? undefined}>
+          {/* The row's press target and its Stop are siblings: a pressable
+              inside a pressable is an invalid nested <button> on web, and the
+              browser then picks which one a click means. */}
+          <View className="flex-row items-center gap-2.5 rounded-md px-1 py-1.5">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${entry.title}, ${entry.agent?.state === 'queued' ? 'queued' : 'running'}`}
+              onPress={() => onOpen(entry)}
+              className="min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md active:bg-accent/50"
+            >
+              {chat ? (
+                // The agent's own avatar, so six runs are six agents at a glance.
+                <View
+                  className={cn('rounded-lg', entry.agent?.state === 'running' && 'border border-primary/60')}
+                  testID={`running-avatar-${entry.id}`}
+                >
+                  <AgentAvatar
+                    name={chat.agentName || chat.projectName || 'Agent'}
+                    projectId={chat.projectId}
+                    workspaceId={workspaceId ?? null}
+                    size={30}
+                  />
+                </View>
+              ) : (
+                <AgentMark running />
+              )}
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{entry.title}</Text>
+                {second ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{second}</Text> : null}
               </View>
-            ) : (
-              <AgentMark running />
-            )}
-            <View className="min-w-0 flex-1">
-              <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{entry.title}</Text>
-              {second ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{second}</Text> : null}
-            </View>
+            </Pressable>
             {chat && onStop && canStopRunningChat(chat) ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Stop ${entry.title}`}
                 testID={`stop-${entry.id}`}
                 hitSlop={8}
-                // Stops the reply it belongs to, and never opens the row: the
-                // inner pressable owns the touch (and on web, where a press is
-                // a click, it stops that click from reaching the row).
-                onPress={(event) => {
-                  event?.stopPropagation?.()
-                  onStop(entry)
-                }}
+                onPress={() => onStop(entry)}
                 className="h-8 w-8 items-center justify-center rounded-full border border-border active:bg-accent"
               >
                 <Square size={11} className="fill-foreground text-foreground" />
               </Pressable>
             ) : null}
-          </Pressable>
+          </View>
+          </RunPeekHover>
         )
       })}
     </View>

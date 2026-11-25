@@ -252,6 +252,15 @@ function codeToReason(code: string): RetryReason {
       return 'truncated'
     case 'upstream_error':
       return 'upstream_error'
+    // The provider answered after our SSE headers had already gone out, so the
+    // AI proxy could no longer relay its HTTP status — it rides on the frame
+    // instead (see `upstreamStatusErrorCode` in apps/api/src/routes/ai-proxy.ts).
+    case 'upstream_5xx':
+      return 'server_5xx'
+    case 'upstream_rate_limit':
+      return 'overloaded'
+    case 'upstream_rejected':
+      return 'invalid_request'
     case 'econnreset':
     case 'econnrefused':
     case 'epipe':

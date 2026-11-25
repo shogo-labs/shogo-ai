@@ -106,6 +106,51 @@ describe("resolveHistoryPaint", () => {
     expect(paint.reason).toBe("history-behind")
   })
 
+  describe("history is the newest page of a longer chat (SHO-483)", () => {
+    // 30 turns on screen (60 rows) after the person scrolled up; the reload
+    // brings back only the newest 50 rows.
+    const turns = (from: number, to: number): PaintableMessage[] => {
+      const rows: PaintableMessage[] = []
+      for (let n = from; n <= to; n += 1) rows.push(user(`u${n}`), reply(`a${n}`))
+      return rows
+    }
+
+    test("paints a reply written elsewhere instead of refusing as history-behind", () => {
+      const current = turns(1, 30)
+      const history = [...turns(6, 30), user("u31"), reply("a31")].slice(-50)
+
+      const paint = resolveHistoryPaint({ history, current, keepsLiveTail: false })
+
+      expect(paint.keptLiveTail).toBe(false)
+      const ids = (paint.messages as readonly PaintableMessage[]).map((m) => m.id)
+      // Older rows the page does not cover stay above it, and the new turn lands.
+      expect(ids[0]).toBe("u1")
+      expect(ids.slice(-2)).toEqual(["u31", "a31"])
+      expect(new Set(ids).size).toBe(ids.length)
+    })
+
+    test("a same-length page with nothing new is a plain paint, not a refusal", () => {
+      const current = turns(1, 30)
+      const history = current.slice(-50)
+
+      const paint = resolveHistoryPaint({ history, current, keepsLiveTail: false })
+
+      expect(paint.keptLiveTail).toBe(false)
+      expect(paint.reason).toBe("history-has-reply")
+      expect((paint.messages as readonly PaintableMessage[]).length).toBe(60)
+    })
+
+    test("still keeps a live reply the server has not written", () => {
+      const current = [...turns(1, 30), user("u31"), reply("live-a31")]
+      const history = [...turns(1, 30), user("u31")].slice(-50)
+
+      const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+      expect(paint.keptLiveTail).toBe(true)
+      expect(paint.messages).toBe(current)
+    })
+  })
+
   test("no-op when the tails already agree", () => {
     const history = [user("u1"), reply("a1")]
     const current = [user("u1"), reply("a1")]

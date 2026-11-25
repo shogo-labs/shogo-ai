@@ -98,17 +98,25 @@ interface PsRow {
   command: string
 }
 
-function readProcessTable(): PsRow[] {
+interface ProcessTableSnapshot {
+  rows: PsRow[]
+  /** False when `ps` itself could not run (e.g. `EAGAIN` at `maxprocperuid`). */
+  readable: boolean
+}
+
+function readProcessTable(): ProcessTableSnapshot {
   let raw = ''
   try {
-    raw = String(
-      spawnSync('ps', ['-A', '-o', 'pid=,pgid=,ppid=,command='], {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).stdout ?? '',
-    )
+    const res = spawnSync('ps', ['-A', '-o', 'pid=,pgid=,ppid=,command='], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    if (res.error || (res.status !== null && res.status !== 0)) {
+      return { rows: [], readable: false }
+    }
+    raw = String(res.stdout ?? '')
   } catch {
-    return []
+    return { rows: [], readable: false }
   }
   const rows: PsRow[] = []
   for (const line of raw.split('\n')) {
@@ -122,7 +130,7 @@ function readProcessTable(): PsRow[] {
     if (!Number.isFinite(pid) || !Number.isFinite(pgid) || !Number.isFinite(ppid)) continue
     rows.push({ pid, pgid, ppid, command: parts.slice(3).join(' ') })
   }
-  return rows
+  return { rows, readable: true }
 }
 
 function imageName(command: string): string {
@@ -136,9 +144,9 @@ function imageName(command: string): string {
  * (`setsid`, a wrapper that detached itself) — the ppid walk is what catches
  * those while the chain is still intact.
  */
-function posixMembers(leader: number): ProcessMember[] {
-  const rows = readProcessTable()
-  if (rows.length === 0) return []
+function posixMembersSnapshot(leader: number): { members: ProcessMember[]; readable: boolean } {
+  const { rows, readable } = readProcessTable()
+  if (rows.length === 0) return { members: [], readable }
   const selected = new Map<number, PsRow>()
   for (const row of rows) {
     if (row.pgid === leader) selected.set(row.pid, row)
@@ -156,7 +164,14 @@ function posixMembers(leader: number): ProcessMember[] {
     }
   }
   selected.delete(leader)
-  return [...selected.values()].map((row) => ({ pid: row.pid, name: imageName(row.command) }))
+  return {
+    members: [...selected.values()].map((row) => ({ pid: row.pid, name: imageName(row.command) })),
+    readable,
+  }
+}
+
+function posixMembers(leader: number): ProcessMember[] {
+  return posixMembersSnapshot(leader).members
 }
 
 function signalGroup(leader: number, signal: NodeJS.Signals): void {
@@ -231,7 +246,13 @@ class PosixContainment implements ContainmentBackend {
    */
   private record(pid: number): void {
     if (!this.workspaceDir) return
-    const command = readProcessCommand(pid)
+    const fallbackCommand =
+      Array.isArray(this.child.spawnargs) && this.child.spawnargs.length > 0
+        ? this.child.spawnargs.join(' ')
+        : ''
+    // Under `EAGAIN`, `ps` cannot spawn even though `pid` is alive; fall back
+    // to `child.spawnargs` in memory rather than leaving the group unrecorded.
+    const command = readProcessCommand(pid) ?? (isAlive(pid) && fallbackCommand ? fallbackCommand : null)
     if (!command) return
     try {
       addChildLedgerEntry(this.workspaceDir, {
@@ -257,9 +278,11 @@ class PosixContainment implements ContainmentBackend {
     if (!leader) return { survivors: [] }
     const graceMs = opts.graceMs ?? 2_000
 
-    const before = this.members()
+    const beforeSnap = posixMembersSnapshot(leader)
+    const before = beforeSnap.members
     const leaderAlive = isAlive(leader)
-    if (before.length === 0 && !leaderAlive) {
+    const leaderGroupAlive = groupAlive(leader)
+    if (beforeSnap.readable && before.length === 0 && !leaderAlive && !leaderGroupAlive) {
       // Nothing was running: the leader had already exited and left no group
       // behind. No second `ps`, no signal — the common case for a quick exec
       // (AC 4: a normal cancel stays one `ps` call).
@@ -281,12 +304,13 @@ class PosixContainment implements ContainmentBackend {
       try { process.kill(member.pid, 'SIGKILL') } catch { /* already gone */ }
     }
 
-    const survivors = this.members().filter((member) => isAlive(member.pid))
-    if (survivors.length === 0) {
+    const afterSnap = posixMembersSnapshot(leader)
+    const survivors = afterSnap.members.filter((member) => isAlive(member.pid))
+    if (afterSnap.readable && survivors.length === 0) {
       this.forget(leader)
     } else {
-      // Leave the ledger entry alone: its fingerprint is what lets the next
-      // reaper find these processes without guessing.
+      // Leave the ledger entry alone: either processes survived or `ps` failed
+      // (`EAGAIN`) so we could not verify detached descendants are gone.
       this.survivorsReported = true
     }
     return { survivors }

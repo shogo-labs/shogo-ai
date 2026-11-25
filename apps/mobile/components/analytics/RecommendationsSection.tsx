@@ -12,7 +12,7 @@
  */
 
 import { useState } from 'react'
-import { View, ActivityIndicator } from 'react-native'
+import { View } from 'react-native'
 import {
   Lightbulb, TrendingDown, TrendingUp, ArrowRightLeft, Check,
 } from 'lucide-react-native'
@@ -20,6 +20,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
 import { Text } from '../settings/account-sheet-chrome'
 import { formatDollarCost, getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface CostRecommendation {
   agentType: string
@@ -64,7 +65,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
     return (
       <Card>
         <CardContent className="p-6 items-center">
-          <ActivityIndicator />
+          <Spinner />
           <Text className="text-xs text-muted-foreground mt-2">Loading…</Text>
         </CardContent>
       </Card>
@@ -226,7 +227,7 @@ export function RecommendationsSection({ data, loading, onApply }: Recommendatio
                           {wasApplied ? (
                             <Check size={12} className="text-foreground" />
                           ) : isApplying ? (
-                            <ActivityIndicator size="small" />
+                            <Spinner size="small" />
                           ) : null}
                           <Text className={cn(
                             'text-xs font-medium',

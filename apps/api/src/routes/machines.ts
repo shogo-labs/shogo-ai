@@ -19,7 +19,6 @@
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import {
-  ensureTunnelConnected,
   generateRequestId,
   getMachineGroupStatus,
   getMachineLiveStatus,
@@ -30,6 +29,7 @@ import {
   normalizeTransparentProxyPath,
   sendTunnelRequest,
   sendTunnelStreamRequest,
+  wakeHostTunnel,
 } from './instances'
 import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { isTunnelConnectedAnywhere } from '../lib/tunnel-redis'
@@ -40,6 +40,7 @@ import { withoutHostChangeLog } from '../lib/machine-sync/host-change-log'
 import { pruneHostFeed, readHostFeed } from '../lib/machine-sync/feed'
 import { hostingInstanceIds, invalidateHostedWorkspaceIds } from '../lib/hosted-workspace'
 import { PRIMARY_REGION, RAW_REGION_ID } from '../lib/region'
+import { signSharedFileToken, sharedFilePathProblem, sharedFilePublicOrigin } from '../lib/shared-file-token'
 import { resolveApiKey } from './api-keys'
 
 /**
@@ -51,6 +52,17 @@ import { resolveApiKey } from './api-keys'
  */
 const DEFAULT_WAKE_DEADLINE_MS = 5_000
 let wakeDeadlineMs = DEFAULT_WAKE_DEADLINE_MS
+
+/**
+ * The wake these routes use: the *decision* comes from the host's heartbeat, but
+ * the wait is capped at `wakeDeadlineMs` (SHO-506 + SHO-185). A panel must not
+ * hang for a desktop's idle poll, so a fresh host that has not connected yet
+ * answers `waking` and the client retries — with `wsRequestedAt` left set, the
+ * desktop polls every 3 s from its next wake and the retry lands.
+ */
+function machineWakeOpts() {
+  return { maxWaitMs: wakeDeadlineMs, staleProbeMs: wakeDeadlineMs }
+}
 
 /** Headers we must not copy back through the proxy. */
 const HOP_BY_HOP = new Set([
@@ -281,7 +293,7 @@ function cachedSnapshot(instance: MachineRow): Record<string, any> | null {
  * answer "offline" anyway (SHO-241).
  */
 async function findRelayTarget(instance: MachineRow): Promise<MachineRow | null> {
-  if (await ensureTunnelConnected(instance.id, wakeDeadlineMs)) return instance
+  if ((await wakeHostTunnel(instance.id, machineWakeOpts())).state === 'connected') return instance
   const siblings = (await prisma.instance.findMany({
     where: {
       hostname: instance.hostname,
@@ -440,7 +452,7 @@ export function machineRoutes() {
     if (auth.email) forwardHeaders['x-tunnel-auth-email'] = auth.email
     if (auth.name) forwardHeaders['x-tunnel-auth-name'] = auth.name
 
-    const online = await ensureTunnelConnected(instance.id, wakeDeadlineMs)
+    const online = (await wakeHostTunnel(instance.id, machineWakeOpts())).state === 'connected'
     if (online) {
       try {
         const resp = await sendTunnelRequest(instance.id, {
@@ -579,6 +591,71 @@ export function machineRoutes() {
       console.warn(`[Machines] sync ingest failed for ${instanceId}: ${err?.message ?? err}`)
       return c.json({ error: { code: 'ingest_failed', message: err?.message ?? 'sync failed' } }, 500)
     }
+  })
+
+  // POST /machines/:id/shared-files — mint a download link for a file that
+  // lives on this machine (SHO-486).
+  //
+  // A hosted workspace is viewed from the cloud, so its file links have to be
+  // the cloud's: the link is opened by the app at the cloud origin, and only
+  // this API can verify its own signature. The desktop's `share_file` relay
+  // calls this with its device key; the link it gets back serves the bytes
+  // through the host tunnel, so the file still never leaves the desktop.
+  router.post('/machines/:id/shared-files', async (c) => {
+    const device = await authenticateDevice(c)
+    if ('response' in device) return device.response
+    const { instanceId } = device
+
+    const body = (await c.req.json().catch(() => null)) as
+      | { projectId?: unknown; workspaceId?: unknown; path?: unknown; expiresInDays?: unknown }
+      | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'invalid_request', message: 'A JSON body is required' } }, 400)
+    }
+    const path = typeof body.path === 'string' ? body.path : ''
+    const pathProblem = sharedFilePathProblem(path)
+    if (pathProblem) return c.json({ error: { code: 'invalid_path', message: pathProblem } }, 400)
+
+    // The machine may only mint links for workspaces it hosts (or the account's
+    // Personal), exactly like every other row it writes.
+    const projectId = typeof body.projectId === 'string' && body.projectId ? body.projectId : undefined
+    const project = projectId
+      ? await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+      : null
+    if (projectId && !project) {
+      return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+    }
+    const workspaceId =
+      project?.workspaceId ?? (typeof body.workspaceId === 'string' && body.workspaceId ? body.workspaceId : '')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'projectId or workspaceId is required' } }, 400)
+    }
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { hostInstanceId: true, personalOwnerId: true },
+    })
+    if (!workspace || (workspace.hostInstanceId !== instanceId && workspace.personalOwnerId !== device.auth.userId)) {
+      return c.json({ error: { code: 'forbidden', message: 'This machine does not host that workspace' } }, 403)
+    }
+
+    const requestedDays = typeof body.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
+      ? Math.floor(body.expiresInDays)
+      : 7
+    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    const now = Math.floor(Date.now() / 1000)
+    const token = signSharedFileToken({
+      ...(projectId ? { projectId } : {}),
+      workspaceId,
+      path,
+      exp: now + expiresInDays * 24 * 60 * 60,
+      now,
+    })
+    return c.json({
+      ok: true,
+      url: `${sharedFilePublicOrigin(c.req.url)}/api/f/${encodeURIComponent(token)}`,
+      expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
+      path,
+    })
   })
 
   // GET /machines/:id/identity — who the desktop's user is (SHO-285). Pairing

@@ -28,13 +28,44 @@ import type { Context } from 'hono'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
+import { isAgentStreamPath } from './agent-stream-paths'
+import { tunnelResponseBody } from './tunnel-body'
+import { wakeRefusal, type WakeRefusal } from './host-wake'
+import { EDGE_RESPONSE_BUDGET_MS, HOST_RETRY_AFTER_S, HOST_WAKE_INTERACTIVE_MS } from './tunnel-timeouts'
+import type { HostWakeResult } from '../routes/instances'
 
 export const HOST_TUNNEL_PREFIX = '/api/internal/host-tunnel'
 
 const SECRET = process.env.SHOGO_HOST_TUNNEL_SECRET || randomBytes(24).toString('hex')
 
-/** How long a request waits for a sleeping desktop's tunnel before `host_offline`. */
+/**
+ * The short probe a *stale* host gets. A desktop whose heartbeat is older than
+ * `POLL_INTERVAL_IDLE_S * 2` has nothing polling to answer the wake, so waiting
+ * longer only delays the honest `host_offline` (SHO-506). A fresh host's wait is
+ * decided from its heartbeat by `wakeHostTunnel`, not by this value.
+ */
 const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
+
+/** The same deadline, for callers that forward over the tunnel themselves (SHO-493). */
+export function hostWakeDeadlineMs(): number {
+  return WAKE_DEADLINE_MS
+}
+
+/**
+ * The wake window a hosted-workspace request may spend on itself (SHO-538).
+ *
+ * Exported for the other tunnel forwarder (`cross-workspace-host`), so both
+ * callers of `wakeHostTunnel` share one cap instead of one of them waiting out
+ * an idle desktop's whole heartbeat.
+ */
+export function hostWakeInteractiveMs(): number {
+  return HOST_WAKE_INTERACTIVE_MS
+}
+
+/** The budget a tunneled call has for its entire answer, headers included (SHO-538). */
+export function edgeResponseBudgetMs(): number {
+  return EDGE_RESPONSE_BUDGET_MS
+}
 
 /** The workspace's host, cached briefly: every runtime resolve asks. */
 const HOST_TTL_MS = 10_000
@@ -96,28 +127,25 @@ export function clientRuntimeUrl(resolved: { mode: string; url?: string | null }
   return resolved.mode === 'host-tunnel' ? null : resolved.url ?? null
 }
 
-export class HostOfflineError extends Error {
-  readonly code = 'host_offline'
-  constructor(readonly instanceId: string, readonly hostName: string | null) {
-    super(`${hostName || 'The desktop hosting this workspace'} is offline`)
-    this.name = 'HostOfflineError'
-  }
-}
-
-const STREAMING_SUFFIXES = ['/agent/chat', '/agent/quick-actions', '/agent/logs/stream']
-
-function isStreaming(method: string, path: string, accept: string | undefined): boolean {
+/**
+ * Does this tunnel request answer as an event stream?
+ *
+ * `rest` is the runtime-relative path (`/agent/chat/<id>/stream`). It uses the
+ * one shared predicate (`lib/agent-stream-paths`) rather than its own suffix
+ * list: a chat resume GET used to take the buffered path here, so rejoining a
+ * desktop-run turn from the cloud sat silent for the 30 s proxy timeout and then
+ * answered `502 host_tunnel_error` (SHO-486).
+ */
+function tunnelStreams(method: string, rest: string, accept: string | undefined): boolean {
   if (accept?.includes('text/event-stream')) return true
-  const clean = path.split('?')[0]
-  if (clean.endsWith('/agent/logs/stream')) return method === 'GET'
-  return method === 'POST' && STREAMING_SUFFIXES.some((suffix) => clean.endsWith(suffix))
+  return isAgentStreamPath(method, rest)
 }
 
 // `x-billing-user-id` is deliberately not forwarded: the only user a hosted
 // workspace may bill is the desktop's owner, which this handler knows, so the
 // caller does not get to name it.
-const FORWARD_HEADERS = ['content-type', 'accept', 'x-chat-session-id', 'last-event-id']
-const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
+const FORWARD_HEADERS = ['content-type', 'accept', 'range', 'x-chat-session-id', 'last-event-id']
+export const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
 
 /** The only paths a tunnel request may carry: a runtime's own agent proxy. */
 const TUNNEL_TARGET_PATH = /^\/api\/(projects|workspaces)\/([^/]+)\/agent-proxy(\/.*)?$/
@@ -152,6 +180,77 @@ function unknownRoute(): Response {
   return new Response('404 Not Found', { status: 404 })
 }
 
+/**
+ * The refusal for a wake that did not reach `connected` (SHO-506's shape), with
+ * `Retry-After` alongside it so a client that reads only headers still knows
+ * when to come back (SHO-538).
+ */
+function wakeRefused(c: Context, refusal: WakeRefusal): Response {
+  const res = c.json({ error: refusal }, 503)
+  if (refusal.retryAfterSeconds) res.headers.set('retry-after', String(refusal.retryAfterSeconds))
+  return res
+}
+
+/**
+ * `504` for a host that is connected but did not answer inside the edge budget.
+ *
+ * Never a silent hang: without this the caller waited on the proxy timeout on
+ * top of the wake, and Cloudflare answered **524** for the whole request before
+ * this process had said anything at all (SHO-538).
+ */
+function runtimeStarting(c: Context, instance: { id: string; name: string | null }): Response {
+  const res = c.json(
+    {
+      error: {
+        code: 'host_runtime_starting',
+        message: `${instance.name || 'The desktop hosting this workspace'} is starting its runtime; try again in a moment`,
+        instanceId: instance.id,
+        retryable: true,
+        retryAfterSeconds: HOST_RETRY_AFTER_S,
+      },
+    },
+    504,
+  )
+  res.headers.set('retry-after', String(HOST_RETRY_AFTER_S))
+  return res
+}
+
+/** Thrown when a call runs out of the edge budget; never surfaces to a client. */
+class EdgeBudgetExceeded extends Error {}
+
+/**
+ * Settle with `work`, or reject with `EdgeBudgetExceeded` once `ms` has passed.
+ *
+ * The budget is a deadline for *our* answer, not for the desktop: the tunnel
+ * request keeps running to its own timeout, which is what cleans up its
+ * pending-request entry. Losing that race only means nobody is waiting.
+ */
+function withinEdgeBudget<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new EdgeBudgetExceeded()), Math.max(0, ms))
+    work.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+/**
+ * A failed wake on a stream that has already sent its headers: an SSE error
+ * frame in the runtime's own dialect, so the app shows the reason instead of a
+ * stream that ends without one (SHO-538).
+ */
+function sseErrorFrame(refusal: WakeRefusal): string {
+  const frame = { type: 'error', errorText: refusal.message, error: refusal }
+  return `data: ${JSON.stringify(frame)}\n\n`
+}
+
 function isLoopbackAddress(address: string | null | undefined): boolean {
   if (!address) return false
   const addr = address.trim().toLowerCase()
@@ -180,8 +279,16 @@ function secretMatches(given: string): boolean {
 }
 
 /** The instance-tunnel transport (the real one lives in `routes/instances`). */
-type TunnelTransport = {
+export type TunnelTransport = {
   ensureTunnelConnected: (instanceId: string, deadlineMs: number) => Promise<boolean>
+  /**
+   * The wake that tells `connected` from `connecting` from `offline` (SHO-506).
+   * Optional so a test double built before it existed still fits.
+   */
+  wakeHostTunnel?: (
+    instanceId: string,
+    opts?: { staleProbeMs?: number; maxWaitMs?: number },
+  ) => Promise<import('../routes/instances').HostWakeResult>
   sendTunnelRequest: (instanceId: string, payload: any) => Promise<{ status: number; headers?: Record<string, string>; body?: string }>
   sendTunnelStreamRequest: (instanceId: string, payload: any, onChunk: (chunk: any) => void) => { cancel: () => void }
   generateRequestId: () => string
@@ -244,7 +351,8 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
   if (!target) return unknownRoute()
 
   const instanceId = decodeURIComponent(match[2])
-  const path = `${match[3]}${new URL(c.req.url).search}`
+  const query = new URL(c.req.url).search
+  const path = `${match[3]}${query}`
 
   const instance = await prisma.instance.findUnique({
     where: { id: instanceId },
@@ -260,11 +368,35 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
   const tunnel: TunnelTransport =
     opts._tunnel ?? ((await import('../routes/instances')) as unknown as TunnelTransport)
   const { ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
-  if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-    const err = new HostOfflineError(instanceId, instance.name)
-    return c.json({ error: { code: err.code, message: err.message, instanceId, retryable: true } }, 503)
+  const wakeHostTunnel = tunnel.wakeHostTunnel
+
+  /**
+   * Ask the desktop for its tunnel, and never for longer than one request may
+   * spend (SHO-538). Without a `maxWaitMs` the wake is `planHostWake`'s worst
+   * case — an idle desktop's 60 s poll plus a margin, up to `WAKE_MAX_WAIT_MS`
+   * (75 s) — and a request that then ran on top of it outlived Cloudflare's edge.
+   */
+  const wakeHost = async (): Promise<HostWakeResult> => {
+    if (wakeHostTunnel) {
+      return wakeHostTunnel(instanceId, {
+        staleProbeMs: WAKE_DEADLINE_MS,
+        maxWaitMs: HOST_WAKE_INTERACTIVE_MS,
+      })
+    }
+    const connected = await ensureTunnelConnected(
+      instanceId,
+      Math.min(WAKE_DEADLINE_MS, HOST_WAKE_INTERACTIVE_MS),
+    )
+    return {
+      state: connected ? 'connected' : 'offline',
+      instanceId,
+      name: instance.name,
+      lastSeenAt: null,
+      retryAfterSeconds: 0,
+    }
   }
 
+  const startedAt = Date.now()
   const method = c.req.method
   const headers: Record<string, string> = {
     // One user (SHO-285): the desktop's user is the host's owner.
@@ -274,18 +406,43 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
     const value = c.req.header(name)
     if (value) headers[name] = value
   }
+  // Read before any branch: the body is the client's own request, already sent,
+  // and a stream must not depend on it still being readable after the wake.
   const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
 
-  if (isStreaming(method, path, c.req.header('accept'))) {
+  if (tunnelStreams(method, target.rest, c.req.header('accept'))) {
     const requestId = generateRequestId()
+    const encoder = new TextEncoder()
+    // The headers go out before the wake, so a sleeping host's chat resume is a
+    // stream that starts (and may then report) rather than a request that sits
+    // header-less and gets a 524 from the edge (SHO-538).
     const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
+      async start(controller) {
+        let wake: HostWakeResult | null = null
+        try {
+          wake = await wakeHost()
+        } catch {
+          wake = null
+        }
+        if (wake?.state !== 'connected') {
+          try {
+            if (wake) {
+              const refusal = wakeRefusal(wake, 'host', { subject: instance.name })
+              if (refusal) controller.enqueue(encoder.encode(sseErrorFrame(refusal)))
+            }
+            controller.close()
+          } catch {
+            /* the client went away before the wake finished */
+          }
+          return
+        }
+
         const { cancel } = sendTunnelStreamRequest(
           instanceId,
           { type: 'request', requestId, method, path, headers, body },
           (chunk) => {
             if (chunk.type === 'stream-chunk' && chunk.data) {
-              controller.enqueue(new TextEncoder().encode(chunk.data))
+              controller.enqueue(encoder.encode(chunk.data))
             } else if (chunk.type === 'stream-end') {
               try { controller.close() } catch { /* already closed */ }
             } else if (chunk.type === 'stream-error') {
@@ -309,21 +466,48 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
   }
 
   try {
-    const resp = await sendTunnelRequest(instanceId, {
-      type: 'request',
-      requestId: generateRequestId(),
-      method,
-      path,
-      headers,
-      body,
-    })
-    const out = new Headers()
-    for (const [key, value] of Object.entries(resp.headers ?? {})) {
-      if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
+    const wake = await wakeHost()
+    if (wake.state !== 'connected') {
+      const refusal = wakeRefusal(wake, 'host', { subject: instance.name })
+      if (refusal) return wakeRefused(c, refusal)
     }
-    if (!out.has('content-type')) out.set('content-type', 'application/json')
-    return new Response(resp.body || '', { status: resp.status, headers: out })
+
+    // The wake spent part of the budget; the request gets what is left of it,
+    // not a fresh proxy timeout on top (SHO-538).
+    const remaining = EDGE_RESPONSE_BUDGET_MS - (Date.now() - startedAt)
+    if (remaining <= 0) return runtimeStarting(c, instance)
+
+    // One frame round trip. `acceptBodyEncoding` is what makes a binary body
+    // survive: without it the desktop hands back text and every image or clip
+    // takes a lossy UTF-8 trip through the tunnel (SHO-526). A file is sent as
+    // one body here, not range-windowed: the desktop's generic agent proxy drops
+    // a `Range` header on the way to the runtime, so windowing this route could
+    // only ever collect full bodies — and asking for one cost the two hosted
+    // file-share downloads in `remote-workspace/files.e2e` their 200 (the extra
+    // header is enough for the runtime to answer 401 `auth_mismatch`).
+    const send = (pathWithQuery: string, headersToSend: Record<string, string>) =>
+      sendTunnelRequest(instanceId, {
+        type: 'request',
+        requestId: generateRequestId(),
+        method,
+        path: pathWithQuery,
+        headers: headersToSend,
+        body,
+        acceptBodyEncoding: ['base64'],
+      })
+
+    const answer = send(path, headers).then((resp) => {
+      const out = new Headers()
+      for (const [key, value] of Object.entries(resp.headers ?? {})) {
+        if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
+      }
+      if (!out.has('content-type')) out.set('content-type', 'application/json')
+      return new Response(tunnelResponseBody(resp) as BodyInit, { status: resp.status, headers: out })
+    })
+
+    return await withinEdgeBudget(answer, remaining)
   } catch (err: any) {
+    if (err instanceof EdgeBudgetExceeded) return runtimeStarting(c, instance)
     const offline = /offline/i.test(err?.message ?? '')
     const status = offline ? 503 : 502
     const code = offline ? 'host_offline' : 'host_tunnel_error'

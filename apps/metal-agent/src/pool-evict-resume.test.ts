@@ -206,6 +206,23 @@ describe('an evicted VM resumes from its snapshot, not a cold boot', () => {
     expect(pool.resident().sort()).toEqual(['incoming', 'warm'])
   })
 
+  test('a resume keeps its cause, so an automated wake does not look like a user open', async () => {
+    const guest = makeGuest()
+    const { pool } = makePool(guest.port)
+    pool.seed('quiet', { lastRealActivityAt: Date.now() - 10 * IDLE_MS })
+    await pool.suspend('quiet', { reason: 'idle' })
+
+    // A schedule tick or an agent wake restoring the snapshot: nobody has opened
+    // this project, so it must not get the relaxed idle window (SHO-533).
+    const woken = await pool.resume('quiet', {}, undefined, 'agent_wake')
+    expect(woken!.assigned.cause).toBe('agent_wake')
+    expect(woken!.assigned.userSeenSinceAssign).toBe(false)
+
+    await pool.suspend('quiet', { reason: 'idle' })
+    const opened = await pool.resume('quiet', {}, undefined, 'user_open')
+    expect(opened!.assigned.userSeenSinceAssign).toBe(true)
+  })
+
   test('an idle-suspended VM reports `idle`, so the two are distinguishable', async () => {
     const guest = makeGuest()
     const { pool } = makePool(guest.port)

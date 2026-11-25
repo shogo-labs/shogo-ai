@@ -24,6 +24,9 @@ export const CHANNEL_TOOL_NAMES = [
   'agent_run_stop',
 ] as const
 
+/** Shogo Mail, gated with team chat (a mailbox is a team chat conversation). */
+export const MAIL_TOOL_NAMES = ['mail_list', 'mail_read', 'mail_reply', 'mail_compose'] as const
+
 /** Working cards: `boardsEnabled`. */
 export const BOARD_TOOL_NAMES = [
   'board_list',
