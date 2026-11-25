@@ -5521,6 +5521,12 @@ export class MetalWarmPool {
             `${outcome.limit}-byte durability limit — NOT persisted. This project's data is ` +
             `only as durable as its VM snapshot; it needs a real storage backend.`,
         )
+        // A FINAL export that could not be persisted fails the recycle/suspend
+        // step, or the VM would be rotated on data that exists only in its own
+        // snapshot (SHO-584). Periodic sweeps still return quietly.
+        if (opts.final) {
+          throw new Error(`writable state is ${outcome.bytes} bytes, over the ${outcome.limit}-byte durability limit`)
+        }
         return false
       case 'skipped':
         return false
@@ -5874,6 +5880,9 @@ export class MetalWarmPool {
     if (exported === 'too-large') {
       metrics.inc(M.homeTooLarge)
       console.error(`[pool] home directory for ${a.projectId} is over the guest's limit — NOT persisted`)
+      // A final export that did not persist fails the step: the cold boot would
+      // hydrate an older home than the one this VM holds (SHO-584).
+      if (opts.final) throw new Error("home directory is over the guest's export limit")
       return false
     }
     if (!exported) return false
@@ -5921,6 +5930,7 @@ export class MetalWarmPool {
       case 'too-large':
         metrics.inc(M.homeTooLarge)
         console.error(`[pool] home archive for ${a.projectId} is ${outcome.bytes} bytes, over ${outcome.limit} — NOT persisted`)
+        if (opts.final) throw new Error(`home archive is ${outcome.bytes} bytes, over the ${outcome.limit}-byte limit`)
         return false
       case 'skipped':
         return false
@@ -6702,6 +6712,10 @@ export class MetalWarmPool {
       memberData: resumedMemberData(s),
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
+      // A restore is an open too: the guest hooks below (rehydrate, drift
+      // repair, drive growth) have not run yet, so an adopt before they finish
+      // must not treat this as a normal VM (SHO-584).
+      openState: 'opening',
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
@@ -6737,6 +6751,9 @@ export class MetalWarmPool {
         )
     }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
+    // The restore is complete, so an adopt from here on is a normal VM (SHO-584).
+    a.openState = 'ready'
+    this.writeLive(a)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, suspendReason: s.suspendReason, drive: wantDriveMiB ?? null }
   }
 
