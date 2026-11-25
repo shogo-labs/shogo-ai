@@ -6201,6 +6201,11 @@ model PublishedEnvironment {
   /// production failed (SHO-308 §8). Mirrors Project.publishStatus.
   publishStatus       String   @default("idle")
   publishError        String?
+  /// What a successful publish decided to leave out, in words the user can act
+  /// on — a Postgres seed that skipped rows with no FK target. Kept on the row
+  /// because a publish answers 202 and finishes in the background (SHO-542), so
+  /// the response body can no longer carry it.
+  publishNotice       String?
   publishStatusAt     DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

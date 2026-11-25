@@ -19,7 +19,7 @@
 // building a new one; `KEEP_PROJECT=1` leaves the project behind on success.
 import { test, expect, type Page } from "./fixtures"
 import { signUp, waitForAgentResponse } from "./helpers"
-import { INITIAL_BUILD_TIMEOUT_MS, createProject, sendProjectChatMessage } from "./agent-chat"
+import { createProject, sendProjectChatMessage } from "./agent-chat"
 import { publishRequestTimeoutMs } from "../../packages/shared-runtime/src/publish-timeouts"
 import { execFileSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
@@ -48,6 +48,17 @@ const APP_PROMPT =
   "generated CRUD API in server.tsx. Do not change prisma/schema.prisma, server.tsx, " +
   "custom-routes.ts, package.json or any other backend file. " +
   'Only replace src/App.tsx with a single page that renders the heading "SHO-551 QA". Nothing else.'
+
+/**
+ * Building the fixture is *setup*, not the thing under test, and on staging it is
+ * not a 3-minute job. Measured 2026-11-24: the shared 180s `INITIAL_BUILD_TIMEOUT_MS`
+ * expired while the turn was still streaming productively (34k → 35k tokens and
+ * climbing), so the spec failed in setup and none of the §F checks ran. The staging
+ * API was also spending its whole 60s AgentProxy spawn-lease window failing to get a
+ * pool connection (63 times in 70 min), which alone consumes a third of 180s.
+ * The turn is bounded by this budget and the test's own 40-minute timeout.
+ */
+const FIXTURE_BUILD_TIMEOUT_MS = 900_000
 
 const KUBECONFIG = `${homedir()}/.kube/config-shogo-staging`
 
@@ -232,7 +243,7 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
 
     if (!projectId) {
       projectId = await createProject(page, APP_PROMPT)
-      await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+      await waitForAgentResponse(page, FIXTURE_BUILD_TIMEOUT_MS)
     }
     evidence.projectId = projectId
     saveEvidence()
@@ -324,6 +335,17 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     evidence.podImage = image
     saveEvidence()
     expect(image, "a Postgres environment must run its own per-commit build").toContain("/published/")
+
+    // `prisma/dev.db` being PRESENT is by design, not a defect: the published
+    // source tree is hydrated from the git repo at the published commit, and that
+    // commit carries the seed DB the builder created (`published-data-sync.ts`),
+    // which is exactly what seeds Postgres on a first deploy. Asserting its
+    // absence fails on a correct system — measured 2026-11-24 against
+    // `api-02943`: the env was `postgres | … | live`, the pod ran its `/published/`
+    // image, `schema.prisma` said `postgresql` and the client was `PrismaPg`,
+    // yet `/app/prisma/dev.db` still existed and failed the run.
+    // The risk is the app WRITING to it, so record the file for the evidence set
+    // and assert the connection string instead.
     const devDb = podExec(pod, [
       "sh",
       "-lc",
@@ -331,10 +353,14 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     ])
     evidence.podDevDb = devDb.slice(0, 400)
     saveEvidence()
-    expect(
-      devDb,
-      "a Postgres pod must not carry a SQLite database — that is the per-pod file writes were landing in",
-    ).not.toContain("EXISTS")
+
+    const databaseUrl = podExec(pod, ["sh", "-lc", 'printf "%s" "${DATABASE_URL:-}"']).trim()
+    evidence.podDatabaseUrl = databaseUrl.replace(/:\/\/[^@]*@/, "://***@")
+    saveEvidence()
+    expect(databaseUrl, "the pod's DATABASE_URL must be the Postgres URL, not a file").toMatch(
+      /^postgres(ql)?:\/\//,
+    )
+    expect(databaseUrl, "the pod must not point Prisma at a SQLite file").not.toContain("file:")
 
     for (const m of models.filter((m) => m === "User").concat(models.filter((m) => m !== "User"))) {
       const candidate = routePathFor(m)
@@ -403,8 +429,24 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     )
     evidence.orphanedParentStillInDb = orphansInDb
     saveEvidence()
-    // The report is the contract; the row must not have been carried over.
-    expect(String(JSON.stringify(republishBody))).toMatch(/orphan/i)
+    // The report is the contract; the row must not have been carried over. A
+    // publish answers 202, so the report cannot be in this response — it is
+    // recorded on the environment row (and served by the environment status GET)
+    // for exactly that reason.
+    const notice = await poll(
+      "the seed's orphan report on the environment row",
+      async () => {
+        const found = psql(
+          `select coalesce("publishNotice",'') from published_environments ` +
+            `where "projectId" = '${projectId}' and name = 'production'`,
+        )
+        return found && /orphan|deleted records/i.test(found) ? found : null
+      },
+      300_000,
+    )
+    evidence.publishNotice = notice
+    saveEvidence()
+    expect(notice, "the seed must report the rows it could not carry").toMatch(/deleted records/i)
     expect(orphansInDb, "the orphaned parent must not be seeded").toBe("0")
   })
 
