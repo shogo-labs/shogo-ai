@@ -978,8 +978,10 @@ jobs:
     # under a minute of headroom; two merge-group runs were cancelled at exactly
     # 15m and the queue dropped those PRs as if their code had failed
     # (SHO-579). Sharding it the way `agent-runtime 1/2, 2/2` is sharded moves
-    # the long half of each package to its own runner. The measured duration of
-    # each leg is recorded in the PR that sharded it and in SHO-579.
+    # the long half of each package to its own runner. Measured on #2256 against
+    # this cap: `api + mobile 1/2` 6m37s and 6m59s, `api + mobile 2/2` 7m19s and
+    # 7m11s — 7½–8½ minutes of headroom per leg. Re-measure after adding tests
+    # to either package; a leg over 11 minutes gets a third shard, not a bigger cap.
     strategy:
       fail-fast: false
       matrix:
