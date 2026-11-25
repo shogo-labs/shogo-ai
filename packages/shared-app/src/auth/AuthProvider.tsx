@@ -143,6 +143,35 @@ export interface AuthProviderProps {
    * `session_missing` on a round trip that has not happened yet (SHO-430).
    */
   socialSignInNavigatesPage?: boolean
+  /**
+   * The user this device already knows it is signed in as, read **once** on the
+   * first frame. Mobile passes the session it keeps on the device; web and
+   * desktop pass nothing and behave exactly as before.
+   *
+   * With a cached user the provider renders the app immediately and asks the
+   * API in the background: a slow `get-session` no longer holds a full-screen
+   * spinner between launch and the first screen (SHO-580). Only a definite
+   * answer signs that user out — a clean "no session", a 401/403, or a
+   * successful sign-out. A dropped connection or a 5xx keeps the cached user,
+   * which is the same rule SHO-430 set for a failed session read.
+   */
+  cachedUser?: () => AuthUser | null
+  /**
+   * Called with the current user whenever it changes, so the host can keep the
+   * device copy in step with the provider (and drop it on sign-out).
+   */
+  onUserChanged?: (user: AuthUser | null) => void
+}
+
+/**
+ * A session read that positively says nobody is signed in. Anything else — no
+ * status, a 5xx, a dropped connection — is the API failing to answer, which is
+ * not the same thing and must not evict a cached user (SHO-430, SHO-580).
+ */
+function saysSignedOut(error: unknown): boolean {
+  if (!error) return true
+  const status = (error as { status?: unknown }).status
+  return status === 401 || status === 403
 }
 
 /** A URL the browser will navigate to, as opposed to one it would ignore. */
@@ -175,9 +204,21 @@ export const MIN_NATIVE_OAUTH_SHEET_MS = 2000
 const SHEET_CLOSED_MESSAGE =
   'Google sign-in was closed before it finished. Tap Continue with Google to try again.'
 
-export function AuthProvider({ authClient, children, onSignOut, onAuthError, socialSignInNavigatesPage = false }: AuthProviderProps) {
-  const [user, setUser] = useState<AuthUser | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+export function AuthProvider({ authClient, children, onSignOut, onAuthError, socialSignInNavigatesPage = false, cachedUser, onUserChanged }: AuthProviderProps) {
+  // Read the device's copy once, before the first frame. A signed-in relaunch
+  // paints the app from it instead of holding a spinner for a `get-session`
+  // round trip, which on a slow network is the whole difference between the app
+  // feeling instant and feeling frozen (SHO-580). Nothing is read without a
+  // source, so web and desktop keep today's behaviour exactly.
+  const [initialUser] = useState<AuthUser | null>(() => {
+    try {
+      return cachedUser?.() ?? null
+    } catch {
+      return null
+    }
+  })
+  const [user, setUser] = useState<AuthUser | null>(initialUser)
+  const [isLoading, setIsLoading] = useState(initialUser === null)
   const [error, setError] = useState<string | null>(null)
   // One social sign-in at a time: a second tap opens a second browser sheet,
   // which dismisses (Android) or throws out of (iOS) the first, killing a round
@@ -188,6 +229,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
   // the sign-out case (user becomes null while the provider stays mounted).
   moduleAuthUser = user
   useEffect(() => () => { moduleAuthUser = null }, [])
+  useEffect(() => { onUserChanged?.(user) }, [user, onUserChanged])
 
   useEffect(() => {
     // A failed session read is not the same answer as "no session". The user
@@ -199,9 +241,25 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
     let cancelled = false
     const loadSession = async (attempt: number): Promise<void> => {
       try {
-        const { data } = await authClient.getSession()
+        const { data, error: readError } = await authClient.getSession()
         if (cancelled) return
-        if (data?.user) setUser(data.user as AuthUser)
+        if (data?.user) {
+          setUser(data.user as AuthUser)
+          setIsLoading(false)
+          return
+        }
+        // A cached user is only signed out by a definite answer. An
+        // unanswered read is retried once, then the cached user stays.
+        if (initialUser && !saysSignedOut(readError)) {
+          if (attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 300))
+            if (!cancelled) await loadSession(1)
+            return
+          }
+          setIsLoading(false)
+          return
+        }
+        setUser(null)
         setIsLoading(false)
       } catch {
         if (cancelled) return
@@ -215,7 +273,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
     }
     void loadSession(0)
     return () => { cancelled = true }
-  }, [authClient])
+  }, [authClient, initialUser])
 
   const handleSignIn = useCallback(async (email: string, password: string) => {
     setIsLoading(true)

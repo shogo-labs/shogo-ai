@@ -65,6 +65,7 @@ function getOrCreateStore(
   remoteConfigRef: { current: RemoteInterceptorConfig },
   credentials?: RequestCredentials,
   getAuthCookie?: () => string | null,
+  requestTimeoutMs?: number,
 ): {
   rawHttp: HttpClient
   http: HttpClient
@@ -96,6 +97,7 @@ function getOrCreateStore(
     getToken: () => null,
     credentials,
     getAuthCookie,
+    ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
   })
 
   // Create the remote-aware proxy BEFORE creating the MST store.
@@ -182,6 +184,12 @@ export interface SDKDomainProviderProps {
    * Can be used to show a toast or auto-disconnect.
    */
   onRemoteError?: (error: Error, path: string) => void
+  /**
+   * Deadline for a GET, in ms. Mobile sets one so a stall on a bad network ends
+   * in a retryable error instead of an endless spinner (SHO-580). Web and
+   * desktop leave it unset and keep waiting as they always have.
+   */
+  requestTimeoutMs?: number
   children: ReactNode
 }
 
@@ -192,6 +200,7 @@ export function SDKDomainProvider({
   getAuthCookie,
   remoteProxyBaseUrl,
   onRemoteError,
+  requestTimeoutMs,
   children,
 }: SDKDomainProviderProps) {
   const [isReady, setIsReady] = useState(false)
@@ -230,7 +239,7 @@ export function SDKDomainProvider({
   }
 
   const { http, store, facades } = getOrCreateStore(
-    apiBaseUrl, userId, remoteConfigRef, credentials, getAuthCookie,
+    apiBaseUrl, userId, remoteConfigRef, credentials, getAuthCookie, requestTimeoutMs,
   )
 
   // When remote connection changes, clear stale data and hydrate from new source.
