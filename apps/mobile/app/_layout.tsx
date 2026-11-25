@@ -10,7 +10,7 @@ import "../global.css";
 csMark("root:layout:after-global-css");
 import "../lib/icon-interop";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
@@ -96,6 +96,7 @@ import { isIslandWindow } from "../components/island/types";
 import { getHuddleHostBridge } from "../lib/desktop-huddle";
 import { EnvironmentBadge } from "../components/layout/EnvironmentBadge";
 import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
+import { hydrateAuthSessionCache } from "../lib/auth-session-cache";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
 
 import {
@@ -333,6 +334,22 @@ function AuthenticatedAppShell({
 
 function RootLayoutInner() {
   csMark("root:layout:render");
+  // The device's own session, read before the first tree so `AuthProvider` can
+  // paint a signed-in launch instead of holding a spinner for `get-session`
+  // (SHO-580). One storage read, already in flight from module load.
+  // The browser passes no cache to `AuthProvider` (its cookie jar answers
+  // synchronously), so only native waits for this one storage read.
+  const [sessionCacheLoaded, setSessionCacheLoaded] = useState(Platform.OS === "web");
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    let mounted = true;
+    void hydrateAuthSessionCache().finally(() => {
+      if (mounted) setSessionCacheLoaded(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
   useEffect(() => {
     csMark("root:layout:mounted");
   }, []);
@@ -346,7 +363,7 @@ function RootLayoutInner() {
 
   const statusBarScheme = resolveThemeMode(theme, systemColorScheme);
 
-  if (!isLoaded) return null;
+  if (!isLoaded || !sessionCacheLoaded) return null;
 
   return (
     <GluestackUIProvider mode={theme}>

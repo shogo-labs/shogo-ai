@@ -7,6 +7,8 @@ import { setEnvOverride, type EnvOverride } from './env-override'
 import { clearTeamChatCache } from './team-chat-cache'
 import { clearChatHistory } from './chat-history-store'
 import { clearWorkspaceChatsCache } from './workspace-chats-cache'
+import { clearAuthSessionCache } from './auth-session-cache'
+import { clearProjectsCache } from './projects-cache'
 
 /**
  * Persisted native state that points at server-side records of one backend.
@@ -20,6 +22,8 @@ async function clearServerScopedState(): Promise<void> {
     clearTeamChatCache(),
     clearChatHistory(),
     clearWorkspaceChatsCache(),
+    clearAuthSessionCache(),
+    clearProjectsCache(),
   ])
 }
 

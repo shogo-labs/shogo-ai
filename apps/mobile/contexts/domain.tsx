@@ -17,7 +17,7 @@ import { SDKDomainProvider } from '@shogo/shared-app/domain'
 import { computeRemoteProxyBaseUrl } from '@shogo/shared-app/hooks'
 import { useAuth } from './auth'
 import { useActiveInstance } from './active-instance'
-import { API_URL } from '../lib/api'
+import { API_URL, MOBILE_REQUEST_TIMEOUT_MS } from '../lib/api'
 import { authClient } from '../lib/auth-client'
 import { isLocalMode } from '../lib/platform-config'
 import { installWorkspaceFetchRouter } from '../lib/workspace-route'
@@ -93,6 +93,9 @@ export function DomainProvider({ children }: { children: ReactNode }) {
       credentials={isNative ? 'omit' : 'include'}
       getAuthCookie={isNative ? getAuthCookie : undefined}
       remoteProxyBaseUrl={remoteProxyBaseUrl}
+      // A GET that stalls on a slow network becomes a retryable error instead
+      // of an endless spinner; streams and uploads are exempt (SHO-580).
+      requestTimeoutMs={MOBILE_REQUEST_TIMEOUT_MS}
       onRemoteError={(error, path) => {
         console.warn('[DomainProvider] Remote request failed:', path, error.message)
       }}
