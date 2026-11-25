@@ -47,7 +47,7 @@ mock.module('../inbox.service', () => ({
 }))
 mock.module('../../workspace-events', () => ({ emitWorkspaceEvent: async () => null }))
 
-type Outcome = 'local' | 'forwarded' | 'unavailable'
+type Outcome = 'local' | 'forwarded' | 'unavailable' | 'rejected'
 let outcome: Outcome = 'forwarded'
 const routed: Array<{ workspaceId: string; path: string; body: any }> = []
 mock.module('../../../lib/home-region-route', () => ({
@@ -55,6 +55,7 @@ mock.module('../../../lib/home-region-route', () => ({
     routed.push({ workspaceId, path, body })
     if (outcome === 'local') return { outcome: 'local' }
     if (outcome === 'forwarded') return { outcome: 'forwarded', data: { status: 200, body: { ok: true, inbox: { handled: true } } } }
+    if (outcome === 'rejected') return { outcome: 'rejected', status: 400, error: { error: 'unknown_account' } }
     return { outcome: 'unavailable' }
   },
 }))
@@ -120,5 +121,17 @@ describe('the Zernio webhook applies an event in the home region', () => {
     const res = await handleZernioWebhook({ rawBody: commentBody, signature: 'nope', secret: SECRET })
     expect(res.status).toBe(401)
     expect(routed).toHaveLength(0)
+  })
+
+  test('acknowledges a definitive refusal instead of asking Zernio to retry', async () => {
+    // The home region understood the event and refused it (unknown account).
+    // Replaying it would change nothing, so the delivery is accepted and the
+    // reason recorded; a 503 here would make Zernio redeliver forever.
+    outcome = 'rejected'
+    const res = await handleZernioWebhook({ rawBody: commentBody, signature: sign(commentBody), secret: SECRET })
+
+    expect(res.status).toBe(200)
+    expect((res.body as any).refused).toBe(true)
+    expect(appliedLocally).toHaveLength(0)
   })
 })

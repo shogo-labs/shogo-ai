@@ -30,6 +30,10 @@ const chatSessions: Record<string, { workspaceId: string | null; contextType: st
 const projects: Record<string, { workspaceId: string }> = {
   proj_eu: { workspaceId: 'ws_eu' },
 }
+/** The identity owner: homed in *this* region — the trap the fail-closed rule exists for. */
+const USERS: Record<string, { homeRegion: string } | null> = {
+  usr_us: { homeRegion: 'us-ashburn-1' },
+}
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
@@ -41,6 +45,9 @@ mock.module('../../lib/prisma', () => ({
     },
     project: {
       findUnique: async ({ where: { id } }: { where: { id: string } }) => projects[id] ?? null,
+    },
+    user: {
+      findUnique: async ({ where: { id } }: { where: { id: string } }) => USERS[id] ?? null,
     },
   },
 }))
@@ -57,7 +64,7 @@ mock.module('../../lib/region', () => ({
 }))
 
 mock.module('../../lib/resolve-user-id', () => ({
-  resolveUserHomeRegionUserId: async () => null,
+  resolveUserHomeRegionUserId: async () => 'usr_us',
 }))
 
 interface ProxyCall {
@@ -185,9 +192,11 @@ describe('the same request stays local', () => {
     expect(handled).toEqual([body])
   })
 
-  test('when the body names no workspace it can resolve', async () => {
+  test('when a non-fail-closed collection names no workspace it can resolve', async () => {
+    // Everything outside FAIL_CLOSED_COLLECTIONS still falls open to local: a
+    // missed proxy hop there costs a replicated row, not a stranded one.
     const { app, handled } = makeApp()
-    const res = await post(app, '/api/chat-queued-messages', { sessionId: 'sess_missing', content: 'x', body: 'x' })
+    const res = await post(app, '/api/chat-messages', { sessionId: 'sess_missing', role: 'user', content: 'x' })
 
     expect(proxyCalls).toHaveLength(0)
     expect((res as any).status).toBe(200)
@@ -204,7 +213,7 @@ describe('the same request stays local', () => {
       return c.json({ ok: true })
     })
     const res = await app.request(
-      new Request('https://us.studio.shogo.ai/api/chat-queued-messages', {
+      new Request('https://us.studio.shogo.ai/api/project-folders', {
         method: 'POST',
         headers: { 'content-type': 'text/plain' },
         body: 'not json',
@@ -213,6 +222,58 @@ describe('the same request stays local', () => {
     expect((res as any).status).toBe(200)
     expect(seen).toBe('not json')
     expect(proxyCalls).toHaveLength(0)
+  })
+})
+
+describe('a fail-closed create is refused rather than stranded', () => {
+  /**
+   * The queued message is drained and deleted by the region that owns its
+   * *session*. With no workspace in the body there is no such region, so every
+   * alternative is a lost message: a local row here, or — worse, because it
+   * looks successful — a row forwarded to the identity owner's region (this one).
+   */
+  test('an unplaceable body is a retryable 503, not a local write', async () => {
+    const { app, handled } = makeApp()
+    const res = await post(app, '/api/chat-queued-messages', { sessionId: 'sess_missing', content: 'x', body: 'x' })
+
+    expect((res as any).status).toBe(503)
+    expect(handled).toHaveLength(0)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('the identity rule may not claim it, even when the user is homed here', async () => {
+    // `usr_us` is homed in this very region, so without the guard the row would
+    // be written locally and never drained — the production bug verbatim.
+    const { app, handled } = makeApp()
+    const res = await post(app, '/api/chat-queued-messages', { content: 'no session id at all' })
+
+    expect((res as any).status).toBe(503)
+    expect(handled).toHaveLength(0)
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('a non-JSON body cannot name a workspace either', async () => {
+    const { app, handled } = makeApp()
+    const res = await app.request(
+      new Request('https://us.studio.shogo.ai/api/chat-queued-messages', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: 'not json',
+      }),
+    )
+    expect((res as any).status).toBe(503)
+    expect(handled).toHaveLength(0)
+  })
+
+  test('it stays local when this region owns the session', async () => {
+    // The guard must not break the region that does own the queue.
+    const { app, handled } = makeApp()
+    const body = { sessionId: 'sess_us', content: 'hi', body: 'hi' }
+    const res = await post(app, '/api/chat-queued-messages', body)
+
+    expect(proxyCalls).toHaveLength(0)
+    expect((res as any).status).toBe(200)
+    expect(handled).toEqual([body])
   })
 })
 

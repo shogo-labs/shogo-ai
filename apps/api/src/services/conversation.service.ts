@@ -1491,6 +1491,17 @@ async function forwardPostMessage(
     { input: { ...input, createdAt: input.createdAt ? input.createdAt.toISOString() : null } },
   )
   if (routed.outcome === 'local') return null
+  if (routed.outcome === 'rejected') {
+    // The home region understood and refused (empty, too long, not a member).
+    // That answer is final — retrying it would loop — so hand it back as the
+    // caller's own error rather than a 503 that invites another attempt.
+    const answer = routed.error as { error?: unknown; message?: unknown } | null
+    throw new ConversationError(
+      refusedStatus(routed.status),
+      typeof answer?.error === 'string' ? answer.error : 'home_region_refused',
+      typeof answer?.message === 'string' ? answer.message : 'The region that serves this conversation refused the message',
+    )
+  }
   if (routed.outcome !== 'forwarded' || !routed.data?.result) {
     throw new ConversationError(
       503,
@@ -1506,6 +1517,15 @@ async function forwardPostMessage(
     from: RAW_REGION_ID,
   })
   return reviveForwardedResult(routed.data.result, conversation)
+}
+
+/**
+ * The home region's refusal as a `ConversationError` status. Only the codes the
+ * error class models are passed through; anything else is a conflict, which is
+ * the honest default — the write was refused, and the caller must not retry.
+ */
+function refusedStatus(status: number | undefined): 400 | 403 | 404 | 409 {
+  return status === 400 || status === 403 || status === 404 || status === 409 ? status : 409
 }
 
 /** The first frame outside this module — how we learn which caller wrote it. */

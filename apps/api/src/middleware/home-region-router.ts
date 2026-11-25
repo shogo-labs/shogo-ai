@@ -131,6 +131,23 @@ type OwnerKind = 'workspace' | 'platform' | 'identity'
  */
 const FAIL_CLOSED_COLLECTIONS = ['/api/chat-queued-messages']
 
+/**
+ * A *create* on a fail-closed collection (`POST /api/chat-queued-messages`).
+ *
+ * These carry their workspace only in the body, so when the body names nothing
+ * this region can resolve there is no owner to route to — and the identity rule
+ * is the wrong answer: it forwards the row to the *user's* home region, which
+ * neither drains nor deletes a queue belonging to another workspace's session.
+ * That is the incident this collection is in the list for, so an unresolvable
+ * body is refused rather than written anywhere (`homeRegionWriteProxy`).
+ */
+function isFailClosedCollectionCreate(path: string, method: string): boolean {
+  if (method.toUpperCase() !== 'POST') return false
+  // The collection itself, not `/:id` — this is about creating a row, which is
+  // the write that gets stranded. Trailing slashes match (`isFailClosed` does).
+  return FAIL_CLOSED_COLLECTIONS.some((p) => path === p || path === `${p}/`)
+}
+
 interface OwnerDecision {
   targetRegion: string
   ownerKind: OwnerKind
@@ -248,8 +265,35 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
   }
 
   // Nothing owns this write (or it's already owned here) — handle locally.
-  if (!decision) return next()
+  if (!decision) {
+    // …unless the collection exists precisely so a body-only create can be
+    // drained by the region that owns the session: with no owner we have no way
+    // to know which region that is, and a local (or identity-routed) row is
+    // stranded — the client can neither send nor delete it. Refuse instead.
+    if (mode === 'enforce' && isFailClosedCollectionCreate(path, c.req.method)) {
+      warn('fail-closed create resolves to no workspace; refusing', { path, from: RAW_REGION_ID })
+      return c.json({ error: 'home region could not be resolved for this write' }, 503)
+    }
+    return next()
+  }
   const { targetRegion, ownerKind, ownerId } = decision
+
+  // A fail-closed create must be workspace-owned, and this is checked *before*
+  // the "homed here" short-circuit: the identity owner is usually this very
+  // region, so falling through would write the row locally — the bug this
+  // collection is listed for. The user's region never drains another
+  // workspace's chat queue.
+  if (mode === 'enforce' && ownerKind !== 'workspace' && isFailClosedCollectionCreate(path, c.req.method)) {
+    warn('fail-closed create is not workspace-owned; refusing', {
+      path,
+      ownerKind,
+      ownerId,
+      homeRegion: targetRegion,
+      from: RAW_REGION_ID,
+    })
+    return c.json({ error: 'home region could not be resolved for this write' }, 503)
+  }
+
   if (targetRegion === RAW_REGION_ID) return next()
 
   const peer = getPeer(targetRegion)

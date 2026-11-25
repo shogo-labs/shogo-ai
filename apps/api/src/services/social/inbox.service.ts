@@ -58,6 +58,17 @@ async function forwardInboxWrite<T>(body: Record<string, unknown> & { workspaceI
   const routed = await routeToHomeRegion<T>(body.workspaceId, SOCIAL_INBOX_FORWARD_PATH, body)
   if (routed.outcome === 'local') return { forwarded: false }
   if (routed.outcome === 'forwarded' && routed.data) return { forwarded: true, data: routed.data }
+  if (routed.outcome === 'rejected') {
+    // A definitive refusal from home — "no account linked yet" (409), "nothing
+    // to reply to" (400). Passing it on as a 503 would tell the agent to retry a
+    // write that will never succeed, so surface the home region's own answer.
+    const answer = asRecord(routed.error)
+    throw new SocialError(
+      routed.status ?? 409,
+      typeof answer?.error === 'string' ? answer.error : 'home_region_refused',
+      typeof answer?.message === 'string' ? answer.message : 'The region that serves this workspace refused the write',
+    )
+  }
   throw new SocialError(
     503,
     'home_region_unavailable',

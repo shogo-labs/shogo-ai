@@ -31,8 +31,9 @@ mock.module('../../../lib/prisma', () => ({
   },
 }))
 
-type Outcome = 'local' | 'forwarded' | 'unavailable'
+type Outcome = 'local' | 'forwarded' | 'unavailable' | 'rejected'
 let outcome: Outcome = 'forwarded'
+let rejection: { status: number; error: unknown } = { status: 409, error: null }
 const HOME_RESULT = { messageId: 'home-message-1', providerMessageId: 'z_m1', conversationId: 'conv_1', metered: false }
 const routed: Array<{ workspaceId: string; path: string; body: any }> = []
 
@@ -41,6 +42,7 @@ mock.module('../../../lib/home-region-route', () => ({
     routed.push({ workspaceId, path, body })
     if (outcome === 'local') return { outcome: 'local' }
     if (outcome === 'forwarded') return { outcome: 'forwarded', data: HOME_RESULT }
+    if (outcome === 'rejected') return { outcome: 'rejected', ...rejection }
     return { outcome: 'unavailable' }
   },
 }))
@@ -109,6 +111,41 @@ describe('an unreachable home region is a retryable 503, never a local write', (
       expect(providerCalls).toEqual([])
     })
   }
+})
+
+describe('a refusal from the home region reaches the caller as its own answer', () => {
+  test('a 409 "no account linked" is a 409, not a retryable 503', async () => {
+    outcome = 'rejected'
+    rejection = { status: 409, error: { error: 'no_account_linked', message: 'No Instagram account is linked yet' } }
+
+    let error: any = null
+    try {
+      await replyToComment('ws_eu', 'cmt_1', { text: 'thanks!' })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).toBeInstanceOf(SocialError)
+    expect(error.status).toBe(409)
+    expect(error.code).toBe('no_account_linked')
+    expect(error.message).toBe('No Instagram account is linked yet')
+    // The provider was never called: the refusal arrived before the send.
+    expect(providerCalls).toEqual([])
+  })
+
+  test('falls back to a conflict when the peer sends no usable body', async () => {
+    outcome = 'rejected'
+    rejection = { status: 409, error: null }
+
+    let error: any = null
+    try {
+      await backfillInbox('ws_eu')
+    } catch (err) {
+      error = err
+    }
+    expect(error?.status).toBe(409)
+    expect(error?.code).toBe('home_region_refused')
+  })
 })
 
 describe('the region that owns the write still does it locally', () => {

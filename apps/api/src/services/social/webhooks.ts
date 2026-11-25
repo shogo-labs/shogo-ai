@@ -405,6 +405,18 @@ export async function handleZernioWebhook(input: ZernioWebhookInput): Promise<{ 
         body: { error: { code: 'home_region_unavailable', message: 'This workspace is served from another region right now' } },
       }
     }
+    if (routed.outcome === 'rejected') {
+      // The home region understood the event and refused it for good (no linked
+      // account, unknown profile). Zernio must not retry that, so acknowledge
+      // the delivery and record why — a 503 here would replay it forever.
+      console.warn('[social] home region refused the Zernio event', {
+        workspaceId: profile.workspaceId,
+        eventId: event.id,
+        status: routed.status,
+        error: routed.error,
+      })
+      return { status: 200, body: { ok: true, refused: true, status: routed.status } }
+    }
     if (routed.outcome === 'forwarded') return routed.data ?? { status: 200, body: { ok: true } }
     return applySocialEvent(forward)
   }

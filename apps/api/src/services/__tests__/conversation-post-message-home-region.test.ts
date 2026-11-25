@@ -14,9 +14,11 @@
  *   bun test apps/api/src/services/__tests__/conversation-post-message-home-region.test.ts
  */
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test'
 
 // --- fakes -----------------------------------------------------------------
+/** Pinned now, so the seeded rows and the code under test agree on "when". */
+const T0 = new Date('2026-11-25T05:00:00.000Z')
 const CONVERSATION = { id: 'conv_1', workspaceId: 'ws_eu', provider: 'shogo', kind: 'public', lastSeq: 4 }
 const localWrites = { seqBump: 0, insert: 0, publish: 0, memberTouch: 0 }
 
@@ -27,8 +29,8 @@ const storedRow = {
   seq: 5,
   text: 'hi',
   authorType: 'user',
-  createdTime: new Date('2026-11-25T05:00:00.000Z'),
-  createdAt: new Date('2026-11-25T05:00:00.000Z'),
+  createdTime: T0,
+  createdAt: T0,
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -75,12 +77,12 @@ mock.module('../../lib/region', () => ({
   isMultiRegionActive: () => true,
 }))
 
-type Outcome = 'local' | 'forwarded' | 'unavailable'
+type Outcome = 'local' | 'forwarded' | 'unavailable' | 'rejected'
 let outcome: Outcome = 'forwarded'
 const routed: Array<{ workspaceId: string; path: string; body: any }> = []
 const HOME_RESULT = {
-  message: { id: 'home_msg_1', conversationId: 'conv_1', seq: 9, createdAt: '2026-11-25T05:00:00.000Z' },
-  row: { id: 'home_msg_1', createdAt: '2026-11-25T05:00:00.000Z', updatedAt: '2026-11-25T05:00:00.000Z' },
+  message: { id: 'home_msg_1', conversationId: 'conv_1', seq: 9, createdAt: T0.toISOString() },
+  row: { id: 'home_msg_1', createdAt: T0.toISOString(), updatedAt: T0.toISOString() },
   mentions: [],
   duplicate: false,
 }
@@ -90,6 +92,9 @@ mock.module('../../lib/home-region-route', () => ({
     routed.push({ workspaceId, path, body })
     if (outcome === 'local') return { outcome: 'local' }
     if (outcome === 'forwarded') return { outcome: 'forwarded', data: { result: HOME_RESULT } }
+    if (outcome === 'rejected') {
+      return { outcome: 'rejected', status: 403, error: { error: 'not_a_member', message: 'Not a member of this conversation' } }
+    }
     return { outcome: 'unavailable' }
   },
 }))
@@ -97,6 +102,7 @@ mock.module('../../lib/home-region-route', () => ({
 const { postMessage, POST_MESSAGE_FORWARD_PATH } = await import('../conversation.service')
 
 beforeEach(() => {
+  setSystemTime(T0)
   outcome = 'forwarded'
   routed.length = 0
   localWrites.seqBump = 0
@@ -104,6 +110,8 @@ beforeEach(() => {
   localWrites.publish = 0
   localWrites.memberTouch = 0
 })
+
+afterEach(() => setSystemTime())
 
 describe('a message for a conversation homed elsewhere is forwarded', () => {
   test('returns the home region result and writes nothing locally', async () => {
@@ -124,7 +132,7 @@ describe('a message for a conversation homed elsewhere is forwarded', () => {
   })
 
   test('carries a createdAt across the hop as an ISO string', async () => {
-    const createdAt = new Date('2026-11-25T04:59:00.000Z')
+    const createdAt = new Date(T0.getTime() - 60_000)
     await postMessage({ conversationId: 'conv_1', text: 'hi', authorType: 'system', createdAt })
     expect(routed[0].body.input.createdAt).toBe('2026-11-25T04:59:00.000Z')
   })
@@ -139,6 +147,23 @@ describe('a message for a conversation homed elsewhere is forwarded', () => {
     }
     expect(error?.status).toBe(503)
     expect(error?.code).toBe('home_region_unavailable')
+    expect(localWrites.insert).toBe(0)
+    expect(localWrites.seqBump).toBe(0)
+  })
+
+  test('the home region refusing the message is final, not a retryable 503', async () => {
+    // "Not a member" cannot be fixed by sending it again. Surfacing a 503 here
+    // made the agent retry a message the home region will never accept.
+    outcome = 'rejected'
+    let error: any = null
+    try {
+      await postMessage({ conversationId: 'conv_1', text: 'hi', authorType: 'user' })
+    } catch (err) {
+      error = err
+    }
+    expect(error?.status).toBe(403)
+    expect(error?.code).toBe('not_a_member')
+    expect(error?.message).toBe('Not a member of this conversation')
     expect(localWrites.insert).toBe(0)
     expect(localWrites.seqBump).toBe(0)
   })
