@@ -584,7 +584,7 @@ async function awaitLfsPush(
  * and re-quarantined 525 MB every ten minutes for six days (SHO-584); the host
  * blocks rotation on this code instead.
  */
-function lfsPushFailureBody(err: LfsPushError) {
+export function lfsPushFailureBody(err: LfsPushError) {
   const corrupt = err.reason === 'repo-corrupt'
   return {
     error: `lfs push failed (${err.reason}): ${err.message}`,
