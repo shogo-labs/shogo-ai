@@ -17,13 +17,13 @@
  * place of the status line, so the recovery UI still owns the body when there
  * is something to recover from.
  */
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { RefreshCw } from "lucide-react-native";
 import { Spinner } from "@/components/ui/spinner";
 import { isPhoneLayout } from "../../lib/native-phone-layout";
 import { ProjectSurfaceHeader } from "./ProjectSurfaceHeader";
-import { usePhoneScreenHeaderInset } from "../layout/PhoneScreenHeader";
+import { usePhoneScreenHeaderPadding } from "../layout/PhoneScreenHeader";
 
 export type ProjectLoadingPhase = "project" | "runtime";
 
@@ -64,7 +64,13 @@ export function ProjectLoadingSurface({
 }: ProjectLoadingSurfaceProps) {
   const { width, height } = useWindowDimensions();
   const phone = isPhoneLayout(width, height);
-  const header = usePhoneScreenHeaderInset();
+  // The header is one glass row, so the safe-area padding is the right first
+  // frame; the measurement only refines it. `ProjectSurfaceHeader.onHeight`
+  // reports a number, not a layout event, so the height is held here (the same
+  // way app/(app)/project-surface/[id].tsx does) rather than reusing the
+  // event-shaped `usePhoneScreenHeaderInset` handler.
+  const unmeasuredHeader = usePhoneScreenHeaderPadding();
+  const [measuredHeader, setMeasuredHeader] = useState(0);
   const status =
     phase === "runtime" ? "Starting your project…" : "Loading project...";
 
@@ -73,9 +79,13 @@ export function ProjectLoadingSurface({
       <ProjectSurfaceHeader
         projectId={projectId}
         title={title}
-        onHeight={header.onLayout}
+        onHeight={setMeasuredHeader}
       />
-      <View className="flex-1" style={{ paddingTop: phone ? header.height : 0 }}>
+      <View
+        className="flex-1"
+        testID="project-loading-body"
+        style={{ paddingTop: phone ? measuredHeader || unmeasuredHeader : 0 }}
+      >
         {/* The phone header carries the name; everywhere else the surface does. */}
         {!phone && (
           <Text

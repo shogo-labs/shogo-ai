@@ -16,14 +16,21 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { createContext, createElement, type ReactNode } from 'react'
+import { act, createContext, createElement, type ReactNode } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
+
+/** The onLayout each view was given, so a test can report a real layout. */
+const layouts: Array<(event: unknown) => void> = []
 
 const flatStyle = (style: any) =>
   Array.isArray(style) ? Object.assign({}, ...style.flat(Infinity).filter(Boolean)) : style
 
 const View = (props: Record<string, any>) => {
   const { children, onLayout, testID, style, ...rest } = props
+  // Collect rather than drop: the surface pads its body from the header's
+  // measured height, and a shim that swallowed `onLayout` hid a crash there
+  // (QA on #2258 — `onHeight` takes a number, the inset hook takes an event).
+  if (typeof onLayout === 'function') layouts.push(onLayout)
   return createElement(
     'div',
     { ...rest, 'data-rn-shim': testID, 'data-testid': testID, style: flatStyle(style) },
@@ -75,6 +82,7 @@ mock.module(resolve(import.meta.dir, '../../../contexts/domain'), () => ({
 }))
 
 const { ProjectLoadingSurface } = await import('../ProjectLoadingSurface')
+const { phoneScreenHeaderHeight } = await import('../../layout/PhoneScreenHeader')
 
 const renderSurface = (props: Record<string, any> = {}) =>
   render(
@@ -89,7 +97,12 @@ const renderSurface = (props: Record<string, any> = {}) =>
 
 beforeEach(() => {
   cleanup()
+  layouts.length = 0
 })
+
+/** The header's own layout, as React Native would report it after a phone layout. */
+const reportHeaderLayout = (height: number) =>
+  act(() => [...layouts].forEach((onLayout) => onLayout({ nativeEvent: { layout: { height } } })))
 
 describe('SHO-581 — project open draws its surface', () => {
   test('AC1: the name, the tab strip and the chat panel draw while the row loads', () => {
@@ -143,5 +156,21 @@ describe('SHO-581 — project open draws its surface', () => {
 
     expect(screen.getByTestId('capacity-card')).toBeTruthy()
     expect(screen.queryByText('Starting your project…')).toBeNull()
+  })
+
+  test('the body sits under the glass header, measured or not (QA #2258 regression)', () => {
+    renderSurface()
+
+    // First frame: the safe area plus one header row, so the panel never starts
+    // under the glass. `onHeight` reports a number, not a LayoutChangeEvent —
+    // passing an event handler here crashed every phone-width project open.
+    const body = screen.getByTestId('project-loading-body') as HTMLElement
+    expect(phoneScreenHeaderHeight(INSETS.top)).toBe(97)
+    expect(body.style.paddingTop).toBe('97px')
+
+    reportHeaderLayout(120)
+    expect(body.style.paddingTop).toBe('120px')
+    // The frame survives the measurement: nothing is lost on re-render.
+    expect(screen.getByTestId('project-loading-skeleton')).toBeTruthy()
   })
 })
