@@ -469,27 +469,55 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     console.log(`[qa-sho551] pods at rest: ${atRest}`)
     expect(atRest, "one replica at rest").toBeGreaterThanOrEqual(1)
 
-    const deadline = Date.now() + 60_000
-    const pids: string[] = []
-    while (Date.now() < deadline) {
-      pids.push(
-        `${await page.request.get(`${LIVE}/`, { failOnStatusCode: false, timeout: 15_000 }).then((r) => r.status())}`,
-      )
-      await sleep(250)
+    // Knative's threshold for this revision is `target` (50) × the cluster's
+    // container-concurrency-target-percentage (70%) = 35 concurrent requests on
+    // one pod. A serial loop (one request, sleep 250ms ≈ 4 rps, concurrency 1)
+    // can never cross that, so it proved nothing about scale-out; 64 parallel
+    // workers do. Two things are asserted, not assumed: the load really carried
+    // more than 35 requests in flight, and the pod count is sampled *while* it
+    // runs — polling after the load would see a correctly scaled-back app.
+    const SCALE_THRESHOLD = 35
+    const WORKERS = 64
+    const LOAD_MS = 90_000
+    let inflight = 0
+    let peakInflight = 0
+    let loadRequests = 0
+    const loadDeadline = Date.now() + LOAD_MS
+    const loadWorker = async () => {
+      while (Date.now() < loadDeadline) {
+        inflight += 1
+        peakInflight = Math.max(peakInflight, inflight)
+        await page.request
+          .get(`${LIVE}/api/${routePath}?limit=5`, { failOnStatusCode: false, timeout: 15_000 })
+          .then((r) => r.status())
+          .catch(() => 0)
+        inflight -= 1
+        loadRequests += 1
+      }
     }
-    const podsUnderLoad = await poll(
-      "a second pod under load",
-      async () => {
-        const n = publishedPods(projectId).length
-        return n >= 2 ? n : null
-      },
-      180_000,
-    )
+    const [podsUnderLoad] = await Promise.all([
+      poll(
+        "a second pod under load",
+        async () => {
+          const n = publishedPods(projectId).length
+          return n >= 2 ? n : null
+        },
+        150_000,
+      ),
+      Promise.all(Array.from({ length: WORKERS }, () => loadWorker())),
+    ])
     evidence.podsUnderLoad = podsUnderLoad
-    evidence.loadRequestCount = pids.length
+    evidence.peakInflight = peakInflight
+    evidence.loadRequestCount = loadRequests
     saveEvidence()
-    console.log(`[qa-sho551] pods under load: ${podsUnderLoad} after ${pids.length} requests`)
-    expect(podsUnderLoad, "Knative must scale to two pods under 60s of load").toBeGreaterThanOrEqual(2)
+    console.log(
+      `[qa-sho551] load: ${loadRequests} requests, peak in-flight ${peakInflight} (threshold ${SCALE_THRESHOLD}); pods under load: ${podsUnderLoad}`,
+    )
+    expect(
+      peakInflight,
+      "the load must exceed the autoscaler's concurrency target, or 'one pod' proves nothing",
+    ).toBeGreaterThan(SCALE_THRESHOLD)
+    expect(podsUnderLoad, "Knative must scale to two pods under load").toBeGreaterThanOrEqual(2)
 
     // A write on one pod, read back from the other: shared Postgres, not a
     // per-pod SQLite file.
