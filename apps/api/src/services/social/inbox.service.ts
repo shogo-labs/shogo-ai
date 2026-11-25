@@ -24,6 +24,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { routeToHomeRegion } from '../../lib/home-region-route'
 import { SocialError, getSocialClient } from './client'
 import { inAccountScope, scopedAccountIds } from './accounts.service'
 import { ensureProfile } from './profiles.service'
@@ -31,6 +32,38 @@ import { zernioId } from './provider-ids'
 import { meterOutboundMessage } from './usage.service'
 
 const db = prisma as any
+
+/**
+ * The home region's half of a forwarded inbox write (`POST
+ * /api/internal/social/inbox`). The user routes carry the workspace in the path
+ * and are proxied by the home-region router, but the agent surface
+ * (`agentSocialRoutes`) is mounted under `/api/internal`, which the router
+ * skips — so the guard has to live at the service, once, for both.
+ */
+export const SOCIAL_INBOX_FORWARD_PATH = '/api/internal/social/inbox'
+
+type ForwardOutcome<T> = { forwarded: false } | { forwarded: true; data: T }
+
+/**
+ * Run an inbox write in the workspace's home region.
+ *
+ * Must be the first thing the write does: a reply is sent to the provider
+ * before it is stored, so forwarding after the send would deliver the message
+ * twice (once from here, once from home). Returns `{ forwarded: true }` with the
+ * home region's result, `{ forwarded: false }` when this region owns the write,
+ * and throws a retryable 503 when the home region is unreachable — it never
+ * falls back to writing locally.
+ */
+async function forwardInboxWrite<T>(body: Record<string, unknown> & { workspaceId: string }): Promise<ForwardOutcome<T>> {
+  const routed = await routeToHomeRegion<T>(body.workspaceId, SOCIAL_INBOX_FORWARD_PATH, body)
+  if (routed.outcome === 'local') return { forwarded: false }
+  if (routed.outcome === 'forwarded' && routed.data) return { forwarded: true, data: routed.data }
+  throw new SocialError(
+    503,
+    'home_region_unavailable',
+    'This workspace is served from another region right now — retry in a moment',
+  )
+}
 
 /** Provider events this module writes rows for (a subset of what it receives). */
 export const INBOX_EVENT_TYPES = new Set([
@@ -701,6 +734,23 @@ export async function replyToConversation(
   input: ReplyInput,
   projectId?: string | null,
 ) {
+  const routed = await forwardInboxWrite<Awaited<ReturnType<typeof replyToConversationHere>>>(
+    { workspaceId, kind: 'reply-conversation', conversationId, input, projectId: projectId ?? null },
+  )
+  if (routed.forwarded) return routed.data
+  return replyToConversationHere(workspaceId, conversationId, input, projectId)
+}
+
+/**
+ * The write itself, run by whichever region owns the workspace (see
+ * `forwardInboxWrite`). Never routes.
+ */
+export async function replyToConversationHere(
+  workspaceId: string,
+  conversationId: string,
+  input: ReplyInput,
+  projectId?: string | null,
+) {
   const text = typeof input.text === 'string' ? input.text.trim() : ''
   if (!text) throw new SocialError(400, 'empty_message', 'A reply needs text')
   if (text.length > 9_000) throw new SocialError(400, 'message_too_long', 'Keep a DM under 9,000 characters')
@@ -782,6 +832,20 @@ export async function replyToConversation(
  * the post.
  */
 export async function replyToComment(
+  workspaceId: string,
+  commentId: string,
+  input: ReplyInput,
+  projectId?: string | null,
+) {
+  const routed = await forwardInboxWrite<Awaited<ReturnType<typeof replyToCommentHere>>>(
+    { workspaceId, kind: 'reply-comment', commentId, input, projectId: projectId ?? null },
+  )
+  if (routed.forwarded) return routed.data
+  return replyToCommentHere(workspaceId, commentId, input, projectId)
+}
+
+/** The write itself (see `forwardInboxWrite`). Never routes. */
+export async function replyToCommentHere(
   workspaceId: string,
   commentId: string,
   input: ReplyInput,
@@ -882,6 +946,17 @@ function listOf(payload: any, ...keys: string[]): any[] {
  * through the same upserts the webhook path uses.
  */
 export async function backfillInbox(workspaceId: string, options: { limit?: number } = {}): Promise<BackfillResult> {
+  const routed = await forwardInboxWrite<BackfillResult>({
+    workspaceId,
+    kind: 'backfill',
+    limit: options.limit ?? null,
+  })
+  if (routed.forwarded) return routed.data
+  return backfillInboxHere(workspaceId, options)
+}
+
+/** The sweep itself (see `forwardInboxWrite`). Never routes. */
+export async function backfillInboxHere(workspaceId: string, options: { limit?: number } = {}): Promise<BackfillResult> {
   const profile = await ensureProfile(workspaceId, await workspaceName(workspaceId))
   const client = getSocialClient()
   const pageSize = clampLimit(options.limit, 50, 100)

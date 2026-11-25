@@ -260,6 +260,70 @@ underlying `storage_usage`-style multi-master conflicts are addressed
 at the application layer (mark those tables region-local so they don't
 ride logical replication at all).
 
+#### Reading the conflict out of the database (SHO-585)
+
+Do not grep `kubectl logs --since=15m` for the LSN. The 2026-11-24 outage
+proved the log is the wrong source: the error had aged out of the window, so
+the watchdog concluded "no known-safe conflict" and re-enabled the
+subscription, which failed again seconds later — for 10 hours. The failing
+transaction is recoverable from the database, and this is what
+`conflict-watchdog.yaml` now does on every run:
+
+```sql
+-- 1. Where our apply worker actually is, for the subscription's origin
+--    (origin name is `pg_<suboid>`).
+SELECT remote_lsn
+FROM pg_replication_origin_status
+WHERE external_id = 'pg_' || (SELECT oid FROM pg_subscription WHERE subname = 'sub_from_eu');
+
+-- 2. Peek the publisher's slot over the subscription's OWN conninfo (that role
+--    already holds REPLICATION). Peeking never advances the slot.
+SELECT pg_logical_slot_peek_binary_changes(
+  'sub_from_eu_slot', NULL, 200, 'proto_version', '1', 'publication_names', 'shogo_all_pub');
+```
+
+The first `Begin` message whose `final_lsn` is greater than `remote_lsn` is the
+transaction the apply worker refused, and the `Relation`/`Insert`/`Update`
+messages in it name the row. Decode a `Begin` into an LSN with
+
+```sql
+SELECT format('%s/%s',
+  to_hex((('x'||encode(substring(data from 2 for 8),'hex'))::bit(64)::bigint >> 32)),
+  to_hex((('x'||encode(substring(data from 2 for 8),'hex'))::bit(64)::bigint & 4294967295)));
+```
+
+(That is the whole of the `skip-loop.py` that was run by hand on 2026-11-25,
+now in `conflict-watchdog.yaml` — the job prints
+`WATCHDOG_SKIP sub= relation= lsn= keys=` and skips at exactly that LSN.)
+
+Classify the conflict from PG18's own counters rather than from log text: a
+rise in `pg_stat_subscription_stats.confl_insert_exists`,
+`confl_update_exists` or `confl_multiple_unique_conflicts` between two runs is
+the known-safe class. On a PostgreSQL without those columns the job falls back
+to the log grep, which is why the outage was possible.
+
+#### A stalled subscription (the mesh is silently down)
+
+`conflict-watchdog` prints `REPLICATION_STALLED sub=<name> minutes=<n>` and
+exits non-zero when a subscription's origin `remote_lsn` has not advanced for
+`STALL_MIN` (15) minutes while the publisher still has WAL beyond it — whether
+or not the subscription is enabled. The SigNoz alert `ReplicationStalled` pages
+on that marker.
+
+```bash
+kubectl get jobs -n shogo-production-system | grep conflict-watchdog
+kubectl logs -n shogo-production-system job/<newest> | grep -E 'REPLICATION_STALLED|WATCHDOG_'
+```
+
+* `WATCHDOG_PEER_UNREACHABLE` — the *publisher* is unreachable from here; check
+  the peer region's API/DB before treating this side as broken.
+* `WATCHDOG_ENABLE_BUDGET_EXHAUSTED` — the subscription has been disabled for an
+  unknown reason `MAX_BLIND_ENABLE` (3) runs in a row and is deliberately left
+  disabled. Read the conflict out of the database (above) and decide skip vs
+  fix-the-row.
+* `WATCHDOG_CONFLICT_NO_LSN` — the counters say a known-safe conflict happened
+  but no LSN could be found; nothing was skipped on purpose.
+
 `disable_on_error = true` flips the apply worker from "crash-restart
 loop" to "stop on first error and stay disabled until an operator
 runs `ALTER SUBSCRIPTION ... ENABLE`". This is the correct default for

@@ -38,7 +38,7 @@ import type { Context, Next } from 'hono'
 import { prisma } from '../lib/prisma'
 import { RAW_REGION_ID, PRIMARY_REGION, REGION_PEERS, getPeer } from '../lib/region'
 import { proxyToPeer, isProxiedRequest } from '../lib/region-peer-proxy'
-import { resolveWorkspaceIdForRequest } from '../lib/resolve-workspace-id'
+import { resolveWorkspaceIdForRequest, FORWARD_BODY_KEY } from '../lib/resolve-workspace-id'
 import { resolveUserHomeRegionUserId } from '../lib/resolve-user-id'
 
 export type HomeRegionRoutingMode = 'off' | 'shadow' | 'enforce'
@@ -98,6 +98,7 @@ const FAIL_CLOSED_PREFIXES = [
 function isFailClosed(path: string): boolean {
   return (
     FAIL_CLOSED_PREFIXES.some((p) => path.startsWith(p)) ||
+    FAIL_CLOSED_COLLECTIONS.some((p) => path === p || path.startsWith(`${p}/`)) ||
     // redeem-license lives under /api/workspaces/:id/redeem-license
     path.includes('/redeem-license')
   )
@@ -121,6 +122,14 @@ function isAffineChatPath(path: string): boolean {
 }
 
 type OwnerKind = 'workspace' | 'platform' | 'identity'
+
+/**
+ * Write surfaces that must never be written locally when the home region is
+ * unreachable: a queued chat message is drained and deleted by the region that
+ * owns its session (SHO-585), so a local row is stranded for good — the client
+ * can neither send nor delete it. Fail closed with a retryable 503 instead.
+ */
+const FAIL_CLOSED_COLLECTIONS = ['/api/chat-queued-messages']
 
 interface OwnerDecision {
   targetRegion: string
@@ -175,6 +184,19 @@ async function resolveOwner(c: Context, path: string): Promise<OwnerDecision | n
 
 function warn(message: string, fields: Record<string, unknown>) {
   console.warn(`[home-region-router] ${message}`, fields)
+}
+
+/**
+ * The bytes the resolver consumed while reading a body-only create's JSON.
+ *
+ * A proxy hop must carry them: the resolver's `c.req.json()` has already drained
+ * the request stream, so forwarding `c.req.raw.body` would send an empty body
+ * and the peer would answer a validation error for a request the caller made
+ * correctly. Undefined when nothing was read — `proxyToPeer` then streams the
+ * untouched body as before.
+ */
+function consumedBody(c: Context): string | undefined {
+  return c.get(FORWARD_BODY_KEY) as string | undefined
 }
 
 export async function homeRegionWriteProxy(c: Context, next: Next) {
@@ -275,5 +297,5 @@ export async function homeRegionWriteProxy(c: Context, next: Next) {
     homeRegion: targetRegion,
     from: RAW_REGION_ID,
   })
-  return proxyToPeer(c, targetRegion)
+  return proxyToPeer(c, targetRegion, { body: consumedBody(c) })
 }

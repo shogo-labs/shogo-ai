@@ -52,6 +52,7 @@ mock.module('../../lib/resolve-workspace-id', () => ({
     if (resolveThrows) throw new Error('boom')
     return resolved
   },
+  FORWARD_BODY_KEY: 'homeRegionForwardBody',
 }))
 
 let resolvedUser: string | null = null
