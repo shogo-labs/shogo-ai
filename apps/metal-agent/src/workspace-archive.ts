@@ -44,6 +44,7 @@
 
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
+import { memoryBody, quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject, type S3Target } from './s3-conditional'
 
 /** A durable source archive plus the S3 ETag that anchors its lineage. */
@@ -77,7 +78,12 @@ export type BackupWriteOutcome =
   | { status: 'promoted'; etag: string | null; supersededKey: string }
   | {
       status: 'conflict'
-      quarantineKey: string
+      /**
+       * Where the refused bytes were parked. `null` means they were NOT saved —
+       * the project is over its daily quarantine cap, so the caller must treat
+       * the export as lost (it can never authorise destroying a VM).
+       */
+      quarantineKey: string | null
       currentEtag: string | null
       /**
        * Why we quarantined: a lineage mismatch, the size backstop tripping, or
@@ -357,7 +363,13 @@ export async function describeWorkspaceArchive(
 export async function uploadWorkspaceArchiveGuarded(
   projectId: string,
   bytes: Uint8Array,
-  opts: { parentEtag?: string | null; adoptWhenUnknown?: boolean; untrusted?: boolean },
+  opts: {
+    parentEtag?: string | null
+    adoptWhenUnknown?: boolean
+    untrusted?: boolean
+    /** Dedupe slots + daily cap for `conflict/` (see quarantine.ts). */
+    quarantine?: QuarantineBookkeeping
+  },
   cfg: MetalConfig,
 ): Promise<BackupWriteOutcome> {
   const s3 = workspaceS3(cfg)
@@ -365,10 +377,23 @@ export async function uploadWorkspaceArchiveGuarded(
 
   const key = archiveKey(projectId)
   const file = s3.client.file(key)
+  // Every refused byte lands through the shared helper: identical copies are
+  // not re-uploaded and a project over its daily cap writes nothing (SHO-584).
+  // `null` back means NOT SAVED, which every caller already treats as `lost`.
+  const park = (body: Uint8Array, qkey: string): Promise<string | null> =>
+    quarantinedCopy({
+      projectId,
+      kind: 'source',
+      body: memoryBody(body),
+      key: qkey,
+      write: (k) => s3.client.write(k, body, { type: 'application/gzip' }).then(() => {}),
+      state: opts.quarantine?.state,
+      onChange: opts.quarantine?.onChange,
+      dailyCap: quarantineDailyCap(cfg),
+    })
 
   if (opts.untrusted) {
-    const qkey = quarantineKey(projectId)
-    await s3.client.write(qkey, bytes, { type: 'application/gzip' })
+    const qkey = await park(bytes, quarantineKey(projectId))
     const currentEtag = (await file.exists()) ? (await statMeta(file)).etag : null
     return { status: 'conflict', quarantineKey: qkey, currentEtag, reason: 'untrusted' }
   }
@@ -409,8 +434,7 @@ export async function uploadWorkspaceArchiveGuarded(
     return { etag: res.etag ?? (await statEtag(file)) }
   }
   const racedQuarantine = async (): Promise<BackupWriteOutcome> => {
-    const qkey = quarantineKey(projectId)
-    await s3.client.write(qkey, bytes, { type: 'application/gzip' })
+    const qkey = await park(bytes, quarantineKey(projectId))
     return { status: 'conflict', quarantineKey: qkey, currentEtag, reason: 'lineage' }
   }
   const written = async (status: 'created' | 'written' | 'adopted'): Promise<BackupWriteOutcome> => {
@@ -431,9 +455,12 @@ export async function uploadWorkspaceArchiveGuarded(
       // is inferred from a size threshold, not proven, and a copy costs one PUT
       // against permanently destroying a small project that tripped the
       // heuristic. Stash first so a failure here refuses the write rather than
-      // taking the object with it.
-      const supersededKey = quarantineKey(projectId)
-      await s3.client.write(supersededKey, await file.arrayBuffer(), { type: 'application/gzip' })
+      // taking the object with it. A capped stash (null) is a FAILED stash: the
+      // placeholder would be unrecoverable, so the promotion does not happen.
+      const supersededKey = await park(await file.arrayBuffer().then((b) => new Uint8Array(b)), quarantineKey(projectId))
+      if (!supersededKey) {
+        return { status: 'conflict', quarantineKey: null, currentEtag, reason: 'lineage' }
+      }
       const res = await writeDurable()
       return res === 'raced' ? racedQuarantine() : { status: 'promoted', etag: res.etag, supersededKey }
     }
@@ -443,8 +470,7 @@ export async function uploadWorkspaceArchiveGuarded(
       // NEVER clobber: divert to a quarantine key so the bytes are recoverable
       // + investigable. `reason` distinguishes the two so ops can tell a benign
       // lineage race from the backstop catching a real clobber attempt.
-      const qkey = quarantineKey(projectId)
-      await s3.client.write(qkey, bytes, { type: 'application/gzip' })
+      const qkey = await park(bytes, quarantineKey(projectId))
       const reason: 'lineage' | 'size-regression' = isTemplateRegression(cur.size, bytes.byteLength)
         ? 'size-regression'
         : 'lineage'

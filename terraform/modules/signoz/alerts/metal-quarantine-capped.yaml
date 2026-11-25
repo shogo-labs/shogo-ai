@@ -1,0 +1,102 @@
+# SigNoz alert: a project is being CAPPED out of writing to `conflict/`
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules).
+#
+# Why: a refused export is parked under `conflict/`, and until SHO-584 nothing
+# limited how often that could happen. One VM adopted mid-open wrote 10,391
+# identical 525 MB copies in six days (5.4 TB) because every retry of a recycle
+# that could never succeed re-quarantined the source. The daily cap stops the
+# bytes, but a capped project is a project whose exports are NOT being saved:
+# the pool treats a capped copy as "not saved", so the VM can neither be
+# destroyed nor rotated on the strength of it. That is a human's decision, and
+# it should not sit silently in a journal line.
+#
+# `metal_quarantine_capped_total` is a counter, reported `{kind="source"|"data"
+# |"home"|"repo"}`, folded into the heartbeat as
+# `metal.host.counter{counter="metal_quarantine_capped_total{kind=\"…\"}"}` and
+# also served on the agent's Prometheus `/metrics`.
+#
+# Any increment at all in the window is the signal: the cap is 24 writes per
+# project per UTC day, which a healthy fleet never reaches. A healthy fleet has
+# no series at all (old agents omit `counters`), so alertOnAbsent stays off.
+
+alert: MetalQuarantineCapped
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: ""
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.counter
+              spaceAggregation: sum
+              timeAggregation: increase
+          filter:
+            expression: "counter LIKE 'metal_quarantine_capped_total%'"
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} capped quarantine writes"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 0
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 1h
+    frequency: 5m
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
+annotations:
+  summary: "A project hit its daily quarantine cap — its exports are not being saved ({{host_id}})"
+  description: |-
+    A metal runtime has made more quarantine writes in a UTC day than
+    METAL_QUARANTINE_DAILY_CAP allows (default 24, all archive kinds together),
+    so further refused copies are NOT written and the caller is told "not
+    saved". `metal_quarantine_capped_total` keeps climbing for as long as the
+    project keeps trying.
+
+    A capped project is stuck: its VM cannot be destroyed or rotated on the
+    strength of a copy that does not exist, and whatever it holds is not in the
+    durable backups. The cap is what stops the 525 MB-every-ten-minutes loop
+     (SHO-584), not a fix for it — something above is retrying an export that
+    cannot succeed.
+
+    Triage:
+    1. `metal_quarantine_deduped_total` — is the copy the same bytes every time?
+       A steady dedupe rate with a cap hit means one static archive and no
+       progress.
+    2. `metal_repo_corrupt_total` / the VM's `repoCorruptFailure` on `/status`
+       — a corrupt `.git` is the usual "can never back up" state. Rotation is
+       blocked on it for 6 h at a time.
+    3. `metal_mid_open_adopted_total` — was this VM adopted mid-open (its
+       assign cut off by a restart)? Those are retired without a snapshot.
+    4. `/vms` for the project's `durability` and `rotationBlocked` fields, then
+       the dal-2 / region journal for `REFUSED to suspend` and
+       `Export quarantined`.
+
+    Runbook: docs/runbooks/metal-fleet.md

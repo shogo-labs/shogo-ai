@@ -575,11 +575,20 @@ async function awaitLfsPush(
   return { state, job }
 }
 
-/** The 503 body for a failed push: the reason, the real stderr, and what is missing. */
+/**
+ * The 503 body for a failed push: the reason, the real stderr, and what is missing.
+ *
+ * A CORRUPT repository gets its own `code` (`repo-corrupt`) rather than
+ * `lfs-push-failed`: the host must not treat it as a transient push failure and
+ * retry, because the same objects are missing next time. Retrying it re-exported
+ * and re-quarantined 525 MB every ten minutes for six days (SHO-584); the host
+ * blocks rotation on this code instead.
+ */
 function lfsPushFailureBody(err: LfsPushError) {
+  const corrupt = err.reason === 'repo-corrupt'
   return {
     error: `lfs push failed (${err.reason}): ${err.message}`,
-    code: 'lfs-push-failed',
+    code: corrupt ? 'repo-corrupt' : 'lfs-push-failed',
     reason: err.reason,
     stderr: err.stderr.slice(0, 16_000),
     missing: err.missing,
