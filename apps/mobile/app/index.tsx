@@ -52,7 +52,7 @@ export default function RootIndex() {
   }, [platformConfig.configLoaded, platformConfig.localMode, isAuthenticated, authLoading, refreshSession])
 
   useEffect(() => {
-    if (!isAuthenticated || authLoading || !user?.id) return
+    if (!isAuthenticated || authLoading) return
     fetch(`${API_URL}/api/me`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: any) => {
@@ -60,7 +60,7 @@ export default function RootIndex() {
         // else (error body, missing field) fails open like a network error.
         const completed = data?.data?.onboardingCompleted !== false
         setOnboardingCompleted(completed)
-        rememberOnboardingCompleted(user.id, completed)
+        if (user?.id) rememberOnboardingCompleted(user.id, completed)
       })
       .catch(() => setOnboardingCompleted(true))
   }, [isAuthenticated, authLoading, user?.id])
