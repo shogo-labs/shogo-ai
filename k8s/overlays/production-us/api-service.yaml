@@ -275,14 +275,19 @@ spec:
             # docs/runbooks/published-images.md — the Secret and the egress rule
             # are manual per region, and PUBLISH_BUILD_IMAGES=off rolls back
             # without unsetting these.
-            # Pinned off until SHO-551 lands (KIF CRM, 2026-11-24): the SQLite→Postgres
-            # seed refuses orphaned rows, published pods never swap db.ts/provider to
-            # Postgres, and metal-hosted editors can't upload the image artifact.
-            # Turn each on only after it is verified end to end on staging.
+            # SHO-551: the Postgres rollout starts with two named projects, not
+            # the region. A comma-separated list means "on for these, off for
+            # everyone else", so the stop-gap (#2222) is still in force for every
+            # other server app while KIF CRM and Nada App move.
+            #   PUBLISH_POSTGRES      — which projects get a Postgres environment
+            #   PUBLISH_BUILD_IMAGES  — which projects build a per-commit image
+            # Both are needed: a Postgres environment must run its own `-pg`
+            # image (a shared-runtime pod hydrates the SQLite build).
+            # Widening this to `on` for the region is a separate decision.
             - name: PUBLISH_POSTGRES
-              value: "off"
+              value: "5925615d-0157-44d3-a114-41b35a14785e,c7d51ded-aa79-42a5-8e48-2b10222d743d"
             - name: PUBLISH_BUILD_IMAGES
-              value: "off"
+              value: "5925615d-0157-44d3-a114-41b35a14785e,c7d51ded-aa79-42a5-8e48-2b10222d743d"
             - name: PUBLISH_BUILD_REGISTRY
               value: "us-ashburn-1.ocir.io"
             - name: PUBLISH_BUILD_NAMESPACE
