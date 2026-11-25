@@ -286,6 +286,7 @@ model Workspace {
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
+  shogoCreditGrants      ShogoCreditGrant[]
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   storageUsageDaily      StorageUsageDaily[]
@@ -1792,6 +1793,46 @@ enum UsageSource {
   overage
   window
   promo
+}
+
+/**
+ * Bonus usage credit, called **Shogo credit** in the product (SHO-572).
+ *
+ * One row per grant, so every source has its own remaining balance, its own
+ * expiry and its own audit trail. The spendable balance is the sum of
+ * `remainingUsd` over live rows; `services/shogo-credit.service.ts` is the
+ * only writer.
+ *
+ * Credit pays for **Hoshi models only** (Russell, 2026-11-25) and only where a
+ * call site opts in — voice, media, published apps and the hourly jobs never
+ * touch it. `UsageWallet.promoCredit*` are the pre-grant columns: no longer
+ * written, kept one release for the migration and for older pods.
+ */
+model ShogoCreditGrant {
+  id           String    @id @default(uuid())
+  /// The workspace whose credit this is. A child workspace pools its parent's
+  /// (the same billing workspace its wallet resolves to).
+  workspaceId  String
+  /// `signup` (the staged $2 → $8 signup credit), `learn_reward` (SHO-573) or
+  /// `admin` (a support top-up). Plain string, validated in the service.
+  source       String
+  /// Idempotency key within a source: `signup:<workspaceId>:stage1`, or the
+  /// LinkedIn share that earned the reward ref. A repeat grant is a no-op.
+  sourceRef    String
+  amountUsd    Float
+  remainingUsd Float
+  /// When the unspent balance expires. `null` = never (learn rewards).
+  expiresAt    DateTime?
+  /// Set when an admin revokes the grant; a revoked row is never spent and
+  /// does not count in the balance.
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([source, sourceRef])
+  @@index([workspaceId, expiresAt])
+  @@map("shogo_credit_grants")
 }
 
 /// Signup risk assessment, one row per new account. Written from the Better

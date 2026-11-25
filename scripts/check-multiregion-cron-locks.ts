@@ -179,7 +179,7 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     fn: 'runExpireSignupCredits',
     file: 'apps/api/src/jobs/expire-signup-credits.ts',
     reason:
-      'Each region zeroes only the expired signup promo credit on usage_wallets it owns, via homeWorkspaceIds() inside expireSignupCredits(). usage_wallets is never replicated, so a global lock would let one region settle a peer-owned wallet it cannot see.',
+      'Each region settles only the expired signup Shogo credit grants (shogo_credit_grants) on workspaces it owns, via homeWorkspaceIds() inside expireSignupCredits(). Grants are published (every region holds a copy) but have one writer per workspace — its home region — so a global lock would serialize peers while one region settled a grant against its peer-owned copy, which last_update_wins cannot merge.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
@@ -368,6 +368,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'external_global_id',
     reason:
       'Stripe assigns the card fingerprint and it is globally stable per card. The dedupe check is racy only if the same card starts two trials in two regions within the same second; the second is still cancelled by the subscription webhook path.',
+  },
+  {
+    key: 'ShogoCreditGrant.(source,sourceRef)',
+    category: 'request_scoped',
+    reason:
+      'SHO-572: the ref embeds the workspace id (`signup:<workspaceId>:stage1`, a LinkedIn share ref), so a duplicate key can only ever collide inside one workspace\'s own grants — never across tenants. Debits are home-routed inside the billing transaction that already home-routed the wallet, and a grant writer in another region inserts the same key into the same workspace, which `grantShogoCredit` treats as the same grant (P2002 → existing row) instead of a second payout.',
   },
   // --- random secrets / cryptographically-unique tokens --------------------
   {

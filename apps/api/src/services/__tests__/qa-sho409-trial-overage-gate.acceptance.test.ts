@@ -62,6 +62,19 @@ type Wallet = {
   promoCreditUsd: number
   promoCreditExpiresAt: Date | null
 }
+/** Shogo credit lives in grants now (SHO-572), not on the wallet. */
+type CreditGrant = {
+  id: string
+  workspaceId: string
+  source: string
+  sourceRef: string
+  amountUsd: number
+  remainingUsd: number
+  expiresAt: Date | null
+  revokedAt: Date | null
+  createdAt: Date
+}
+
 type Grant = {
   id: string
   workspaceId: string
@@ -313,6 +326,88 @@ const prismaApi: any = {
     findUnique: async () => null,
     findFirst: async () => null,
   },
+  shogoCreditGrant: {
+    findFirst: async ({ where }: any) => {
+      const now = where?.OR?.[1]?.expiresAt?.gt ?? new Date()
+      const rows = creditGrants
+        .filter((g) =>
+          g.workspaceId === where.workspaceId &&
+          g.remainingUsd > 0 &&
+          g.revokedAt === null &&
+          (g.expiresAt === null || (g.expiresAt as Date).getTime() > new Date(now).getTime()),
+        )
+        .sort((a, b) => {
+          const at = a.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+          const bt = b.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+          return at - bt || a.createdAt.getTime() - b.createdAt.getTime()
+        })
+      return rows[0] ?? null
+    },
+    findMany: async ({ where }: any) => creditGrants.filter((g) => {
+      if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+      if (where.source !== undefined && g.source !== where.source) return false
+      if (where.revokedAt === null && g.revokedAt !== null) return false
+      if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+      if (where.expiresAt?.lte !== undefined) {
+        if (!g.expiresAt || g.expiresAt.getTime() > new Date(where.expiresAt.lte).getTime()) return false
+      }
+      return true
+    }),
+    create: async ({ data }: any) => {
+      if (creditGrants.some((g) => g.source === data.source && g.sourceRef === data.sourceRef)) {
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
+      }
+      const row: CreditGrant = {
+        id: `cg-${creditGrants.length + 1}`,
+        remainingUsd: data.amountUsd,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        ...data,
+      }
+      creditGrants.push(row)
+      return { ...row }
+    },
+    updateMany: async ({ where, data }: any) => {
+      const ids: string[] = where.id?.in ?? (where.id ? [where.id] : [])
+      const rows = creditGrants.filter((g) => {
+        if (ids.length > 0 && !ids.includes(g.id)) return false
+        if (where.revokedAt === null && g.revokedAt !== null) return false
+        if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+        if (where.remainingUsd?.gte !== undefined && !(g.remainingUsd >= where.remainingUsd.gte)) return false
+        return true
+      })
+      for (const g of rows) {
+        if (data.remainingUsd?.decrement !== undefined) g.remainingUsd -= data.remainingUsd.decrement
+        else if (typeof data.remainingUsd === 'number') g.remainingUsd = data.remainingUsd
+        if ('revokedAt' in data) g.revokedAt = data.revokedAt
+      }
+      return { count: rows.length }
+    },
+    count: async ({ where }: any) => creditGrants.filter((g) => {
+      if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+      if (where.source !== undefined && g.source !== where.source) return false
+      return true
+    }).length,
+    aggregate: async ({ _sum, where }: any) => {
+      const rows = creditGrants.filter((g) => {
+        if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+        if (where.source !== undefined && g.source !== where.source) return false
+        if (where.revokedAt === null && g.revokedAt !== null) return false
+        if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+        if (where.OR) {
+          const live = g.expiresAt === null || g.expiresAt.getTime() > new Date(where.OR[1].expiresAt.gt).getTime()
+          if (!live) return false
+        }
+        return true
+      })
+      const sums: Record<string, number | null> = {}
+      for (const field of Object.keys(_sum ?? {})) {
+        sums[field] = rows.length > 0 ? rows.reduce((t, g) => t + ((g as any)[field] ?? 0), 0) : null
+      }
+      return { _sum: sums }
+    },
+  },
   $transaction: async (fn: any) => fn(prismaApi),
 }
 
@@ -468,12 +563,15 @@ function setTrialSub(over: Partial<Sub> = {}): Sub {
   return setSub({ status: 'trialing', firstPaidAt: null, ...over })
 }
 
+const creditGrants: CreditGrant[] = []
+
 const origConsole = { log: console.log, warn: console.warn, error: console.error }
 
 beforeEach(() => {
   subs.clear()
   wallets.clear()
   grants.clear()
+  creditGrants.length = 0
   redemptions.length = 0
   members.length = 0
   workspaces.clear()
@@ -554,10 +652,10 @@ describe('AC1: a trial cannot run up overage', () => {
 })
 
 // ============================================================================
-// AC2 — the trial still gets its plan windows and promo credit
+// AC2 — the trial still gets its plan windows and Shogo credit
 // ============================================================================
 
-describe('AC2: the trial keeps its windows and promo credit', () => {
+describe('AC2: the trial keeps its windows and Shogo credit', () => {
   it('plan windows still admit usage while trialing', async () => {
     setTrialSub()
     wallets.set('w1', freshWallet({ overageEnabled: true }))
@@ -573,27 +671,63 @@ describe('AC2: the trial keeps its windows and promo credit', () => {
     expect(r.source).toBe('window')
   })
 
-  it('promo credit still covers a call once the windows are spent', async () => {
+  it('Shogo credit still covers a Hoshi call once the windows are spent', async () => {
     setTrialSub()
-    wallets.set(
-      'w1',
-      freshWallet({
-        ...exhausted,
-        promoCreditUsd: 10,
-        promoCreditExpiresAt: new Date(Date.now() + 86_400_000),
-      }),
-    )
-    expect(await billing.checkUsageBalance('w1', 1)).toEqual({ ok: true })
+    wallets.set('w1', freshWallet({ ...exhausted }))
+    creditGrants.push({
+      id: 'cg1',
+      workspaceId: 'w1',
+      source: 'signup',
+      sourceRef: 'signup:w1:stage1',
+      amountUsd: 10,
+      remainingUsd: 10,
+      expiresAt: new Date(Date.now() + 86_400_000),
+      revokedAt: null,
+      createdAt: new Date(),
+    })
+    expect(await billing.checkUsageBalance('w1', 1, undefined, { shogoCredit: 'turn' })).toEqual({ ok: true })
     const r = await billing.consumeUsage({
       workspaceId: 'w1',
       projectId: null,
       memberId: 'u1',
       actionType: 'chat_message',
       billedUsd: 2,
+      shogoCreditModel: 'hoshi-2.0',
     })
     expect(r.success).toBe(true)
     expect(r.source).toBe('promo')
+    expect(creditGrants[0].remainingUsd).toBe(8)
+    // Credit paid, so nothing was metered to overage.
     expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(0)
+  })
+
+  // The trial's credit is real money, but Hoshi-only: a call on any other model
+  // must be refused with that reason rather than silently spending it.
+  it('does not spend trial credit on a non-Hoshi model', async () => {
+    setTrialSub()
+    wallets.set('w1', freshWallet({ ...exhausted }))
+    creditGrants.push({
+      id: 'cg1',
+      workspaceId: 'w1',
+      source: 'signup',
+      sourceRef: 'signup:w1:stage1',
+      amountUsd: 10,
+      remainingUsd: 10,
+      expiresAt: new Date(Date.now() + 86_400_000),
+      revokedAt: null,
+      createdAt: new Date(),
+    })
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1',
+      projectId: null,
+      memberId: 'u1',
+      actionType: 'chat_message',
+      billedUsd: 2,
+      shogoCreditModel: 'claude-opus-4-7',
+    })
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('shogo_credit_hoshi_only')
+    expect(creditGrants[0].remainingUsd).toBe(10)
   })
 })
 

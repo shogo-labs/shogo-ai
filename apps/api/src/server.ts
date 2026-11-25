@@ -179,7 +179,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, WORKSPACE_LIMITS, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, normalizePlanId, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, WORKSPACE_LIMITS, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, normalizePlanId, trialSeatLimitMessage } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -265,6 +265,7 @@ const Stripe: any = cloud.Stripe ?? class LocalStripeUnavailable {
   }
 }
 const billingService: any = cloud.billingService ?? {}
+const shogoCreditService: any = cloud.shogoCreditService ?? {}
 const billingSummaryService: any = cloud.billingSummaryService ?? {}
 const appleIap: any = cloud.appleIap ?? {}
 const instanceService: any = cloud.instanceService ?? {}
@@ -8517,6 +8518,34 @@ app.get('/api/billing/workspace-plan', async (c) => {
         : promoRisk?.decision === 'credit_held'
           ? SIGNUP_CREDIT_TOTAL_USD
           : 0
+    // Shogo credit (SHO-572): the sum of live grants on the wallet that funds
+    // this workspace — a personal workspace sees the credit granted on its
+    // owner's team workspace, because that is the credit it spends.
+    const now = new Date()
+    const creditBillingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId).catch(() => workspaceId)
+    const ownShogoCreditUsd = await shogoCreditService.availableShogoCredit(prisma, creditBillingWorkspaceId, now).catch(() => 0)
+    const creditSource = await shogoCreditService.resolveShogoCreditSource(
+      prisma,
+      creditBillingWorkspaceId,
+      ownShogoCreditUsd,
+      now,
+    ).catch(() => null)
+    const shogoCreditUsd = creditSource?.availableUsd ?? 0
+    const shogoCreditExpiresAt =
+      shogoCreditUsd > 0
+        ? await shogoCreditService.soonestShogoCreditExpiry(prisma, creditSource!.workspaceId, now).catch(() => null)
+        : null
+    const shogoCreditPayload = {
+      availableUsd: shogoCreditUsd,
+      // Soonest-expiring live grant, or null when none of them expires (a learn
+      // reward never does).
+      expiresAt: shogoCreditExpiresAt,
+      // What the credit may buy. Not a client preference: it pays for Hoshi
+      // models only.
+      hoshiOnly: true as const,
+      pendingVerificationUsd: promoPendingUsd,
+      emailVerified: promoEmailVerified,
+    }
     const source: 'subscription' | 'grant' | 'free' =
       sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
     return c.json({
@@ -8567,12 +8596,19 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
       // means the window is uncapped (enterprise).
       usageWindows,
-      // Signup promo credit: spendable balance (0 once expired), what unlocks
-      // on email verification, and the expiry.
+      // Signup credit is Shogo credit now (SHO-572): one Hoshi-only balance,
+      // spendable for 30 days after signup.
+      shogoCredit: shogoCreditPayload,
+      // Deprecated alias, same numbers, kept one release so an older mobile
+      // build keeps rendering the balance. Remove with the `promoCredit*`
+      // columns.
       promoCredit: {
-        availableUsd: wallet ? promoCreditAvailableUsd(wallet) : 0,
-        grantedUsd: wallet?.promoCreditGrantedUsd ?? 0,
-        expiresAt: wallet?.promoCreditExpiresAt ?? null,
+        availableUsd: shogoCreditPayload.availableUsd,
+        grantedUsd:
+          (await shogoCreditService
+            .grantedShogoCreditUsd(prisma, creditSource?.workspaceId ?? creditBillingWorkspaceId, 'signup')
+            .catch(() => 0)) ?? 0,
+        expiresAt: shogoCreditPayload.expiresAt,
         emailVerified: promoEmailVerified,
         pendingVerificationUsd: promoPendingUsd,
       },

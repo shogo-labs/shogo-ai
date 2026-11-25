@@ -98,6 +98,21 @@ export function usageLimitNoticeFor(input: {
         secondaryLabel: "Retry",
       }
     }
+    // Windows are spent and the workspace holds Shogo credit it cannot spend
+    // here (SHO-572): the credit is Hoshi-only, so switching models is free and
+    // is the way out. Leading with billing would sell a plan for a problem the
+    // user can fix themselves in the composer.
+    if (blocked.code === "shogo_credit_hoshi_only") {
+      return {
+        variant: "blocked",
+        title: "Switch to Hoshi",
+        body: `${ERROR_CODE_MESSAGES[blocked.code]} Switch the model to Hoshi and tap Retry, or ${
+          trialEligible ? "start the 7-day free Business trial" : "upgrade"
+        } to keep using this one.`,
+        primaryLabel,
+        secondaryLabel: "Retry",
+      }
+    }
     return {
       variant: "blocked",
       title: "Billing needs attention",

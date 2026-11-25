@@ -222,6 +222,8 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   Session: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   SignupAttribution: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   SignupRiskAssessment: { decision: 'exclude', reason: 'Global anti-abuse state keyed by user: signals, score, band and the review decision. It is the platform\'s fraud record of a person, not workspace content.' },
+  // SHO-572
+  ShogoCreditGrant: { decision: 'exclude', reason: 'The workspace\'s credit ledger: what the platform granted, to whom, and what is left. Restoring it would mint spendable money, and the balance is re-read from the account, not the archive.' },
   SlackChannelSettings: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   SlackProjectRoutingRule: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   SlackUserLink: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },

@@ -172,6 +172,9 @@ const NEVER_BILLING = [
   'BillingAccount',
   'Subscription',
   'UsageWallet',
+  // Shogo credit (SHO-572): the balance is server money, granted and spent on
+  // the workspace's home region; a desktop's copy would be a second ledger.
+  'ShogoCreditGrant',
   'UsageEvent',
   'InstanceSubscription',
   'StorageUsage',

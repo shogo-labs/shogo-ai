@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Signup promo credit: grants, verification release, admin overrides, expiry.
+ * Signup Shogo credit: grants, verification release, admin overrides, expiry.
  *
- * Credit lives on the signup's team workspace wallet (`usage_wallets`), which
- * is where the user builds. It is spent by `_consumeUsageTransaction` after the
- * rolling windows and before overage.
+ * The money lives in `shogo_credit_grants` (one `signup` row per stage, see
+ * `shogo-credit.service.ts`) on the signup's team workspace, which is where the
+ * user builds. It is spent by `_consumeUsageTransaction` after the rolling
+ * windows and before overage — and only on Hoshi models (SHO-572).
  *
  * Idempotency: `usage_wallets.promoCreditStage` only moves forward
  * (0 none -> 1 initial granted -> 2 fully granted). Every grant is a conditional
  * `updateMany` on the stage, so retries, duplicate verification links and
- * concurrent hooks can't pay out twice.
+ * concurrent hooks can't pay out twice; the grant itself is keyed
+ * `signup:<workspaceId>:stage<n>` and `grantShogoCredit` is idempotent on it.
+ * The wallet's `promoCredit*` money columns are no longer written.
  */
 
 import { prisma } from '../lib/prisma'
@@ -20,6 +23,11 @@ import {
   SIGNUP_CREDIT_VERIFIED_USD,
 } from '../config/usage-plans'
 import { allocateFreeWallet } from './billing.service'
+import {
+  grantShogoCredit,
+  grantedShogoCreditUsd,
+  revokeShogoCredit,
+} from './shogo-credit.service'
 import { homeWorkspaceIds } from '../lib/region'
 import { invalidateSignupTrustHold } from '../lib/signup-trust'
 import {
@@ -60,10 +68,20 @@ export async function findSignupCreditWorkspaceId(userId: string): Promise<strin
   return member?.workspaceId ?? null
 }
 
+/** The grant ref for a signup stage: one payout per workspace per stage. */
+function signupGrantRef(workspaceId: string, stage: number): string {
+  return `signup:${workspaceId}:stage${stage}`
+}
+
+function signupExpiry(now: Date): Date {
+  return new Date(now.getTime() + SIGNUP_CREDIT_TTL_DAYS * 24 * 60 * 60 * 1000)
+}
+
 /**
- * Add promo credit and advance the stage. The expiry is anchored to the first
- * grant (stage 0 -> n) and is not extended by later stages.
- * Returns true if this call changed the wallet.
+ * Add the signup credit for a stage as a Shogo credit grant and advance the
+ * stage marker. The expiry is anchored to the first grant (stage 0 -> n) and is
+ * not extended by later stages.
+ * Returns true if this call granted anything.
  */
 export async function grantPromoCredit(params: {
   workspaceId: string
@@ -75,25 +93,37 @@ export async function grantPromoCredit(params: {
   const now = params.now ?? new Date()
   await allocateFreeWallet(workspaceId)
 
-  const inc = {
-    promoCreditUsd: { increment: amountUsd },
-    promoCreditGrantedUsd: { increment: amountUsd },
-    promoCreditStage: toStage,
-  }
+  const wallet = await prisma.usageWallet.findUnique({
+    where: { workspaceId },
+    select: { promoCreditExpiresAt: true },
+  })
+  // The 30-day expiry is anchored to the first stage and never extended by a
+  // later one. `promoCreditExpiresAt` is a legacy (no longer money-bearing)
+  // column, kept as the anchor so a migrated balance keeps its original expiry.
+  const expiresAt = wallet?.promoCreditExpiresAt ?? signupExpiry(now)
+
+  // Move the stage marker forward, conditionally, so concurrent grants (the
+  // signup hook and a verification link) cannot pay the same stage twice.
   const first = await prisma.usageWallet.updateMany({
     where: { workspaceId, promoCreditStage: 0 },
-    data: {
-      ...inc,
-      promoCreditExpiresAt: new Date(now.getTime() + SIGNUP_CREDIT_TTL_DAYS * 24 * 60 * 60 * 1000),
-    },
+    data: { promoCreditStage: toStage, promoCreditExpiresAt: expiresAt },
   })
-  if (first.count > 0) return true
+  if (first.count === 0) {
+    const next = await prisma.usageWallet.updateMany({
+      where: { workspaceId, promoCreditStage: { gt: 0, lt: toStage } },
+      data: { promoCreditStage: toStage },
+    })
+    if (next.count === 0) return false
+  }
 
-  const next = await prisma.usageWallet.updateMany({
-    where: { workspaceId, promoCreditStage: { gt: 0, lt: toStage } },
-    data: inc,
+  await grantShogoCredit({
+    workspaceId,
+    amountUsd,
+    source: 'signup',
+    sourceRef: signupGrantRef(workspaceId, toStage),
+    expiresAt,
   })
-  return next.count > 0
+  return true
 }
 
 /**
@@ -239,9 +269,10 @@ export async function releaseSignupCreditOnVerification(params: {
 
 /**
  * Admin: bring the workspace up to the full credit regardless of band, including
- * after an earlier revoke. `promoCreditGrantedUsd` is net of revokes, so the
- * amount owed is simply the total minus what is already granted; once approved
- * it is 0 and a repeat approval is a no-op. Expired credit gets a fresh expiry.
+ * after an earlier revoke. The granted total is the sum of `signup` grants net
+ * of revokes, so the amount owed is simply the total minus what is already
+ * granted; once approved it is 0 and a repeat approval is a no-op. Expired
+ * credit gets a fresh expiry.
  */
 export async function approveSignupCredit(params: {
   userId: string
@@ -255,24 +286,31 @@ export async function approveSignupCredit(params: {
     await allocateFreeWallet(workspaceId)
     const wallet = await prisma.usageWallet.findUnique({
       where: { workspaceId },
-      select: { promoCreditGrantedUsd: true, promoCreditExpiresAt: true },
+      select: { promoCreditExpiresAt: true },
     })
-    const owed = Math.max(0, SIGNUP_CREDIT_TOTAL_USD - (wallet?.promoCreditGrantedUsd ?? 0))
-    if (wallet && owed > 0) {
-      const live = wallet.promoCreditExpiresAt && new Date(wallet.promoCreditExpiresAt).getTime() > now.getTime()
-      const res = await prisma.usageWallet.updateMany({
-        // Conditional on the granted total read above, so concurrent approvals pay once.
-        where: { workspaceId, promoCreditGrantedUsd: wallet.promoCreditGrantedUsd },
-        data: {
-          promoCreditUsd: { increment: owed },
-          promoCreditGrantedUsd: { increment: owed },
-          promoCreditStage: STAGE_FULL,
-          promoCreditExpiresAt: live
-            ? wallet.promoCreditExpiresAt
-            : new Date(now.getTime() + SIGNUP_CREDIT_TTL_DAYS * 24 * 60 * 60 * 1000),
-        },
+    const alreadyGranted = await grantedShogoCreditUsd(prisma, workspaceId, 'signup')
+    const owed = Math.max(0, SIGNUP_CREDIT_TOTAL_USD - alreadyGranted)
+    if (owed > 0) {
+      const live = wallet?.promoCreditExpiresAt && new Date(wallet.promoCreditExpiresAt).getTime() > now.getTime()
+      const expiresAt = live ? new Date(wallet!.promoCreditExpiresAt!) : signupExpiry(now)
+      // One grant per approval slot: the ref counts the signup grants already on
+      // this workspace, so two concurrent approvals compute the same ref and
+      // `grantShogoCredit` pays once (P2002 → existing row).
+      const priorGrants = await prisma.shogoCreditGrant.count({
+        where: { workspaceId, source: 'signup' },
       })
-      if (res.count > 0) grantedUsd = owed
+      const grant = await grantShogoCredit({
+        workspaceId,
+        amountUsd: owed,
+        source: 'signup',
+        sourceRef: `signup:${workspaceId}:admin:${priorGrants}`,
+        expiresAt,
+      })
+      if (grant.amountUsd > 0) grantedUsd = grant.amountUsd
+      await prisma.usageWallet.update({
+        where: { workspaceId },
+        data: { promoCreditStage: STAGE_FULL, promoCreditExpiresAt: expiresAt },
+      })
     }
   }
   await prisma.signupRiskAssessment.updateMany({
@@ -291,9 +329,9 @@ export async function approveSignupCredit(params: {
 }
 
 /**
- * Admin: zero the remaining promo balance and stop any future release. The
- * revoked amount comes off `promoCreditGrantedUsd` (so a later approval can
- * restore it) and is recorded as a zero-cost audit event.
+ * Admin: zero every live `signup` grant and stop any future release. The
+ * revoked amount comes off the granted total (so a later approval can restore
+ * it) and is recorded as a zero-cost audit event.
  */
 export async function revokeSignupCredit(params: {
   userId: string
@@ -304,19 +342,8 @@ export async function revokeSignupCredit(params: {
   let revokedUsd = 0
   if (workspaceId) {
     revokedUsd = await prisma.$transaction(async (tx) => {
-      const wallet = await tx.usageWallet.findUnique({
-        where: { workspaceId },
-        select: { promoCreditUsd: true },
-      })
-      const balance = Math.max(0, wallet?.promoCreditUsd ?? 0)
+      const balance = await revokeShogoCredit({ workspaceId, source: 'signup' }, tx)
       if (balance <= 0) return 0
-      const res = await tx.usageWallet.updateMany({
-        // Conditional on the balance read above: a concurrent spend makes this
-        // a no-op rather than writing a stale revoked amount.
-        where: { workspaceId, promoCreditUsd: balance },
-        data: { promoCreditUsd: 0, promoCreditGrantedUsd: { decrement: balance } },
-      })
-      if (res.count === 0) return 0
       await recordPromoAuditEvent(tx, workspaceId, 'signup_credit_revoked', balance)
       return balance
     })
@@ -354,7 +381,7 @@ async function recordPromoAuditEvent(
     orderBy: { createdAt: 'asc' },
   })
   if (!member) {
-    console.warn('[signup-credit] promo balance change with no member to attribute the event to', {
+    console.warn('[signup-credit] Shogo credit change with no member to attribute the event to', {
       workspaceId,
       actionType,
     })
@@ -376,33 +403,47 @@ async function recordPromoAuditEvent(
 }
 
 /**
- * Zero promo balances whose expiry has passed and record one zero-cost
+ * Settle `signup` grants whose expiry has passed and record one zero-cost
  * `UsageEvent` per workspace for the audit trail. Returns the number of
- * wallets expired.
+ * workspaces settled.
+ *
+ * Expired credit is never spendable anyway (`availableShogoCredit` filters on
+ * `expiresAt`), so this job is bookkeeping — missing a run delays the audit
+ * row, not a charge.
  */
 export async function expireSignupCredits(now: Date = new Date(), batchSize = 500): Promise<number> {
-  const candidates = await prisma.usageWallet.findMany({
-    where: { promoCreditUsd: { gt: 0 }, promoCreditExpiresAt: { lte: now } },
+  const candidates = await prisma.shogoCreditGrant.findMany({
+    where: {
+      source: 'signup',
+      remainingUsd: { gt: 0 },
+      revokedAt: null,
+      expiresAt: { lte: now },
+    },
     select: { workspaceId: true },
-    take: batchSize,
+    take: batchSize * 4,
   })
-  // usage_wallets is home-region partitioned (never replicated), so each region
-  // only expires the wallets it owns. `null` = single-region / local: all of them.
-  const home = await homeWorkspaceIds(candidates.map((w) => w.workspaceId))
-  const due = home ? candidates.filter((w) => home.has(w.workspaceId)) : candidates
+  const workspaceIds = [...new Set(candidates.map((g) => g.workspaceId))].slice(0, batchSize)
+  // shogo_credit_grants is home-region partitioned with usage_wallets (never
+  // replicated), so each region only settles the workspaces it owns.
+  // `null` = single-region / local: all of them.
+  const home = await homeWorkspaceIds(workspaceIds)
+  const due = home ? workspaceIds.filter((id) => home.has(id)) : workspaceIds
   let expired = 0
-  for (const { workspaceId } of due) {
-    // The balance write and its audit event commit together.
+  for (const workspaceId of due) {
+    // The grant settle and its audit event commit together.
     const didExpire = await prisma.$transaction(async (tx) => {
-      const wallet = await tx.usageWallet.findUnique({
-        where: { workspaceId },
-        select: { promoCreditUsd: true },
+      const grants = await tx.shogoCreditGrant.findMany({
+        where: { workspaceId, source: 'signup', remainingUsd: { gt: 0 }, revokedAt: null, expiresAt: { lte: now } },
+        select: { id: true, remainingUsd: true },
       })
-      const balance = wallet?.promoCreditUsd ?? 0
+      const balance = grants.reduce((sum, g) => sum + Math.max(0, g.remainingUsd), 0)
       if (balance <= 0) return false
-      const res = await tx.usageWallet.updateMany({
-        where: { workspaceId, promoCreditUsd: balance, promoCreditExpiresAt: { lte: now } },
-        data: { promoCreditUsd: 0 },
+      const res = await tx.shogoCreditGrant.updateMany({
+        // Conditional on the rows read above: a concurrent settle (or a spend
+        // that landed between the read and the write) makes this a no-op
+        // instead of recording a stale amount.
+        where: { id: { in: grants.map((g) => g.id) }, revokedAt: null, remainingUsd: { gt: 0 } },
+        data: { remainingUsd: 0 },
       })
       if (res.count === 0) return false
       await recordPromoAuditEvent(tx, workspaceId, 'signup_credit_expired', balance)

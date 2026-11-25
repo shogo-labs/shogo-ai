@@ -177,6 +177,17 @@ mock.module('../lib/prisma', () => withPrismaExports({
             return data
           },
         },
+        // SHO-572: Shogo credit is opt-in per call and this workspace has no
+        // grants, so the credit walk finds nothing and the overage path below
+        // behaves exactly as before.
+        shogoCreditGrant: {
+          findFirst: async () => null,
+          findMany: async () => [],
+          create: async ({ data }: any) => data,
+          updateMany: async () => ({ count: 0 }),
+          aggregate: async () => ({ _sum: { remainingUsd: 0, amountUsd: 0 } }),
+          count: async () => 0,
+        },
         // The merged rolling-window billing path resolves plan limits inside
         // the consume transaction via tx.subscription.findFirst — mirror the
         // top-level subscription mock so resolveWorkspaceWindowLimits works.

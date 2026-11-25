@@ -122,6 +122,8 @@ const EXEMPT: Record<string, string> = {
   slackProjectRoutingRule: 'Mutated via /api/integrations/slack/workspaces/:workspaceId/routing-rules — resolved by path workspaceId (admin-gated).',
   slackWorkspaceInstallation: 'Mutated via /api/integrations/slack/workspaces/:workspaceId routes (path workspaceId) and the OAuth callback (workspaceId from signed OAuth state).',
   scheduledMessage: 'Mutated via workspace-scoped scheduled-message routes — resolved by path workspaceId.',
+  // SHO-572
+  shogoCreditGrant: 'Written only by (a) the signup/verification hook and the admin approve/revoke paths, (b) `_consumeUsageTransaction` inside the same transaction that already resolved the billing workspace to its home region, and (c) the hourly expiry job, which is home-region locked (see check-multiregion-cron-locks.ts). There is no standalone /api/<resource>/:id mutation.',
   storageUsage: 'Counter table written via workspace-scoped usage routes — resolved by path workspaceId.',
   storageUsageDaily: 'SHO-423: written only by the 6h measurement pass and the daily bill job (both home-region locked — see check-multiregion-cron-locks.ts) and read via /api/workspaces/:id/storage or the super-admin views; there is no standalone row mutation route.',
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',

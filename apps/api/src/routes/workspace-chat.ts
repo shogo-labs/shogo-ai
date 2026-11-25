@@ -717,10 +717,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     if ('res' in auth) return auth.res
     const workspaceId = c.req.param('workspaceId')
 
-    // Usage gate (workspace-level balance) — mirrors project-chat.
-    const balanceCheck = await billingService.checkUsageBalance(workspaceId, 0.001, auth.userId)
+    // Usage gate (workspace-level balance) — mirrors project-chat. A turn
+    // starts before its model is known, so it is admitted on any Shogo credit
+    // balance ('turn'); each model call inside the turn is gated Hoshi-only in
+    // ai-proxy, which is where credit is actually spent (SHO-572).
+    const balanceCheck = await billingService.checkUsageBalance(workspaceId, 0.001, auth.userId, {
+      shogoCredit: 'turn',
+    })
     if (!balanceCheck.ok) {
-      const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+      const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason, {
+        shogoCreditUsd: balanceCheck.shogoCreditUsd,
+      })
       // Records firstCapHitAt + the hit_cap event: this route blocked the most
       // people and used to record nothing (SHO-258 §2).
       const { resetsAt, window } = await buildUsageLimitInfo(workspaceId, {

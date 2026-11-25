@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Signup promo credit: staged grants are idempotent, verification releases
- * exactly once, high-risk rescoring blocks release, and expiry zeroes the
- * balance with an audit event. Prisma is an in-memory double that understands
+ * Signup Shogo credit: staged grants are idempotent, verification releases
+ * exactly once, high-risk rescoring blocks release, and expiry settles the
+ * grants with an audit event. Prisma is an in-memory double that understands
  * the operators the service uses (equality, gt/gte/lt/lte, in, increment,
  * decrement).
+ *
+ * The money lives in `shogoCreditGrant` rows now (SHO-572) — the real
+ * `shogo-credit.service` runs against this double, so a duplicate `sourceRef`
+ * hits the same unique-key path production does. `usage_wallets` keeps only the
+ * stage marker and the expiry anchor.
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
@@ -17,6 +22,8 @@ const members: Row[] = []
 const assessments = new Map<string, Row>()
 const users = new Map<string, Row>()
 const usageEvents: Row[] = []
+const grants: Row[] = []
+let grantSeq = 1
 let homeFilter: Set<string> | null = null
 
 function num(x: any) {
@@ -57,6 +64,10 @@ function applyData(row: Row, data: Row) {
   }
 }
 
+function grantRows(where: Row): Row[] {
+  return grants.filter((g) => matches(g, where))
+}
+
 function newWallet(workspaceId: string): Row {
   const w: Row = {
     workspaceId,
@@ -77,6 +88,42 @@ const prismaDouble: Record<string, any> = {
     findFirst: async ({ where }: { where: Row }) =>
       members.find((m) => matches(m, where)) ?? null,
   },
+  shogoCreditGrant: {
+    create: async ({ data }: { data: Row }) => {
+      if (grants.some((g) => g.source === data.source && g.sourceRef === data.sourceRef)) {
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
+      }
+      const row: Row = {
+        id: `grant-${grantSeq++}`,
+        remainingUsd: data.amountUsd,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        ...data,
+      }
+      grants.push(row)
+      return { ...row }
+    },
+    findFirst: async ({ where }: { where: Row }) => {
+      const row = grantRows(where)[0]
+      return row ? { ...row } : null
+    },
+    findMany: async ({ where }: { where: Row }) => grantRows(where).map((g) => ({ ...g })),
+    updateMany: async ({ where, data }: { where: Row; data: Row }) => {
+      const rows = grantRows(where)
+      rows.forEach((g) => applyData(g, data))
+      return { count: rows.length }
+    },
+    count: async ({ where }: { where: Row }) => grantRows(where).length,
+    aggregate: async ({ _sum, where }: { _sum: Row; where?: Row }) => {
+      const rows = where ? grantRows(where) : grants
+      const sums: Row = {}
+      for (const field of Object.keys(_sum)) {
+        sums[field] = rows.reduce((total, g) => total + (g[field] ?? 0), 0)
+      }
+      return { _sum: sums }
+    },
+  },
   usageWallet: {
     findUnique: async ({ where }: { where: Row }) => wallets.get(where.workspaceId) ?? null,
     findMany: async ({ where }: { where: Row; take?: number }) =>
@@ -85,6 +132,12 @@ const prismaDouble: Record<string, any> = {
       const rows = [...wallets.values()].filter((w) => matches(w, where))
       rows.forEach((w) => applyData(w, data))
       return { count: rows.length }
+    },
+    update: async ({ where, data }: { where: Row; data: Row }) => {
+      const w = wallets.get(where.workspaceId)
+      if (!w) throw new Error(`wallet ${where.workspaceId} not found`)
+      applyData(w, data)
+      return { ...w }
     },
   },
   signupRiskAssessment: {
@@ -160,10 +213,12 @@ beforeEach(() => {
   assessments.clear()
   users.clear()
   usageEvents.length = 0
+  grants.length = 0
+  grantSeq = 1
   recorded.length = 0
   homeFilter = null
   riskState.features = { ...CLEAN }
-  members.push({ userId: 'u-1', workspaceId: 'ws-1', role: 'owner', projectId: null, createdAt: new Date(0) })
+  members.push({ id: 'm-1', userId: 'u-1', workspaceId: 'ws-1', role: 'owner', projectId: null, createdAt: new Date(0) })
   users.set('u-1', { id: 'u-1', email: 'alice@company.io', emailVerified: false })
 })
 
@@ -183,15 +238,58 @@ function seedAssessment(decision: string, email = 'alice@company.io') {
   })
 }
 
+function signupGrants(workspaceId = 'ws-1'): Row[] {
+  return grants.filter((g) => g.workspaceId === workspaceId && g.source === 'signup')
+}
+
+/** Spendable `signup` credit: live rows only, exactly what the API reports. */
+function signupBalance(workspaceId = 'ws-1'): number {
+  return signupGrants(workspaceId)
+    .filter((g) => g.revokedAt === null)
+    .reduce((sum, g) => sum + Math.max(0, g.remainingUsd), 0)
+}
+
+function seedGrant(overrides: Row = {}): Row {
+  const row: Row = {
+    id: `grant-${grantSeq++}`,
+    workspaceId: 'ws-1',
+    source: 'signup',
+    sourceRef: `seed-${grantSeq}`,
+    amountUsd: 1,
+    remainingUsd: 1,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: new Date(),
+    ...overrides,
+  }
+  grants.push(row)
+  return row
+}
+
+function fakeSpend(workspaceId: string, amountUsd: number): void {
+  let remaining = amountUsd
+  for (const g of signupGrants(workspaceId)) {
+    if (remaining <= 0) break
+    const take = Math.min(remaining, g.remainingUsd)
+    g.remainingUsd -= take
+    remaining -= take
+  }
+  if (remaining > 1e-9) throw new Error('fakeSpend: not enough credit')
+}
+
 describe('grantPromoCredit (staged, idempotent)', () => {
-  test('first stage grant adds the amount and anchors the expiry to now + 30 days', async () => {
+  test('first stage grant creates one grant and anchors the expiry to now + 30 days', async () => {
     const now = new Date('2026-10-01T00:00:00Z')
     const changed = await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1, now })
     expect(changed).toBe(true)
     const w = wallets.get('ws-1')!
-    expect(w.promoCreditUsd).toBe(2)
+    // The wallet is the stage marker and expiry anchor now; the money is a grant.
+    expect(w.promoCreditUsd).toBe(0)
     expect(w.promoCreditStage).toBe(1)
     expect(new Date(w.promoCreditExpiresAt).getTime()).toBe(now.getTime() + 30 * DAY)
+    expect(signupGrants()).toHaveLength(1)
+    expect(signupBalance()).toBe(2)
+    expect(signupGrants()[0].expiresAt.getTime()).toBe(now.getTime() + 30 * DAY)
   })
 
   test('repeating the same stage grants nothing (retry-safe)', async () => {
@@ -199,7 +297,8 @@ describe('grantPromoCredit (staged, idempotent)', () => {
     await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1, now })
     const again = await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1, now })
     expect(again).toBe(false)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(2)
+    expect(signupBalance()).toBe(2)
+    expect(signupGrants()).toHaveLength(1)
   })
 
   test('the verification stage adds the rest without moving the expiry', async () => {
@@ -210,8 +309,12 @@ describe('grantPromoCredit (staged, idempotent)', () => {
     const changed = await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 8, toStage: 2, now: t1 })
     expect(changed).toBe(true)
     const w = wallets.get('ws-1')!
-    expect(w.promoCreditUsd).toBe(10)
-    expect(w.promoCreditGrantedUsd).toBe(10)
+    expect(signupBalance()).toBe(10)
+    expect(signupGrants()).toHaveLength(2)
+    // Both stages share the anchor: verification must not extend the clock.
+    for (const grant of signupGrants()) {
+      expect(grant.expiresAt.getTime()).toBe(new Date(expiry).getTime())
+    }
     expect(w.promoCreditStage).toBe(2)
     expect(w.promoCreditExpiresAt).toBe(expiry)
   })
@@ -222,7 +325,8 @@ describe('applyInitialSignupCredit', () => {
     const result = scoreSignupRisk({ ...CLEAN, emailVerified: false })
     const out = await credit.applyInitialSignupCredit({ userId: 'u-1', result })
     expect(out.granted).toBe(true)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(2)
+    expect(signupBalance()).toBe(2)
+    expect(signupGrants()).toHaveLength(1)
     expect(wallets.get('ws-1')!.promoCreditStage).toBe(1)
   })
 
@@ -233,6 +337,7 @@ describe('applyInitialSignupCredit', () => {
     expect(out.granted).toBe(false)
     expect(wallets.get('ws-1')?.promoCreditStage ?? 0).toBe(0)
     expect(wallets.get('ws-1')?.promoCreditExpiresAt ?? null).toBeNull()
+    expect(grants).toHaveLength(0)
   })
 
   test('no_credit (disposable or high band): no wallet change', async () => {
@@ -240,7 +345,7 @@ describe('applyInitialSignupCredit', () => {
     expect(result.decision).toBe(CREDIT_DECISIONS.none)
     await credit.applyInitialSignupCredit({ userId: 'u-1', result })
     // No grant: the wallet is not created here (allocation is lazy elsewhere).
-    expect(wallets.get('ws-1')?.promoCreditUsd ?? 0).toBe(0)
+    expect(grants).toHaveLength(0)
     expect(wallets.get('ws-1')?.promoCreditStage ?? 0).toBe(0)
   })
 })
@@ -253,13 +358,15 @@ describe('releaseSignupCreditOnVerification', () => {
     const first = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
     expect(first.released).toBe(true)
     expect(first.amountUsd).toBe(8)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(10)
+    expect(signupBalance()).toBe(10)
+    expect(signupGrants()).toHaveLength(2)
     expect(assessments.get('u-1')!.decision).toBe(CREDIT_DECISIONS.released)
 
     const second = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
     expect(second.released).toBe(false)
     expect(second.reason).toBe('not_eligible')
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(10)
+    expect(signupBalance()).toBe(10)
+    expect(signupGrants()).toHaveLength(2)
   })
 
   test('held (medium) signups release the full $10, expiring 30 days after verification', async () => {
@@ -269,7 +376,8 @@ describe('releaseSignupCreditOnVerification', () => {
     expect(out.released).toBe(true)
     expect(out.amountUsd).toBe(10)
     const w = wallets.get('ws-1')!
-    expect(w.promoCreditUsd).toBe(10)
+    expect(signupBalance()).toBe(10)
+    expect(signupGrants()).toHaveLength(1)
     expect(w.promoCreditStage).toBe(2)
     expect(new Date(w.promoCreditExpiresAt).getTime()).toBe(verifiedAt.getTime() + 30 * DAY)
   })
@@ -282,7 +390,8 @@ describe('releaseSignupCreditOnVerification', () => {
     const out = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
     expect(out.released).toBe(false)
     expect(out.reason).toBe('rescored_high_risk')
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(2)
+    expect(signupBalance()).toBe(2)
+    expect(signupGrants()).toHaveLength(1)
     expect(recorded.at(-1)!.decision).toBe(CREDIT_DECISIONS.none)
   })
 
@@ -324,7 +433,7 @@ describe('releaseSignupCreditOnVerification', () => {
     expect(assessments.get('u-1')!.band).not.toBe('high')
     // Credit rules are unchanged: still `no_credit`, no wallet write.
     expect(assessments.get('u-1')!.decision).toBe(CREDIT_DECISIONS.none)
-    expect(wallets.get('ws-1')?.promoCreditUsd ?? 0).toBe(0)
+    expect(grants).toHaveLength(0)
   })
 
   test('a high-band account that stays high keeps the hold and grants no credit', async () => {
@@ -336,7 +445,7 @@ describe('releaseSignupCreditOnVerification', () => {
     expect(out.reason).toBe('rescored_high_risk')
     expect(assessments.get('u-1')!.band).toBe('high')
     expect(assessments.get('u-1')!.decision).toBe(CREDIT_DECISIONS.none)
-    expect(wallets.get('ws-1')?.promoCreditUsd ?? 0).toBe(0)
+    expect(grants).toHaveLength(0)
   })
 })
 
@@ -346,7 +455,8 @@ describe('approve / revoke (admin)', () => {
     await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1 })
     const out = await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
     expect(out.granted).toBe(true)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(10)
+    expect(out.grantedUsd).toBe(8)
+    expect(signupBalance()).toBe(10)
     expect(assessments.get('u-1')!.reviewDecision).toBe('approved')
     expect(assessments.get('u-1')!.reviewedByUserId).toBe('admin-1')
     // Settled: a later verification must not release more.
@@ -355,10 +465,13 @@ describe('approve / revoke (admin)', () => {
 
   test('approving twice grants once', async () => {
     seedAssessment(CREDIT_DECISIONS.held)
-    await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
+    const first = await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
+    expect(first.grantedUsd).toBe(10)
     const again = await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
     expect(again.granted).toBe(false)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(10)
+    expect(again.grantedUsd).toBe(0)
+    expect(signupBalance()).toBe(10)
+    expect(signupGrants()).toHaveLength(1)
   })
 
   test('revoke zeroes the balance, takes it off the granted total, and writes an audit event', async () => {
@@ -366,23 +479,41 @@ describe('approve / revoke (admin)', () => {
     await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1 })
     const out = await credit.revokeSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
     expect(out.revokedUsd).toBe(2)
-    const w = wallets.get('ws-1')!
-    expect(w.promoCreditUsd).toBe(0)
-    expect(w.promoCreditGrantedUsd).toBe(0)
+    expect(signupBalance()).toBe(0)
+    const grant = signupGrants()[0]
+    expect(grant.remainingUsd).toBe(0)
+    expect(grant.revokedAt).toBeInstanceOf(Date)
     expect(assessments.get('u-1')!.reviewDecision).toBe('revoked')
     expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0]).toMatchObject({ actionType: 'signup_credit_revoked', billedUsd: 0, balanceBefore: 2 })
+    expect(usageEvents[0]).toMatchObject({
+      actionType: 'signup_credit_revoked',
+      billedUsd: 0,
+      balanceBefore: 2,
+      balanceAfter: 0,
+      source: 'promo',
+      workspaceId: 'ws-1',
+      memberId: 'm-1',
+    })
   })
 
-  test('approve after a revoke restores the full $10', async () => {
+  test('revoking a workspace with no live credit is a no-op and writes nothing', async () => {
+    seedAssessment(CREDIT_DECISIONS.initial)
+    const out = await credit.revokeSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
+    expect(out.revokedUsd).toBe(0)
+    expect(usageEvents).toHaveLength(0)
+  })
+
+  // A revoke is a forfeit: it zeroes both the balance and the granted total, so
+  // a later approval re-grants the full amount rather than the remainder. The
+  // audit trail keeps the revoke, so the extra $4 spent before it is visible.
+  test('approve after a revoke grants the full credit again', async () => {
     seedAssessment(CREDIT_DECISIONS.initial)
     await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 10, toStage: 2 })
-    wallets.get('ws-1')!.promoCreditUsd = 6 // $4 already spent
+    fakeSpend('ws-1', 4)
     await credit.revokeSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
     const out = await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1' })
-    expect(out.grantedUsd).toBe(6)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(6)
-    expect(wallets.get('ws-1')!.promoCreditGrantedUsd).toBe(10)
+    expect(out.grantedUsd).toBe(10)
+    expect(signupBalance()).toBe(10)
   })
 
   test('approve gives expired credit a fresh expiry', async () => {
@@ -390,50 +521,76 @@ describe('approve / revoke (admin)', () => {
     const now = new Date('2026-12-01T00:00:00Z')
     await credit.grantPromoCredit({ workspaceId: 'ws-1', amountUsd: 2, toStage: 1, now: new Date('2026-10-01T00:00:00Z') })
     await credit.approveSignupCredit({ userId: 'u-1', adminUserId: 'admin-1', now })
+    const topUp = signupGrants().at(-1)!
+    expect(topUp.remainingUsd).toBe(8)
+    expect(topUp.expiresAt.getTime()).toBe(now.getTime() + 30 * DAY)
     expect(new Date(wallets.get('ws-1')!.promoCreditExpiresAt).getTime()).toBe(now.getTime() + 30 * DAY)
+    expect(signupBalance()).toBe(10)
   })
 })
 
 describe('expireSignupCredits', () => {
-  test('zeroes expired balances and writes a zero-cost audit event', async () => {
+  test('settles expired signup grants and writes one zero-cost audit event', async () => {
     const now = new Date('2026-11-01T00:00:00Z')
-    const w = newWallet('ws-1')
-    w.promoCreditUsd = 3
-    w.promoCreditExpiresAt = new Date('2026-10-31T00:00:00Z')
+    newWallet('ws-1')
+    const grant = seedGrant({ amountUsd: 3, remainingUsd: 3, expiresAt: new Date('2026-10-31T00:00:00Z') })
 
-    const n = await credit.expireSignupCredits(now)
-    expect(n).toBe(1)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(0)
+    expect(await credit.expireSignupCredits(now)).toBe(1)
+    expect(grant.remainingUsd).toBe(0)
     expect(usageEvents).toHaveLength(1)
     expect(usageEvents[0]).toMatchObject({
       actionType: 'signup_credit_expired',
       balanceBefore: 3,
+      balanceAfter: 0,
       billedUsd: 0,
       source: 'promo',
       workspaceId: 'ws-1',
     })
   })
 
-  test('leaves unexpired balances alone', async () => {
+  test('records only what was left unspent', async () => {
+    const now = new Date('2026-11-01T00:00:00Z')
+    newWallet('ws-1')
+    seedGrant({ amountUsd: 3, remainingUsd: 0.75, expiresAt: new Date('2026-10-31T00:00:00Z') })
+
+    expect(await credit.expireSignupCredits(now)).toBe(1)
+    expect(usageEvents[0]).toMatchObject({ balanceBefore: 0.75 })
+    expect(signupBalance()).toBe(0)
+  })
+
+  test('leaves unexpired grants alone', async () => {
     const now = new Date('2026-10-15T00:00:00Z')
-    const w = newWallet('ws-1')
-    w.promoCreditUsd = 3
-    w.promoCreditExpiresAt = new Date('2026-11-15T00:00:00Z')
+    newWallet('ws-1')
+    const grant = seedGrant({ amountUsd: 3, remainingUsd: 3, expiresAt: new Date('2026-11-15T00:00:00Z') })
+
     expect(await credit.expireSignupCredits(now)).toBe(0)
-    expect(wallets.get('ws-1')!.promoCreditUsd).toBe(3)
+    expect(grant.remainingUsd).toBe(3)
     expect(usageEvents).toHaveLength(0)
   })
 
-  test('only expires wallets owned by this region (home-region partition)', async () => {
+  test('ignores other sources and grants with nothing left', async () => {
     const now = new Date('2026-11-01T00:00:00Z')
-    for (const ws of ['ws-home', 'ws-peer']) {
-      const w = newWallet(ws)
-      w.promoCreditUsd = 1
-      w.promoCreditExpiresAt = new Date('2026-10-01T00:00:00Z')
-    }
+    newWallet('ws-1')
+    const admin = seedGrant({ source: 'admin', amountUsd: 5, remainingUsd: 5, expiresAt: new Date('2026-10-01T00:00:00Z') })
+    const spent = seedGrant({ amountUsd: 2, remainingUsd: 0, expiresAt: new Date('2026-10-01T00:00:00Z') })
+
+    expect(await credit.expireSignupCredits(now)).toBe(0)
+    expect(admin.remainingUsd).toBe(5)
+    expect(spent.remainingUsd).toBe(0)
+    expect(usageEvents).toHaveLength(0)
+  })
+
+  test('only expires workspaces owned by this region (home-region partition)', async () => {
+    const now = new Date('2026-11-01T00:00:00Z')
+    const home = seedGrant({ workspaceId: 'ws-home', amountUsd: 1, remainingUsd: 1, expiresAt: new Date('2026-10-01T00:00:00Z') })
+    const peer = seedGrant({ workspaceId: 'ws-peer', amountUsd: 1, remainingUsd: 1, expiresAt: new Date('2026-10-01T00:00:00Z') })
+    newWallet('ws-home')
+    newWallet('ws-peer')
+    members.push({ id: 'm-home', userId: 'u-home', workspaceId: 'ws-home', role: 'owner', projectId: null, createdAt: new Date(0) })
+
     homeFilter = new Set(['ws-home'])
     expect(await credit.expireSignupCredits(now)).toBe(1)
-    expect(wallets.get('ws-home')!.promoCreditUsd).toBe(0)
-    expect(wallets.get('ws-peer')!.promoCreditUsd).toBe(1)
+    expect(home.remainingUsd).toBe(0)
+    expect(peer.remainingUsd).toBe(1)
   })
 })

@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Hourly sweep that zeroes expired signup promo credit.
+ * Hourly sweep that settles expired signup Shogo credit.
  *
- * Multi-region: home-region partitioned, not globally locked. `usage_wallets`
- * is never replicated, so each region expires only the wallets it owns
- * (`homeWorkspaceIds`, applied inside `expireSignupCredits`). This mirrors
+ * Multi-region: home-region partitioned, not globally locked. `shogo_credit_grants`
+ * is published, so every region holds a copy — but only the workspace's home
+ * region may write its rows (the same single-writer rule as the wallet; see
+ * `check-multiregion-cron-locks.ts` ACCEPTED_UNIQUE_KEYS). So each region
+ * settles only the grants `homeWorkspaceIds` says it owns, and a global lock
+ * would let one region fight a peer's copy under last_update_wins. Mirrors
  * `grant-monthly-refill.ts`; see `scripts/check-multiregion-cron-locks.ts`
  * (HOME_REGION_PARTITIONED).
  *
- * Expired credit is never spendable: `promoCreditAvailableUsd` already treats
- * an expired wallet as 0, so this job only settles the stored balance and
- * writes the audit event. Missing a run delays bookkeeping, not charging.
+ * Expired credit is never spendable: `availableShogoCredit` already treats an
+ * expired grant as 0, so this job only settles the stored balance and writes the
+ * audit event. Missing a run delays bookkeeping, not charging.
  */
 
 import { expireSignupCredits } from '../services/signup-credit.service'

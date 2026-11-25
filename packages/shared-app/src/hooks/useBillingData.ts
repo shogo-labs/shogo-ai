@@ -65,8 +65,9 @@ export interface UsageWindows {
 }
 
 /**
- * Signup promo credit as reported by workspace-plan. Spendable on the models the
- * workspace's plan allows (economy tier on Free and Basic).
+ * Credit-balance fields. Named for the promo balance this used to be; the money
+ * is Shogo credit now (see `ShogoCreditView`) and this name only survives as the
+ * deprecated `promoCredit` alias's type.
  */
 export interface PromoCreditView {
   /** Spendable now. 0 once expired. */
@@ -79,6 +80,19 @@ export interface PromoCreditView {
   emailVerified: boolean
   /** Credit that unlocks on email verification (0 when verified or none held). */
   pendingVerificationUsd: number
+}
+
+/**
+ * Shogo credit: the workspace's bonus usage credit (SHO-572). It replaced the
+ * signup-only promo balance — the $10 signup credit and learn.shogo.ai rewards
+ * are the same money now — and it pays for **Hoshi models only**.
+ */
+export interface ShogoCreditView extends PromoCreditView {
+  /**
+   * True when the credit can only be spent on Hoshi models. Always true today;
+   * read it rather than hardcoding the rule in a component.
+   */
+  hoshiOnly?: boolean
 }
 
 export interface BillingDataState {
@@ -114,7 +128,12 @@ export interface BillingDataState {
   // Rolling 5-hour + weekly usage windows (time-gated "unlimited"). Undefined
   // until the workspace-plan endpoint resolves.
   usageWindows: UsageWindows | undefined
-  /** Signup promo credit. Undefined until workspace-plan resolves. */
+  /** Shogo credit. Undefined until workspace-plan resolves. */
+  shogoCredit: ShogoCreditView | undefined
+  /**
+   * @deprecated Alias of `shogoCredit`, kept for callers written before the
+   * rename. Read `shogoCredit`.
+   */
   promoCredit: PromoCreditView | undefined
   /** The workspace can start the 7-day free trial (card required). */
   trialEligible: boolean
@@ -179,7 +198,7 @@ export function useBillingData(
   // UI as the current plan.
   const [effectivePlan, setEffectivePlan] = useState<{ planId: string; source: PlanSource } | null>(null)
   const [usageWindows, setUsageWindows] = useState<UsageWindows | undefined>(undefined)
-  const [promoCredit, setPromoCredit] = useState<PromoCreditView | undefined>(undefined)
+  const [shogoCredit, setShogoCredit] = useState<ShogoCreditView | undefined>(undefined)
   // Plan-gated chat attachment cap (SHO-370). `undefined` until the plan
   // resolves; callers fall back to the paid cap so a slow fetch never blocks.
   const [chatAttachmentBytes, setChatAttachmentBytes] = useState<number | undefined>(undefined)
@@ -221,6 +240,8 @@ export function useBillingData(
           planId?: string
           source?: PlanSource
           usageWindows?: UsageWindows
+          shogoCredit?: ShogoCreditView
+          /** Deprecated alias of `shogoCredit`. */
           promoCredit?: PromoCreditView
           limits?: { chatAttachmentBytes?: number; trialMaxSeats?: number }
           trialEligible?: boolean
@@ -241,7 +262,10 @@ export function useBillingData(
               source: (data.source as PlanSource) ?? (data.planId === "free" ? "free" : "subscription"),
             })
             if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
-            if (data.promoCredit) setPromoCredit(data.promoCredit as PromoCreditView)
+            // `shogoCredit` is the current field; `promoCredit` is the
+            // one-release alias an older API still sends.
+            const credit = data.shogoCredit ?? data.promoCredit
+            if (credit) setShogoCredit(credit as ShogoCreditView)
             if (typeof data.limits?.chatAttachmentBytes === "number") {
               setChatAttachmentBytes(data.limits.chatAttachmentBytes)
             }
@@ -496,7 +520,8 @@ export function useBillingData(
     effectivePlanId,
     planSource,
     usageWindows: liveUsageWindows,
-    promoCredit,
+    shogoCredit,
+    promoCredit: shogoCredit,
     chatAttachmentBytes: chatAttachmentBytes ?? DEFAULT_CHAT_ATTACHMENT_BYTES,
     trialEligible: trial.eligible,
     trialEndsAt: trial.endsAt,

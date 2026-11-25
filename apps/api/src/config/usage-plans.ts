@@ -588,20 +588,6 @@ export function trialSeatLimitMessage(maxSeats: number = TRIAL_MAX_SEATS): strin
 // them to Business at renewal.
 export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'business']
 
-/**
- * Promo credit that can still be spent at `now`. Zero once the credit has
- * expired or when there is no expiry, so a stray balance without an expiry
- * never becomes spendable.
- */
-export function promoCreditAvailableUsd(
-  wallet: { promoCreditUsd: number; promoCreditExpiresAt: Date | string | null } | null | undefined,
-  now: Date = new Date(),
-): number {
-  if (!wallet?.promoCreditExpiresAt) return 0
-  if (new Date(wallet.promoCreditExpiresAt).getTime() <= now.getTime()) return 0
-  return Math.max(0, wallet.promoCreditUsd)
-}
-
 // =============================================================================
 // Published-app plan caps (SHO-308 §9)
 //
