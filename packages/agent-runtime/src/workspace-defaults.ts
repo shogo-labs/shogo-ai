@@ -1103,13 +1103,6 @@ export interface TechStackMeta {
      */
     vmClass?: 'standard' | 'docker'
     /**
-     * Smallest `InstanceSizeName` (see `apps/api/src/config/instance-sizes.ts`)
-     * this stack should run at. Unlike the mobile floor, this floor IS
-     * billed — a Docker-class project needs real CPU/RAM for
-     * `dockerd` + the compose stack, not just headroom.
-     */
-    minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
-    /**
      * One-time setup command run after `seedTechStack()` places the
      * stack's files (e.g. `docker compose pull`). Analogous to Cursor's
      * `environment.json#install` — runs once, its output (pulled images /
@@ -1202,7 +1195,7 @@ export function listTechStacks(): TechStackMeta[] {
 export function validateTechStackRegistry(
   registry: Record<
     string,
-    { target: string; seedsOwnTemplate?: boolean; vmClass?: string; minimumInstanceSize?: string }
+    { target: string; seedsOwnTemplate?: boolean; vmClass?: string }
   >,
 ): Array<{ stackId: string; reason: string }> {
   const mismatches: Array<{ stackId: string; reason: string }> = []
@@ -1238,14 +1231,6 @@ export function validateTechStackRegistry(
       mismatches.push({
         stackId: meta.id,
         reason: `vmClass mismatch: stack.json="${diskVmClass}" registry="${regVmClass}"`,
-      })
-    }
-    const diskFloor = meta.runtime?.minimumInstanceSize
-    const regFloor = reg.minimumInstanceSize
-    if ((diskFloor ?? null) !== (regFloor ?? null)) {
-      mismatches.push({
-        stackId: meta.id,
-        reason: `minimumInstanceSize mismatch: stack.json=${diskFloor ?? 'unset'} registry=${regFloor ?? 'unset'}`,
       })
     }
   }

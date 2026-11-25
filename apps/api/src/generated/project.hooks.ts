@@ -9,7 +9,6 @@
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
 import * as billingService from '../services/billing-runtime'
 import { getModelTier } from '@shogo/model-catalog'
-import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
@@ -213,35 +212,16 @@ export const projectHooks: ProjectHooks = {
       input.settings = normalizeProjectSettings(input.settings)
     }
 
-    // Docker-class ("Tier 2") minimum compute tier. `getMinimumInstanceSize()`
-    // is a free, sync lookup that returns null for every non-Docker stack
-    // today, so this only reaches the DB (`canRunTechStackOnInstanceSize`)
-    // for a stack that actually declares a floor — ordinary project
-    // creation isn't slowed down. This is the creation-time half of the
-    // gate; `build-project-env.ts` re-checks at VM-assignment time as
-    // defense-in-depth in case a project's settings/workspace tier changes
-    // after creation.
+    // Docker-class ("Tier 2") projects are gated on the platform flag only.
+    // Docker is a VM class, not a compute tier: instance-size purchases were
+    // retired (SHO-424) and compute is metered per VM, so there is no floor
+    // left to charge against here.
     const techStackId = (input.settings as Record<string, unknown> | null)?.techStackId as
       | string
       | undefined
     const dockerBlocked = dockerClassBlockedMessage(techStackId)
     if (dockerBlocked) {
       return { ok: false, error: { code: 'docker_class_disabled', message: dockerBlocked } }
-    }
-    if (getMinimumInstanceSize(techStackId)) {
-      const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
-        workspaceId,
-        techStackId,
-      )
-      if (!allowed) {
-        return {
-          ok: false,
-          error: {
-            code: 'instance_too_small',
-            message: `This stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
-          },
-        }
-      }
     }
 
     return { ok: true, data: input }
@@ -356,23 +336,17 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // Docker-class ("Tier 2") minimum compute tier — same rationale as
-    // `beforeCreate`'s check. Only triggers a lookup when the PATCH is
-    // actually switching `techStackId` to a stack with a declared floor
-    // (`getMinimumInstanceSize()` is a free, sync check), and only blocks
-    // when the stack is actually CHANGING, so unrelated settings patches
-    // (e.g. toggling `canvasMode`) on an existing docker-compose project
-    // are never affected by this gate.
+    // Docker-class ("Tier 2") projects — same rationale as `beforeCreate`.
+    // Only checked when the PATCH is actually switching `techStackId` to a
+    // docker stack, so unrelated settings patches (e.g. toggling
+    // `canvasMode`) on an existing docker-compose project are never affected.
     const incomingTechStackId = (input?.settings as Record<string, unknown> | null)?.techStackId as
       | string
       | undefined
-    if (
-      incomingTechStackId &&
-      (getMinimumInstanceSize(incomingTechStackId) || dockerClassBlockedMessage(incomingTechStackId))
-    ) {
+    if (incomingTechStackId && dockerClassBlockedMessage(incomingTechStackId)) {
       const existing = await ctx.prisma.project.findUnique({
         where: { id },
-        select: { workspaceId: true, settings: true },
+        select: { settings: true },
       })
       if (existing) {
         const currentTechStackId = parseProjectSettings(existing.settings)?.techStackId as
@@ -382,21 +356,6 @@ export const projectHooks: ProjectHooks = {
           const dockerBlocked = dockerClassBlockedMessage(incomingTechStackId)
           if (dockerBlocked) {
             return { ok: false, error: { code: 'docker_class_disabled', message: dockerBlocked } }
-          }
-          if (getMinimumInstanceSize(incomingTechStackId)) {
-            const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
-              existing.workspaceId,
-              incomingTechStackId,
-            )
-            if (!allowed) {
-              return {
-                ok: false,
-                error: {
-                  code: "instance_too_small",
-                  message: `Switching to this stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
-                },
-              }
-            }
           }
         }
       }

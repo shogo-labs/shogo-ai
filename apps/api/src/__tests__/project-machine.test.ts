@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'bun:test'
 import { accountedVmMemMiB } from '../config/instance-sizes'
+import { vmHourlyUsd } from '../config/vm-pricing'
 import {
   currentMachineSize,
   describeProjectMachine,
@@ -31,40 +32,55 @@ describe('currentMachineSize', () => {
 })
 
 describe('planMachineChange', () => {
-  it('upgrades within the workspace budget', () => {
-    expect(planMachineChange('medium', 'medium')).toMatchObject({ ok: true, vmMemoryMiB: 8192, vmVcpus: 4 })
-    expect(planMachineChange('xlarge', 'xlarge')).toMatchObject({ ok: true, vmMemoryMiB: 32768, vmVcpus: 8 })
+  it('accepts every preset, whatever the workspace tier', () => {
+    expect(planMachineChange('medium')).toMatchObject({ ok: true, vmMemoryMiB: 8192, vmVcpus: 4 })
+    expect(planMachineChange('xlarge')).toMatchObject({ ok: true, vmMemoryMiB: 32768, vmVcpus: 8 })
   })
-  it('refuses a size above the plan and names the plan that allows it', () => {
-    const plan = planMachineChange('large', 'medium')
-    expect(plan.ok).toBe(false)
-    if (!plan.ok) {
-      expect(plan.status).toBe(422)
-      expect(plan.code).toBe('plan_ceiling')
-      expect(plan.message).toContain('Large workspace plan')
-    }
+  it('accepts a size above the workspace tier — the machine is billed per hour, not by plan', () => {
+    // SHO-578 §E: a `micro` workspace may pick XLarge; `accountedVmMemMiB` keeps
+    // the workspace budget safe, and the meter charges the real size.
+    expect(planMachineChange('xlarge')).toMatchObject({ ok: true, vmMemoryMiB: 32768, vmVcpus: 8 })
+    expect(planMachineChange('large')).toMatchObject({ ok: true, vmMemoryMiB: 16384, vmVcpus: 4 })
   })
   it('always allows downgrading to Standard, which clears the override', () => {
-    expect(planMachineChange('standard', 'micro')).toMatchObject({ ok: true, vmMemoryMiB: null, vmVcpus: null })
+    expect(planMachineChange('standard')).toMatchObject({ ok: true, vmMemoryMiB: null, vmVcpus: null })
   })
   it('rejects an unknown size', () => {
-    expect(planMachineChange('huge', 'xlarge')).toMatchObject({ ok: false, status: 400 })
-    expect(planMachineChange(undefined, 'xlarge')).toMatchObject({ ok: false, status: 400 })
+    expect(planMachineChange('huge')).toMatchObject({ ok: false, status: 400 })
+    expect(planMachineChange(undefined)).toMatchObject({ ok: false, status: 400 })
   })
 })
 
 describe('describeProjectMachine', () => {
-  it('marks which sizes the plan allows', () => {
-    const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'medium', substrate: 'metal', running: true })
-    expect(d.options.filter((o) => o.allowed).map((o) => o.id)).toEqual(['standard', 'medium'])
-    expect(d.options.find((o) => o.id === 'large')?.requiredTier).toBe('large')
+  it('offers every size on a micro workspace, each with its hourly price', () => {
+    const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'micro', substrate: 'metal', running: true })
+    expect(d.options.map((o) => o.id)).toEqual(['standard', 'medium', 'large', 'xlarge'])
+    expect(d.options.map((o) => o.hourlyUsd)).toEqual([0.188, 0.376, 0.472, 0.944])
     expect(d.canChange).toBe(true)
     expect(d.canRestart).toBe(true)
+  })
+  it('never sends a tier gate or plan wording — SHO-578 AC', () => {
+    // The picker must not carry `allowed`/`requiredTier` any more, and nothing
+    // in the payload may point at a workspace plan or a Billing upgrade: the
+    // machine is sold by the hour, not by the tier.
+    const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'micro', substrate: 'metal', running: true })
+    for (const option of d.options) {
+      expect(Object.keys(option).sort()).toEqual(['hourlyUsd', 'id', 'label', 'memMiB', 'vcpus'])
+    }
+    expect(JSON.stringify(d)).not.toMatch(/requiredTier|allowed|\bplan\b|billing|upgrade/i)
   })
   it('is read-only off metal', () => {
     const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'large', substrate: 'local', running: false })
     expect(d.canChange).toBe(false)
     expect(d.canRestart).toBe(false)
+  })
+})
+
+describe('vmHourlyUsd', () => {
+  it('prices a machine from VM_PRICING (vCPU-h + GiB-h)', () => {
+    expect(vmHourlyUsd(2, 4096)).toBe(0.188)
+    expect(vmHourlyUsd(8, 32768)).toBe(0.944)
+    expect(vmHourlyUsd(0, 0)).toBe(0)
   })
 })
 
@@ -74,6 +90,7 @@ describe('accountedVmMemMiB', () => {
   })
   it('never counts more than the workspace budget', () => {
     expect(accountedVmMemMiB(2048, 8192, 'micro')).toBe(2048)
+    expect(accountedVmMemMiB(2048, 32768, 'micro')).toBe(2048)
     expect(accountedVmMemMiB(4096, 32768, 'medium')).toBe(8192)
   })
   it('keeps the tier size for no override or a smaller one', () => {

@@ -10,10 +10,7 @@
  * of limits (burstable cap). Paid sizes keep min-scale 1 for zero cold starts.
  */
 
-import {
-  isMobileTechStack as isMobileTechStackShared,
-  getMinimumInstanceSize,
-} from '../../../../packages/core/src/tech-stack-registry'
+import { isMobileTechStack as isMobileTechStackShared } from '../../../../packages/core/src/tech-stack-registry'
 
 export const INSTANCE_MARKUP = 1.0
 
@@ -228,54 +225,10 @@ export function applyTechStackFloor(
 }
 
 /**
- * Docker-class stacks (`docker-compose`, `TechStackMeta.runtime.vmClass ===
- * 'docker'`) declare their own floor via `runtime.minimumInstanceSize`
- * (mirrored in the tech-stack registry as `minimumInstanceSize`) — unlike
- * `MOBILE_TECH_STACK_FLOOR`, this floor IS billed: dockerd + a real compose
- * stack need genuine CPU/RAM, not just free headroom. Callers on the
- * project-creation / instance-size-change path should apply this AFTER
- * `applyTechStackFloor` and before persisting/charging the size, and should
- * gate acceptance of the stack itself on `isDockerClassEnabled()`
- * (`apps/api/src/lib/runtime-class-setting.ts`) — this function only computes
- * the size, it does not check the platform gate.
- */
-export function applyDockerStackFloor(
-  size: InstanceSizeName,
-  techStackId: string | null | undefined,
-): InstanceSizeName {
-  const floor = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
-  if (!floor) return size
-  const currentIdx = INSTANCE_SIZE_ORDER.indexOf(size)
-  const floorIdx = INSTANCE_SIZE_ORDER.indexOf(floor)
-  return currentIdx >= floorIdx ? size : floor
-}
-
-/**
- * True if `size` meets (or exceeds) `techStackId`'s declared
- * `minimumInstanceSize` floor — i.e. `applyDockerStackFloor(size,
- * techStackId) === size`, without needing a workspace lookup. A stack with
- * no declared floor (every non-Docker stack today) always passes.
- *
- * Pure/sync — callers that need to check an actual WORKSPACE (not just a
- * hypothetical size) should use `canRunTechStackOnInstanceSize()` in
- * `services/billing.service.ts`, which resolves `workspace.instanceSize`
- * and calls this.
- */
-export function meetsMinimumInstanceSize(
-  size: InstanceSizeName,
-  techStackId: string | null | undefined,
-): boolean {
-  const floor = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
-  if (!floor) return true
-  return INSTANCE_SIZE_ORDER.indexOf(size) >= INSTANCE_SIZE_ORDER.indexOf(floor)
-}
-
-/**
  * Default memory size of a standard (non-docker) metal VM, before the
  * workspace tier caps it. Large workspaces don't get one 16 GiB VM per
  * project: the tier is a budget shared by every running project, so a
- * standard project takes `small` out of it and a docker project takes its
- * stack floor.
+ * standard project takes `small` out of it.
  */
 const STANDARD_VM_SIZE: InstanceSizeName = 'small'
 
@@ -294,9 +247,14 @@ function smallerSize(a: InstanceSizeName, b: InstanceSizeName): InstanceSizeName
  *   - vCPUs follow the tier (host CPU is shared and overcommitted; memory is
  *     what the workspace budget accounts for). Firecracker needs whole vCPUs,
  *     so `micro`'s 0.5 rounds up to 1.
- *   - Memory is the docker stack's floor for a docker-class VM, otherwise
- *     `STANDARD_VM_SIZE` capped at the tier. The unbilled mobile floor still
- *     lifts a micro workspace's Expo project to `small`.
+ *   - Memory is `STANDARD_VM_SIZE` capped at the tier. The unbilled mobile
+ *     floor still lifts a micro workspace's Expo project to `small`.
+ *
+ * A docker-class stack is accounted exactly like any other: since the
+ * instance-size purchase tiers were retired (SHO-424), the VM is paid for by
+ * metered vCPU-h + GiB-h, so there is no stack floor to lift the accounting.
+ * `SHOGO_VM_MEM_MIB` only feeds the workspace budget; the host boots the
+ * project's picked machine size or the host's docker class size.
  *
  * `techStackIds` are the stacks of every project the VM serves (one for a
  * project runtime, every member for a merged workspace runtime).
@@ -304,23 +262,11 @@ function smallerSize(a: InstanceSizeName, b: InstanceSizeName): InstanceSizeName
 export function resolveMetalVmSize(
   instanceSize: InstanceSizeName,
   techStackIds: Array<string | null | undefined>,
-  dockerClass: boolean,
 ): MetalVmSize {
   const size: InstanceSizeName = INSTANCE_SIZES[instanceSize] ? instanceSize : 'micro'
-  let vcpus = Math.max(1, Math.ceil(INSTANCE_SIZES[size].cpuCores))
+  const vcpus = Math.max(1, Math.ceil(INSTANCE_SIZES[size].cpuCores))
   let memSize = smallerSize(STANDARD_VM_SIZE, size)
-  if (dockerClass) {
-    const floor = techStackIds
-      .map((id) => getMinimumInstanceSize(id) as InstanceSizeName | null)
-      .filter((s): s is InstanceSizeName => !!s)
-      .sort((a, b) => INSTANCE_SIZE_ORDER.indexOf(b) - INSTANCE_SIZE_ORDER.indexOf(a))[0]
-    if (floor) {
-      memSize = floor
-      vcpus = Math.max(vcpus, Math.ceil(INSTANCE_SIZES[floor].cpuCores))
-    }
-  } else {
-    for (const id of techStackIds) memSize = applyTechStackFloor(memSize, id)
-  }
+  for (const id of techStackIds) memSize = applyTechStackFloor(memSize, id)
   return { vcpus, memMiB: INSTANCE_SIZES[memSize].memoryGb * 1024 }
 }
 

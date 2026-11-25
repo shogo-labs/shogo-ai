@@ -135,7 +135,6 @@ mock.module('@shogo/shared-runtime', () => ({
   // None of these fixtures declare a docker-class stack — always
   // short-circuits the runImport tier gate. Still needs to be a real
   // function so the route's static import doesn't crash at link time.
-  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
 }))
 
 // `project-export-import.ts` statically imports `../services/billing.service`
@@ -147,11 +146,6 @@ mock.module('@shogo/shared-runtime', () => ({
 // trying to satisfy that whole chain.
 mock.module('../../services/billing.service', () => ({
   hasAdvancedModelAccess: async (_workspaceId: string) => false,
-  canRunTechStackOnInstanceSize: async (_workspaceId: string, _techStackId: string | null | undefined) => ({
-    allowed: true,
-    currentSize: 'micro',
-    requiredSize: null,
-  }),
 }))
 
 // Dynamic import AFTER mocks so the route module captures the mocked deps.

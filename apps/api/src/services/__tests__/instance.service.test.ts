@@ -47,7 +47,6 @@ const fakeTx = {
 mock.module('@shogo/shared-runtime', () => ({
   isMobileTechStack: (_id: any) => false,
   isDockerTechStack: (_id: any) => false,
-  getMinimumInstanceSize: (_id: any) => null,
 }))
 
 mock.module('../../lib/prisma', () => ({

@@ -6,25 +6,12 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setDockerClassOverride } from '../../lib/runtime-class-setting'
-
-// ─── @shogo/shared-runtime mock ────────────────────────────────────────
-// Only `docker-compose` declares a floor; everything else is unrestricted.
-mock.module('@shogo/shared-runtime', () => ({
-  getMinimumInstanceSize: (techStackId: string | null | undefined) =>
-    techStackId === 'docker-compose' ? 'large' : null,
-}))
+import { parseProjectSettings } from '../../lib/project-settings'
 
 // ─── billing.service mock ──────────────────────────────────────────────
-type TierGateResult = { allowed: boolean; currentSize: string; requiredSize: string | null }
-let tierGateAnswer: TierGateResult = { allowed: true, currentSize: 'micro', requiredSize: null }
-const tierGateCalls: Array<{ workspaceId: string; techStackId: string | null | undefined }> = []
 let paidAnswer = true
 const paidCalls: string[] = []
 mock.module('../billing.service', () => ({
-  canRunTechStackOnInstanceSize: async (workspaceId: string, techStackId: string | null | undefined) => {
-    tierGateCalls.push({ workspaceId, techStackId })
-    return tierGateAnswer
-  },
   hasPaidSubscription: async (workspaceId: string) => {
     paidCalls.push(workspaceId)
     return paidAnswer
@@ -177,8 +164,6 @@ beforeEach(() => {
   createIdCounter = 0
   durableRepoAnswer = false
   durableRepoCalls.length = 0
-  tierGateAnswer = { allowed: true, currentSize: 'micro', requiredSize: null }
-  tierGateCalls.length = 0
   paidAnswer = true
   paidCalls.length = 0
   beforeCreateAnswer = { ok: true }
@@ -225,10 +210,13 @@ describe('createProjectInWorkspace', () => {
     expect(projects.get(project.id)?.hidden).toBe(true)
   })
 
-  it('throws ProjectLifecycleError with the instance_too_small code untouched (not coerced to bad_request)', async () => {
+  it('keeps the docker_class_disabled code untouched (not coerced to bad_request)', async () => {
+    // SHO-578: the only refusal left for a Docker stack is the platform flag.
+    // The agent's `create_project` path must surface that code as-is, not as a
+    // generic bad_request.
     beforeCreateAnswer = {
       ok: false,
-      error: { code: 'instance_too_small', message: 'This stack requires the large compute tier or higher.' },
+      error: { code: 'docker_class_disabled', message: 'Docker projects are not available on this server yet.' },
     }
     await expect(
       createProjectInWorkspace({
@@ -239,7 +227,7 @@ describe('createProjectInWorkspace', () => {
       }),
     ).rejects.toMatchObject({
       name: 'ProjectLifecycleError',
-      code: 'instance_too_small',
+      code: 'docker_class_disabled',
     })
   })
 
@@ -258,25 +246,7 @@ describe('createProjectInWorkspace', () => {
   })
 })
 
-describe('configureProject — Docker-class minimum compute tier', () => {
-  it('does not call the tier gate when settings has no techStackId change', async () => {
-    const p = seedProject({ settings: { techStackId: 'nextjs' } })
-    await configureProject(p.id, { settings: { foo: 'bar' } })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
-  it('does not call the tier gate for a stack with no declared floor', async () => {
-    const p = seedProject({ settings: { techStackId: 'nextjs' } })
-    await configureProject(p.id, { settings: { techStackId: 'react-app' } })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
-  it('does not call the tier gate when techStackId is unchanged (re-PATCHing the same stack)', async () => {
-    const p = seedProject({ settings: { techStackId: 'docker-compose' } })
-    await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
+describe('configureProject — Docker-class platform gate', () => {
   it('blocks switching to docker-compose while the platform gate is off', async () => {
     setDockerClassOverride(false)
     const p = seedProject({ workspaceId: 'ws_large', settings: { techStackId: 'nextjs' } })
@@ -284,29 +254,28 @@ describe('configureProject — Docker-class minimum compute tier', () => {
       name: 'ProjectLifecycleError',
       code: 'docker_class_disabled',
     })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
-  it('blocks switching to docker-compose when the workspace instance size is too small', async () => {
-    setDockerClassOverride(true)
-    tierGateAnswer = { allowed: false, currentSize: 'micro', requiredSize: 'large' }
-    const p = seedProject({ workspaceId: 'ws_small', settings: { techStackId: 'nextjs' } })
-    await expect(configureProject(p.id, { settings: { techStackId: 'docker-compose' } })).rejects.toMatchObject({
-      name: 'ProjectLifecycleError',
-      code: 'instance_too_small',
-    })
-    expect(tierGateCalls).toEqual([{ workspaceId: 'ws_small', techStackId: 'docker-compose' }])
     // Settings must NOT have been persisted.
     expect((projects.get(p.id)!.settings as Record<string, unknown>).techStackId).toBe('nextjs')
   })
 
-  it('allows switching to docker-compose when the workspace meets the tier floor', async () => {
+  it('allows switching to docker-compose with the platform gate on, whatever the instance size', async () => {
+    // SHO-578: instance-size floors were retired with the purchase tiers
+    // (SHO-424) — Docker is a VM class, not a compute tier, so a `micro`
+    // workspace (nearly every workspace in prod) may switch.
     setDockerClassOverride(true)
-    tierGateAnswer = { allowed: true, currentSize: 'large', requiredSize: 'large' }
-    const p = seedProject({ workspaceId: 'ws_large', settings: { techStackId: 'nextjs' } })
+    const p = seedProject({ workspaceId: 'ws_micro', settings: { techStackId: 'nextjs' } })
     const result = await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })
     expect((result.settings as Record<string, unknown>).techStackId).toBe('docker-compose')
-    expect(tierGateCalls).toEqual([{ workspaceId: 'ws_large', techStackId: 'docker-compose' }])
+    // The write path encodes settings for the active DB (a JSON string on
+    // SQLite, a bare object on Postgres), so assert what the read path sees.
+    expect(parseProjectSettings(projects.get(p.id)!.settings)?.techStackId).toBe('docker-compose')
+  })
+
+  it('does not re-check the platform gate when techStackId is unchanged (re-PATCHing the same stack)', async () => {
+    setDockerClassOverride(false)
+    const p = seedProject({ settings: { techStackId: 'docker-compose' } })
+    await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })
+    expect(parseProjectSettings(projects.get(p.id)!.settings)?.techStackId).toBe('docker-compose')
   })
 
   it('throws not_found for a nonexistent project', async () => {

@@ -3,9 +3,9 @@
 /**
  * MachineSettings — project Settings → DATA → Machine.
  *
- * Pick this project's machine size (vCPU + memory) and restart it. Sizes above
- * the workspace plan's memory budget are shown but locked, with the plan that
- * unlocks them. Going back to Standard is always allowed.
+ * Pick this project's machine size (vCPU + memory) and restart it. Every size
+ * can be picked: the machine is billed by the hour it runs, so each option
+ * shows its hourly price instead of a plan that would unlock it.
  *
  * The host sizes a VM when it starts it, so a change to a running project
  * waits for a restart; the panel offers one right after saving. A restart
@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView } from 'react-native'
-import { Cpu, Lock, RotateCw, Check } from 'lucide-react-native'
+import { Cpu, RotateCw, Check } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type ProjectMachineState, type MachineSizeId } from '../../lib/api'
@@ -30,17 +30,13 @@ interface MachineSettingsProps {
   http: HttpClient
 }
 
-const TIER_LABEL: Record<string, string> = {
-  micro: 'Micro',
-  small: 'Small',
-  medium: 'Medium',
-  large: 'Large',
-  xlarge: 'XLarge',
-}
-
 function gb(memMiB: number): string {
   const v = memMiB / 1024
   return `${Number.isInteger(v) ? v : v.toFixed(1)} GB`
+}
+
+function hourly(usd: number): string {
+  return `≈ $${usd.toFixed(2)}/h while running`
 }
 
 export function MachineSettings({ projectId, http }: MachineSettingsProps) {
@@ -90,7 +86,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
         )
       }
     } catch (err: any) {
-      // The route's message names the plan that allows the size; show it as is.
+      // Show the route's message as is — it names the reason the save failed.
       setError(err?.message || 'Could not change the machine size')
     } finally {
       setSaving(false)
@@ -140,8 +136,8 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
         {readOnly
           ? state?.substrate === 'local'
             ? 'This project runs on your computer, so it uses your own CPU and memory.'
-            : 'This project’s machine size follows the workspace plan.'
-          : 'CPU and memory for this project’s machine. A bigger machine uses more of the workspace plan’s memory, leaving less for its other running projects.'}
+            : 'This project’s machine size is managed by the host it runs on.'
+          : 'CPU and memory for this project’s machine. A bigger machine costs more per hour while it runs.'}
       </Text>
 
       {current && (
@@ -170,15 +166,13 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
         <View className="mt-4 gap-2" accessibilityRole="radiogroup">
           {state.options.map((o) => {
             const selected = draft === o.id
-            const locked = !o.allowed
             return (
               <Pressable
                 key={o.id}
                 accessibilityRole="radio"
                 aria-checked={selected}
-                aria-disabled={locked}
-                accessibilityLabel={`${o.label}, ${o.vcpus} vCPU, ${gb(o.memMiB)}`}
-                disabled={locked || saving}
+                accessibilityLabel={`${o.label}, ${o.vcpus} vCPU, ${gb(o.memMiB)}, ${hourly(o.hourlyUsd)}`}
+                disabled={saving}
                 onPress={() => {
                   setDraft(o.id)
                   setNotice(null)
@@ -187,7 +181,6 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
                 className={cn(
                   'rounded-lg border p-3 flex-row items-center gap-3',
                   selected ? 'border-primary bg-primary/5' : 'border-border',
-                  locked && 'opacity-60',
                 )}
               >
                 <View
@@ -212,14 +205,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
                     {o.id === 'standard' ? ' · default for every project' : ''}
                   </Text>
                 </View>
-                {locked && (
-                  <View className="flex-row items-center gap-1">
-                    <Lock size={12} className="text-muted-foreground" />
-                    <Text className="text-[11px] text-muted-foreground">
-                      {o.requiredTier ? `${TIER_LABEL[o.requiredTier] ?? o.requiredTier} plan` : 'Not available'}
-                    </Text>
-                  </View>
-                )}
+                <Text className="text-[11px] text-muted-foreground">{hourly(o.hourlyUsd)}</Text>
               </Pressable>
             )
           })}
@@ -249,7 +235,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
             )}
           </Pressable>
           <Text className="text-[11px] text-muted-foreground">
-            Need more than your plan allows? Upgrade the workspace plan in Billing.
+            A bigger machine costs more per hour, billed from your workspace’s usage while the project runs.
           </Text>
         </View>
       )}

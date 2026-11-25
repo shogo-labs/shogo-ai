@@ -225,26 +225,9 @@ mock.module('../marketplace-snapshot-storage.service', () => ({
 mock.module('@shogo/shared-runtime', () => ({
   createS3SyncForProject: (projectDir: string, projectId: string) =>
     s3SyncFactoryMock ? s3SyncFactoryMock(projectDir, projectId) : null,
-  // Mirrors the real tech-stack registry's only stack with a declared
-  // floor today. Kept in sync manually since this file mocks the whole
-  // `@shogo/shared-runtime` module (unlike billing.service.test.ts, which
-  // uses the real one) — see `getMinimumInstanceSize` tests below for the
-  // one place this constant matters.
-  getMinimumInstanceSize: (techStackId: string | null | undefined) =>
-    techStackId === 'docker-compose' ? 'large' : null,
 }))
 
-type TierGateResult = { allowed: boolean; currentSize: string; requiredSize: string | null }
-let tierGateMock: ((workspaceId: string, techStackId: string | null | undefined) => Promise<TierGateResult>) | null =
-  null
-const tierGateCalls: Array<{ workspaceId: string; techStackId: string | null | undefined }> = []
-
 mock.module('../billing.service', () => ({
-  canRunTechStackOnInstanceSize: async (workspaceId: string, techStackId: string | null | undefined) => {
-    tierGateCalls.push({ workspaceId, techStackId })
-    if (tierGateMock) return tierGateMock(workspaceId, techStackId)
-    return { allowed: true, currentSize: 'micro', requiredSize: null }
-  },
 }))
 
 let cancelledSubscriptions: string[] = []
@@ -295,8 +278,6 @@ beforeEach(() => {
   computeManifestMock = () => ({})
   diffMock = null
   s3SyncFactoryMock = null
-  tierGateMock = null
-  tierGateCalls.length = 0
   id = 0
 
   for (const k of Object.keys(process.env)) {
@@ -465,57 +446,37 @@ describe('installAgent — preconditions', () => {
   })
 })
 
-describe('installAgent — Docker-class minimum compute tier', () => {
-  it('does not call the tier gate for a listing with no declared floor', async () => {
-    const L = seedListing({ id: 'lst_notech' })
-    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
-    await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
-  it('does not call the tier gate for a listing on an unrelated tech stack', async () => {
-    const L = seedListing({ id: 'lst_vite' })
-    L.project.settings = { activeMode: 'canvas', techStackId: 'vite-react' }
-    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
-    await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
-    expect(tierGateCalls).toHaveLength(0)
-  })
-
-  it('blocks installing a docker-compose listing when the workspace instance size is too small', async () => {
-    setDockerClassOverride(true)
-    const L = seedListing({ id: 'lst_dockersmall' })
-    L.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
-    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
-    tierGateMock = async () => ({ allowed: false, currentSize: 'micro', requiredSize: 'large' })
-    await expect(
-      svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' }),
-    ).rejects.toThrow(/instance_too_small.*large.*micro/)
-    expect(tierGateCalls).toEqual([{ workspaceId: 'ws_1', techStackId: 'docker-compose' }])
-    // No project row was created — the gate runs before the transaction.
-    expect(db.projects.size).toBe(1) // only the seeded source project
-  })
-
-  it('allows installing a docker-compose listing when the workspace meets the tier floor', async () => {
+describe('installAgent — Docker-class platform gate', () => {
+  it('installs a docker-compose listing on a micro workspace when the platform gate is on', async () => {
+    // SHO-578: instance-size floors were retired with the purchase tiers
+    // (SHO-424) — Docker is a VM class, not a compute tier.
     setDockerClassOverride(true)
     const L = seedListing({ id: 'lst_dockerok' })
     L.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
     db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
-    tierGateMock = async () => ({ allowed: true, currentSize: 'large', requiredSize: 'large' })
     const out = await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
     expect(out.projectId).toBeDefined()
-    expect(tierGateCalls).toEqual([{ workspaceId: 'ws_1', techStackId: 'docker-compose' }])
   })
 
-  it('honors a string-encoded settings blob when reading techStackId for the gate', async () => {
+  it('honors a string-encoded settings blob when reading techStackId', async () => {
     setDockerClassOverride(true)
     const L = seedListing({ id: 'lst_dockerstr' })
     L.project.settings = JSON.stringify({ activeMode: 'canvas', techStackId: 'docker-compose' })
     db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
-    tierGateMock = async () => ({ allowed: false, currentSize: 'small', requiredSize: 'large' })
+    const out = await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
+    expect(out.projectId).toBeDefined()
+  })
+
+  it('refuses a docker-compose listing with docker_class_disabled when the platform gate is off', async () => {
+    setDockerClassOverride(false)
+    const L = seedListing({ id: 'lst_dockerblocked' })
+    L.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
+    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
     await expect(
       svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' }),
-    ).rejects.toThrow(/instance_too_small/)
-    expect(tierGateCalls).toEqual([{ workspaceId: 'ws_1', techStackId: 'docker-compose' }])
+    ).rejects.toThrow(/docker_class_disabled/)
+    // No project row was created — the gate runs before the transaction.
+    expect(db.projects.size).toBe(1) // only the seeded source project
   })
 })
 

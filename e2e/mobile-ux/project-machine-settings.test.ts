@@ -3,10 +3,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * Settings → DATA → Machine: pick a bigger machine, see the plan lock on sizes
- * the workspace can't have, then restart to apply. The `/machine` responses are
- * fulfilled locally so the run checks the panel's own behaviour without a metal
- * host; the route logic is covered by `apps/api/src/__tests__/project-machine.test.ts`.
+ * Settings → DATA → Machine: every size is pickable (SHO-578 §E), each shows
+ * its hourly price, and a change waits for a restart to apply. The `/machine`
+ * responses are fulfilled locally so the run checks the panel's own behaviour
+ * without a metal host; the route logic is covered by
+ * `apps/api/src/__tests__/project-machine.test.ts`.
  *
  *   E2E_PROJECT_ID=<project id> \
  *   E2E_TARGET_URL=http://localhost:8081 \
@@ -16,10 +17,10 @@ import { expect, test, type Page } from "@playwright/test";
  */
 
 const options = [
-  { id: "standard", label: "Standard", vcpus: 2, memMiB: 4096, allowed: true, requiredTier: null },
-  { id: "medium", label: "Medium", vcpus: 4, memMiB: 8192, allowed: true, requiredTier: "medium" },
-  { id: "large", label: "Large", vcpus: 4, memMiB: 16384, allowed: false, requiredTier: "large" },
-  { id: "xlarge", label: "XLarge", vcpus: 8, memMiB: 32768, allowed: false, requiredTier: "xlarge" },
+  { id: "standard", label: "Standard", vcpus: 2, memMiB: 4096, hourlyUsd: 0.188 },
+  { id: "medium", label: "Medium", vcpus: 4, memMiB: 8192, hourlyUsd: 0.376 },
+  { id: "large", label: "Large", vcpus: 4, memMiB: 16384, hourlyUsd: 0.472 },
+  { id: "xlarge", label: "XLarge", vcpus: 8, memMiB: 32768, hourlyUsd: 0.944 },
 ];
 
 const state = (current: (typeof options)[number], over: Record<string, unknown> = {}) => ({
@@ -42,7 +43,7 @@ async function openMachinePanel(page: Page, projectId: string): Promise<void> {
   await expect(page.getByText("Current size").first()).toBeVisible({ timeout: 30_000 });
 }
 
-test("the machine panel upgrades within the plan, locks bigger sizes, and restarts to apply", async ({ page }) => {
+test("every machine size is pickable, priced per hour, and a change restarts to apply", async ({ page }) => {
   const projectId = process.env.E2E_PROJECT_ID;
   test.skip(!projectId, "Set E2E_PROJECT_ID to a project the session can open");
 
@@ -52,7 +53,7 @@ test("the machine panel upgrades within the plan, locks bigger sizes, and restar
   await page.route(`**/api/projects/${projectId}/machine`, async (route) => {
     if (route.request().method() === "PUT") {
       putBody = JSON.parse(route.request().postData() || "{}");
-      current = options[1];
+      current = options.find((o) => o.id === (putBody as { size?: string }).size) ?? options[3];
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -73,11 +74,17 @@ test("the machine panel upgrades within the plan, locks bigger sizes, and restar
 
   await openMachinePanel(page, projectId!);
   await expect(page.getByText("Standard · 2 vCPU · 4 GB")).toBeVisible();
-  await expect(page.getByText("Large plan")).toBeVisible();
+  // Every option carries its hourly price; no size is locked behind a plan.
+  await expect(page.getByText("≈ $0.19/h while running")).toBeVisible();
+  await expect(page.getByText("≈ $0.94/h while running")).toBeVisible();
+  await expect(page.getByText("Large plan")).toHaveCount(0);
+  await expect(page.getByText(/Upgrade the workspace plan/)).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /XLarge/ })).toBeEnabled();
 
-  await page.getByRole("radio", { name: /Medium/ }).click();
-  await page.getByText("Upgrade to Medium").click();
-  await expect.poll(() => putBody).toEqual({ size: "medium" });
+  // The biggest size is pickable on any workspace (SHO-578 §E).
+  await page.getByRole("radio", { name: /XLarge/ }).click();
+  await page.getByText("Upgrade to XLarge").click();
+  await expect.poll(() => putBody).toEqual({ size: "xlarge" });
   await expect(page.getByText("Restart the project to switch to the new size", { exact: false })).toBeVisible();
   await page.screenshot({ path: "e2e/mobile-ux/screenshots/machine-settings-390.png", fullPage: true });
 

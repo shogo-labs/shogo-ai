@@ -20,7 +20,6 @@ export {
   usesMetroBundler,
   stackSeedsItself,
   isDockerTechStack,
-  getMinimumInstanceSize,
   getDeclaredPorts,
   type StackTarget,
   type StackRegistryEntry,
