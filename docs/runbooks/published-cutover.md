@@ -102,6 +102,37 @@ environment's pod is running). For a metal site that means the microVM is still
 up, which is expected while it serves traffic; rehearse on staging first, where
 the environment is idle.
 
+## Region stamping (SHO-588)
+
+The `SERVER_BACKED` KV value now carries the site's **home region**
+(`knative:eu`), because each region has its own Kourier and the `*.shogo.one`
+Worker picks the origin from that code. A bare `knative` — every value written
+before SHO-588 — still routes, but always to the **default (US)** Kourier, so an
+EU site's `/api/*` calls hit a cluster with no DomainMapping for that app and
+404.
+
+After the Worker change ships to a zone, backfill existing entries once:
+
+```bash
+# Report only: what each site's value is, what its home region says it should be.
+bun apps/api/scripts/stamp-knative-region.ts
+
+# Write the region code onto every `knative` entry that needs it.
+bun apps/api/scripts/stamp-knative-region.ts --yes
+```
+
+The script lists `SERVER_BACKED`, resolves each project's home region from
+Postgres, and probes that region's Kourier. Each entry prints one line — its
+current value, its home region, the probe result and the action taken (or the
+reason to skip) — and the run ends with counts of entries written and still to
+write. It skips `metal` entries and anything it cannot confirm, so re-running it
+is a no-op; `--subdomain <name>` narrows it to one site. New publishes stamp
+themselves — this is only for entries that existed before the change.
+
+Never hand-write `knative:<code>` with a region that does not own the ksvc: the
+site is created in the region the publish ran in, and the two Kouriers cannot
+see each other's services.
+
 ## Failure codes
 
 | Code | Meaning | What it leaves behind |
