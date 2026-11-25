@@ -95,7 +95,10 @@ const prismaApi = {
       if (!row) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
       const at = row.publishStatusAt instanceof Date ? row.publishStatusAt.getTime() : 0
-      const stale = !at || Date.now() - at > 30 * 60_000
+      // Derived, like the route's `stalePublishBefore()`: a literal 30-minute
+      // lease here silently inverts the guard whenever the real lease is
+      // shorter, and the write-back then never happens.
+      const stale = !at || Date.now() - at > publishInFlightTtlMs()
       if (inFlight && !stale) return { count: 0 }
       if (typeof data?.publishStatus === 'string') {
         statusWrites.push({ status: data.publishStatus, error: data.publishError ?? null })
