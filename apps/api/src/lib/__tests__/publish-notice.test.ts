@@ -37,4 +37,17 @@ describe("publish seed notice", () => {
     expect(decision.write).toBe(true)
     expect(decision.notice).toBeNull()
   })
+
+  it("still reports when a seed dropped every row, so it seeded nothing", () => {
+    // The runtime returns `seed: null` with the orphans once every row is
+    // dropped (published-schema-export.ts), so the caller's row count is 0 even
+    // though a seed ran and lost everything. That is the report that matters most.
+    const decision = seedNoticeWrite({
+      seeded: false,
+      orphans: [{ table: "stage_changes", count: 12 }],
+    })
+    expect(decision.write).toBe(true)
+    expect(decision.notice).toContain("12 row(s)")
+    expect(decision.notice).toContain("stage_changes (12)")
+  })
 })

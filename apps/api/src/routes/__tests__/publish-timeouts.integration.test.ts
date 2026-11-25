@@ -22,6 +22,7 @@ mock.module('../../lib/substrate/router', () => ({
   getPublishSubstrate: async () => ({ kind: substrate.kind }),
 }))
 
+import { publishReadinessTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { publishConfigureTimeoutMs, triggerBuildWithRetry } from '../publish'
 
 let server: Server | null = null
@@ -103,7 +104,7 @@ describe('publish build timeout and retry', () => {
       substrate.kind = 'knative'
       const configure = Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000
       const imageBuild = Number(process.env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS) || 900_000
-      const readiness = Number(process.env.PUBLISH_READINESS_TIMEOUT_MS) || 120_000
+      const readiness = publishReadinessTimeoutMs()
       expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: true })).toBe(
         configure + imageBuild + readiness,
       )

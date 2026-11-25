@@ -30,12 +30,17 @@ export interface SeedNoticeDecision {
  * - a seed ran with orphans → the report, naming every table and count.
  * - a seed ran clean → `{ write: true, notice: null }`, which clears a notice
  *   from an earlier seed that did have orphans.
+ *
+ * `seeded` is the caller's row count, and a seed whose every row was an orphan
+ * writes no rows at all, so it arrives here as `false` with the orphans that
+ * explain why. Those orphans prove a seed ran, and dropping all of its rows is
+ * the case that must never go unreported — so they decide, not just the count.
  */
 export function seedNoticeWrite(input: {
   seeded: boolean
   orphans: readonly SeedOrphanCount[]
 }): SeedNoticeDecision {
-  if (!input.seeded) return { write: false, notice: null }
+  if (!input.seeded && input.orphans.length === 0) return { write: false, notice: null }
   const total = input.orphans.reduce((sum, orphan) => sum + orphan.count, 0)
   if (total === 0) return { write: true, notice: null }
   const tableList = input.orphans.map((orphan) => `${orphan.table} (${orphan.count})`).join(', ')
