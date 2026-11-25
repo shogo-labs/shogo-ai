@@ -112,6 +112,53 @@ export function publishedBootPlan(env: NodeJS.ProcessEnv = process.env): {
 }
 
 /**
+ * What a Metro/Expo boot has to do for itself.
+ *
+ * A published pod is not a preview. The publish flow already exported the web
+ * bundle on the editing runtime — with a warm cache, at publish time — and
+ * uploaded it to the bucket the `*.shogo.one` Worker serves every non-`/api/*`
+ * request from, so this pod only has to answer `/api/*`. Re-exporting here cost
+ * ~2 GB on a 1 GiB instance and the OOM kill landed *before* `server.tsx`
+ * started, which left readiness at 503 and every `/api/*` at 404 while the
+ * bundle being built was never served anyway (SHO-587).
+ *
+ * `SHOGO_PUBLISHED_WEB=artifact` is the signal that such an artifact exists. It
+ * is set by `buildPublishedProjectEnv` (metal) and
+ * `createPublishedServerService` (Knative), i.e. on every server-backed
+ * publish, and a publish with no files fails before the site goes live. A
+ * per-commit image counts too: its root-based `dist/` is baked in
+ * ({@link publishedBootPlan}'s `fromImage`).
+ *
+ * Without the signal — a VM booted by an API that predates it — the export
+ * still runs, but after the API, so a failed or OOM-killed export can no longer
+ * hold `/api/*` hostage. The editing preview keeps its own order: it serves the
+ * canvas out of `dist/`, so there the export has to come first.
+ */
+export function publishedMetroBootPlan(env: NodeJS.ProcessEnv = process.env): {
+  /** This process serves a published app (`SHOGO_PUBLISHED_MODE`). */
+  published: boolean
+  /** Boot has to run `expo export --platform web` itself. */
+  exportWeb: boolean
+  /** Boot has to install deps and run prisma — an image-booted pod skips both. */
+  installDeps: boolean
+  /** `server.tsx` comes up before any export, so an export failure cannot 404 the API. */
+  apiFirst: boolean
+} {
+  const published = (env.SHOGO_PUBLISHED_MODE || '').trim().toLowerCase() === 'true'
+  if (!published) {
+    return { published: false, exportWeb: true, installDeps: true, apiFirst: false }
+  }
+  const bootPlan = publishedBootPlan(env)
+  const webArtifact = (env.SHOGO_PUBLISHED_WEB || '').trim().toLowerCase() === 'artifact'
+  return {
+    published: true,
+    exportWeb: !webArtifact && !bootPlan.fromImage,
+    installDeps: bootPlan.installDeps,
+    apiFirst: true,
+  }
+}
+
+/**
  * Matches the "disk is full" build failure mode (09-21 prod pain point:
  * a workspace `emptyDir` reported "14GB/14GB"). vite/esbuild/bun all
  * surface this the same way in stderr regardless of which step hit it.
@@ -1076,7 +1123,87 @@ export interface ApiServerHost {
 
 type PublishBuildResult = {
   ok: boolean
+  /**
+   * Machine-readable failure reason, carried through `/agent/publish-build` to
+   * `publishStatus`'s error code so a client can tell an out-of-memory build
+   * from a broken one and say something useful.
+   */
+  code?: PublishBuildCode
   error?: string
+}
+
+export type PublishBuildCode = 'build_oom' | 'build_failed'
+
+/**
+ * What one `expo export --platform web` run did.
+ *
+ * `void` used to be the answer, which is why a cold export that died on a small
+ * instance reached the user as "did not produce index.html": the exit signal and
+ * everything Metro wrote to stderr were dropped. The publish path turns this
+ * into a `build_oom` / `build_failed` code plus a message with the real cause;
+ * the preview path ignores it exactly as before.
+ */
+export type ExpoExportResult = {
+  /** The export exited 0 and its `index.html` is on disk. */
+  ok: boolean
+  exitCode: number | null
+  signal: string | null
+  /** Last lines of the run's stderr (its stdout when it wrote no stderr). */
+  stderrTail: string
+  /** The kernel killed the export for running out of memory. */
+  oom: boolean
+}
+
+/** How many trailing output lines an export keeps for its failure message. */
+const EXPO_OUTPUT_TAIL_LINES = 40
+
+/** Lines node/V8 print when a build exhausts its own heap. */
+const OOM_OUTPUT_PATTERN = /heap out of memory|reached heap limit|out of memory/i
+
+/**
+ * How many times this cgroup OOM-killed a process, or `null` when the kernel
+ * does not report it (cgroup v1, macOS, Windows).
+ *
+ * A build killed by the OOM killer dies on SIGKILL with nothing on stderr, so
+ * the counter moving is the only positive evidence of *why* it died — the exit
+ * status alone is indistinguishable from an operator kill. Read before and
+ * after a build and compare.
+ */
+function readCgroupOomKillCount(): number | null {
+  if (process.platform !== 'linux') return null
+  try {
+    const text = readFileSync('/sys/fs/cgroup/memory.events', 'utf8')
+    for (const line of text.split('\n')) {
+      const [name, value] = line.trim().split(/\s+/)
+      if (name === 'oom_kill') {
+        const count = Number(value)
+        return Number.isFinite(count) ? count : null
+      }
+    }
+  } catch {
+    /* no cgroup v2 memory accounting on this host */
+  }
+  return null
+}
+
+/**
+ * One line naming why a publish export failed, for `publishError`'s detail.
+ *
+ * It reaches the desktop panel and the agent, so it has to carry the cause
+ * rather than point at a build log neither of them can read.
+ */
+function describeExpoExportFailure(result: ExpoExportResult): string {
+  if (result.exitCode === 0) return `expo export exited 0 but produced no web bundle`
+  const how =
+    result.exitCode !== null
+      ? `expo export failed (exit ${result.exitCode})`
+      : result.signal
+        ? `expo export was killed (${result.signal})`
+        : 'expo export could not start'
+  if (result.oom) return `${how} — out of memory on the editing runtime`
+  const tail = result.stderrTail.trim()
+  if (!tail) return how
+  return `${how}: ${tail.split('\n').slice(-12).join('\n')}`
 }
 
 type OneShotBuildOptions = {
@@ -1285,7 +1412,7 @@ export class PreviewManager {
    * promise because they write different staging directories and only the
    * preview export promotes its output into `dist/`.
    */
-  private expoExportInFlight = new Map<string, Promise<void>>()
+  private expoExportInFlight = new Map<string, Promise<ExpoExportResult>>()
   private expoExportQueue: Promise<void> = Promise.resolve()
   /** Debounce timer + trailing-edge state for {@link requestWebRebuild}. */
   private webRebuildTimer: ReturnType<typeof setTimeout> | null = null
@@ -2304,18 +2431,18 @@ export class PreviewManager {
       const cwd = this.staticBuildCwd()
       if (existsSync(join(cwd, 'package.json'))) await this.installDepsIfNeeded({}, cwd)
       const plan = resolveStaticBuildPlan(cwd, { stagingDir: PUBLISH_STAGING_DIR, basePath: '/' })
-      if ('error' in plan) return { ok: false, error: plan.error }
+      if ('error' in plan) return { ok: false, code: 'build_failed', error: plan.error }
       cleanupStagingOutput(cwd, PUBLISH_STAGING_DIR)
       const result = await runStaticBuild(cwd, plan, {
         stagingDir: PUBLISH_STAGING_DIR,
         basePath: '/',
         env: await this.projectProcessEnv({ NODE_ENV: 'production' }),
       })
-      return result.ok ? { ok: true } : { ok: false, error: result.error }
+      return result.ok ? { ok: true } : { ok: false, code: 'build_failed', error: result.error }
     }
     const cwd = this.bundlerCwd
     if (!existsSync(join(cwd, 'package.json'))) {
-      return { ok: false, error: `No package.json found in ${cwd}` }
+      return { ok: false, code: 'build_failed', error: `No package.json found in ${cwd}` }
     }
 
     const timings: Record<string, number> = {}
@@ -2326,7 +2453,7 @@ export class PreviewManager {
       const devServer = this.resolveDevServer()
       if (devServer === 'vite') {
         const viteBin = this.resolveViteBin(cwd)
-        if (!viteBin) return { ok: false, error: 'Vite is not installed in the project' }
+        if (!viteBin) return { ok: false, code: 'build_failed', error: 'Vite is not installed in the project' }
         const buildLogPath = previewBuildLogPath(this.workspaceDir)
         const isWindows = process.platform === 'win32'
         const ok = await this.runViteOneShotBuild(viteBin, cwd, buildLogPath, isWindows, {
@@ -2336,26 +2463,30 @@ export class PreviewManager {
         })
         return ok
           ? { ok: true }
-          : { ok: false, error: 'Vite publish build failed; inspect the runtime build log' }
+          : { ok: false, code: 'build_failed', error: 'Vite publish build failed; inspect the runtime build log' }
       }
 
       if (devServer === 'metro') {
-        await this.runExpoExportWeb(timings, cwd, {
+        const exportResult = await this.runExpoExportWeb(timings, cwd, {
           basePath: '/',
           stagingDir: PUBLISH_STAGING_DIR,
           promote: false,
         })
-        return existsSync(join(cwd, PUBLISH_STAGING_DIR, 'index.html'))
-          ? { ok: true }
-          : { ok: false, error: `Expo publish build did not produce ${PUBLISH_STAGING_DIR}/index.html` }
+        if (exportResult.ok) return { ok: true }
+        return {
+          ok: false,
+          code: exportResult.oom ? 'build_oom' : 'build_failed',
+          error: describeExpoExportFailure(exportResult),
+        }
       }
 
       return {
         ok: false,
+        code: 'build_failed',
         error: `Cannot create a publish artifact for devServer=${devServer}`,
       }
     } catch (err: any) {
-      return { ok: false, error: err?.message ?? String(err) }
+      return { ok: false, code: 'build_failed', error: err?.message ?? String(err) }
     }
   }
 
@@ -2809,11 +2940,17 @@ export class PreviewManager {
     // and logging the final mode label (web preview, tunnel status, etc.)
     // — keep this wrapper minimal so we don't double-emit phase changes.
     const apiSuffix = this.apiServerProcess ? '+api' : ''
-    const mode = this.metroProcess
-      ? `metro-web${apiSuffix}+tunnel`
-      : this.localMode
-        ? `metro-web${apiSuffix} (tunnel-failed)`
-        : `metro-web${apiSuffix} (cloud-todo)`
+    const bootPlan = publishedMetroBootPlan()
+    let mode: string
+    if (bootPlan.published) {
+      mode = `${bootPlan.exportWeb ? 'published-web (boot export)' : 'published-web (artifact)'}${apiSuffix}`
+    } else if (this.metroProcess) {
+      mode = `metro-web${apiSuffix}+tunnel`
+    } else if (this.localMode) {
+      mode = `metro-web${apiSuffix} (tunnel-failed)`
+    } else {
+      mode = `metro-web${apiSuffix} (cloud-todo)`
+    }
     console.log(`[${LOG_PREFIX}] Background Metro setup complete: ${mode}`)
   }
 
@@ -2835,12 +2972,45 @@ export class PreviewManager {
    *   users to a local Shogo install for device preview.
    */
   private async runSetupTasksMetro(timings: Record<string, number>, bundlerCwd: string): Promise<void> {
-    await this.installDepsIfNeeded(timings, bundlerCwd)
-    // Mobile (Metro/Expo) workspaces ship the same Hono + Prisma backend
-    // at their root as Vite stacks. Generate the Prisma client up-front
-    // so `startApiServer()` can spawn `server.tsx` cleanly below; this
-    // is a no-op when there's no `prisma/schema.prisma` on disk.
-    await this.runPrismaIfNeeded(timings)
+    const bootPlan = publishedMetroBootPlan()
+
+    if (bootPlan.installDeps) {
+      await this.installDepsIfNeeded(timings, bundlerCwd)
+      // Mobile (Metro/Expo) workspaces ship the same Hono + Prisma backend
+      // at their root as Vite stacks. Generate the Prisma client up-front
+      // so `startApiServer()` can spawn `server.tsx` cleanly below; this
+      // is a no-op when there's no `prisma/schema.prisma` on disk.
+      await this.runPrismaIfNeeded(timings)
+    }
+
+    if (bootPlan.published) {
+      // A published pod serves `/api/*` only: its pages were exported on the
+      // editing runtime at publish and are served from the bucket by the
+      // `*.shogo.one` Worker. Re-exporting here needs ~2 GB, and an OOM kill
+      // landed before `server.tsx` ever started (SHO-587). No tunnel and no
+      // watcher either — published source is immutable.
+      if (bootPlan.exportWeb) {
+        console.log(`[${LOG_PREFIX}] published pod has no web artifact — exporting at boot (legacy)`)
+      } else {
+        console.log(
+          `[${LOG_PREFIX}] published mode — web bundle served from the publish artifact, skipping expo export`,
+        )
+      }
+
+      // `apiFirst`: the API is up before any export, so a failed or OOM-killed
+      // export can no longer leave every `/api/*` at 404 behind a 503.
+      this._phase = 'starting-api'
+      await this.startApiServer()
+
+      if (bootPlan.exportWeb) {
+        this._phase = 'building'
+        await this.runExpoExportWeb(timings, bundlerCwd)
+      }
+
+      this._phase = 'ready'
+      this.started = true
+      return
+    }
 
     this._phase = 'building'
     await this.runExpoExportWeb(timings, bundlerCwd)
@@ -4882,7 +5052,7 @@ export class PreviewManager {
     timings: Record<string, number>,
     cwd: string,
     options: { basePath?: string | null; stagingDir?: string; promote?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<ExpoExportResult> {
     const basePath = options.basePath === undefined ? this.basePath : options.basePath
     const stagingDir = options.stagingDir ?? DEFAULT_STAGING_DIR
     const promote = options.promote ?? true
@@ -4903,7 +5073,10 @@ export class PreviewManager {
       promote,
     }))
     this.expoExportInFlight.set(modeKey, run)
-    this.expoExportQueue = run.catch(() => {})
+    this.expoExportQueue = run.then(
+      () => {},
+      () => {},
+    )
     void run.then(
       () => {
         if (this.expoExportInFlight.get(modeKey) === run) this.expoExportInFlight.delete(modeKey)
@@ -4919,11 +5092,11 @@ export class PreviewManager {
     timings: Record<string, number>,
     cwd: string,
     options: { basePath?: string | null; stagingDir?: string; promote?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<ExpoExportResult> {
     const expoBin = this.resolveExpoBin(cwd)
     if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping web export`)
-      return
+      return { ok: false, exitCode: null, signal: null, stderrTail: '', oom: false }
     }
     const isWindows = process.platform === 'win32'
     const basePath = options.basePath === undefined ? this.basePath : options.basePath
@@ -4954,6 +5127,8 @@ export class PreviewManager {
     const t0 = Date.now()
     /** Whether this export produced the served output (not a failed run). */
     let landed = false
+    /** Whether the export left an `index.html` behind, i.e. it can be published. */
+    let producedIndex = false
     // Hash the inputs BEFORE `patchExpoAppJsonForBasePath` writes the preview
     // prefix into app.json: this is the tree the export is about to consume.
     // Capturing it here (rather than re-hashing once the export finishes) is
@@ -4967,10 +5142,21 @@ export class PreviewManager {
     const restoreExpoConfig = basePath
       ? patchExpoAppJsonForBasePath(cwd, basePath)
       : () => {}
+    // A failed export has to say why: the last lines it printed are the only
+    // copy of the real error a caller can act on (the build log lives on the
+    // runtime). Kept small — this is a message, not a log.
+    const stdoutTail: string[] = []
+    const stderrTail: string[] = []
+    const rememberOutput = (ring: string[], line: string) => {
+      ring.push(line)
+      if (ring.length > EXPO_OUTPUT_TAIL_LINES) ring.shift()
+    }
+    const oomKillsBefore = readCgroupOomKillCount()
     console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
-    let exitCode: number | null
+    let exitCode: number | null = null
+    let exitSignal: string | null = null
     try {
-      exitCode = await new Promise<number | null>((resolveExport) => {
+      await new Promise<void>((resolveExport) => {
         let proc: ChildProcess
         try {
           proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', stagingDir], {
@@ -4982,7 +5168,7 @@ export class PreviewManager {
           })
         } catch (err: any) {
           console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
-          resolveExport(null)
+          resolveExport()
           return
         }
         // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
@@ -4990,13 +5176,14 @@ export class PreviewManager {
         // tears down the entire agent runtime process.
         proc.on('error', (err: Error) => {
           console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
-          resolveExport(null)
+          resolveExport()
         })
         proc.stdout?.on('data', (data: Buffer) => {
           const text = data.toString()
           for (const raw of text.split('\n')) {
             const line = raw.trim()
             if (!line) continue
+            rememberOutput(stdoutTail, line)
             emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
             this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
           }
@@ -5006,15 +5193,18 @@ export class PreviewManager {
           for (const raw of text.split('\n')) {
             const line = raw.trim()
             if (!line) continue
+            rememberOutput(stderrTail, line)
             emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
             this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
           }
         })
-        proc.on('exit', (code) => {
+        proc.on('exit', (code, signal) => {
+          exitCode = code
+          exitSignal = signal
           if (code !== 0) {
-            console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
+            console.error(`[${LOG_PREFIX}] expo export failed (code=${code}, signal=${signal ?? 'none'})`)
           }
-          resolveExport(code)
+          resolveExport()
         })
       })
     } finally {
@@ -5040,6 +5230,7 @@ export class PreviewManager {
         )
         cleanupStagingOutput(cwd, stagingDir)
       } else {
+        producedIndex = true
         const committed = promote
           ? await commitBuildOutputAsync(cwd, stagingDir)
           : true
@@ -5083,6 +5274,25 @@ export class PreviewManager {
     }
 
     timings.expoExport = Date.now() - t0
+
+    // Keep the last lines of stderr for the failure message; a bundler that
+    // wrote nothing there (a Babel crash inside a worker, for one) still left
+    // its reason on stdout.
+    const tail = stderrTail.length > 0 ? stderrTail : stdoutTail
+    const oomKillsAfter = readCgroupOomKillCount()
+    const oom =
+      (oomKillsAfter !== null && oomKillsBefore !== null && oomKillsAfter > oomKillsBefore) ||
+      exitSignal === 'SIGKILL' ||
+      exitCode === 137 ||
+      OOM_OUTPUT_PATTERN.test(tail.join('\n'))
+
+    return {
+      ok: exitCode === 0 && producedIndex,
+      exitCode,
+      signal: exitSignal,
+      stderrTail: tail.join('\n'),
+      oom,
+    }
   }
 
   /**

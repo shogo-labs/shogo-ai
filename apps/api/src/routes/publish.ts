@@ -716,14 +716,28 @@ async function triggerBuild(
       signal: AbortSignal.timeout(timeoutMs),
     })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      return { success: false, code: 'build_failed', error: `Build failed: ${response.status} - ${errorText}` }
+    // The runtime answers a failed build with 500 *and* JSON
+    // (`{ ok: false, code, error }`), so the body is read once and parsed
+    // regardless of status — a 500 must not swallow the reason the runtime
+    // gave for it.
+    const rawBody = await response.text()
+    let result: { ok?: boolean; error?: string; code?: string } | null = null
+    try {
+      result = JSON.parse(rawBody)
+    } catch {
+      /* not the runtime's JSON (a proxy error page) — reported as-is below */
     }
 
-    const result = await response.json() as { ok?: boolean; error?: string }
-    if (result.ok !== true) {
-      return { success: false, code: 'build_failed', error: result.error || 'Publish build failed' }
+    if (!response.ok) {
+      return {
+        success: false,
+        code: result?.code || 'build_failed',
+        error: result?.error || `Build failed: ${response.status} - ${rawBody.slice(0, 400)}`,
+      }
+    }
+
+    if (result?.ok !== true) {
+      return { success: false, code: result?.code || 'build_failed', error: result?.error || 'Publish build failed' }
     }
     console.log(`[Publish] Root-based publish build complete`)
     return { success: true }
@@ -2051,7 +2065,16 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
           await setPublishStatus(projectId, 'building')
           const buildResult = await triggerBuildWithRetry(projectId)
           if (!buildResult.success) {
-            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
+            // The detail is the real cause (`expo export failed (exit 7) — out
+            // of memory…`): `setPublishStatus` stores it as `code: detail` and
+            // every reader surfaces it, so a failed publish stops being a bare
+            // code with no explanation.
+            await setPublishStatus(
+              projectId,
+              'failed',
+              buildResult.code || 'build_failed',
+              buildResult.error ?? null,
+            )
             return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
           }
 

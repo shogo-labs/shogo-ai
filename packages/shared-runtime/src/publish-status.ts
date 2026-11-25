@@ -63,6 +63,8 @@ export function publishFailureMessage(code: string | null | undefined): string {
     case 'build_failed':
     case 'build_timeout':
       return "The app's build failed, so nothing was deployed. The previous deploy (if any) is still serving."
+    case 'build_oom':
+      return "The web build ran out of memory on the editing runtime, so nothing was deployed. The previous deploy (if any) is still serving."
     case 'download_failed':
     case 'download_timeout':
       return 'The build finished but its output could not be read back. Nothing was deployed; the previous deploy (if any) is still serving.'

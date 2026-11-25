@@ -117,7 +117,7 @@ mock.module('../lib/runtime-class-setting', () => ({
   isDockerClassEnabled: isDockerClassEnabledMock,
 }))
 
-const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
+const { buildProjectEnv, buildPublishedProjectEnv } = await import('../lib/runtime/build-project-env')
 
 // ─── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -1190,5 +1190,25 @@ describe('buildProjectEnv — return shape', () => {
       expect(typeof k).toBe('string')
       expect(typeof v).toBe('string')
     }
+  })
+})
+
+// ─── published mode (SHO-587) ──────────────────────────────────────────────
+
+describe('buildPublishedProjectEnv — publish artifact signal', () => {
+  test('tells the pod its pages come from the publish artifact, not a boot export', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      name: 'Samsara',
+      settings: {},
+    }))
+
+    const env = await buildPublishedProjectEnv('proj-pub', 'samsara')
+
+    // `SHOGO_PUBLISHED_WEB=artifact` is what keeps `expo export` out of the
+    // published boot (a ~2 GB build on a 1 GiB instance, SHO-587).
+    expect(env.SHOGO_PUBLISHED_MODE).toBe('true')
+    expect(env.SHOGO_PUBLISHED_WEB).toBe('artifact')
+    expect(env.PUBLISHED_SUBDOMAIN).toBe('samsara')
   })
 })

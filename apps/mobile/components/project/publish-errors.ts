@@ -19,6 +19,8 @@ export function publishStatusMessage(code: string | null | undefined): string {
     case 'build_failed':
     case 'build_timeout':
       return "Your app's build failed, so nothing was deployed. Your published site (if any) is unchanged."
+    case 'build_oom':
+      return "Your app's web build ran out of memory, so nothing was deployed. Raise the project's instance size (or free up memory on the machine building it) and publish again."
     case 'no_files':
       return 'The build produced no files to publish — check that the app builds and outputs to dist/.'
     case 'download_failed':

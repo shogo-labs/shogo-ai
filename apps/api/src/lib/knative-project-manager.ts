@@ -2199,6 +2199,11 @@ export class KnativeProjectManager {
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Published-mode switches: run server.tsx, no agent gateway.
       { name: "SHOGO_PUBLISHED_MODE", value: "true" },
+      // Pages come from the bundle this publish uploaded (the Worker serves
+      // them from the bucket), so the pod must not re-run `expo export` — a
+      // cold Metro build needs ~2 GB and OOM-killed a size-`s` pod before
+      // server.tsx started (SHO-587).
+      { name: "SHOGO_PUBLISHED_WEB", value: "artifact" },
       { name: "PUBLISHED_ENVIRONMENT", value: environment },
       { name: "PUBLISHED_SUBDOMAIN", value: subdomain },
       { name: "PUBLISH_DOMAIN", value: publishDomain },

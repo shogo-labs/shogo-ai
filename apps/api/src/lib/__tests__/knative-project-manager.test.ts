@@ -283,6 +283,9 @@ describe('createPublishedServerService — republish', () => {
     expect(typeof container.image).toBe('string')
     expect(container.env.some((e: any) => e.name === 'PROJECT_ID' && e.value === 'p-srv')).toBe(true)
     expect(container.env.some((e: any) => e.name === 'SHOGO_PUBLISHED_MODE' && e.value === 'true')).toBe(true)
+    // The pages come from the bundle the publish uploaded, so the pod must not
+    // re-run `expo export` (SHO-587).
+    expect(container.env.some((e: any) => e.name === 'SHOGO_PUBLISHED_WEB' && e.value === 'artifact')).toBe(true)
     const annotations = body.spec.template.metadata.annotations
     expect(annotations['shogo.io/deploy-timestamp']).toBeTruthy()
     // Every scale annotation a republish can change is written explicitly —
