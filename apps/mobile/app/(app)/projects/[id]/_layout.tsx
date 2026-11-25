@@ -42,7 +42,7 @@ import { useRouter, Stack } from "expo-router";
 import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { setStorageItem } from '@/lib/storage'
+import { removeStorageItem, setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
@@ -123,6 +123,7 @@ import {
   previewTabUserPickKey,
 } from "../../../../lib/preview-auto-open";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { ChatPanelResizeHandle } from "../../../../components/layout/ChatPanelResizeHandle";
 import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
@@ -1988,6 +1989,13 @@ export default observer(function ProjectLayout() {
     setStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
       () => {}
     );
+  }, []);
+
+  // Double-clicking the splitter drops the saved width, so the panel goes back
+  // to the default now and on every later load.
+  const resetChatPanelWidth = useCallback(() => {
+    setChatPanelWidth(DEFAULT_CHAT_PANEL_WIDTH);
+    removeStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY).catch(() => {});
   }, []);
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(
@@ -4550,7 +4558,7 @@ export default observer(function ProjectLayout() {
                             maxWidth={maxChatPanelWidth}
                             onResize={setChatPanelWidth}
                             onResizeEnd={persistChatPanelWidth}
-                            defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                            onReset={resetChatPanelWidth}
                             leftOffset={showChatSessions ? 280 : 0}
                             rightOffset={12}
                           />
@@ -5240,145 +5248,6 @@ function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
           </Pressable>
         </View>
       )}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ChatPanelResizeHandle — web-only drag handle between chat column and canvas
-// ---------------------------------------------------------------------------
-
-function ChatPanelResizeHandle({
-  splitRowRef,
-  chatPanelWidth,
-  minWidth,
-  maxWidth,
-  onResize,
-  onResizeEnd,
-  defaultWidth,
-  leftOffset = 0,
-  rightOffset = 0,
-  hitWidth = 20,
-}: {
-  splitRowRef: React.RefObject<View | null>;
-  chatPanelWidth: number;
-  minWidth: number;
-  maxWidth: number;
-  onResize: (w: number) => void;
-  onResizeEnd: (w: number) => void;
-  defaultWidth: number;
-  /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
-  leftOffset?: number;
-  /** Pixels from the chat panel's right edge where the *visible* bar is drawn.
-   *  The grabbable hit zone always extends all the way to the right edge so
-   *  the (thin) scrollbar area is also a valid drag target. */
-  rightOffset?: number;
-  /** Total width of the (transparent) grab zone, measured from the chat
-   *  panel's right edge. Should be larger than `rightOffset` so the bar
-   *  itself is comfortably inside the hit area. */
-  hitWidth?: number;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const latestWidthRef = useRef(chatPanelWidth);
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      setDragging(true);
-
-      const container = splitRowRef.current as unknown as HTMLElement | null;
-      if (!container) return;
-      const containerRect = container.getBoundingClientRect();
-
-      // Distance from the cursor at pointerdown to the chat panel's right
-      // edge. We hold this constant during the drag so that grabbing the
-      // handle off-center doesn't snap the panel to the cursor position
-      // (the handle is now inset from the right edge by `rightOffset`, so
-      // the cursor is meaningfully to the left of the actual edge).
-      const currentRightEdgeX =
-        containerRect.left + leftOffset + chatPanelWidth;
-      const grabDx = currentRightEdgeX - e.clientX;
-
-      // Transparent fixed overlay over the whole viewport. Without this,
-      // any iframe under the cursor (canvas / preview) swallows the
-      // pointermove events and the resize freezes the moment the cursor
-      // crosses into the iframe. The overlay's high z-index keeps it on
-      // top of every iframe; pointer-events stays default ("auto") so
-      // pointermove fires on `document` as expected.
-      const overlay = document.createElement("div");
-      overlay.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;";
-      document.body.appendChild(overlay);
-
-      const onPointerMove = (ev: PointerEvent) => {
-        const newWidth = Math.max(
-          minWidth,
-          Math.min(
-            maxWidth,
-            ev.clientX + grabDx - containerRect.left - leftOffset
-          )
-        );
-        latestWidthRef.current = newWidth;
-        onResize(newWidth);
-      };
-
-      const onPointerUp = () => {
-        document.removeEventListener("pointermove", onPointerMove);
-        document.removeEventListener("pointerup", onPointerUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        overlay.remove();
-        setDragging(false);
-        onResizeEnd(latestWidthRef.current);
-      };
-
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("pointermove", onPointerMove);
-      document.addEventListener("pointerup", onPointerUp);
-    },
-    [
-      splitRowRef,
-      minWidth,
-      maxWidth,
-      onResize,
-      onResizeEnd,
-      leftOffset,
-      chatPanelWidth,
-    ]
-  );
-
-  const handleDoubleClick = useCallback(() => {
-    onResizeEnd(defaultWidth);
-  }, [defaultWidth, onResizeEnd]);
-
-  const active = dragging || hovered;
-
-  return (
-    <View
-      // @ts-expect-error web-only event handlers
-      onPointerDown={handlePointerDown}
-      onDoubleClick={handleDoubleClick}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      style={{
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        right: 0,
-        width: hitWidth,
-        cursor: "col-resize" as any,
-        zIndex: 21,
-      }}
-    >
-      <View
-        className={cn(
-          "absolute top-0 bottom-0 transition-all duration-150",
-          active ? "bg-primary/40" : "bg-transparent"
-        )}
-        style={{ right: rightOffset, width: active ? 3 : 1 }}
-      />
     </View>
   );
 }
