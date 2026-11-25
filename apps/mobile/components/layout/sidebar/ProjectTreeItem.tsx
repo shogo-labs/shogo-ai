@@ -93,6 +93,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   // the first project's chats out of the cache.
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // A failed fetch is not an empty list: the sidebar must not tell a person
+  // their chats are gone because a request died (SHO-582).
+  const [loadError, setLoadError] = useState(false);
   const [totalChats, setTotalChats] = useState(0);
   const [hasMoreChats, setHasMoreChats] = useState(false);
   const [loadingMoreChats, setLoadingMoreChats] = useState(false);
@@ -154,9 +157,15 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             : result.sessions.length,
         );
         setHasMoreChats(result.hasMore);
+        setLoadError(false);
       } catch (e) {
         console.error("[AppSidebar] Failed to load chats:", e);
-        if (!loadingMore) seededRef.current = false;
+        // A failed first page leaves nothing on screen, so it becomes a
+        // retryable error instead of the "No chats yet" empty state.
+        if (!loadingMore) {
+          seededRef.current = false;
+          setLoadError(true);
+        }
       } finally {
         setLoaded(true);
         if (loadingMore) setLoadingMoreChats(false);
@@ -178,6 +187,12 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     if (!hasMoreChats || loadingMoreChats) return;
     void loadChats(sessions.length + PROJECT_CHAT_PAGE_SIZE);
   }, [hasMoreChats, loadingMoreChats, loadChats, sessions.length]);
+
+  // Retry after a failed fetch: show the loading row again, then re-fetch.
+  const retryChats = useCallback(() => {
+    setLoadError(false);
+    refreshChats();
+  }, [refreshChats]);
 
   const toggleExpanded = useCallback(() => {
     setExpanded((prev) => {
@@ -509,6 +524,8 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       mobileProjectDetail={mobileProjectDetail}
       loaded={loaded}
       emptyLabel="No chats yet"
+      loadError={loadError}
+      onRetry={retryChats}
       hasMore={hasMoreChats}
       loadingMore={loadingMoreChats}
       onLoadMore={handleLoadMoreChats}

@@ -32,13 +32,16 @@ export interface HttpClientConfig {
   dedupWindowMs?: number
 
   /**
-   * How long a **GET** may wait for an answer before it fails as a network
+   * How long a **GET** may go without an answer before it fails as a network
    * error, in ms. `0` (the default) means no limit, which is what the browser
    * and desktop clients have always had.
    *
    * It exists for slow and lossy mobile networks: without a deadline a request
    * that stalls behind a dying connection leaves the screen on an endless
-   * spinner instead of an error the person can retry (SHO-580). Non-GET
+   * spinner instead of an error the person can retry (SHO-580). It is a stall
+   * detector, not a stopwatch: time the client could not observe (a busy or
+   * throttled JS thread) is not charged, and the clock stops once the response
+   * arrives, so a slow-but-alive request is never cut off (SHO-582). Non-GET
    * requests, streams and uploads are deliberately exempt — a long POST is
    * work in progress, not a hang.
    */
@@ -241,7 +244,7 @@ export class HttpClient {
     const url = this.buildUrl(path, searchParams)
     const requestHeaders = this.getHeaders(headers)
 
-    // A GET gets a deadline; a caller's own signal still cancels it early.
+    // A GET gets a stall deadline; a caller's own signal still cancels it early.
     const deadline = method === 'GET' && this.requestTimeoutMs > 0
       ? createDeadline(this.requestTimeoutMs, signal)
       : null
@@ -254,6 +257,11 @@ export class HttpClient {
         signal: deadline ? deadline.signal : signal,
         credentials: this.credentials,
       })
+
+      // The answer is here, so the request is alive. Reading and parsing the
+      // body is the client's own work, and a starved device does it slowly
+      // without anything having stalled (SHO-582).
+      deadline?.answered()
 
       const data = await this.parseResponse<T>(response)
 
@@ -544,22 +552,55 @@ export class HttpClient {
   }
 }
 
+/** How often a deadline samples how much observable time has passed. */
+const DEADLINE_SAMPLE_MS = 250
+
 /**
- * An abort signal that fires after `ms`, chained to a caller's own signal.
+ * An abort signal that fires after `ms` of **observable** silence, chained to a
+ * caller's own signal.
+ *
+ * A wall-clock timer measures the client as much as the request: a JS thread
+ * busy with a cold start, a throttled renderer or a backgrounded tab cannot
+ * watch the request at all, so a timer that fires anyway convicts a request the
+ * client simply could not read yet — and a chats GET that died that way left the
+ * sidebar showing "No chats yet" while the answer sat in its queue (SHO-582).
+ * So the clock only advances on a sample the client was actually able to take:
+ * one late sample buys at most one interval, so a client that is mostly busy
+ * burns its budget slowly instead of being convicted for the work it was doing.
+ *
+ * `answered()` stops the clock once the response is in: decoding and parsing the
+ * body is the client's work, not a stall.
  *
  * `timedOut()` is kept apart from "aborted" so the error a stalling request
  * produces says it timed out, instead of looking like the caller cancelled it.
  */
-function createDeadline(
+export function createDeadline(
   ms: number,
   callerSignal?: AbortSignal
-): { signal: AbortSignal; timedOut: () => boolean; clear: () => void } {
+): {
+  signal: AbortSignal
+  timedOut: () => boolean
+  answered: () => void
+  clear: () => void
+} {
   const controller = new AbortController()
   let timedOut = false
-  const timer = setTimeout(() => {
+  let answered = false
+  let observed = 0
+  let last = Date.now()
+  // Sample a quarter of the budget so a short deadline still ends on time.
+  const sampleMs = Math.max(1, Math.min(DEADLINE_SAMPLE_MS, Math.ceil(ms / 4)))
+  const timer = setInterval(() => {
+    const now = Date.now()
+    const elapsed = now - last
+    last = now
+    if (answered) return
+    observed += Math.min(elapsed, sampleMs)
+    if (observed < ms) return
     timedOut = true
+    clearInterval(timer)
     controller.abort()
-  }, ms)
+  }, sampleMs)
   const forward = () => controller.abort()
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort()
@@ -568,8 +609,12 @@ function createDeadline(
   return {
     signal: controller.signal,
     timedOut: () => timedOut,
+    answered: () => {
+      answered = true
+      clearInterval(timer)
+    },
     clear: () => {
-      clearTimeout(timer as unknown as ReturnType<typeof setTimeout>)
+      clearInterval(timer)
       callerSignal?.removeEventListener('abort', forward)
     },
   }
