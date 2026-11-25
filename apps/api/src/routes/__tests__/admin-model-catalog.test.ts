@@ -380,6 +380,35 @@ describe('admin models CRUD', () => {
     expect((await updated.json() as any).model.reasoningEffort).toBe('high')
   })
 
+  test('stores explicit reasoning variants and rejects unknown values', async () => {
+    const provider = await (await post('/model-providers', {
+      label: 'Custom reasoner',
+      baseUrl: 'https://example.test/v1',
+      protocol: 'openai',
+      apiKey: 'test-key-123456',
+    })).json() as any
+    const valid = await post('/models', {
+      provider: 'custom',
+      providerId: provider.provider.id,
+      apiModel: 'custom-reasoner',
+      displayName: 'Custom Reasoner',
+      capabilities: { reasoningEfforts: ['low', 'high'] },
+    })
+    expect(valid.status).toBe(200)
+    const { model } = await valid.json() as any
+    expect(model.capabilities.reasoningEfforts).toEqual(['low', 'high'])
+
+    expect((await post('/models', {
+      provider: 'openai',
+      apiModel: 'invalid-reasoner',
+      displayName: 'Invalid',
+      capabilities: { reasoningEfforts: ['turbo'] },
+    })).status).toBe(400)
+    expect((await put(`/models/${model.id}`, {
+      capabilities: { reasoningEfforts: 'high' },
+    })).status).toBe(400)
+  })
+
   // SHO-558: the admin edit form always PUTs the whole payload, `family`
   // included. The route validated against a hand-copied family list that had
   // lost `gemini`, so every save from a Gemini model's edit modal was a 400 —

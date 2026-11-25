@@ -76,6 +76,7 @@ const {
   writeVisibleModelsConfig,
   resolveVisibleCatalogModels,
   resolvePlatformVisibleModels,
+  resolvePlatformVisibleModelsForRequest,
   resolveVisibleModelsForWorkspace,
   isModelProviderConfigured,
 } = await import('../visible-models.service')
@@ -205,6 +206,8 @@ describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () 
     expect(ids).toContain('claude-sonnet-5')
     expect(ids).toContain('gpt-6-luna')
     expect(ids).toContain('claude-haiku-5-5')
+    const gpt6 = models.find((model) => model.id === 'gpt-6-luna')
+    expect(gpt6?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh'])
     // Legacy catalog entries are a routing-only fallback, not listed.
     expect(ids).not.toContain('claude-3-haiku-20240307')
     expect(ids).not.toContain('claude-opus-5')
@@ -218,7 +221,7 @@ describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () 
 describe('resolveVisibleCatalogModels — DB-managed picker', () => {
   test('reflects only enabled DB rows and hides ones missing a provider key', async () => {
     MODEL_DEFS = [
-      dbModel({ id: 'db-model-a', apiModel: 'db-model-a', displayName: 'DB Model A', shortDisplayName: 'A', provider: 'anthropic', sortOrder: 0 }),
+      dbModel({ id: 'db-model-a', apiModel: 'db-model-a', displayName: 'DB Model A', shortDisplayName: 'A', provider: 'anthropic', sortOrder: 0, capabilities: { reasoningEfforts: ['low', 'high'] } }),
       dbModel({ id: 'db-model-b', apiModel: 'db-model-b', displayName: 'DB Model B', shortDisplayName: 'B', provider: 'google', sortOrder: 1 }),
       dbModel({ id: 'db-model-disabled', apiModel: 'db-model-disabled', displayName: 'Disabled', shortDisplayName: 'D', provider: 'anthropic', enabled: false }),
     ]
@@ -229,6 +232,7 @@ describe('resolveVisibleCatalogModels — DB-managed picker', () => {
     const ids = models.map((m) => m.id)
 
     expect(ids).toEqual(['db-model-a'])
+    expect(models[0]?.reasoningEfforts).toEqual(['low', 'high'])
     // Once the DB has rows, the static catalog is no longer used as a source.
     expect(ids).not.toContain('claude-opus-5')
   })
@@ -293,6 +297,24 @@ describe('resolveVisibleCatalogModels — cloud-proxy mode (mirrored catalog)', 
 
     const models = await resolveVisibleCatalogModels(null)
     expect(models.map((m) => m.id)).toEqual(['cloud-only-uuid'])
+  })
+
+  test('cloud-forwarded picker payload includes known effort choices from model aliases', async () => {
+    CLOUD_CATALOG_MODELS = [
+      {
+        id: 'cloud-opus-uuid',
+        provider: 'anthropic',
+        displayName: 'Claude Opus 5.5',
+        shortDisplayName: 'Opus 5.5',
+        aliases: ['claude-opus-5-5', 'opus'],
+        tier: 'premium',
+        family: 'opus',
+        maxOutputTokens: 128000,
+      },
+    ]
+
+    const payload = await resolvePlatformVisibleModelsForRequest()
+    expect(payload.catalogModels[0]?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
   })
 })
 

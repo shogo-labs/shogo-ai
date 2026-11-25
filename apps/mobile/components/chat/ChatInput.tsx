@@ -57,8 +57,9 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { AttachSourceSheet } from "./AttachSourceSheet";
 import { ContextTracker } from "./ContextTracker";
 import type { ContextBreakdownData } from "./ContextBreakdownPanel";
-import { resolveShortName, resolveTier } from "../../lib/visible-models";
+import { resolveShortName, resolveTier, type ReasoningEffort } from "../../lib/visible-models";
 import { ComposerModelPicker, ModelPickerMenu } from "./ModelPickerMenu";
+import { ComposerReasoningEffortPicker } from "./ComposerReasoningEffortPicker";
 import { WebTooltip } from "./WebTooltip";
 import { DockChip } from "./dock/DockChip";
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel";
@@ -350,6 +351,7 @@ export type QueuedMessage = {
   content: string;
   files?: FileAttachment[];
   selectedModel?: string;
+  selectedReasoningEffort?: ReasoningEffort;
   references?: ChatReference[];
   status?: string;
   error?: string;
@@ -378,7 +380,8 @@ export interface ChatInputProps {
     content: string,
     files?: FileAttachment[],
     modelId?: string,
-    references?: ChatReference[]
+    references?: ChatReference[],
+    reasoningEffort?: ReasoningEffort
   ) => void;
   disabled?: boolean;
   placeholder?: string;
@@ -392,6 +395,8 @@ export interface ChatInputProps {
   onStop?: () => void;
   selectedModel?: string;
   onModelChange?: (modelId: string) => void;
+  selectedReasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (modelId: string, effort: ReasoningEffort | null) => void;
   isPro?: boolean;
   onUpgradeClick?: () => void;
   queuedMessages?: QueuedMessage[];
@@ -567,6 +572,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onStop,
   selectedModel: controlledModel,
   onModelChange,
+  selectedReasoningEffort,
+  onReasoningEffortChange,
   isPro = false,
   onUpgradeClick,
   queuedMessages = [],
@@ -1726,7 +1733,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       encodeChatMentionTokens(trimmedContent, refData),
       fileData,
       currentModelId,
-      refData
+      refData,
+      selectedReasoningEffort
     );
     // Drop any still-pending coalesced text-change flush (see
     // `handleChangeText`) so it can't fire AFTER this clear and resurrect
@@ -1746,6 +1754,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     pendingFiles,
     isProcessingFiles,
     currentModelId,
+    selectedReasoningEffort,
     pastedTexts,
     references,
     voiceInput.isBusy,
@@ -3332,6 +3341,14 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       menuWidth: nativeModelMenuWidth,
                       onSelect: handleModelChange,
                     })}
+                  />
+                ) : null}
+                {!inlineEdit && currentModelId !== AUTO_MODEL_ID && onReasoningEffortChange ? (
+                  <ComposerReasoningEffortPicker
+                    modelId={currentModelId}
+                    selectedEffort={selectedReasoningEffort}
+                    onSelect={onReasoningEffortChange}
+                    disabled={disabled || isProcessingFiles}
                   />
                 ) : null}
                 {useProminentComposer ? null : (

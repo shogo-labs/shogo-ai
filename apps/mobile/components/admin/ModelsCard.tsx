@@ -104,6 +104,8 @@ interface ModelFormState {
   description: string
   contextWindow: string
   reasoningEffort: ReasoningEffortOption
+  reasoningEfforts: ReasoningEffortOption[]
+  capabilities: Record<string, unknown> | null
   inputPerMillion: string
   cachedInputPerMillion: string
   cacheWritePerMillion: string
@@ -125,6 +127,8 @@ const EMPTY_MODEL_FORM: ModelFormState = {
   description: '',
   contextWindow: '',
   reasoningEffort: 'medium',
+  reasoningEfforts: [],
+  capabilities: null,
   inputPerMillion: '0',
   cachedInputPerMillion: '0',
   cacheWritePerMillion: '0',
@@ -153,6 +157,14 @@ function timeAgo(iso: string | null): string {
 function num(s: string): number {
   const n = Number(s)
   return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
+function readReasoningEfforts(raw: unknown): ReasoningEffortOption[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter(
+    (effort): effort is ReasoningEffortOption =>
+      typeof effort === 'string' && MODEL_REASONING_EFFORT_OPTIONS.includes(effort as ReasoningEffortOption),
+  )
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -833,6 +845,8 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
       description: m.description ?? '',
       contextWindow: m.contextWindow != null ? String(m.contextWindow) : '',
       reasoningEffort: (m.reasoningEffort ?? 'medium') as ReasoningEffortOption,
+      reasoningEfforts: readReasoningEfforts(m.capabilities?.reasoningEfforts),
+      capabilities: m.capabilities,
       inputPerMillion: String(m.inputPerMillion),
       cachedInputPerMillion: String(m.cachedInputPerMillion),
       cacheWritePerMillion: String(m.cacheWritePerMillion),
@@ -868,6 +882,12 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
         description: form.description.trim() || null,
         contextWindow: form.contextWindow.trim() ? num(form.contextWindow) || null : null,
         reasoningEffort: form.reasoningEffort,
+        capabilities: (() => {
+          const capabilities = { ...(form.capabilities ?? {}) }
+          delete capabilities.reasoningEfforts
+          if (form.reasoningEfforts.length > 0) capabilities.reasoningEfforts = form.reasoningEfforts
+          return Object.keys(capabilities).length > 0 ? capabilities : null
+        })(),
         inputPerMillion: num(form.inputPerMillion),
         cachedInputPerMillion: num(form.cachedInputPerMillion),
         cacheWritePerMillion: num(form.cacheWritePerMillion),
@@ -1431,6 +1451,40 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                     value={form.reasoningEffort}
                     onChange={(v) => setForm((f) => ({ ...f, reasoningEffort: v }))}
                   />
+                </View>
+
+                <View className="gap-1.5">
+                  <FieldLabel>Supported reasoning choices (optional)</FieldLabel>
+                  <Text className="text-xs text-muted-foreground">
+                    Select only values accepted by this model's upstream API. Leave empty to use known model defaults.
+                  </Text>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    {MODEL_REASONING_EFFORT_OPTIONS.map((effort) => {
+                      const selected = form.reasoningEfforts.includes(effort)
+                      return (
+                        <Pressable
+                          key={effort}
+                          testID={`admin-reasoning-effort-${effort}`}
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: selected }}
+                          onPress={() => setForm((current) => ({
+                            ...current,
+                            reasoningEfforts: selected
+                              ? current.reasoningEfforts.filter((value) => value !== effort)
+                              : [...current.reasoningEfforts, effort],
+                          }))}
+                          className={cn(
+                            'px-2.5 py-1 rounded-md border',
+                            selected ? 'border-primary bg-primary/10' : 'border-border bg-background',
+                          )}
+                        >
+                          <Text className={cn('text-xs', selected ? 'text-primary font-medium' : 'text-muted-foreground')}>
+                            {effort}
+                          </Text>
+                        </Pressable>
+                      )
+                    })}
+                  </View>
                 </View>
 
                 <FieldLabel>Pricing (USD per 1M tokens)</FieldLabel>

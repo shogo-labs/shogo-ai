@@ -1951,6 +1951,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           stampModelProvider(parsedBody)
         }
       }
+      // Revalidate against the final model after all entitlement downgrades.
+      // Also clears a client-supplied effort when the run falls back to its
+      // configured model because no explicit `agentMode` was supplied.
+      stampModelProvider(parsedBody)
 
       // Harden "@" references before forwarding. Workspace refs get an
       // authoritative DB summary; project refs are access-checked + normalized.

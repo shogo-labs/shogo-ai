@@ -43,6 +43,8 @@ export interface PickerModel {
   contextWindow?: number
   /** Reasoning effort applied when the model runs. */
   reasoningEffort?: ReasoningEffort
+  /** User-selectable effort variants supported by this model. */
+  reasoningEfforts?: ReasoningEffort[]
 }
 
 export interface PickerGroup {
@@ -117,6 +119,7 @@ interface ResolvedModelMeta {
   description?: string
   contextWindow?: number
   reasoningEffort?: ReasoningEffort
+  reasoningEfforts?: ReasoningEffort[]
 }
 
 const serverModelMeta = new Map<string, ResolvedModelMeta>()
@@ -134,6 +137,7 @@ function indexServerCatalog(data: ResolvedVisibleModels): void {
       description: m.description,
       contextWindow: m.contextWindow,
       reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
+      reasoningEfforts: m.reasoningEfforts as ReasoningEffort[] | undefined,
     })
   }
   for (const m of data.openrouterModels ?? []) {
@@ -291,6 +295,12 @@ export function resolveReasoningEffort(id: string): ReasoningEffort | undefined 
   return serverModelMeta.get(id)?.reasoningEffort
 }
 
+/** Resolve the selectable reasoning levels for an explicitly chosen model. */
+export function resolveReasoningEfforts(id: string): ReasoningEffort[] {
+  if (!id || id === AUTO_MODEL_ID) return []
+  return serverModelMeta.get(id)?.reasoningEfforts ?? []
+}
+
 // ===========================================================================
 // Picker list/group builders — purely server-driven.
 // ===========================================================================
@@ -326,6 +336,7 @@ function toPickerModel(m: NonNullable<ResolvedVisibleModels['catalogModels']>[nu
     description: m.description,
     contextWindow: m.contextWindow,
     reasoningEffort: m.reasoningEffort as ReasoningEffort | undefined,
+    reasoningEfforts: m.reasoningEfforts as ReasoningEffort[] | undefined,
   }
 }
 

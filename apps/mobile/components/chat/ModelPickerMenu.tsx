@@ -13,7 +13,7 @@
  * admin-configured catalog (sortOrder, description, contextWindow,
  * reasoningEffort) served by `/api/platform/visible-models`.
  */
-import React, { useCallback, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import {
   View,
   Text,
@@ -131,6 +131,26 @@ export function ModelPickerMenu({
   // is expanded inline (tap the chevron to toggle).
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const hoverClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!isWeb) setExpandedId(currentModelId)
+  }, [currentModelId, isWeb])
+  useEffect(() => () => {
+    if (hoverClearTimer.current) clearTimeout(hoverClearTimer.current)
+  }, [])
+
+  const cancelHoverClear = useCallback(() => {
+    if (hoverClearTimer.current) clearTimeout(hoverClearTimer.current)
+    hoverClearTimer.current = null
+  }, [])
+
+  const scheduleHoverClear = useCallback((modelId: string) => {
+    cancelHoverClear()
+    hoverClearTimer.current = setTimeout(() => {
+      setHoveredId((current) => (current === modelId ? null : current))
+      hoverClearTimer.current = null
+    }, 120)
+  }, [cancelHoverClear])
 
   // Web hover card geometry, all measured rather than assumed: each row's
   // offset inside the scroll content, the list's scroll offset and viewport
@@ -181,7 +201,6 @@ export function ModelPickerMenu({
     const effort = model.reasoningEffort
     const isExpanded = expandedId === model.id
     const contextLabel = !isWeb && isExpanded ? formatContextWindow(model.contextWindow) : null
-
     return (
       <View
         key={model.id}
@@ -193,8 +212,11 @@ export function ModelPickerMenu({
           accessibilityRole="button"
           accessibilityLabel={`${model.shortDisplayName ?? model.displayName}${isLocked ? `, requires ${UPGRADE_PLAN_NAME}` : ""}`}
           aria-selected={isSelected}
-          onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
-          onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
+          onHoverIn={isWeb ? () => {
+            cancelHoverClear()
+            setHoveredId(model.id)
+          } : undefined}
+          onHoverOut={isWeb ? () => scheduleHoverClear(model.id) : undefined}
           className={cn(
             "flex-row items-center gap-2.5 px-3",
             isSheet ? NATIVE_MODEL_SHEET.rowClass : isWeb ? "py-2" : "min-h-12 py-2.5",
@@ -313,7 +335,10 @@ export function ModelPickerMenu({
                 : ("/(admin)/admin/settings" as any)
             )
           }}
-          onHoverIn={isWeb ? () => setHoveredId(null) : undefined}
+          onHoverIn={isWeb ? () => {
+            cancelHoverClear()
+            setHoveredId(null)
+          } : undefined}
           className="flex-row items-center gap-2 px-3 py-2.5 border-t border-border/50"
         >
           <Settings2
@@ -331,22 +356,26 @@ export function ModelPickerMenu({
   if (!isWeb) return list
 
   return (
-    // The list is the popover body; the info card is a separate floating piece
-    // anchored to the list's right edge, so it isn't clipped by the menu's
-    // width and only appears while a row is hovered. `userSelect: none` stops
-    // click-drag text highlighting; `outline-none` kills the focus ring.
+    // The list is the popover body; the info card floats to its left so it
+    // stays on-screen for the composer picker, which is anchored at the lower
+    // right edge of the viewport. `userSelect: none` stops click-drag text
+    // highlighting; `outline-none` kills the focus ring.
     <View className="relative web:outline-none no-focus-ring" style={{ userSelect: "none" } as any}>
       {list}
       {activeInfoModel && !namesOnly && activeInfoRowVisible ? (
         <View
           testID="model-info-card"
           onLayout={(event) => setWebCardHeight(event.nativeEvent.layout.height)}
+          {...(isWeb ? {
+            onMouseEnter: cancelHoverClear,
+            onMouseLeave: () => scheduleHoverClear(activeInfoModel.id),
+          } as any : {})}
           className="bg-card border border-border rounded-xl shadow-lg"
           style={{
             position: "absolute",
-            left: "100%",
+            right: "100%",
             top: activeInfoTop,
-            marginLeft: 8,
+            marginRight: 8,
             width: INFO_PANEL_WIDTH,
           }}
         >

@@ -143,6 +143,8 @@ function toQueuedMessage(row: IChatQueuedMessage): QueuedMessage {
     content: row.content,
     files: filesFromParts(row.parts),
     selectedModel: typeof body.agentMode === "string" ? body.agentMode : undefined,
+    selectedReasoningEffort:
+      typeof body.reasoningEffort === "string" ? body.reasoningEffort as QueuedMessage["selectedReasoningEffort"] : undefined,
     references: Array.isArray(body.references)
       ? (body.references as ChatReference[])
       : undefined,

@@ -46,7 +46,14 @@ export {
   type AgentMode,
   type ModelCapabilities,
   type CapabilityReliability,
+  type ReasoningEffort,
 } from './models'
+
+export {
+  getGoogleThinkingEfforts,
+  getSupportedReasoningEfforts,
+  isReasoningEffort,
+} from './reasoning-efforts'
 
 export {
   MODEL_ALIASES,

@@ -59,6 +59,21 @@ describe("buildChatSendBody", () => {
     expect("references" in body).toBe(false)
     expect(body.text).toBe("wire text")
   })
+
+  test('sends an explicit supported reasoning effort', () => {
+    const body = buildChatSendBody({ ...base, reasoningEffort: 'high' })
+    expect(body.reasoningEffort).toBe('high')
+  })
+
+  test('strips invalid reasoning values and every Auto effort, including extra fields', () => {
+    expect(buildChatSendBody({ ...base, reasoningEffort: 'turbo' as never }).reasoningEffort).toBeUndefined()
+    expect(buildChatSendBody({
+      ...base,
+      agentMode: 'auto',
+      reasoningEffort: 'high',
+      extra: { reasoningEffort: 'xhigh' },
+    }).reasoningEffort).toBeUndefined()
+  })
 })
 
 describe("normalizePlanData", () => {

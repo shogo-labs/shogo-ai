@@ -1,4 +1,4 @@
-import { resolveModelId } from "@shogo/model-catalog"
+import * as modelCatalog from "@shogo/model-catalog"
 import { getMergedModelEntrySync } from "../services/model-registry.service"
 
 /**
@@ -20,11 +20,31 @@ export function stampModelProvider(parsedBody: {
   agentMode?: unknown
   modelProvider?: unknown
   modelDisplayName?: unknown
+  reasoningEffort?: unknown
 }): void {
-  if (!parsedBody?.agentMode || typeof parsedBody.agentMode !== "string") return
+  if (!parsedBody) return
+  if (!parsedBody.agentMode || typeof parsedBody.agentMode !== "string") {
+    delete parsedBody.reasoningEffort
+    return
+  }
   const agentMode = parsedBody.agentMode
-  const resolvedId = resolveModelId(agentMode)
+  if (modelCatalog.isAutoModel(agentMode) || agentMode === modelCatalog.AUTO_MODEL_ID) {
+    delete parsedBody.reasoningEffort
+  }
+  const resolvedId = modelCatalog.resolveModelId(agentMode)
   const entry = getMergedModelEntrySync(resolvedId)
+  const supportedEfforts = entry && typeof modelCatalog.getSupportedReasoningEfforts === 'function'
+    ? modelCatalog.getSupportedReasoningEfforts(entry)
+    : []
+  if (
+    parsedBody.reasoningEffort !== undefined &&
+    (!entry ||
+      typeof modelCatalog.isReasoningEffort !== 'function' ||
+      !modelCatalog.isReasoningEffort(parsedBody.reasoningEffort) ||
+      !supportedEfforts.includes(parsedBody.reasoningEffort))
+  ) {
+    delete parsedBody.reasoningEffort
+  }
   if (entry?.provider) parsedBody.modelProvider = entry.provider
   else delete parsedBody.modelProvider
   if (entry?.displayName) parsedBody.modelDisplayName = entry.displayName

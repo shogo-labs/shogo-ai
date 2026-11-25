@@ -98,6 +98,8 @@ import {
   AGENT_MODE_DEFAULTS,
   setAgentModeOverrides,
   isAutoModel,
+  isReasoningEffort,
+  type ReasoningEffort,
   modelSupportsVideoInput,
   AUTO_MODEL_ID,
   parseDynamicModelsEnv,
@@ -575,14 +577,16 @@ export function resolveTurnModelAliasFor(
  * Precedence:
  *   1. `basic` agent mode → its dedicated env override (haiku benefits from
  *      medium reasoning effort).
- *   2. The selected model's admin-configured `reasoningEffort`, threaded
+ *   2. The explicitly selected per-turn effort variant.
+ *   3. The selected model's admin-configured `reasoningEffort`, threaded
  *      through `config.model.thinkingLevel` by the picker.
- *   3. The `AGENT_THINKING_LEVEL` env default, then `medium`.
+ *   4. The `AGENT_THINKING_LEVEL` env default, then `medium`.
  */
 export function resolveThinkingLevel(
   modelOverride?: string,
   configThinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
-): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  turnReasoningEffort?: unknown,
+): ReasoningEffort {
   // Ollama models such as qwen2.5:3b do not accept provider reasoning
   // parameters. Local development must send a plain completion request even
   // when the shared Auto-mode defaults would normally choose medium thinking.
@@ -591,6 +595,7 @@ export function resolveThinkingLevel(
   if (modelOverride === 'basic') {
     return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'medium'
   }
+  if (!isAutoModel(modelOverride ?? '') && isReasoningEffort(turnReasoningEffort)) return turnReasoningEffort
   if (configThinkingLevel) return configThinkingLevel
   return envLevel || 'medium'
 }
@@ -2922,6 +2927,8 @@ export class AgentGateway {
        *  2.0"), stamped by the same request. Used for the per-turn Account
        *  line so it never quotes a different turn's model (SHO-145). */
       modelDisplayName?: string
+      /** Per-turn effort variant selected for this explicit model. Auto turns ignore it. */
+      reasoningEffort?: ReasoningEffort
       fileParts?: FilePart[]
       userId?: string
       /** API-signed proof of who sent this message (see integration-credentials.ts). */
@@ -3059,6 +3066,7 @@ export class AgentGateway {
       options?.requesterTicket,
       options?.chatContext,
       options?.turnOrigin,
+      options?.reasoningEffort,
     )
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
@@ -3661,6 +3669,8 @@ export class AgentGateway {
     chatContext?: ChatContext,
     /** What started this turn; only a person clears the automatic-restart cap. */
     turnOrigin?: TurnOrigin,
+    /** Explicit effort choice from a user-selected model, never used by Auto. */
+    turnReasoningEffort?: ReasoningEffort,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -3673,7 +3683,10 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, dualPlan, requesterTicket, chatContext, turnOrigin)
+    const turnPromise = this._agentTurnInner(
+      prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images,
+      dualPlan, requesterTicket, chatContext, turnOrigin, turnReasoningEffort,
+    )
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -3698,6 +3711,7 @@ export class AgentGateway {
     requesterTicket?: string,
     chatContext?: ChatContext,
     turnOrigin?: TurnOrigin,
+    turnReasoningEffort?: ReasoningEffort,
   ): Promise<string> {
     // How long this session sat idle before the turn started (SHO-259). Read
     // first, before anything in the turn touches `lastActivityAt` — after a
@@ -5240,6 +5254,7 @@ export class AgentGateway {
         thinkingLevel: resolveThinkingLevel(
           autoRouting ? undefined : session.modelOverride,
           autoRouting ? undefined : this.config.model.thinkingLevel,
+          autoRouting ? undefined : turnReasoningEffort,
         ),
         signal: turnAbort.signal,
         inferenceRetry: { waker: retryWaker },

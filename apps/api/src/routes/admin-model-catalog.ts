@@ -46,7 +46,7 @@ import {
   getPricingRefreshedAt,
   isPricingStale,
 } from '../services/model-pricing-catalog.service'
-import { MODEL_FAMILIES as MODEL_FAMILIES_VALUES } from '@shogo/model-catalog'
+import { MODEL_FAMILIES as MODEL_FAMILIES_VALUES, isReasoningEffort } from '@shogo/model-catalog'
 
 const MODEL_PROVIDER_PROTOCOLS = new Set(['openai', 'anthropic'])
 const MODEL_PROVIDER_AUTH_STYLES = new Set(['bearer', 'api-key-header'])
@@ -58,6 +58,12 @@ const MODEL_TIERS = new Set(['economy', 'standard', 'premium'])
 const MODEL_FAMILIES = new Set<string>(MODEL_FAMILIES_VALUES)
 const MODEL_GENERATIONS = new Set(['current', 'legacy'])
 const MODEL_REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+
+function hasValidReasoningEffortCapabilities(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
+  const efforts = (raw as Record<string, unknown>).reasoningEfforts
+  return efforts === undefined || efforts === null || (Array.isArray(efforts) && efforts.every(isReasoningEffort))
+}
 
 /** Shape a ModelProvider row for read responses — never includes the key. */
 export function toProviderResponse(row: any) {
@@ -733,6 +739,9 @@ export function adminModelCatalogRoutes() {
       if (body?.reasoningEffort != null && !MODEL_REASONING_EFFORTS.has(body.reasoningEffort)) {
         return c.json({ error: 'invalid reasoningEffort' }, 400)
       }
+      if (!hasValidReasoningEffortCapabilities(body?.capabilities)) {
+        return c.json({ error: 'invalid capabilities.reasoningEfforts' }, 400)
+      }
       const description = typeof body?.description === 'string' && body.description.trim()
         ? body.description.trim()
         : null
@@ -828,6 +837,9 @@ export function adminModelCatalogRoutes() {
       }
       if (Array.isArray(body?.aliases)) data.aliases = sanitizeAliases(body.aliases)
       if ('capabilities' in (body ?? {})) {
+        if (!hasValidReasoningEffortCapabilities(body.capabilities)) {
+          return c.json({ error: 'invalid capabilities.reasoningEfforts' }, 400)
+        }
         data.capabilities = body.capabilities && typeof body.capabilities === 'object' ? body.capabilities : null
       }
       if ('description' in (body ?? {})) {

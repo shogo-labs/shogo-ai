@@ -128,7 +128,7 @@ import {
   type RepoManifest,
   type RepoSnapshotFields,
 } from '@shogo/shared-runtime/repo-bundles'
-import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput, isReasoningEffort } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
   seedWorkspaceRuntimeDefaults,
@@ -2325,6 +2325,7 @@ app.post('/agent/chat', async (c) => {
   // session override so the Account prompt line names the model this turn
   // actually sends (SHO-145).
   const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
+  const reasoningEffort = isReasoningEffort(body.reasoningEffort) ? body.reasoningEffort : undefined
   // SHO-417: the API moved this run off the agent's configured model because it
   // is above the person the run acts for. The reply says so in code, before the
   // model writes anything — never by asking the model to mention it.
@@ -2381,6 +2382,7 @@ app.post('/agent/chat', async (c) => {
       modelOverride,
       modelProvider,
       modelDisplayName,
+      reasoningEffort,
       fileParts: userFileParts.length > 0 ? userFileParts : undefined,
       userId: chatUserId,
       requesterTicket,

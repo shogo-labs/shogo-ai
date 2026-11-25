@@ -25,6 +25,7 @@ import { prisma } from '../lib/prisma'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { fetchCloudVisibleModels } from '../lib/federated-upstream'
 import { NATIVE_PROVIDER_ENV_KEY, getNativeProviderApiKeySync } from './provider-credentials.service'
+import { getSupportedReasoningEfforts } from '@shogo/model-catalog'
 import * as workspaceModelsService from './workspace-models.service'
 
 const VISIBLE_MODELS_KEY = 'models.visible'
@@ -75,6 +76,7 @@ export interface VisibleCatalogModel {
   description?: string
   contextWindow?: number
   reasoningEffort?: string
+  reasoningEfforts?: string[]
   /**
    * Whether the model accepts video input natively. Carried so a desktop
    * mirroring this catalog (cloud-proxy mode) can tell its own runtime which
@@ -247,6 +249,7 @@ export async function resolveVisibleCatalogModels(
   const toVisible = (entry: any): VisibleCatalogModel => {
     const pricing = getDbModelPricingSync(entry.id)
     const aliases = getModelAliasesSync(entry.id)
+    const reasoningEfforts = getSupportedReasoningEfforts(entry)
     return {
       id: entry.id,
       provider: entry.provider,
@@ -261,6 +264,7 @@ export async function resolveVisibleCatalogModels(
       ...(entry.description ? { description: entry.description } : {}),
       ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+      ...(reasoningEfforts.length ? { reasoningEfforts } : {}),
       ...(entry.capabilities?.supportsVideoInput === true ? { supportsVideoInput: true } : {}),
       ...(pricing ? { pricing } : {}),
       ...(aliases.length > 0 ? { aliases } : {}),
@@ -337,10 +341,11 @@ export async function resolvePlatformVisibleModelsForRequest(
   try {
     const fromCloud = await fetchCloudVisibleModels()
     if (fromCloud) {
+      const { enrichCloudVisibleCatalogModels } = await import('./model-registry.service')
       return {
         catalogIds: fromCloud.catalogIds,
         openrouterModels: (fromCloud.openrouterModels ?? []) as VisibleOpenRouterModelStored[],
-        catalogModels: ((fromCloud.catalogModels ?? []) as VisibleCatalogModel[])
+        catalogModels: (enrichCloudVisibleCatalogModels(fromCloud.catalogModels ?? []) as VisibleCatalogModel[])
           .filter((entry) => options.includeLive || entry.kind !== 'live'),
       }
     }

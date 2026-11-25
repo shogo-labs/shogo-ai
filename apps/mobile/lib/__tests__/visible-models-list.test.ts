@@ -25,7 +25,7 @@ describe('buildModelList (flat, admin-ordered)', () => {
       catalogModels: [
         { id: 'claude-opus-4-8', provider: 'anthropic', displayName: 'Claude Opus 4.8', shortDisplayName: 'Opus 4.8', tier: 'premium' },
         { id: 'gpt-5.5', provider: 'openai', displayName: 'GPT-5.5', shortDisplayName: 'GPT-5.5', tier: 'standard' },
-        { id: 'claude-sonnet-4-6', provider: 'anthropic', displayName: 'Claude Sonnet 4.6', shortDisplayName: 'Sonnet 4.6', tier: 'standard', description: 'Smart', contextWindow: 200000, reasoningEffort: 'medium' },
+        { id: 'claude-sonnet-4-6', provider: 'anthropic', displayName: 'Claude Sonnet 4.6', shortDisplayName: 'Sonnet 4.6', tier: 'standard', description: 'Smart', contextWindow: 200000, reasoningEffort: 'medium', reasoningEfforts: ['low', 'medium', 'high'] },
       ],
       openrouterModels: [
         { id: 'openrouter:meta/llama', displayName: 'Llama', tier: 'standard' },
@@ -44,7 +44,7 @@ describe('buildModelList (flat, admin-ordered)', () => {
     const list = buildModelList({
       catalogIds: null,
       catalogModels: [
-        { id: 'claude-sonnet-4-6', provider: 'anthropic', displayName: 'Claude Sonnet 4.6', tier: 'standard', description: 'Smart', contextWindow: 200000, reasoningEffort: 'medium' },
+        { id: 'claude-sonnet-4-6', provider: 'anthropic', displayName: 'Claude Sonnet 4.6', tier: 'standard', description: 'Smart', contextWindow: 200000, reasoningEffort: 'medium', reasoningEfforts: ['low', 'medium', 'high'] },
       ],
       openrouterModels: [],
     } as any)
@@ -53,6 +53,7 @@ describe('buildModelList (flat, admin-ordered)', () => {
     expect(sonnet.description).toBe('Smart')
     expect(sonnet.contextWindow).toBe(200000)
     expect(sonnet.reasoningEffort).toBe('medium')
+    expect(sonnet.reasoningEfforts).toEqual(['low', 'medium', 'high'])
   })
 
   test('no catalogModels → empty list (no bundled-catalog fallback)', () => {

@@ -52,6 +52,7 @@ const {
   resolveModelLabels,
   resolveModelLabel,
   debugRegistrySnapshotForId,
+  enrichCloudVisibleCatalogModels,
 } = await import('../model-registry.service')
 
 const MIMO_KEY = 'sk-mimo-staging-key-abcdef'
@@ -207,6 +208,33 @@ describe('model-registry.service', () => {
     const dbg = debugRegistrySnapshotForId(CLOUD_OPUS_UUID)
     expect(dbg.isCloudMirrored).toBe(true)
     expect(new Set(getDbModelEntriesSync().map((m) => m.id)).has(CLOUD_OPUS_UUID)).toBe(false)
+  })
+
+  test('enriches older cloud catalog projections with known reasoning choices', () => {
+    const cloudModels = enrichCloudVisibleCatalogModels([
+      {
+        id: CLOUD_OPUS_UUID,
+        provider: 'anthropic',
+        aliases: ['claude-opus-5-5', 'opus'],
+      },
+      {
+        id: '02ad0bec-375c-4c53-bf9d-cc795caf7978',
+        provider: 'openai',
+        aliases: ['gpt-6-sol', 'sol'],
+      },
+      {
+        id: 'hoshi-cloud-uuid',
+        provider: 'custom',
+        aliases: ['hoshi-2-0'],
+        reasoningEffort: 'high',
+      },
+    ]) as Array<Record<string, unknown>>
+
+    expect(cloudModels[0]?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(cloudModels[1]?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh'])
+    // A configured default is not proof that an arbitrary custom endpoint
+    // accepts user-selected effort values.
+    expect(cloudModels[2]).not.toHaveProperty('reasoningEfforts')
   })
 
   test('a mirrored cloud model bills at the cloud pricing, not the sonnet fallback', async () => {

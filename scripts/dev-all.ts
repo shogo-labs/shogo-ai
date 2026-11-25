@@ -291,25 +291,41 @@ export function isPostgresDatabaseUrl(url: string | undefined): boolean {
 }
 
 /**
- * Resolve the on-disk path of the local SQLite DB exactly the way Prisma
- * does for `prisma.config.local.ts`: prefer `DATABASE_URL` and fall back to
- * the config's `file:./shogo.db` default. Relative `file:` paths resolve
- * against the repo root, where the Prisma config lives.
+ * Resolve the local app database URL the same way the local API does.
+ * Local mode stores its own application data in SQLite even when the generic
+ * DATABASE_URL points at Postgres for project/cloud services. In that case the
+ * API falls back to `shogo.db`; migration commands must target that same file.
+ */
+function localDatabaseUrl(databaseUrl?: string): string {
+  const url = databaseUrl?.trim();
+  return !url || isPostgresDatabaseUrl(url) ? `file:${DEFAULT_DB_FILE}` : url;
+}
+
+function configuredLocalDatabaseUrl(): string {
+  return localDatabaseUrl(
+    process.env.SHOGO_APP_DATABASE_URL ?? process.env.DATABASE_URL,
+  );
+}
+
+/**
+ * Resolve the on-disk path of the local SQLite DB exactly the way the local
+ * API and `prisma.config.local.ts` do. Relative `file:` paths resolve against
+ * the repo root, where the Prisma config lives.
  *
  * This used to be hardcoded to `shogo.db`. Any developer who set
- * `DATABASE_URL=file:./shogo-local.db` therefore pointed the auto-resolver
- * at the wrong (usually empty) database, so `isMigrationFullyApplied` never
- * found the columns and the recovery silently never fired.
+ * `SHOGO_APP_DATABASE_URL=file:./shogo-local.db` therefore pointed the
+ * auto-resolver at the wrong (usually empty) database, so
+ * `isMigrationFullyApplied` never found the columns and recovery never fired.
  */
 export function resolveLocalDbPath(
   opts: { rootDir?: string; databaseUrl?: string } = {},
 ): string {
   const rootDir = opts.rootDir ?? ROOT;
-  const raw = (
+  const raw = localDatabaseUrl(
     opts.databaseUrl ??
-    process.env.DATABASE_URL ??
-    `file:${DEFAULT_DB_FILE}`
-  ).trim();
+      process.env.SHOGO_APP_DATABASE_URL ??
+      process.env.DATABASE_URL,
+  );
   let p = raw.startsWith("file:") ? raw.slice("file:".length) : raw;
   // Drop any `?connection_limit=…` style suffix defensively.
   const queryIdx = p.indexOf("?");
@@ -338,7 +354,7 @@ function runPrismaDetached(args: string[]): Promise<{ code: number; stderr: stri
         cwd: ROOT,
         detached: process.platform !== "win32",
         stdio: ["ignore", "inherit", "pipe"],
-        env: { ...process.env },
+        env: { ...process.env, DATABASE_URL: configuredLocalDatabaseUrl() },
       },
     );
     let stderr = "";
@@ -378,7 +394,11 @@ function runPrismaCapture(
         // `migrate diff --from-migrations` replays the SQLite migration
         // history into a shadow DB; SHOGO_LOCAL_MODE keeps the config on the
         // SQLite track (mirrors check-desktop-schema-drift.ts).
-        env: { ...process.env, SHOGO_LOCAL_MODE: "true" },
+        env: {
+          ...process.env,
+          SHOGO_LOCAL_MODE: "true",
+          DATABASE_URL: configuredLocalDatabaseUrl(),
+        },
       },
     );
     let stdout = "";
@@ -719,7 +739,7 @@ async function markMigrationApplied(migrationName: string): Promise<boolean> {
     cwd: ROOT,
     stdout: "inherit",
     stderr: "inherit",
-    env: { ...process.env },
+    env: { ...process.env, DATABASE_URL: configuredLocalDatabaseUrl() },
   });
   const code = await proc.exited;
   return code === 0;
@@ -866,12 +886,13 @@ export async function migrate() {
  * an immediate exit.
  */
 async function runMigratePhase(): Promise<void> {
-  // The SQLite ledger/recovery below only applies to the desktop/local
-  // SQLite database. When DATABASE_URL points at Postgres (the README /
-  // SELF_HOSTING flow: `docker:infra` -> `db:migrate:deploy` -> `dev:all`),
-  // `prisma.config.local.ts` rejects the URL with P1013 ("must start with
-  // file:"). Postgres migrations are applied by `bun run db:migrate:deploy`.
-  if (isPostgresDatabaseUrl(process.env.DATABASE_URL)) {
+  // Cloud/self-host mode uses Postgres migrations separately. Local mode still
+  // owns a SQLite app database (SHOGO_APP_DATABASE_URL or shogo.db), even when
+  // DATABASE_URL points at Postgres for project/cloud services.
+  if (
+    process.env.SHOGO_LOCAL_MODE !== "true" &&
+    isPostgresDatabaseUrl(process.env.DATABASE_URL)
+  ) {
     console.log(
       "[dev:all] DATABASE_URL is Postgres — skipping SQLite migrations " +
         "(run `bun run db:migrate:deploy` to apply Postgres migrations).",
@@ -958,7 +979,12 @@ async function generateRoutes() {
     cwd: ROOT,
     stdout: "inherit",
     stderr: "inherit",
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      ...(process.env.SHOGO_LOCAL_MODE === "true"
+        ? { DATABASE_URL: configuredLocalDatabaseUrl() }
+        : {}),
+    },
   });
   const code = await proc.exited;
   if (code !== 0) {

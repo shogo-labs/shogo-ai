@@ -6,6 +6,7 @@
  * model and confirmed-plan handling.
  */
 import type { PlanData } from "../components/chat/PlanCard"
+import { isAutoModel, isReasoningEffort, type ReasoningEffort } from "@shogo/model-catalog"
 
 /**
  * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
@@ -47,6 +48,8 @@ export interface ChatSendBodyInput {
   featureId?: string | null
   phase?: string | null
   agentMode: string
+  /** Per-turn reasoning variant; absent uses the model's configured default. */
+  reasoningEffort?: ReasoningEffort
   dualPlan?: boolean
   clientTurnId?: string
   viewer?: unknown
@@ -69,6 +72,7 @@ export function buildChatSendBody(input: ChatSendBodyInput): Record<string, unkn
     projectId: input.projectId,
     focusedProjectId: input.focusedProjectId,
     agentMode: input.agentMode,
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
     dualPlan: input.dualPlan,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(input.clientTurnId !== undefined ? { clientTurnId: input.clientTurnId } : {}),
@@ -80,5 +84,12 @@ export function buildChatSendBody(input: ChatSendBodyInput): Record<string, unkn
   if (input.ideContext) body.ideContext = input.ideContext
   if (input.references && input.references.length > 0) body.references = input.references
   if (input.extra) Object.assign(body, input.extra)
+  // Auto chooses a different model per turn. A picked model's variant must
+  // never leak into Auto requests, even when a caller supplied it in `extra`.
+  if (isAutoModel(typeof body.agentMode === "string" ? body.agentMode : "")) {
+    delete body.reasoningEffort
+  } else if (!isReasoningEffort(body.reasoningEffort)) {
+    delete body.reasoningEffort
+  }
   return body
 }

@@ -205,6 +205,7 @@ mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
+mock.module("../ComposerReasoningEffortPicker", () => ({ ComposerReasoningEffortPicker: () => null }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
 mock.module("../PastedTextChip", () => ({ PastedTextChip: () => null }))
 mock.module("../../voice-mode/ChatBridgeContext", () => ({

@@ -13,7 +13,13 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
 // Mutable mock registry, keyed by canonical id (UUIDs pass through resolveModelId).
-let ENTRIES: Record<string, { provider?: string; displayName?: string }> = {}
+let ENTRIES: Record<string, {
+  provider?: string
+  displayName?: string
+  apiModel?: string
+  reasoningEfforts?: string[]
+  capabilities?: { reasoningEfforts?: string[] }
+}> = {}
 
 mock.module('../../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) => ENTRIES[id],
@@ -26,8 +32,8 @@ const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 beforeEach(() => {
   ENTRIES = {
-    [OPUS_UUID]: { provider: 'anthropic', displayName: 'Claude Opus 5' },
-    [GPT_UUID]: { provider: 'openai' },
+    [OPUS_UUID]: { provider: 'anthropic', displayName: 'Claude Opus 5', apiModel: 'claude-opus-5', thinkingApi: 'adaptive' } as any,
+    [GPT_UUID]: { provider: 'openai', apiModel: 'gpt-6-astra' },
   }
 })
 
@@ -72,5 +78,33 @@ describe('stampModelProvider', () => {
     const body: any = { agentMode: GPT_UUID, modelDisplayName: 'Old Model' }
     stampModelProvider(body)
     expect('modelDisplayName' in body).toBe(false)
+  })
+
+  test('preserves a supported per-turn effort for a registered model', () => {
+    const body: any = { agentMode: GPT_UUID, reasoningEffort: 'high' }
+    stampModelProvider(body)
+    expect(body.reasoningEffort).toBe('high')
+  })
+
+  test('strips efforts that are unsupported or invalid for the selected model', () => {
+    const unsupported: any = { agentMode: GPT_UUID, reasoningEffort: 'off' }
+    stampModelProvider(unsupported)
+    expect('reasoningEffort' in unsupported).toBe(false)
+
+    const invalid: any = { agentMode: GPT_UUID, reasoningEffort: 'turbo' }
+    stampModelProvider(invalid)
+    expect('reasoningEffort' in invalid).toBe(false)
+  })
+
+  test('strips reasoning effort after the model has been downgraded to Auto', () => {
+    const body: any = { agentMode: 'auto', reasoningEffort: 'high' }
+    stampModelProvider(body)
+    expect('reasoningEffort' in body).toBe(false)
+  })
+
+  test('strips a reasoning effort when no model was resolved', () => {
+    const body: any = { reasoningEffort: 'high' }
+    stampModelProvider(body)
+    expect('reasoningEffort' in body).toBe(false)
   })
 })

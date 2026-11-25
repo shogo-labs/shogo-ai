@@ -21,14 +21,17 @@ import { createReactNativeMock } from "../../../test/react-native-mock"
 
 const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
 const scrollHandlers = new WeakMap<Element, (event: unknown) => void>()
+const platformOverride = { OS: "web" }
 
-function ViewShim({ children, onLayout, testID, className, style }: any) {
+function ViewShim({ children, onLayout, onMouseEnter, onMouseLeave, testID, className, style }: any) {
   return createElement(
     "div",
     {
       "data-testid": testID,
       className,
       style,
+      onMouseEnter,
+      onMouseLeave,
       ref: (node: HTMLElement | null) => {
         if (node && typeof onLayout === "function") layoutHandlers.set(node, onLayout)
       },
@@ -65,8 +68,9 @@ function PressableShim({
   style,
   disabled,
 }: any) {
+  const tag = mockPlatform.OS === "web" ? "button" : "div"
   return createElement(
-    "button",
+    tag,
     {
       "data-testid": testID,
       className,
@@ -87,10 +91,12 @@ const MODELS = Array.from({ length: 12 }, (_, index) => ({
   tier: "standard" as const,
   description: `Description for model ${index}`,
   contextWindow: 200_000,
+  ...(index < 2 ? { reasoningEfforts: ["low", "high"] as const } : {}),
 }))
 
 mock.module("react-native", () =>
   createReactNativeMock({
+    Platform: platformOverride,
     View: ViewShim,
     ScrollView: ScrollViewShim,
     Pressable: PressableShim,
@@ -117,6 +123,7 @@ mock.module("../../layout/MobileWorkspaceChromeContext", () => ({
 }))
 mock.module("../../../lib/visible-models", () => ({ useModelPickerList: () => MODELS }))
 
+const { Platform: mockPlatform } = await import("react-native") as { Platform: { OS: string } }
 const { ModelPickerMenu } = await import("../ModelPickerMenu")
 
 /** One web row: `py-2` + `text-sm` lands on 36px, not the old 32px guess. */
@@ -185,6 +192,11 @@ describe("ModelPickerMenu web hover card (SHO-480)", () => {
     renderMenu()
     hover(3)
     expect(cardTop()).toBe(rowY(3))
+    // The composer picker is anchored to the viewport's right edge, so the
+    // effort panel must open left of the list rather than off-screen.
+    const card = screen.getByTestId("model-info-card") as HTMLElement
+    expect(card.style.right).toBe("100%")
+    expect(card.style.marginRight).toBe("8px")
 
     hover(7)
     expect(cardTop()).toBe(rowY(7))
@@ -247,9 +259,17 @@ describe("ModelPickerMenu web hover card (SHO-480)", () => {
     expect(cardTop()).toBe(0)
   })
 
+  test("model details do not contain the separate effort control", () => {
+    renderMenu()
+    hover(0)
+    expect(screen.getByTestId("model-info-card")).toBeTruthy()
+    expect(screen.queryByTestId("reasoning-effort-model-0-low")).toBeNull()
+  })
+
   test("names-only pickers show no card at all", () => {
     renderMenu({ hideCostLabels: true })
     hover(2)
     expect(screen.queryByTestId("model-info-card")).toBeNull()
   })
+
 })

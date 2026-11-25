@@ -106,6 +106,7 @@ mock.module("../../../lib/native-attachment-picker", () => ({ executeNativeAttac
 mock.module("../ContextTracker", () => ({ ContextTracker: () => null, formatTokenCount: (t: number) => String(t) }))
 mock.module("../../../lib/visible-models", () => ({ resolveShortName: (m: string) => m, resolveTier: () => "economy" }))
 mock.module("../ModelPickerMenu", () => ({ ModelPickerMenu: () => null, ComposerModelPicker: () => null, getNativeModelMenuWidth: () => 280 }))
+mock.module("../ComposerReasoningEffortPicker", () => ({ ComposerReasoningEffortPicker: () => null }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
 mock.module("../PastedTextChip", () => ({ PastedTextChip: () => null }))
 mock.module("../../voice-mode/ChatBridgeContext", () => ({ useChatBridgeOptional: () => null }))

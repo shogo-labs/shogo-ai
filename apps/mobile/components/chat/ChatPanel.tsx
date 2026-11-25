@@ -318,7 +318,12 @@ import {
   resolveChatModel,
   useChatComposerMemory,
 } from "../../lib/chat-composer-memory"
-import { useReconcileStaleModelSelection } from "../../lib/visible-models"
+import { isAutoModel } from "@shogo/model-catalog"
+import {
+  resolveReasoningEfforts,
+  useReconcileStaleModelSelection,
+  type ReasoningEffort,
+} from "../../lib/visible-models"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -473,6 +478,7 @@ export type QueuedMessage = {
   content: string
   files?: FileAttachment[]
   selectedModel?: string
+  selectedReasoningEffort?: ReasoningEffort
   references?: ChatReference[]
   status?: string
   error?: string
@@ -1950,6 +1956,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const selectedModel = isModelControlled
     ? controlledSelectedModel
     : internalSelectedModel
+  const selectedReasoningEffort =
+    composerRecord?.model === selectedModel
+      ? composerRecord.reasoningEffort
+      : undefined
+
+  const handleReasoningEffortChange = useCallback(
+    (modelId: string, effort: ReasoningEffort | null) => {
+      if (isAutoModel(modelId)) return
+      if (effort && !resolveReasoningEfforts(modelId).includes(effort)) return
+      composerMemory.saveReasoningEffort(modelId, effort)
+    },
+    [composerMemory],
+  )
 
   const handleModelChange = useCallback(
     (modelId: string) => {
@@ -7380,6 +7399,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       perMsgModel?: string,
       extraBody?: Record<string, unknown>,
       references?: ChatReference[],
+      perMsgReasoningEffort?: ReasoningEffort,
     ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
@@ -7562,6 +7582,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
           projectId,
           focusedProjectId,
           agentMode: perMsgModel || selectedModel,
+          reasoningEffort:
+            (perMsgModel || selectedModel) === selectedModel
+              ? perMsgReasoningEffort ?? selectedReasoningEffort
+              : undefined,
           dualPlan: dualPlanRef.current,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
@@ -7646,6 +7670,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       projectId,
       focusedProjectId,
       selectedModel,
+      selectedReasoningEffort,
       actions,
       enrichMessage,
       ideMode,
@@ -7759,6 +7784,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           nextMessage.selectedModel,
           undefined,
           nextMessage.references,
+          nextMessage.selectedReasoningEffort,
         )
       }
     } catch (err) {
@@ -8587,6 +8613,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       trimmedContent: string,
       perMsgModel: string | undefined,
       references: ChatReference[] | undefined,
+      perMsgReasoningEffort?: ReasoningEffort,
     ) => {
       const planToSend = confirmedPlanRef.current
       confirmedPlanRef.current = null
@@ -8601,6 +8628,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         projectId,
         focusedProjectId,
         agentMode: perMsgModel || selectedModel,
+        reasoningEffort:
+          (perMsgModel || selectedModel) === selectedModel
+            ? perMsgReasoningEffort ?? selectedReasoningEffort
+            : undefined,
         dualPlan: dualPlanRef.current,
         viewer: canvasViewerPayload({
           isPhoneViewport,
@@ -8629,6 +8660,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       phase,
       projectId,
       selectedModel,
+      selectedReasoningEffort,
       userId,
       windowWidth,
       workspaceId,
@@ -8661,6 +8693,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       files?: FileAttachment[],
       perMsgModel?: string,
       references?: ChatReference[],
+      perMsgReasoningEffort?: ReasoningEffort,
     ) => {
       const trimmedContent = content.trim()
       if (!(await ensureAiConsentForMessage())) {
@@ -8670,7 +8703,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      const body = buildQueuedBody(trimmedContent, perMsgModel, references)
+      const body = buildQueuedBody(trimmedContent, perMsgModel, references, perMsgReasoningEffort)
 
       // The dock row is the create's own optimistic insert, so it has to be
       // the first thing that happens: the message is queued, not sent, and it
@@ -8702,6 +8735,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       queuedEnrich,
       releaseStopSnapshot,
       selectedModel,
+      selectedReasoningEffort,
       serverQueue,
     ],
   )
@@ -8722,9 +8756,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       files?: FileAttachment[],
       perMsgModel?: string,
       references?: ChatReference[],
+      perMsgReasoningEffort?: ReasoningEffort,
     ) => {
       const trimmedContent = content.trim()
-      const body = buildQueuedBody(trimmedContent, perMsgModel, references)
+      const body = buildQueuedBody(trimmedContent, perMsgModel, references, perMsgReasoningEffort)
       try {
         await serverQueue.edit(id, {
           content: trimmedContent,
@@ -8765,7 +8800,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           "[ChatPanel] The queued message could not be edited in place:",
           error,
         )
-        await enqueueServerMessage(trimmedContent, files, perMsgModel, references)
+        await enqueueServerMessage(trimmedContent, files, perMsgModel, references, perMsgReasoningEffort)
       }
     },
     [
@@ -8776,6 +8811,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       queueActionMessage,
       releaseStopSnapshot,
       selectedModel,
+      selectedReasoningEffort,
       serverQueue,
       setQueuedActionError,
     ],
@@ -8788,6 +8824,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       files?: FileAttachment[],
       perMsgModel?: string,
       references?: ChatReference[],
+      perMsgReasoningEffort?: ReasoningEffort,
     ) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
@@ -8820,7 +8857,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             replaceQueuedMessage(queue, editingQueuedId, {
               content: trimmedContent,
               files,
-              selectedModel: perMsgModel,
+              selectedModel: perMsgModel || selectedModel,
+              selectedReasoningEffort:
+                (perMsgModel || selectedModel) === selectedModel
+                  ? perMsgReasoningEffort ?? selectedReasoningEffort
+                  : undefined,
               references,
             }),
           )
@@ -8834,6 +8875,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             files,
             perMsgModel,
             references,
+            perMsgReasoningEffort,
           )
           return
         }
@@ -8856,7 +8898,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 .substr(2, 9)}`,
               content: trimmedContent,
               files,
-              selectedModel: perMsgModel,
+              selectedModel: perMsgModel || selectedModel,
+              selectedReasoningEffort:
+                (perMsgModel || selectedModel) === selectedModel
+                  ? perMsgReasoningEffort ?? selectedReasoningEffort
+                  : undefined,
               references,
             },
           ])
@@ -8871,6 +8917,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             files,
             perMsgModel,
             references,
+            perMsgReasoningEffort,
           )
         } catch (error) {
           console.warn(
@@ -8929,6 +8976,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         perMsgModel,
         undefined,
         references,
+        perMsgReasoningEffort ??
+          ((perMsgModel || selectedModel) === selectedModel ? selectedReasoningEffort : undefined),
       )
     },
     [
@@ -8945,6 +8994,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       reloadAndAttachLiveTurn,
       serverQueue,
       showOptimisticEcho,
+      selectedModel,
+      selectedReasoningEffort,
     ],
   )
 
@@ -8955,6 +9006,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       files?: FileAttachment[],
       perMsgModel?: string,
       references?: ChatReference[],
+      reasoningEffort?: ReasoningEffort,
     ) => {
       // The message was accepted (sent or queued) — forget the stored draft
       // immediately so a reload doesn't resurrect it. If the send later fails
@@ -8967,7 +9019,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // The box is empty now and must stay empty: drop the restore that would
       // otherwise come back on a remount of the composer.
       setRestoreDraftRequest((prev) => (prev ? null : prev))
-      handleSendMessage(content, files, perMsgModel, references)
+      handleSendMessage(content, files, perMsgModel, references, reasoningEffort)
     },
     [composerChatKey, composerMemory, handleSendMessage],
   )
@@ -11289,6 +11341,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onStop={handleStop}
                     selectedModel={selectedModel}
                     onModelChange={handleModelChange}
+                    selectedReasoningEffort={selectedReasoningEffort}
+                    onReasoningEffortChange={handleReasoningEffortChange}
                     isPro={hasAdvancedModelAccess}
                     onUpgradeClick={handleUpgradeClick}
                     queuedMessages={displayedQueue}

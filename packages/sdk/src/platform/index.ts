@@ -327,6 +327,8 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   /** Reasoning effort applied when the model runs (drives thinkingLevel). */
   reasoningEffort?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Per-model reasoning variants supported by the configured provider. */
+  reasoningEfforts?: Array<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'>
   /** Slugs this model used to answer to. A saved selection that matches one of
    *  these is re-pointed at `id` rather than reset. Optional for back-compat
    *  with API servers that predate this field. */

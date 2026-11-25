@@ -60,7 +60,20 @@ export function localPlatformRoutes(): Hono {
     const includeLive = c.req.query('includeLive') === 'true'
     try {
       const fromCloud = await fetchCloudVisibleModels()
-      if (fromCloud) return c.json(fromCloud)
+      if (fromCloud) {
+        const { enrichCloudVisibleCatalogModels } = await import('../services/model-registry.service')
+        return c.json({
+          ...fromCloud,
+          // Cloud fetches request the full catalog so local-only consumers can
+          // sync Live models. Reapply this endpoint's caller-facing filter and
+          // enrich older cloud projections with locally-known effort choices.
+          catalogModels: Array.isArray(fromCloud.catalogModels)
+            ? enrichCloudVisibleCatalogModels(fromCloud.catalogModels).filter(
+                (model: any) => includeLive || model?.kind !== 'live',
+              )
+            : fromCloud.catalogModels,
+        })
+      }
     } catch {
       // The local catalog remains usable while cloud discovery is unavailable.
     }

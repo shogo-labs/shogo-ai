@@ -135,6 +135,38 @@ describe("draft round-trip", () => {
 })
 
 describe("clearing", () => {
+  test('persists a reasoning choice with the model and clears it when the model changes', async () => {
+    const { store, storage } = memoryStorage()
+    const memory = new ComposerMemory(storage, { debounceMs: 0 })
+    memory.setModel(KEY, 'gpt-6-astra')
+    memory.setReasoningEffort(KEY, 'gpt-6-astra', 'xhigh')
+    await Bun.sleep(5)
+    expect((await memory.load(KEY))?.reasoningEffort).toBe('xhigh')
+
+    memory.setModel(KEY, 'claude-sonnet-5')
+    await Bun.sleep(5)
+    expect(memory.peek(KEY)?.reasoningEffort).toBeUndefined()
+    expect(JSON.parse(store.get(KEY)!).reasoningEffort).toBeUndefined()
+  })
+
+  test('persists the effort for a new chat before its model has been saved', async () => {
+    const { store, storage } = memoryStorage()
+    const memory = new ComposerMemory(storage, { debounceMs: 0 })
+    memory.setDraft(KEY, 'unsent benchmark prompt', [])
+
+    memory.setReasoningEffort(KEY, 'gpt-6-luna', 'low')
+    await Bun.sleep(5)
+
+    expect(memory.peek(KEY)).toMatchObject({
+      model: 'gpt-6-luna',
+      reasoningEffort: 'low',
+      draft: { text: 'unsent benchmark prompt', references: [] },
+    })
+    const reloaded = new ComposerMemory(storage, { debounceMs: 0 })
+    expect((await reloaded.load(KEY))?.reasoningEffort).toBe('low')
+    expect(JSON.parse(store.get(KEY)!).model).toBe('gpt-6-luna')
+  })
+
   test("an empty draft removes the draft field but keeps the model", async () => {
     const { store, storage } = memoryStorage()
     const memory = new ComposerMemory(storage, { debounceMs: 0 })

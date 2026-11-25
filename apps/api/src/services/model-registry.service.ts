@@ -183,10 +183,11 @@ function rowToModelEntry(row: ModelRow): ModelEntry {
   // reseed is a manual ops step, so without this an existing instance keeps
   // refusing video on a model the catalog knows takes it. A row that does
   // declare capabilities always wins (admin override).
+  const catalogEntry = modelCatalog.getModelEntry(row.apiModel)
   const capabilities =
     row.capabilities && typeof row.capabilities === 'object'
       ? (row.capabilities as ModelEntry['capabilities'])
-      : modelCatalog.getModelEntry(row.apiModel)?.capabilities
+      : catalogEntry?.capabilities
   return {
     id: row.id,
     provider: row.provider as ModelEntry['provider'],
@@ -207,6 +208,7 @@ function rowToModelEntry(row: ModelRow): ModelEntry {
     ...(row.description ? { description: row.description } : {}),
     ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
     ...(row.reasoningEffort ? { reasoningEffort: row.reasoningEffort as ModelEntry['reasoningEffort'] } : {}),
+    ...(catalogEntry?.thinkingApi ? { thinkingApi: catalogEntry.thinkingApi } : {}),
   }
 }
 
@@ -284,10 +286,41 @@ function cloudCatalogModelToEntry(raw: unknown): ModelEntry | null {
   if (typeof m.id !== 'string' || typeof m.provider !== 'string') return null
   const tier = (typeof m.tier === 'string' ? m.tier : 'standard') as ModelTier
   const family = (typeof m.family === 'string' ? m.family : 'other') as ModelFamily
+  const aliases = aliasList(m.aliases)
+  // Older cloud catalogs only project picker fields and don't yet carry the
+  // reasoningEfforts array. Resolve known built-in model aliases locally so a
+  // cloud-connected desktop can still expose the effort choices it knows how
+  // to translate. Unknown/custom models remain opt-in and are never guessed.
+  const knownCatalogEntry = [
+    ...(typeof m.apiModel === 'string' ? [m.apiModel] : []),
+    ...aliases,
+    m.id,
+  ]
+    .map((id) => modelCatalog.getModelEntry(id))
+    .find((entry) => entry?.provider === m.provider)
+  const apiModel = typeof m.apiModel === 'string'
+    ? m.apiModel
+    : knownCatalogEntry?.apiModel ?? m.id
+  const capabilities =
+    m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)
+      ? m.capabilities as ModelEntry['capabilities']
+      : knownCatalogEntry?.capabilities
+  const reasoningEfforts = modelCatalog.getSupportedReasoningEfforts({
+    provider: m.provider as ModelEntry['provider'],
+    apiModel,
+    ...(typeof m.reasoningEffort === 'string'
+      ? { reasoningEffort: m.reasoningEffort as ModelEntry['reasoningEffort'] }
+      : {}),
+    ...(Array.isArray(m.reasoningEfforts)
+      ? { reasoningEfforts: m.reasoningEfforts as ModelEntry['reasoningEfforts'] }
+      : {}),
+    ...(knownCatalogEntry?.thinkingApi ? { thinkingApi: knownCatalogEntry.thinkingApi } : {}),
+    ...(capabilities ? { capabilities } : {}),
+  })
   return {
     id: m.id,
     provider: m.provider as ModelEntry['provider'],
-    apiModel: typeof m.apiModel === 'string' ? m.apiModel : m.id,
+    apiModel,
     displayName: typeof m.displayName === 'string' ? m.displayName : m.id,
     shortDisplayName: typeof m.shortDisplayName === 'string' ? m.shortDisplayName : (typeof m.displayName === 'string' ? m.displayName : m.id),
     tier,
@@ -301,11 +334,27 @@ function cloudCatalogModelToEntry(raw: unknown): ModelEntry | null {
     ...(typeof m.description === 'string' ? { description: m.description } : {}),
     ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
     ...(typeof m.reasoningEffort === 'string' ? { reasoningEffort: m.reasoningEffort as ModelEntry['reasoningEffort'] } : {}),
+    ...(reasoningEfforts.length ? { reasoningEfforts } : {}),
+    ...(knownCatalogEntry?.thinkingApi ? { thinkingApi: knownCatalogEntry.thinkingApi } : {}),
     // The cloud picker payload carries only the modality flags the runtime
     // needs to classify an opaque cloud id; without this a cloud-connected
     // desktop 400s a video on Carbon before it ever forwards (SHO-495).
     ...(m.supportsVideoInput === true ? { capabilities: { supportsVideoInput: true } } : {}),
   }
+}
+
+/**
+ * Add locally-known reasoning choices to an older cloud picker projection.
+ * Kept on the same conversion path used by proxy routing so the UI and the
+ * API boundary agree about which efforts are valid for a cloud model.
+ */
+export function enrichCloudVisibleCatalogModels(models: unknown[]): unknown[] {
+  return models.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const entry = cloudCatalogModelToEntry(raw)
+    if (!entry?.reasoningEfforts?.length) return raw
+    return { ...(raw as Record<string, unknown>), reasoningEfforts: entry.reasoningEfforts }
+  })
 }
 
 /**

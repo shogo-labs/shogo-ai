@@ -151,4 +151,29 @@ describe('model form: a rejected save is visible in the modal', () => {
       expect.objectContaining({ family: 'gemini', reasoningEffort: 'high' }),
     )
   })
+
+  test('saves supported reasoning choices while preserving other model capabilities', async () => {
+    const model = {
+      ...GEMINI_MODEL,
+      capabilities: { supportsVideoInput: true, reasoningEfforts: ['low'] },
+    }
+    const platform = fakePlatform({
+      listModels: mock(async () => [model] as any[]),
+    })
+    render(createElement(ModelsCard, { platform, localMode: false }))
+    await waitFor(() => expect(screen.queryAllByText('Gemini 4 Carbon').length).toBeGreaterThan(0))
+
+    fireEvent.click(editButton())
+    await waitFor(() => expect(screen.getByTestId('admin-reasoning-effort-low')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('admin-reasoning-effort-high'))
+    fireEvent.click(screen.getByTestId('admin-reasoning-effort-low'))
+    fireEvent.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(platform.updateModel).toHaveBeenCalledWith(
+      'model-gemini-carbon',
+      expect.objectContaining({
+        capabilities: { supportsVideoInput: true, reasoningEfforts: ['high'] },
+      }),
+    ))
+  })
 })

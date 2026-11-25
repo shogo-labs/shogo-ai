@@ -1268,6 +1268,7 @@ app.get('/api/platform/visible-models', async (c) => {
   try {
     const fromCloud = await fetchCloudVisibleModels()
     if (fromCloud) {
+      const { enrichCloudVisibleCatalogModels } = await import('./services/model-registry.service')
       // `fetchCloudVisibleModels` always requests the upstream's superset
       // (see its doc comment) — re-apply this caller's own `includeLive`
       // intent before returning, so an intermediate node forwarding to a
@@ -1276,7 +1277,7 @@ app.get('/api/platform/visible-models', async (c) => {
       return c.json({
         ...fromCloud,
         catalogModels: Array.isArray(fromCloud.catalogModels)
-          ? fromCloud.catalogModels.filter(
+          ? enrichCloudVisibleCatalogModels(fromCloud.catalogModels).filter(
               (entry: any) => includeLive || entry?.kind !== 'live',
             )
           : fromCloud.catalogModels,

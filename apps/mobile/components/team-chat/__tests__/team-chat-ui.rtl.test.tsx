@@ -342,6 +342,7 @@ mock.module('../../chat/VoiceWaveform', () => ({ VoiceWaveform: () => null }))
 mock.module('../../chat/AttachSourceSheet', () => ({ AttachSourceSheet: () => null }))
 mock.module('../../chat/ContextTracker', () => ({ ContextTracker: () => null, formatTokenCount: (n: number) => String(n) }))
 mock.module('../../chat/ModelPickerMenu', () => ({ ModelPickerMenu: () => null, ComposerModelPicker: () => null, getNativeModelMenuWidth: () => 280 }))
+mock.module('../../chat/ComposerReasoningEffortPicker', () => ({ ComposerReasoningEffortPicker: () => null }))
 mock.module('../../chat/FileViewerModal', () => ({ FileViewerModal: () => null }))
 // The real viewer pulls in gesture-handler + glustack Portal; probe its props
 // instead so these assert the wiring, not the modal's internals.

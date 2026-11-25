@@ -877,6 +877,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         stampModelProvider(parsedBody)
       }
     }
+    // Revalidate after the final entitlement downgrade (or clear a client
+    // effort when this request relies on the configured model).
+    stampModelProvider(parsedBody)
     await stampWorkspacePlan(parsedBody, workspaceId)
     // Tell the runtime which surface this chat is, so capability toggles and
     // the prompt block resolve for the WORKSPACE agent even when the runtime

@@ -21,6 +21,7 @@ import { AppState, Platform } from "react-native"
 import type { ChatReference } from "./chat-references"
 import { safeGetItem } from "./safe-storage"
 import { removeStorageItem, setStorageItem } from "./storage"
+import { isReasoningEffort, type ReasoningEffort } from "@shogo/model-catalog"
 
 export const CHAT_COMPOSER_KEY_PREFIX = "shogo:chat-composer:"
 export const CHAT_COMPOSER_INDEX_KEY = "shogo:chat-composer:index"
@@ -42,6 +43,8 @@ export interface ComposerDraft {
 export interface ComposerRecord {
   /** The model the person picked in this chat. */
   model?: string
+  /** Explicit effort variant for `model`; absent means the model default. */
+  reasoningEffort?: ReasoningEffort
   /** Wall-clock ms of that pick, so a newer model-stamped message can win. */
   modelAt?: number
   draft?: ComposerDraft
@@ -99,6 +102,9 @@ export function sanitizeRecord(raw: unknown): ComposerRecord | null {
   if (!raw || typeof raw !== "object") return null
   const r = raw as Record<string, unknown>
   const model = typeof r.model === "string" && r.model.trim() ? r.model : undefined
+  const reasoningEffort = model && isReasoningEffort(r.reasoningEffort)
+    ? r.reasoningEffort
+    : undefined
   const modelAt = typeof r.modelAt === "number" ? r.modelAt : undefined
   const updatedAt = typeof r.updatedAt === "number" ? r.updatedAt : 0
 
@@ -117,6 +123,7 @@ export function sanitizeRecord(raw: unknown): ComposerRecord | null {
   if (!model && !draft) return null
   return {
     ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(model && modelAt != null ? { modelAt } : {}),
     ...(draft ? { draft } : {}),
     updatedAt,
@@ -222,8 +229,32 @@ export class ComposerMemory {
     const current = this.peek(key)
     const record: ComposerRecord = {
       ...(current ?? {}),
+      ...(current?.model && current.model !== modelId ? { reasoningEffort: undefined } : {}),
       model: modelId,
       modelAt: at,
+      updatedAt: at,
+    }
+    this.cache.set(key, record)
+    this.cancelTimer(key)
+    void this.write(key, record)
+  }
+
+  /** Saves or clears an explicit per-chat model effort variant immediately. */
+  setReasoningEffort(
+    key: string,
+    modelId: string,
+    effort: ReasoningEffort | null,
+  ): void {
+    if (!modelId) return
+    const current = this.peek(key)
+    const at = this.now()
+    const { reasoningEffort: _previousEffort, ...withoutEffort } = current ?? {}
+    const record: ComposerRecord = {
+      ...withoutEffort,
+      model: modelId,
+      modelAt:
+        current?.model === modelId ? (current.modelAt ?? at) : at,
+      ...(effort && isReasoningEffort(effort) ? { reasoningEffort: effort } : {}),
       updatedAt: at,
     }
     this.cache.set(key, record)
@@ -472,6 +503,7 @@ export interface ChatComposerMemoryState {
   saveDraft: (text: string, references: ChatReference[]) => void
   clearDraft: () => void
   saveModel: (modelId: string) => void
+  saveReasoningEffort: (modelId: string, effort: ReasoningEffort | null) => void
   flush: () => void
 }
 
@@ -589,6 +621,16 @@ export function useChatComposerMemory(
     [memory, setKnownKey],
   )
 
+  const saveReasoningEffort = useCallback(
+    (modelId: string, effort: ReasoningEffort | null) => {
+      const current = keyRef.current
+      if (!current) return
+      memory.setReasoningEffort(current, modelId, effort)
+      setKnownKey(current)
+    },
+    [memory, setKnownKey],
+  )
+
   const flush = useCallback(() => {
     const current = keyRef.current
     if (current) memory.flush(current)
@@ -606,6 +648,7 @@ export function useChatComposerMemory(
       saveDraft,
       clearDraft,
       saveModel,
+      saveReasoningEffort,
       flush,
     }),
     [
@@ -616,6 +659,7 @@ export function useChatComposerMemory(
       saveDraft,
       clearDraft,
       saveModel,
+      saveReasoningEffort,
       flush,
     ],
   )

@@ -64,6 +64,8 @@ export type CapabilityReliability = 'reliable' | 'flaky' | 'unsupported'
 export interface ModelCapabilities {
   /** Optional upstream protocol identity used for provider-specific routing. */
   upstream?: string
+  /** Explicit reasoning effort variants supported by a custom provider. */
+  reasoningEfforts?: ReasoningEffort[]
   /**
    * How reliably the model orchestrates subagents (`agent_spawn`,
    * `agent_create`, `agent_result`). Multi-agent flows like canvas
@@ -132,6 +134,8 @@ export interface ModelEntry {
   contextWindow?: number
   /** Reasoning effort applied when this model runs (drives `thinkingLevel`). */
   reasoningEffort?: ReasoningEffort
+  /** Optional explicit effort variants; provider defaults are resolved centrally. */
+  reasoningEfforts?: ReasoningEffort[]
   /**
    * Anthropic thinking API shape. `adaptive` models reject the legacy
    * budget-based `thinking.type: "enabled"` block with a 400. Required on

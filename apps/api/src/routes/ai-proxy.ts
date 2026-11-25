@@ -77,6 +77,7 @@ import {
   isAutoModel,
   stripOpenRouterPrefix,
   supportsAdaptiveThinking,
+  getGoogleThinkingEfforts,
   type Provider,
   type ImageProvider,
   type ImageModelEntry,
@@ -3034,27 +3035,15 @@ export function bridgeVideoContentBlocks(
  *          "extra_body":{"google":{"thinking_config":{"thinking_level":"<level>","include_thoughts":true}}}}' \
  *     "$GOOGLE_BASE_URL/chat/completions"
  */
-const GOOGLE_THINKING_LEVELS: Record<string, { levels: readonly string[]; lowest: string }> = {
-  'gemini-4-carbon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
-  'gemini-4-argon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
-  'gemini-4-neon': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
-  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
-  'gemini-3.1-pro-preview': { levels: ['low', 'medium', 'high'], lowest: 'low' },
-  'gemini-3.8-flash': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
-  'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
-}
-
-/** A model this table has never seen: the levels every Gemini text model takes. */
-const DEFAULT_GOOGLE_THINKING = { levels: ['low', 'medium', 'high'], lowest: 'low' } as const
-
 /** Map a caller's reasoning effort onto a `thinking_level` the model accepts. */
 export function googleThinkingLevel(apiModel: string, effort?: string): string {
-  const { levels, lowest } = GOOGLE_THINKING_LEVELS[apiModel] ?? DEFAULT_GOOGLE_THINKING
+  const levels = getGoogleThinkingEfforts(apiModel)
+  const lowest = levels[0] ?? 'low'
   const requested = (effort ?? 'medium').trim().toLowerCase()
   if (requested === 'off' || requested === 'none') return lowest
   if (requested === 'minimal') return levels.includes('minimal') ? 'minimal' : lowest
   if (requested === 'xhigh') return levels.includes('xhigh') ? 'xhigh' : 'high'
-  return levels.includes(requested) ? requested : 'medium'
+  return levels.includes(requested as (typeof levels)[number]) ? requested : 'medium'
 }
 
 export function buildOpenAICompatibleBody(
