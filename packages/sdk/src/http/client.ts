@@ -31,6 +31,19 @@ export interface HttpClientConfig {
   /** Request deduplication window in ms (default: 100) */
   dedupWindowMs?: number
 
+  /**
+   * How long a **GET** may wait for an answer before it fails as a network
+   * error, in ms. `0` (the default) means no limit, which is what the browser
+   * and desktop clients have always had.
+   *
+   * It exists for slow and lossy mobile networks: without a deadline a request
+   * that stalls behind a dying connection leaves the screen on an endless
+   * spinner instead of an error the person can retry (SHO-580). Non-GET
+   * requests, streams and uploads are deliberately exempt — a long POST is
+   * work in progress, not a hang.
+   */
+  requestTimeoutMs?: number
+
   /** Fetch credentials mode (default: 'same-origin'). Set to 'include' for cross-origin cookie auth. */
   credentials?: RequestCredentials
 
@@ -72,6 +85,9 @@ export class HttpClient {
   /** Request deduplication window in milliseconds */
   private dedupWindowMs: number
 
+  /** Deadline for a GET, in ms. `0` = no deadline. */
+  private requestTimeoutMs: number
+
   /** Cache for in-flight and recently completed GET requests */
   private requestCache = new Map<string, CacheEntry<any>>()
 
@@ -86,6 +102,7 @@ export class HttpClient {
     this.mcpPath = config.mcpPath ?? '/mcp'
     this.authPath = config.authPath ?? '/api/auth'
     this.dedupWindowMs = config.dedupWindowMs ?? 100
+    this.requestTimeoutMs = config.requestTimeoutMs ?? 0
     this.getAuthCookie = config.getAuthCookie ?? null
     this.credentials = this.getAuthCookie ? 'omit' : (config.credentials ?? 'same-origin')
     this.projectId = config.projectId ?? null
@@ -224,12 +241,17 @@ export class HttpClient {
     const url = this.buildUrl(path, searchParams)
     const requestHeaders = this.getHeaders(headers)
 
+    // A GET gets a deadline; a caller's own signal still cancels it early.
+    const deadline = method === 'GET' && this.requestTimeoutMs > 0
+      ? createDeadline(this.requestTimeoutMs, signal)
+      : null
+
     try {
       const response = await fetch(url, {
         method,
         headers: requestHeaders,
         body: body ? JSON.stringify(body) : undefined,
-        signal,
+        signal: deadline ? deadline.signal : signal,
         credentials: this.credentials,
       })
 
@@ -261,6 +283,12 @@ export class HttpClient {
         headers: response.headers,
       }
     } catch (error) {
+      if (deadline?.timedOut()) {
+        throw ShogoError.networkError(
+          `The request timed out after ${this.requestTimeoutMs} ms`,
+          error
+        )
+      }
       if (error instanceof ShogoError) {
         throw error
       }
@@ -271,6 +299,8 @@ export class HttpClient {
         error instanceof Error ? error.message : 'Network request failed',
         error
       )
+    } finally {
+      deadline?.clear()
     }
   }
 
@@ -511,5 +541,36 @@ export class HttpClient {
   resetMcpSession(): void {
     this.mcpSessionId = null
     this.mcpInitPromise = null
+  }
+}
+
+/**
+ * An abort signal that fires after `ms`, chained to a caller's own signal.
+ *
+ * `timedOut()` is kept apart from "aborted" so the error a stalling request
+ * produces says it timed out, instead of looking like the caller cancelled it.
+ */
+function createDeadline(
+  ms: number,
+  callerSignal?: AbortSignal
+): { signal: AbortSignal; timedOut: () => boolean; clear: () => void } {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, ms)
+  const forward = () => controller.abort()
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort()
+    else callerSignal.addEventListener('abort', forward, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    clear: () => {
+      clearTimeout(timer as unknown as ReturnType<typeof setTimeout>)
+      callerSignal?.removeEventListener('abort', forward)
+    },
   }
 }

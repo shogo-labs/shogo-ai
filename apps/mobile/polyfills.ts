@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import structuredClone from '@ungap/structured-clone'
+import { NativeEventSource } from './lib/event-source-native'
 
 if (Platform.OS !== 'web') {
   // Polyfill crypto.randomUUID for Hermes (used by domain-stores for temp IDs)
@@ -20,106 +21,11 @@ if (Platform.OS !== 'web') {
     }
   }
 
-  // Always override EventSource on native. The built-in Hermes/Expo Go
-  // EventSource doesn't support custom headers, which we need to send
-  // auth cookies. Our implementation uses XMLHttpRequest for reliable
-  // incremental streaming and fires onerror on stream end for reconnection.
-  {
-    class RNEventSource {
-      static CONNECTING = 0
-      static OPEN = 1
-      static CLOSED = 2
-      url: string
-      readyState = 0
-      onopen: ((ev: any) => void) | null = null
-      onmessage: ((ev: any) => void) | null = null
-      onerror: ((ev: any) => void) | null = null
-      private _xhr: XMLHttpRequest | null = null
-      private _lastIdx = 0
-
-      constructor(url: string, options?: { headers?: Record<string, string> }) {
-        this.url = url
-        this._open(options?.headers)
-      }
-
-      private _open(headers?: Record<string, string>) {
-        const xhr = new XMLHttpRequest()
-        this._xhr = xhr
-        this._lastIdx = 0
-
-        xhr.open('GET', this.url, true)
-        xhr.setRequestHeader('Accept', 'text/event-stream')
-        xhr.setRequestHeader('Cache-Control', 'no-cache')
-        if (headers) {
-          for (const [k, v] of Object.entries(headers)) {
-            xhr.setRequestHeader(k, v)
-          }
-        }
-
-        xhr.onreadystatechange = () => {
-          if (this.readyState === RNEventSource.CLOSED) return
-
-          if (
-            (xhr.readyState === 3 || xhr.readyState === 4) &&
-            xhr.status >= 200 &&
-            xhr.status < 400
-          ) {
-            if (this.readyState === RNEventSource.CONNECTING) {
-              this.readyState = RNEventSource.OPEN
-              this.onopen?.({ type: 'open' })
-            }
-            this._parse(xhr.responseText || '')
-          }
-
-          if (xhr.readyState === 4) {
-            this.readyState = RNEventSource.CLOSED
-            this.onerror?.({ type: 'error' })
-          }
-        }
-
-        xhr.onerror = () => {
-          if (this.readyState === RNEventSource.CLOSED) return
-          this.readyState = RNEventSource.CLOSED
-          this.onerror?.({ type: 'error' })
-        }
-
-        xhr.send()
-      }
-
-      private _parse(text: string) {
-        const unprocessed = text.substring(this._lastIdx)
-        const boundary = unprocessed.lastIndexOf('\n\n')
-        if (boundary === -1) return
-
-        const chunk = unprocessed.substring(0, boundary)
-        this._lastIdx += boundary + 2
-
-        for (const block of chunk.split('\n\n')) {
-          if (!block.trim()) continue
-          let data = ''
-          let eventType = 'message'
-          for (const line of block.split('\n')) {
-            if (line.startsWith('data: ')) data += line.slice(6)
-            else if (line.startsWith('data:')) data += line.slice(5)
-            else if (line.startsWith('event: ')) eventType = line.slice(7)
-            else if (line.startsWith('event:')) eventType = line.slice(6)
-          }
-          if (data && eventType === 'message') {
-            this.onmessage?.({ type: 'message', data, lastEventId: '' })
-          }
-        }
-      }
-
-      close() {
-        this.readyState = RNEventSource.CLOSED
-        if (this._xhr) {
-          this._xhr.abort()
-          this._xhr = null
-        }
-      }
-    }
-    ;(global as any).EventSource = RNEventSource
-  }
+  // Always override EventSource on native: the built-in Hermes/Expo Go one
+  // cannot send custom headers (we need the Better Auth cookie), and this one
+  // streams through `fetch` so a long-lived connection holds only the unparsed
+  // tail instead of the whole transcript (SHO-580).
+  ;(global as any).EventSource = NativeEventSource
 
   const setupPolyfills = () => {
     // Metro converts native dynamic imports into async-require calls. In this
