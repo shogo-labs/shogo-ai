@@ -14,6 +14,7 @@
 // Fetch (the project pod) and S3 are faked; the state machine is real.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
 process.env.PUBLISH_BUCKET = 'test-publish-bucket'
@@ -363,7 +364,11 @@ describe('publish as a background job', () => {
     // An API restart mid-publish leaves `building` behind with nobody running it.
     const row = projects.get('p1')!
     row.publishStatus = 'building'
-    row.publishStatusAt = new Date(Date.now() - 31 * 60_000)
+    // Older than the lease, whatever the lease currently is: it is derived from
+    // the step budgets (max(10m, request budget + 30s)), so a hardcoded age
+    // silently stops being stale the moment a budget grows — which is exactly
+    // what raising the readiness timeout to 300s did.
+    row.publishStatusAt = new Date(Date.now() - publishInFlightTtlMs() - 60_000)
 
     const state = await (await getState('p1')).json()
     expect(state.publishStatus).toBe('failed')

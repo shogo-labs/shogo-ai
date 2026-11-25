@@ -31,6 +31,18 @@ describe('publishedRevisionState', () => {
     expect(state.state === 'pending' && state.reason).toContain('Deploying')
   })
 
+  it('is pending, not failed, while Knative reports Ready=False / Deploying', () => {
+    // This is what a Revision looks like for its first seconds: Knative sets
+    // Ready=False with `reason: Deploying` until the pod answers. Reading it as
+    // a failure failed a publish that came up 12s later, with a reason that
+    // claimed it had waited the whole timeout.
+    const state = publishedRevisionState(
+      revision({ conditions: [{ type: 'Ready', status: 'False', reason: 'Deploying' }] }),
+    )
+    expect(state.state).toBe('pending')
+    expect(state.state === 'pending' && state.reason).toContain('Deploying')
+  })
+
   it('names an OOMKilled container as the failure it is', () => {
     const state = publishedRevisionState(
       revision({
