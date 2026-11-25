@@ -407,6 +407,21 @@ export default observer(function AllProjectsPage() {
   const rawFolders = store?.folderCollection?.all
   const networkFolders = (Array.isArray(rawFolders) ? rawFolders : []) as Folder[]
 
+  // Only this workspace's rows count as "the network answered" for the key
+  // below. `loadAll({ workspaceId })` merges into the shared collection, so for
+  // the length of a switch the collection still holds the workspace we just
+  // left — and reading that as an answer hid the cached rows of the workspace we
+  // are switching to (SHO-581, the switch half of SHO-580's §C).
+  const scopedNetworkProjects = useMemo(
+    () =>
+      !listsEveryWorkspace && projectScopeId
+        ? networkProjects.filter(
+            (project) => (project as any).workspaceId === projectScopeId,
+          )
+        : networkProjects,
+    [networkProjects, projectScopeId, listsEveryWorkspace],
+  )
+
   // Paint the workspace's projects from the device first (SHO-580). The list
   // used to be empty until `GET /api/projects` answered, so a slow network read
   // as a blank screen; the cached rows are replaced the moment the network
@@ -431,14 +446,14 @@ export default observer(function AllProjectsPage() {
     }
   }, [cacheKey])
 
-  const projectSignature = useMemo(() => networkProjects.map((p) => p.id).join(','), [networkProjects])
+  const projectSignature = useMemo(() => scopedNetworkProjects.map((p) => p.id).join(','), [scopedNetworkProjects])
   const folderSignature = useMemo(() => networkFolders.map((f) => f.id).join(','), [networkFolders])
   useEffect(() => {
-    if (!cacheKey || !networkProjects.length) return
-    writeCachedProjects(cacheKey, { projects: networkProjects, folders: networkFolders })
+    if (!cacheKey || !scopedNetworkProjects.length) return
+    writeCachedProjects(cacheKey, { projects: scopedNetworkProjects, folders: networkFolders })
   }, [cacheKey, projectSignature, folderSignature])
 
-  const allProjects = networkProjects.length ? networkProjects : (cachedLists?.projects ?? [])
+  const allProjects = scopedNetworkProjects.length ? scopedNetworkProjects : (cachedLists?.projects ?? [])
   const allFolders = networkFolders.length ? networkFolders : (cachedLists?.folders ?? [])
 
   // Folders in current location

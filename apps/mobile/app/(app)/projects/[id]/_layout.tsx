@@ -71,6 +71,13 @@ import {
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
 import { onChatInsertRequested } from "../../../../lib/chat-insert-bus";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
+import {
+  cachedProjectKey,
+  firstPaintProject,
+  peekCachedProject,
+  readCachedProject,
+  writeCachedProject,
+} from "../../../../lib/projects-cache";
 import { lifecycleNotificationKind } from "../../../../lib/notifications/lifecycle-click";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -153,7 +160,7 @@ import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
 import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
-import { ProjectSurfaceHeader } from "../../../../components/project/ProjectSurfaceHeader";
+import { ProjectLoadingSurface } from "../../../../components/project/ProjectLoadingSurface";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
 import { useOpenAgentChat } from "../../../../lib/use-open-agent-chat";
@@ -514,6 +521,24 @@ export default observer(function ProjectLayout() {
   // Project state
   const [project, setProject] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  /**
+   * The row this device already holds for the project (SHO-581): the one the
+   * list just filled the collection with, or the copy kept from the last time
+   * the project was opened. It paints the header and the surface while
+   * `GET /api/projects/:id` is in flight, and never replaces the network
+   * answer — `firstPaintProject` prefers the loaded row.
+   */
+  const projectRowCacheKey = cachedProjectKey(user?.id, API_URL, projectId);
+  const [cachedProjectRow, setCachedProjectRow] = useState<any>(() =>
+    peekCachedProject<any>(projectRowCacheKey)
+  );
+  /**
+   * A load that ran out of retries. The screen keeps drawing its surface and
+   * offers a retry here instead of bouncing home (SHO-581).
+   */
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  /** Bumped by the retry button, which re-runs the load effect. */
+  const [loadRetryNonce, setLoadRetryNonce] = useState(0);
 
   // "Message agent": the project is an agent in the workspace's team chat, so
   // from here you can jump to a DM with it (the same thread as the DMs tab).
@@ -1491,6 +1516,7 @@ export default observer(function ProjectLayout() {
     const loadProject = async (attempt = 1): Promise<void> => {
       if (cancelled) return;
       setIsLoading(true);
+      setProjectLoadError(null);
       csMark("project:load:start", { attempt });
 
       try {
@@ -1527,15 +1553,18 @@ export default observer(function ProjectLayout() {
         if (proj) {
           setProject(proj);
           setIsLoading(false);
+          writeCachedProject(projectRowCacheKey, proj);
         } else if (attempt < MAX_RETRIES) {
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
           return loadProject(attempt + 1);
         } else {
+          // The row never answered. Keep the surface and offer a retry here
+          // rather than dropping the person back on the list (SHO-581).
           console.warn(
-            "[ProjectLayout] Project not found after retries, redirecting home:",
+            "[ProjectLayout] Project not found after retries:",
             projectId
           );
-          router.replace("/(app)");
+          setProjectLoadError("The project didn't load. Check your connection and try again.");
         }
       } catch (err: any) {
         if (cancelled) return;
@@ -1555,7 +1584,11 @@ export default observer(function ProjectLayout() {
           return loadProject(attempt + 1);
         }
         console.error("[ProjectLayout] Failed to load project:", err);
-        router.replace("/(app)");
+        setProjectLoadError(
+          err?.message?.includes("Network request failed")
+            ? "We couldn't reach the server. Check your connection and try again."
+            : "We couldn't load this project. Try again in a moment."
+        );
       }
     };
 
@@ -1563,7 +1596,30 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, domainsReady, store, user?.id]);
+  }, [projectId, domainsReady, store, user?.id, loadRetryNonce, projectRowCacheKey]);
+
+  // Paint from the row already on the device while the network answers
+  // (SHO-581). `peek` is the same-session mirror; `read` is what an earlier run
+  // of the app left behind (a relaunch offline). The network answer is written
+  // back by the load effect above.
+  useEffect(() => {
+    setCachedProjectRow(peekCachedProject<any>(projectRowCacheKey));
+    if (!projectRowCacheKey) return;
+    let cancelled = false;
+    void readCachedProject<any>(projectRowCacheKey).then((row) => {
+      if (!cancelled && row) setCachedProjectRow(row);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRowCacheKey]);
+
+  /** Retry re-runs the load effect; the surface keeps drawing while it does. */
+  const retryProjectLoad = useCallback(() => {
+    setProjectLoadError(null);
+    setIsLoading(true);
+    setLoadRetryNonce((nonce) => nonce + 1);
+  }, []);
 
   // Persist last chat session to AsyncStorage
   useEffect(() => {
@@ -3648,6 +3704,17 @@ export default observer(function ProjectLayout() {
     !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady;
   const showStalledRecovery =
     stillBootingRuntime && (runtimeStalled || !!runtimeError);
+  /**
+   * The row the loading surface draws from (SHO-581): the network answer once it
+   * is in, otherwise the collection the projects list just filled, otherwise
+   * the copy kept on the device from the last time this project was opened.
+   */
+  const firstPaintRow = firstPaintProject<any>(
+    cachedProjectRow ??
+      projects?.all?.find((candidate: any) => candidate.id === projectId) ??
+      null,
+    project
+  );
 
   /**
    * No tabs are open and we've finished hydrating from storage. This is the
@@ -3976,86 +4043,84 @@ export default observer(function ProjectLayout() {
   };
 
   if (projectRouteLoading) {
+    // Recovery still owns the body when it has something to say; the surface
+    // draws everything else around it.
+    const runtimeRecovery = !showStalledRecovery ? null : runtimeCapacity ? (
+      <WorkspaceCapacityCard
+        capacity={runtimeCapacity}
+        onRetry={() => retryAgentUrl()}
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace("/(app)")
+        }
+      />
+    ) : (
+      <View className="w-full gap-3 items-center px-2 py-6">
+        <Spinner size="small" />
+        <Text className="text-foreground text-base font-semibold text-center">
+          This is taking longer than expected
+        </Text>
+        <Text className="text-muted-foreground text-sm text-center">
+          {runtimeError
+            ? `We couldn't reach your project's runtime${
+                runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
+              }. Check your connection or try again.`
+            : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
+        </Text>
+        <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
+          <Pressable
+            onPress={() => retryAgentUrl()}
+            className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            accessibilityLabel="Retry connecting to your project"
+          >
+            <Text className="text-foreground text-sm font-medium">
+              Try again
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              router.canGoBack() ? router.back() : router.replace("/(app)")
+            }
+            className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            accessibilityLabel="Go back to projects list"
+          >
+            <Text className="text-foreground text-sm font-medium">Go back</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              void openWebAppSession(`/projects/${projectId}`).catch((err) =>
+                console.warn("[ProjectLayout] open-on-web failed:", err)
+              );
+            }}
+            className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+            accessibilityLabel="Open this project on the web"
+          >
+            <Text className="text-primary-foreground text-sm font-medium">
+              Open on web
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        {/* A phone enters the project on this page, so keep the way back and
-            the name on screen while it loads instead of a bare spinner. */}
-        <ProjectSurfaceHeader projectId={projectId} />
-        <View className="flex-1 bg-background items-center justify-center px-6">
-          {!showStalledRecovery && (
-            <>
-              <Spinner size="large" />
-              <Text className="text-muted-foreground mt-3 text-sm">
-                {stillBootingRuntime
-                  ? "Starting your project…"
-                  : "Loading project..."}
-              </Text>
-            </>
-          )}
-          {showStalledRecovery && runtimeCapacity && (
-            <WorkspaceCapacityCard
-              capacity={runtimeCapacity}
-              onRetry={() => retryAgentUrl()}
-              onBack={() =>
-                router.canGoBack() ? router.back() : router.replace("/(app)")
-              }
-            />
-          )}
-          {showStalledRecovery && !runtimeCapacity && (
-            <View className="w-full max-w-sm gap-3 items-center">
-              <Spinner size="small" />
-              <Text className="text-foreground text-base font-semibold text-center">
-                This is taking longer than expected
-              </Text>
-              <Text className="text-muted-foreground text-sm text-center">
-                {runtimeError
-                  ? `We couldn't reach your project's runtime${
-                      runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
-                    }. Check your connection or try again.`
-                  : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
-              </Text>
-              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
-                <Pressable
-                  onPress={() => retryAgentUrl()}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Retry connecting to your project"
-                >
-                  <Text className="text-foreground text-sm font-medium">
-                    Try again
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    router.canGoBack()
-                      ? router.back()
-                      : router.replace("/(app)")
-                  }
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Go back to projects list"
-                >
-                  <Text className="text-foreground text-sm font-medium">
-                    Go back
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    void openWebAppSession(`/projects/${projectId}`).catch(
-                      (err) =>
-                        console.warn("[ProjectLayout] open-on-web failed:", err)
-                    );
-                  }}
-                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
-                  accessibilityLabel="Open this project on the web"
-                >
-                  <Text className="text-primary-foreground text-sm font-medium">
-                    Open on web
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
+        {/* A phone enters the project on this page, so the way back, the name,
+            the tab strip and the chat panel are all drawn while the row and the
+            runtime are still in flight — only the status line changes
+            (SHO-581). */}
+        <ProjectLoadingSurface
+          projectId={projectId}
+          title={firstPaintRow?.name}
+          phase={stillBootingRuntime ? "runtime" : "project"}
+          loadError={projectLoadError}
+          onRetryLoad={retryProjectLoad}
+          onBack={() =>
+            router.canGoBack() ? router.back() : router.replace("/(app)")
+          }
+        >
+          {runtimeRecovery}
+        </ProjectLoadingSurface>
       </>
     );
   }
