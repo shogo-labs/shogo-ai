@@ -17,3 +17,21 @@ export function workspaceProjectFilter(
   const id = workspaceId ?? getActiveWorkspaceId()
   return id ? { workspaceId: id } : undefined
 }
+
+/**
+ * The rows that belong to the workspace the screen is showing.
+ *
+ * `loadAll({ workspaceId })` merges into the shared collection, so for the
+ * length of a switch the collection still holds the workspace just left. Those
+ * rows are not "the network answered" for the new workspace: reading them as
+ * one hides the cached rows of the workspace being switched to, and writes the
+ * departed workspace's rows into its cache.
+ */
+export function rowsInWorkspace<T extends { workspaceId?: string | null }>(
+  rows: readonly T[],
+  workspaceId: string | null | undefined,
+  everyWorkspace = false,
+): T[] {
+  if (everyWorkspace || !workspaceId) return [...rows]
+  return rows.filter((row) => row.workspaceId === workspaceId)
+}
