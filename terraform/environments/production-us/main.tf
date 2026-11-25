@@ -83,6 +83,13 @@ provider "cloudflare" {
 # terraform-managed here, hence the literal).
 locals {
   prod_us_kourier_lb_ip = "152.70.192.220"
+  # Stable OCI-assigned LB address for the long-lived `kourier` Service in
+  # `kourier-system` of the EU (eu-frankfurt-1) cluster — the same literal the
+  # edge-global `shogo-eu` pool and the `REGION_PEERS` entry use. Not
+  # terraform-managed here (the Service lives in the cluster), hence the
+  # literal. EU-homed Knative published apps are only routable through this
+  # one (SHO-588).
+  prod_eu_kourier_lb_ip = "79.76.126.115"
 }
 
 data "cloudflare_zone" "publish" {
@@ -105,6 +112,28 @@ resource "cloudflare_record" "kourier_us" {
 resource "cloudflare_worker_route" "kourier_bypass" {
   zone_id = data.cloudflare_zone.publish.id
   pattern = "${cloudflare_record.kourier_us.hostname}/*"
+  # script_name intentionally omitted → Workers skipped for this host.
+}
+
+# The EU cluster's Kourier, for EU-homed Knative published apps (SHO-588). Same
+# shape as `kourier_us`: proxied (both hosts of a resolveOverride must be
+# orange-clouded in the same zone) plus a no-script route so the origin pull
+# never re-runs this Worker. The subdomain-router Worker picks it from the
+# `kourier_origins` map below, keyed by the region code the API stamps into the
+# SERVER_BACKED KV value (`knative:eu`).
+resource "cloudflare_record" "kourier_eu" {
+  zone_id = data.cloudflare_zone.publish.id
+  name    = "kourier-eu"
+  content = local.prod_eu_kourier_lb_ip
+  type    = "A"
+  proxied = true
+  ttl     = 1
+  comment = "Proxied resolveOverride target for EU-homed server-backed published /api/* proxying (prod-eu Kourier LB)"
+}
+
+resource "cloudflare_worker_route" "kourier_eu_bypass" {
+  zone_id = data.cloudflare_zone.publish.id
+  pattern = "${cloudflare_record.kourier_eu.hostname}/*"
   # script_name intentionally omitted → Workers skipped for this host.
 }
 
@@ -138,6 +167,28 @@ resource "cloudflare_worker_route" "kourier_bypass_custom_domains" {
   count   = var.enable_custom_domains ? 1 : 0
   zone_id = data.cloudflare_zone.custom_domains[0].id
   pattern = "${cloudflare_record.kourier_us_custom_domains[0].hostname}/*"
+}
+
+# The EU Kourier in the custom-domains zone too: resolveOverride only works
+# within one zone, so an EU-homed Knative app on `app.acme.com` (which runs the
+# Worker in the SaaS zone) needs a proxied EU record THERE, or it 522/404s
+# (SHO-588 — `app.playsamsara.com`).
+resource "cloudflare_record" "kourier_eu_custom_domains" {
+  count   = var.enable_custom_domains ? 1 : 0
+  zone_id = data.cloudflare_zone.custom_domains[0].id
+  name    = "kourier-eu"
+  content = local.prod_eu_kourier_lb_ip
+  type    = "A"
+  proxied = true
+  ttl     = 1
+  comment = "resolveOverride target for EU-homed knative-backed custom domains (subdomain-router Worker, SaaS zone)"
+}
+
+resource "cloudflare_worker_route" "kourier_eu_bypass_custom_domains" {
+  count   = var.enable_custom_domains ? 1 : 0
+  zone_id = data.cloudflare_zone.custom_domains[0].id
+  pattern = "${cloudflare_record.kourier_eu_custom_domains[0].hostname}/*"
+  # script_name intentionally omitted → Workers skipped for this host.
 }
 
 data "oci_containerengine_cluster_kube_config" "main" {
@@ -334,6 +385,21 @@ module "us" {
   # locals note above for the IP-fetch + Worker-loop gotchas this avoids).
   kourier_origin                = "http://${cloudflare_record.kourier_us.hostname}"
   custom_domains_kourier_origin = var.enable_custom_domains ? "http://${cloudflare_record.kourier_us_custom_domains[0].hostname}" : null
+
+  # Per-region Kouriers (SHO-588). A Knative app's ksvc + DomainMappings live in
+  # its workspace's home region, so the API stamps the region into the
+  # SERVER_BACKED KV value (`knative:eu`) and the Worker resolves that code
+  # here. `kourier_origin` above stays the DEFAULT for bare `knative` / legacy
+  # `1` / any code this map does not know — i.e. every entry the sweep has not
+  # stamped yet keeps today's behaviour.
+  kourier_origins = {
+    us = "http://${cloudflare_record.kourier_us.hostname}"
+    eu = "http://${cloudflare_record.kourier_eu.hostname}"
+  }
+  custom_domains_kourier_origins = var.enable_custom_domains ? {
+    us = "http://${cloudflare_record.kourier_us_custom_domains[0].hostname}"
+    eu = "http://${cloudflare_record.kourier_eu_custom_domains[0].hostname}"
+  } : {}
 
   # METAL-backed published apps: the public Shogo API origin the subdomain-router
   # Worker proxies `/api/*` to (→ /api/published/{subdomain}/...). The API

@@ -237,6 +237,41 @@ kubectl create secret generic custom-domains-config \
 publish: without it the API cannot mark a published site as server-backed, so
 the edge Worker never sends its `/api/*` calls to the API.
 
+### The KV value carries the home region (`knative:<code>`)
+
+A Knative app's ksvc `published-{id}` and its DomainMappings are created by the
+API in **its own** cluster, so the app only exists in its workspace's home
+region. The Worker has one Kourier per region, so the KV value says which one:
+`knative:eu`, `knative:us` — written from `REGION_ID` at publish time
+(`REGION_CODE_BY_ID` in `apps/api/src/lib/region.ts`, the same map the
+preview-router uses). The Worker resolves the code through its
+`KOURIER_ORIGINS` / `CUSTOM_DOMAINS_KOURIER_ORIGINS` maps (passed by
+`terraform/environments/production-us`) and falls back to the single default
+`KOURIER_ORIGIN` for a bare `knative`, the legacy `1`, and any code it does not
+know — so un-swept entries and local/desktop publishes keep working. `metal`
+and `metal:<code>` go to the API published proxy and ignore the code.
+
+Entries written before this change hold a bare `knative` (or `1`) and are
+routed to US Kourier, which 404s `/api/*` for an EU app. Backfill them once,
+from a prod API pod (it has the CF + DB env):
+
+```bash
+# Dry run: prints subdomain, KV value, homeRegion, each Kourier's /ready status,
+# its custom domains (and which Kourier has their DomainMapping), and the action.
+bun apps/api/scripts/stamp-knative-region.ts
+
+# Write `knative:<code>` for entries where exactly one Kourier answers AND that
+# Kourier is the workspace's home region.
+bun apps/api/scripts/stamp-knative-region.ts --yes
+```
+
+The script probes each region's Kourier LB with `GET /ready` and
+`Host: <subdomain>` (the same check that diagnoses the 404) and writes nothing
+when the evidence is ambiguous — both Kouriers answer, neither answers, or the
+answering region disagrees with `workspace.homeRegion`. Those rows are printed
+for a human. Override the LB addresses with `KNATIVE_KOURIER_LBS`
+(`{"us":"…","eu":"…"}`) if a region is added or one moves.
+
 ## Rollout (staging)
 
 The application layer (DB migration, API, UI) ships inert by default. Turning

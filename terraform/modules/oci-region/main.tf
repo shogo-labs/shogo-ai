@@ -264,6 +264,11 @@ module "publish_hosting" {
   # Same, for Knative-backed apps reached on a custom domain (SaaS zone).
   custom_domains_kourier_origin = var.custom_domains_kourier_origin
 
+  # Per-region Kouriers (SHO-588): the Worker resolves a `knative:<code>` KV
+  # value through these maps instead of the single default above.
+  kourier_origins                = var.kourier_origins
+  custom_domains_kourier_origins = var.custom_domains_kourier_origins
+
   # METAL-backed published apps: the public Shogo API origin the Worker proxies
   # `/api/*` to (→ /api/published/{subdomain}/...) so the API can forward to the
   # project's microVM over the mesh. Falls back to static serving when unset.

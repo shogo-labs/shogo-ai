@@ -38,6 +38,43 @@ export const REGION_ID = RAW_REGION_ID || 'unknown'
 /** Human-readable label for this region (falls back to the id). */
 export const REGION_LABEL = process.env.REGION_LABEL || REGION_ID
 
+/**
+ * Short region code the edge Workers key their per-region anchors on.
+ * Keep in sync with `anchorFor()` in terraform/modules/preview-router/main.tf
+ * (preview-router `region_anchors`) and the `KOURIER_ORIGINS` /
+ * `CUSTOM_DOMAINS_KOURIER_ORIGINS` maps the subdomain-router Worker
+ * (terraform/modules/publish-hosting-oci) resolves them to.
+ *
+ * It is written into two Workers KV namespaces, both as a `region` value the
+ * Worker maps to a per-region origin:
+ *   - PREVIEW_REGIONS (cloudflare-preview-region-kv.ts), and
+ *   - SERVER_BACKED as the `knative:<code>` suffix (server-backed-kv, SHO-588).
+ */
+export const REGION_CODE_BY_ID: Record<string, string> = {
+  'us-ashburn-1': 'us',
+  'eu-frankfurt-1': 'eu',
+  // Staging is single-region but sets REGION_ID=staging; its Workers use a
+  // matching `staging` anchor (terraform/environments/staging), so the code
+  // write paths can be exercised there.
+  staging: 'staging',
+}
+
+/** The short region code for a raw `REGION_ID`, or null when unmapped. */
+export function regionCodeForId(regionId: string | null | undefined): string | null {
+  if (!regionId) return null
+  return REGION_CODE_BY_ID[regionId] ?? null
+}
+
+/**
+ * This pod's short region code (`us` | `eu` | `staging`), or null in
+ * local/desktop mode and in any region with no edge anchor yet. Read from env
+ * at call time (not the module-load snapshot) so scripts and tests can set
+ * `REGION_ID` themselves.
+ */
+export function getRegionCode(): string | null {
+  return regionCodeForId(process.env.REGION_ID || null)
+}
+
 /** Sibling regions this pod can proxy writes to. Empty in single-region mode. */
 export const REGION_PEERS: RegionPeer[] = (() => {
   try {
