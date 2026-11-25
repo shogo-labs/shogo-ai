@@ -16,6 +16,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   type ReactNode,
@@ -149,7 +150,13 @@ export function useSidebarScrollEnd(
 ): boolean {
   const signal = useContext(SidebarScrollContext);
   const latest = useRef(listener);
-  useEffect(() => {
+  // A layout effect, not a passive one: it runs in the same task as the commit
+  // that drew the rows, so no scroll-end can be dispatched in between. With an
+  // effect there is a window after every render where the subscription still
+  // points at the previous render's listener — for the chat list that is the
+  // empty list it mounted with, so the grow is capped at zero and the signal is
+  // dropped (SHO-579: 30 rows drawn, a scroll-end delivered, nothing grown).
+  useLayoutEffect(() => {
     latest.current = listener;
   }, [listener]);
   useEffect(() => {
