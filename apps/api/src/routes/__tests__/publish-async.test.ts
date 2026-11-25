@@ -385,6 +385,18 @@ describe('publish as a background job', () => {
     expect(projects.get('p1')!.publishedSubdomain).toBe('recovered')
   })
 
+  it('leaves a publish inside its lease alone: a fresh in-flight row is still building', async () => {
+    seed('p1')
+    const row = projects.get('p1')!
+    row.publishStatus = 'building'
+    row.publishStatusAt = new Date(Date.now() - publishInFlightTtlMs() + 60_000)
+
+    const state = await (await getState('p1')).json()
+    expect(state.publishStatus).toBe('building')
+    // Not written back: a publish that could still be running must not be failed.
+    expect(projects.get('p1')!.publishStatus).toBe('building')
+  })
+
   it('keeps validation synchronous: a bad subdomain is still a 400, not a 202', async () => {
     seed('p1')
     const res = await postPublish('p1', { subdomain: 'Not A Subdomain!' })
