@@ -178,10 +178,10 @@ mock.module('../lib/warm-pool-controller', () => ({
 // Stub `fetch` so `mergePatchKnativeService`, `updatePreviewDomainMapping`,
 // and `healthCheck` calls don't escape the test process.
 const originalFetch = globalThis.fetch
-let nextFetch: () => Response = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+let nextFetch: (input?: any) => Response = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
 
 beforeAll(() => {
-  globalThis.fetch = (async () => nextFetch() as any) as any
+  globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   // Grant the warm-pool claim lock in-memory (no real pg pool). Records the
   // key so tests can assert the claim ran under the advisory lock.
   __setAdvisoryLockAcquireClientForTests(async () => ({
@@ -448,7 +448,7 @@ describe('updatePreviewDomainMapping', () => {
     expect((lastInit as any)?.method).toBe('PATCH')
     expect((lastInit as any)?.headers['Content-Type']).toBe('application/merge-patch+json')
     // Restore the file-scope stub for subsequent tests.
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 
   test('on 404 falls through to createPreviewDomainMapping', async () => {
@@ -459,14 +459,14 @@ describe('updatePreviewDomainMapping', () => {
     await mgr.updatePreviewDomainMapping('p1', 'svc-2')
     createCalled = capture.slice(original).some((c) => c.method === 'createNamespacedCustomObject')
     expect(createCalled).toBe(true)
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 
   test('non-2xx, non-404 logs and returns without throwing', async () => {
     globalThis.fetch = (async () => new Response('boom', { status: 500 }) as any) as any
     const mgr = new KnativeProjectManager()
     await expect(mgr.updatePreviewDomainMapping('p1', 'svc-2')).resolves.toBeUndefined()
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 })
 
@@ -583,7 +583,7 @@ describe('scaleProject', () => {
     expect(lastInit.headers['Content-Type']).toBe('application/merge-patch+json')
     const body = JSON.parse(lastInit.body)
     expect(body.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('3')
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 })
 
@@ -748,7 +748,7 @@ describe('published service helpers', () => {
       expect(body.spec.template.metadata.annotations['shogo.io/deploy-timestamp']).toBeTruthy()
       expect(capture.some((c) => c.method === 'replaceNamespacedCustomObject')).toBe(false)
     } finally {
-      globalThis.fetch = (async () => nextFetch() as any) as any
+      globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
     }
   })
 
@@ -773,7 +773,7 @@ describe('published service helpers', () => {
       expect(capture.filter((c) => c.method === 'deleteNamespacedCustomObject').length).toBeGreaterThanOrEqual(2)
     } finally {
       delete process.env.PUBLISH_DOMAIN
-      globalThis.fetch = (async () => nextFetch() as any) as any
+      globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
     }
   })
 })
@@ -787,14 +787,14 @@ describe('healthCheck', () => {
     globalThis.fetch = (async () => new Response('ok', { status: 200 }) as any) as any
     const mgr = new KnativeProjectManager()
     expect(await mgr.healthCheck('p1')).toBe(true)
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 
   test('returns false on network error', async () => {
     globalThis.fetch = (async () => { throw new Error('net fail') }) as any
     const mgr = new KnativeProjectManager()
     expect(await mgr.healthCheck('p1')).toBe(false)
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 })
 
@@ -811,7 +811,7 @@ describe('mergePatch / jsonPatch helpers', () => {
     }) as any
     await mergePatchKnativeService('shogo-test', 'project-p1', { spec: { x: 1 } })
     expect(lastInit.headers['Content-Type']).toBe('application/merge-patch+json')
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 
   test('jsonPatchKnativeService PATCHes with application/json-patch+json', async () => {
@@ -822,7 +822,7 @@ describe('mergePatch / jsonPatch helpers', () => {
     }) as any
     await jsonPatchKnativeService('shogo-test', 'project-p1', [{ op: 'add', path: '/x', value: 1 }])
     expect(lastInit.headers['Content-Type']).toBe('application/json-patch+json')
-    globalThis.fetch = (async () => nextFetch() as any) as any
+    globalThis.fetch = (async (input?: any) => nextFetch(input) as any) as any
   })
 })
 
@@ -943,21 +943,52 @@ describe('healthCheckPublished + waitForPublishedReady', () => {
     expect(mgr.publishedServiceUrl('p-pub')).toContain('published-p-pub')
   })
 
-  test('healthCheckPublished is true when published-{id}/ready returns 2xx', async () => {
+  test('healthCheckPublished is true when the pod answers readiness as JSON', async () => {
     const mgr = new KnativeProjectManager()
-    nextFetch = () => new Response('{"ready":true}', { status: 200 })
+    nextFetch = () =>
+      new Response('{"ready":true}', { status: 200, headers: { 'content-type': 'application/json' } })
     expect(await mgr.healthCheckPublished('p-pub')).toBe(true)
   })
 
   test('healthCheckPublished is false when /ready returns 503 (still cold)', async () => {
     const mgr = new KnativeProjectManager()
-    nextFetch = () => new Response('{"ready":false}', { status: 503 })
+    nextFetch = () => new Response('{"ready":false}', { status: 503, headers: { 'content-type': 'application/json' } })
     expect(await mgr.healthCheckPublished('p-pub')).toBe(false)
+  })
+
+  test('a 200 that is the SPA document is not a ready API', async () => {
+    // Measured on staging: a published app answers /ready with index.html and a
+    // 200, so a status-only probe went green for a pod whose API was down.
+    const mgr = new KnativeProjectManager()
+    nextFetch = () =>
+      new Response('<!DOCTYPE html><html></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      })
+    expect(await mgr.healthCheckPublished('p-pub')).toBe(false)
+  })
+
+  test('healthCheckPublished accepts the generated server /health JSON', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = (input?: any) =>
+      String(input).endsWith('/health')
+        ? new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+        : new Response('<!DOCTYPE html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    expect(await mgr.healthCheckPublished('p-pub')).toBe(true)
+  })
+
+  test('healthCheckPublished accepts the runtime /ready JSON', async () => {
+    const mgr = new KnativeProjectManager()
+    nextFetch = (input?: any) =>
+      String(input).endsWith('/ready')
+        ? new Response('{"ready":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+        : new Response('{}', { status: 404 })
+    expect(await mgr.healthCheckPublished('p-pub')).toBe(true)
   })
 
   test('waitForPublishedReady resolves true once the pod answers', async () => {
     const mgr = new KnativeProjectManager()
-    nextFetch = () => new Response('', { status: 200 })
+    nextFetch = () => new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
     expect(await mgr.waitForPublishedReady('p-pub', 5000)).toBe(true)
   })
 

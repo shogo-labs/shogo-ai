@@ -6,6 +6,7 @@
 // so the handler logic is exercised in isolation.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 // Run the handler's k8s branch so setPublishedMinScale is exercised.
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
@@ -44,7 +45,7 @@ const prismaApi = {
       if (!projectRow || projectRow.id !== where.id) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(projectRow.publishStatus)
       const at = (projectRow as any).publishStatusAt instanceof Date ? (projectRow as any).publishStatusAt.getTime() : 0
-      const stale = !at || Date.now() - at > 30 * 60_000
+      const stale = !at || Date.now() - at > publishInFlightTtlMs()
       if (inFlight && !stale) return { count: 0 }
       updateCalls.push({ where, data })
       Object.assign(projectRow, data)

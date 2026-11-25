@@ -429,24 +429,34 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     )
     evidence.orphanedParentStillInDb = orphansInDb
     saveEvidence()
-    // The report is the contract; the row must not have been carried over. A
-    // publish answers 202, so the report cannot be in this response — it is
-    // recorded on the environment row (and served by the environment status GET)
-    // for exactly that reason.
-    const notice = await poll(
-      "the seed's orphan report on the environment row",
+    // The row must not have been carried over. This harness cannot assert the
+    // seed *report* itself, and pretending otherwise made run 7 wait 300s for a
+    // notice that can never appear: `publishNotice` is written only by a seed
+    // that actually ran, a republish of an environment whose schema already
+    // exists copies no rows, and the orphans planted above live in Postgres —
+    // not in the SQLite source the seed reads. The drop and its report are
+    // covered directly by `packages/shared-runtime/src/__tests__/published-schema.test.ts`
+    // (fixed-point orphan drop) and `apps/api/src/lib/__tests__/publish-notice.test.ts`
+    // (what a seed records). What staging can prove here is that unknown rows in
+    // the destination neither break the republish nor leave the row failed.
+    const envAfterOrphans = await poll(
+      "the environment row after the orphan republish",
       async () => {
         const found = psql(
-          `select coalesce("publishNotice",'') from published_environments ` +
+          `select coalesce("dbProvider",'-') || ' | ' || coalesce("publishStatus",'-') from published_environments ` +
             `where "projectId" = '${projectId}' and name = 'production'`,
         )
-        return found && /orphan|deleted records/i.test(found) ? found : null
+        if (!found.trim()) return null
+        const [provider, status] = found.split("|").map((part) => part.trim())
+        if (status === "failed") return found
+        return status === "live" && provider === "postgres" ? found : null
       },
-      300_000,
+      420_000,
     )
-    evidence.publishNotice = notice
+    evidence.publishNotice = envAfterOrphans
     saveEvidence()
-    expect(notice, "the seed must report the rows it could not carry").toMatch(/deleted records/i)
+    expect(envAfterOrphans, "the republish must not have failed").not.toContain("failed")
+    expect(envAfterOrphans, "the environment must still be Postgres").toContain("postgres")
     expect(orphansInDb, "the orphaned parent must not be seeded").toBe("0")
   })
 
@@ -459,27 +469,55 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     console.log(`[qa-sho551] pods at rest: ${atRest}`)
     expect(atRest, "one replica at rest").toBeGreaterThanOrEqual(1)
 
-    const deadline = Date.now() + 60_000
-    const pids: string[] = []
-    while (Date.now() < deadline) {
-      pids.push(
-        `${await page.request.get(`${LIVE}/`, { failOnStatusCode: false, timeout: 15_000 }).then((r) => r.status())}`,
-      )
-      await sleep(250)
+    // Knative's threshold for this revision is `target` (50) × the cluster's
+    // container-concurrency-target-percentage (70%) = 35 concurrent requests on
+    // one pod. A serial loop (one request, sleep 250ms ≈ 4 rps, concurrency 1)
+    // can never cross that, so it proved nothing about scale-out; 64 parallel
+    // workers do. Two things are asserted, not assumed: the load really carried
+    // more than 35 requests in flight, and the pod count is sampled *while* it
+    // runs — polling after the load would see a correctly scaled-back app.
+    const SCALE_THRESHOLD = 35
+    const WORKERS = 64
+    const LOAD_MS = 90_000
+    let inflight = 0
+    let peakInflight = 0
+    let loadRequests = 0
+    const loadDeadline = Date.now() + LOAD_MS
+    const loadWorker = async () => {
+      while (Date.now() < loadDeadline) {
+        inflight += 1
+        peakInflight = Math.max(peakInflight, inflight)
+        await page.request
+          .get(`${LIVE}/api/${routePath}?limit=5`, { failOnStatusCode: false, timeout: 15_000 })
+          .then((r) => r.status())
+          .catch(() => 0)
+        inflight -= 1
+        loadRequests += 1
+      }
     }
-    const podsUnderLoad = await poll(
-      "a second pod under load",
-      async () => {
-        const n = publishedPods(projectId).length
-        return n >= 2 ? n : null
-      },
-      180_000,
-    )
+    const [podsUnderLoad] = await Promise.all([
+      poll(
+        "a second pod under load",
+        async () => {
+          const n = publishedPods(projectId).length
+          return n >= 2 ? n : null
+        },
+        150_000,
+      ),
+      Promise.all(Array.from({ length: WORKERS }, () => loadWorker())),
+    ])
     evidence.podsUnderLoad = podsUnderLoad
-    evidence.loadRequestCount = pids.length
+    evidence.peakInflight = peakInflight
+    evidence.loadRequestCount = loadRequests
     saveEvidence()
-    console.log(`[qa-sho551] pods under load: ${podsUnderLoad} after ${pids.length} requests`)
-    expect(podsUnderLoad, "Knative must scale to two pods under 60s of load").toBeGreaterThanOrEqual(2)
+    console.log(
+      `[qa-sho551] load: ${loadRequests} requests, peak in-flight ${peakInflight} (threshold ${SCALE_THRESHOLD}); pods under load: ${podsUnderLoad}`,
+    )
+    expect(
+      peakInflight,
+      "the load must exceed the autoscaler's concurrency target, or 'one pod' proves nothing",
+    ).toBeGreaterThan(SCALE_THRESHOLD)
+    expect(podsUnderLoad, "Knative must scale to two pods under load").toBeGreaterThanOrEqual(2)
 
     // A write on one pod, read back from the other: shared Postgres, not a
     // per-pod SQLite file.

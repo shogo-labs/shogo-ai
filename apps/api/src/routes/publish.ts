@@ -22,6 +22,7 @@ import { prisma } from "../lib/prisma"
 import { removePublishedCustomDomainMapping } from "../lib/published-custom-domain-mapping"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 import { resolvePublishCommitSha as resolvePublishCommitFromHead } from "../lib/publish-commit"
+import { seedNoticeWrite } from "../lib/publish-notice"
 import {
   PUBLISH_BUCKET,
   PUBLISH_DATA_BUCKET,
@@ -1283,25 +1284,26 @@ async function configurePublishedService(
         )
       }
       currentDbProvider = "postgres"
-      if (prepared.value.orphans.length > 0) {
-        const totalOrphaned = prepared.value.orphans.reduce((sum, o) => sum + o.count, 0)
-        const tableList = prepared.value.orphans
-          .map((o) => `${o.table} (${o.count})`)
-          .join(', ')
-        seedNotice =
-          `${totalOrphaned} row(s) referencing deleted records were not copied to Postgres ` +
-          `(${tableList}). They are still in the SQLite archive and can be recovered.`
+      // A republish of an environment whose schema already exists copies no
+      // rows, so it must not touch the record an earlier seed wrote.
+      const notice = seedNoticeWrite({
+        seeded: prepared.value.seeded,
+        orphans: prepared.value.orphans,
+      })
+      if (notice.notice) {
+        seedNotice = notice.notice
         console.log(`[Publish] ${seedNotice}`)
       }
       // The response body cannot carry this: a publish answers 202 and finishes
       // in the background (SHO-542), so without persisting it the report reaches
-      // nobody but the log. Writing it on every Postgres publish also clears a
-      // stale notice from an earlier seed that had orphans.
-      await prisma.publishedEnvironment
-        .update({ where: { id: environment.id }, data: { publishNotice: seedNotice ?? null } })
-        .catch((err: any) => {
-          console.warn("[Publish] could not record the seed notice:", err?.message ?? err)
-        })
+      // nobody but the log.
+      if (notice.write) {
+        await prisma.publishedEnvironment
+          .update({ where: { id: environment.id }, data: { publishNotice: notice.notice } })
+          .catch((err: any) => {
+            console.warn("[Publish] could not record the seed notice:", err?.message ?? err)
+          })
+      }
     }
 
     // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest

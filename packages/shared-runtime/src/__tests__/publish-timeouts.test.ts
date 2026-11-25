@@ -15,6 +15,7 @@ import {
   publishArtifactInlineMaxBytes,
   publishArtifactMaxBytes,
   publishArtifactUploadTimeoutMs,
+  publishReadinessTimeoutMs,
   publishRequestTimeoutMs,
   publishStepTimeouts,
 } from '../publish-timeouts'
@@ -47,6 +48,21 @@ describe('publish timeouts', () => {
         + DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS
         + DEFAULT_PUBLISH_READINESS_TIMEOUT_MS
         + PUBLISH_REQUEST_SLACK_MS,
+    )
+  })
+
+  test('the readiness budget is cold-boot room, and a region can still shrink it', () => {
+    // The 300s default *is* the fix (SHO-551): a first boot of a freshly built
+    // published image measured 105-162s on staging, so the old 120s wait
+    // recorded a healthy publish as `revision_not_ready`. Nothing else pins the
+    // number — `publishRequestTimeoutMs` only ever reads the constant — so
+    // lowering it back to 120s has to fail here.
+    expect(publishReadinessTimeoutMs({})).toBe(DEFAULT_PUBLISH_READINESS_TIMEOUT_MS)
+    expect(DEFAULT_PUBLISH_READINESS_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000)
+    expect(publishReadinessTimeoutMs({ PUBLISH_READINESS_TIMEOUT_MS: '60000' })).toBe(60_000)
+    // Nonsense is ignored, not treated as an instant timeout.
+    expect(publishReadinessTimeoutMs({ PUBLISH_READINESS_TIMEOUT_MS: 'lots' })).toBe(
+      DEFAULT_PUBLISH_READINESS_TIMEOUT_MS,
     )
   })
 

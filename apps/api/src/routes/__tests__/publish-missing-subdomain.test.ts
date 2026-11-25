@@ -14,6 +14,7 @@
 // 400 `invalid_body`. Never a 500.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
 process.env.PUBLISH_BUCKET = 'test-publish-bucket'
@@ -89,7 +90,7 @@ const prismaApi = {
       if (!row) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
       const at = row.publishStatusAt instanceof Date ? row.publishStatusAt.getTime() : 0
-      const stale = !at || Date.now() - at > 30 * 60_000
+      const stale = !at || Date.now() - at > publishInFlightTtlMs()
       if (inFlight && !stale) return { count: 0 }
       if (typeof data?.publishStatus === 'string') {
         statusWrites.push({ status: data.publishStatus, error: data.publishError ?? null })
