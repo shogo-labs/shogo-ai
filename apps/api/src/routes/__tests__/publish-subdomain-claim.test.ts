@@ -11,6 +11,7 @@
 // afterwards. These tests pin the claim that closes that window.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 // Non-k8s path: skip the build/upload pipeline so the claim + persist logic is
 // exercised in isolation.
@@ -95,7 +96,7 @@ const prismaApi = {
       if (!row) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
       const at = (row as any).publishStatusAt instanceof Date ? (row as any).publishStatusAt.getTime() : 0
-      const stale = !at || Date.now() - at > 30 * 60_000
+      const stale = !at || Date.now() - at > publishInFlightTtlMs()
       if (inFlight && !stale) return { count: 0 }
       updateCalls.push({ where, data })
       Object.assign(row, data)

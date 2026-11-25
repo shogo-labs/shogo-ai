@@ -8,6 +8,7 @@
 // reuse on republish, and cross-workspace refusal.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
 process.env.PUBLISH_BUCKET = 'test-publish-bucket'
@@ -77,7 +78,7 @@ const prismaApi = {
       if (!row) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
       const at = row.publishStatusAt ? new Date(row.publishStatusAt).getTime() : 0
-      if (inFlight && at && Date.now() - at < 30 * 60_000) return { count: 0 }
+      if (inFlight && at && Date.now() - at < publishInFlightTtlMs()) return { count: 0 }
       updateCalls.push({ where, data })
       Object.assign(row, data)
       return { count: 1 }
