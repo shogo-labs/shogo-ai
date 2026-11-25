@@ -97,8 +97,17 @@ export function publishArtifactMaxBytes(env: NodeJS.ProcessEnv = process.env): n
  * Recorded as `ready` at creation time, a revision that died with ExitCode137
  * kept a healthy Deployment tab while the app served nothing. The wait is part
  * of the configure step, so it is part of that step's budget too.
+ *
+ * 300s, not 120s: the first boot of a freshly built published image is a cold
+ * start of a ~1.3 GB image plus the app's own boot, and it is nothing like a
+ * warm roll. Measured on staging 2026-11-25: first boot of a new published
+ * image reached `/ready` at 105-162s after the container started, while every
+ * subsequent pod on the same node answered in 2-15s. At 120s a publish that
+ * *did* come up seconds later was recorded `failed` with
+ * `revision_not_ready` — a false failure on the very first deploy of any new
+ * Postgres environment, which is exactly the deploy a migration runs.
  */
-export const DEFAULT_PUBLISH_READINESS_TIMEOUT_MS = 120_000
+export const DEFAULT_PUBLISH_READINESS_TIMEOUT_MS = 300_000
 
 /** {@link DEFAULT_PUBLISH_ARTIFACT_INLINE_MAX_BYTES}, overridable per region. */
 export function publishArtifactInlineMaxBytes(env: NodeJS.ProcessEnv = process.env): number {

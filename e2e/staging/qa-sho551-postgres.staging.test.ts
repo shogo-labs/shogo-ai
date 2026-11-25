@@ -429,24 +429,34 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     )
     evidence.orphanedParentStillInDb = orphansInDb
     saveEvidence()
-    // The report is the contract; the row must not have been carried over. A
-    // publish answers 202, so the report cannot be in this response — it is
-    // recorded on the environment row (and served by the environment status GET)
-    // for exactly that reason.
-    const notice = await poll(
-      "the seed's orphan report on the environment row",
+    // The row must not have been carried over. This harness cannot assert the
+    // seed *report* itself, and pretending otherwise made run 7 wait 300s for a
+    // notice that can never appear: `publishNotice` is written only by a seed
+    // that actually ran, a republish of an environment whose schema already
+    // exists copies no rows, and the orphans planted above live in Postgres —
+    // not in the SQLite source the seed reads. The drop and its report are
+    // covered directly by `packages/shared-runtime/src/__tests__/published-schema.test.ts`
+    // (fixed-point orphan drop) and `apps/api/src/lib/__tests__/publish-notice.test.ts`
+    // (what a seed records). What staging can prove here is that unknown rows in
+    // the destination neither break the republish nor leave the row failed.
+    const envAfterOrphans = await poll(
+      "the environment row after the orphan republish",
       async () => {
         const found = psql(
-          `select coalesce("publishNotice",'') from published_environments ` +
+          `select coalesce("dbProvider",'-') || ' | ' || coalesce("publishStatus",'-') from published_environments ` +
             `where "projectId" = '${projectId}' and name = 'production'`,
         )
-        return found && /orphan|deleted records/i.test(found) ? found : null
+        if (!found.trim()) return null
+        const [provider, status] = found.split("|").map((part) => part.trim())
+        if (status === "failed") return found
+        return status === "live" && provider === "postgres" ? found : null
       },
-      300_000,
+      420_000,
     )
-    evidence.publishNotice = notice
+    evidence.publishNotice = envAfterOrphans
     saveEvidence()
-    expect(notice, "the seed must report the rows it could not carry").toMatch(/deleted records/i)
+    expect(envAfterOrphans, "the republish must not have failed").not.toContain("failed")
+    expect(envAfterOrphans, "the environment must still be Postgres").toContain("postgres")
     expect(orphansInDb, "the orphaned parent must not be seeded").toBe("0")
   })
 
