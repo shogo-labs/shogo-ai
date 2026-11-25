@@ -15,7 +15,7 @@
  *      per UTC day, and a capped copy is reported as NOT SAVED.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -27,6 +27,11 @@ import type { FirecrackerVMManager, FcVmHandle } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9', vmClass: 'standard' } as any
+
+// The quarantine cap is per UTC day and this file pins day boundaries as
+// literals, so the clock is pinned to match them (check:test-clock, SHO-505).
+beforeAll(() => setSystemTime(new Date(Date.UTC(2026, 10, 25, 12))))
+afterAll(() => setSystemTime())
 
 type Outcome<T> = T | Error
 
@@ -278,6 +283,23 @@ describe('SHO-584 · a corrupt .git is permanent, not retryable', () => {
     } finally {
       guest.stop(true)
     }
+  })
+})
+
+describe('SHO-584 · a final export that did not persist fails the step', () => {
+  test('an over-size final data export throws instead of reporting "not written"', async () => {
+    // `false` used to mean both "nothing changed, already durable" and "this was
+    // never saved". A recycle treats the second as success and rotates the VM on
+    // data that exists only in its own snapshot — a capped or over-limit final
+    // copy must fail the step instead (SHO-584).
+    const pool = makePool()
+    const a = pool.add('p1')
+    pool.data = { status: 'too-large', bytes: 900_000_000, limit: 500_000_000 }
+
+    await expect(pool.saveProjectDataToStore(a, { final: true })).rejects.toThrow(/over the/)
+    // The periodic sweep keeps its quiet "not saved" answer; only the final
+    // export — the one a recycle depends on — throws.
+    expect(await pool.saveProjectDataToStore(a)).toBe(false)
   })
 })
 

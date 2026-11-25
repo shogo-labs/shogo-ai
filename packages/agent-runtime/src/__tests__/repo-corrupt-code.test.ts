@@ -14,7 +14,9 @@
 
 import { describe, expect, test } from 'bun:test'
 import { LfsPushError } from '@shogo/shared-runtime'
-import { lfsPushFailureBody } from '../server'
+// Imported from the body's own module, not `../server`: that module boots the
+// runtime and exits without PROJECT_ID, which is why this test was 0-pass in CI.
+import { lfsPushFailureBody } from '../lfs-failure-body'
 
 describe('lfsPushFailureBody (SHO-584)', () => {
   test('a corrupt repository gets its own code, distinct from a push failure', () => {
