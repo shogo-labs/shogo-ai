@@ -971,6 +971,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+    # Budget: every leg must finish at least 4 minutes under the job's
+    # `timeout-minutes: 15`, i.e. inside 11 minutes. A leg that lands over that
+    # gets another shard — do not raise the cap. `api + mobile` used to run as
+    # ONE unsharded leg and took 9m30s–14m47s on green runs (median ≈14m), so
+    # under a minute of headroom; two merge-group runs were cancelled at exactly
+    # 15m and the queue dropped those PRs as if their code had failed
+    # (SHO-579). Sharding it the way `agent-runtime 1/2, 2/2` is sharded moves
+    # the long half of each package to its own runner. The measured duration of
+    # each leg is recorded in the PR that sharded it and in SHO-579.
     strategy:
       fail-fast: false
       matrix:
@@ -987,9 +996,15 @@ jobs:
             build_templates: true
             desktop_bundle: false
             include_e2e: false
-          - name: api + mobile
+          - name: api + mobile 1/2
             packages: apps/api,apps/mobile
-            shard: ''
+            shard: 1/2
+            build_templates: false
+            desktop_bundle: false
+            include_e2e: false
+          - name: api + mobile 2/2
+            packages: apps/api,apps/mobile
+            shard: 2/2
             build_templates: false
             desktop_bundle: false
             include_e2e: false
@@ -1143,10 +1158,6 @@ jobs:
         # of only running when someone remembers to run the package locally.
         if: (matrix.include_e2e) && needs.prelude.outputs.verified != 'true'
         run: bun --no-env-file --conditions=development test packages/shogo-worker/src/lib/__tests__/git-cloner.test.ts
-
-      - name: Test unsharded packages
-        if: (matrix.shard == '' && matrix.include_e2e == false) && needs.prelude.outputs.verified != 'true'
-        run: bun run test -- --packages "${{ matrix.packages }}"
 
   # The RBAC suites run on SQLite in the `test` job; this job reruns them on
   # Postgres so the PG migrations (partial unique indexes on Member, the
@@ -1655,6 +1666,10 @@ jobs:
     needs: [prelude, typecheck, typecheck-mobile, test, rbac-postgres, rbac-live, test-windows, workflow-lint, metal-agent-bundle]
     runs-on: ubuntu-latest
     if: always()
+    # Naming the leg that was stopped at its time cap means reading this run's
+    # job list back from the Actions API (SHO-579).
+    permissions:
+      actions: read
     steps:
       - name: Check upstream job results
         env:
@@ -1669,6 +1684,9 @@ jobs:
           TEST_WINDOWS: ${{ needs.test-windows.result }}
           WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
           METAL_AGENT_BUNDLE: ${{ needs.metal-agent-bundle.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           echo "prelude: ${PRELUDE} (verified=${VERIFIED}, windows-needed=${WINDOWS_RELEVANT})"
           echo "typecheck: ${TYPECHECK}"
@@ -1682,5 +1700,24 @@ jobs:
           # Jobs a queue-verified push skips outright; anywhere else they must pass.
           skippable() { [ "$1" == "success" ] || { [ "$VERIFIED" == "true" ] && [ "$1" == "skipped" ]; }; }
           if [ "$PRELUDE" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$RBAC_LIVE" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
+            # A job stopped at its wall-clock cap reports `cancelled`, and that
+            # is not a failing test: its tests never ran. The gate still fails —
+            # letting it pass would merge code nothing exercised — but it must
+            # not read like a red test in the diff. Name the leg so the next
+            # reader re-queues instead of hunting for a bug (SHO-579).
+            cancelled="$(
+              gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100&filter=latest" --paginate 2>/dev/null |
+                jq -s -r 'map(.jobs) | add // [] | map(select(.conclusion == "cancelled") | .name) | unique | join(", ")' 2>/dev/null
+            )" || cancelled=""
+            if [ -n "${cancelled}" ]; then
+              echo "::error title=Timed out, not a test failure::${cancelled} was cancelled before it finished — a job that ran out of its time budget (or was cancelled), not a failing test. This gate fails because those tests never ran. Re-run this workflow or re-queue the PR instead of looking for a bug in the diff."
+              {
+                echo "### Timed out, not a test failure"
+                echo ""
+                echo "\`${cancelled}\` was cancelled before it finished — an over-budget job, not a red test."
+                echo ""
+                echo "This gate **fails** because those tests never ran. Re-run the workflow or re-queue the PR; the diff was not shown to be at fault."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
             exit 1
           fi

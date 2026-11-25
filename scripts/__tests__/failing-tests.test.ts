@@ -25,6 +25,15 @@ const GH_PREFIXED_LOG = PLAIN_LOG.split('\n')
   .map((line) => `Test (api + mobile)\tTest unsharded packages\t2026-11-22T02:58:07.5524825Z ${line}`)
   .join('\n')
 
+/**
+ * The same log from the sharded leg `api + mobile 1/2` (SHO-579). Both halves
+ * run the shared `Test` step, so the prefix carries a slash in the job name and
+ * no "unsharded" step exists any more — the prefix strip must not care which.
+ */
+const GH_PREFIXED_SHARDED_LOG = PLAIN_LOG.split('\n')
+  .map((line) => `Test (api + mobile 1/2)\tTest\t2026-11-25T02:58:07.5524825Z ${line}`)
+  .join('\n')
+
 /** The same log through `gh api .../actions/jobs/<id>/logs` — bare timestamp only. */
 const GH_JOB_LOG = PLAIN_LOG.split('\n')
   .map((line) => `2026-11-22T02:58:07.5524825Z ${line}`)
@@ -77,6 +86,12 @@ describe('failing-tests.sh', () => {
 
   test('reads a gh-prefixed log the same way', () => {
     expect(run(GH_PREFIXED_LOG)).toBe(run(PLAIN_LOG))
+  })
+
+  test('reads a sharded leg\'s log the same way', () => {
+    // `api + mobile 1/2` / `2/2` (SHO-579): the prefix's job name and step name
+    // both changed, and the old `Test unsharded packages` step is gone.
+    expect(run(GH_PREFIXED_SHARDED_LOG)).toBe(run(PLAIN_LOG))
   })
 
   test('reads a per-job log the same way', () => {
