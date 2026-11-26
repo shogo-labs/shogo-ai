@@ -38,6 +38,7 @@ import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
+import { BodyTooLargeError, ByteBudget, readBoundedBody } from './byte-budget'
 import { memProbe } from './mem-probe'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -1680,6 +1681,13 @@ export class MetalWarmPool {
   private lastCowInvalid = 0
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
+  /**
+   * Total bytes of guest exports in memory at once (SHO-593). Every whole-object
+   * export read reserves here first, so a slow 33 GiB workspace member cannot
+   * pile up behind three small backups and take the host's control plane with
+   * it. See `readBoundedBody`.
+   */
+  readonly exportBudget: ByteBudget
   /** Single-flight guard for pool fills (see reconcile). */
   private reconciling: Promise<void> | null = null
   /**
@@ -1721,6 +1729,7 @@ export class MetalWarmPool {
     this.live = new LiveRegistry(cfg.runDir)
     rmSync(this.exportSpoolDir, { recursive: true, force: true })
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
+    this.exportBudget = new ByteBudget(cfg.exportBudgetBytes)
     this.hydrateProxy = new HydrateProxy({
       partBytes: cfg.hydrateProxyPartBytes,
       concurrency: cfg.s3GetConcurrency,
@@ -3498,9 +3507,9 @@ export class MetalWarmPool {
       if (res.status === 204) return null
       if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await res.arrayBuffer()
+      const buf = await this.readExportBody(res, `source ${handle.id}${dir ? ` ${dir}` : ''}`)
       bytes = buf.byteLength
-      return bytes ? new Uint8Array(buf) : null
+      return bytes ? buf : null
     } catch (err) {
       // A read that stopped early — deadline, or a body the guest is still
       // sending — must be torn down, not merely abandoned: the guest only
@@ -3564,6 +3573,31 @@ export class MetalWarmPool {
       }
       return this.storeSource(a, bytes)
     })
+  }
+
+  /**
+   * Read one guest export body under the shared budget and the size cap.
+   *
+   * Every export goes through here for the reason in `byte-budget.ts`: the guest
+   * streams whatever its spool file holds and there is no cap on the guest side,
+   * so the host is the only place the read can be bounded (SHO-593).
+   */
+  private async readExportBody(res: Response, label: string): Promise<Uint8Array> {
+    try {
+      return await readBoundedBody(res, {
+        budget: this.exportBudget,
+        capBytes: this.cfg.exportMaxBytes,
+        label,
+      })
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        metrics.inc(M.exportTooLarge)
+        console.error(
+          `[pool] refusing ${err.message} — nothing buffered, the durable backup is left in place`,
+        )
+      }
+      throw err
+    }
   }
 
   /**
@@ -3970,10 +4004,10 @@ export class MetalWarmPool {
       if (res.status === 404) return 'unsupported'
       if (!res.ok) throw await exportError(res)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await res.arrayBuffer()
+      const buf = await this.readExportBody(res, `writable state ${handle.id}${dir ? ` ${dir}` : ''}`)
       bytes = buf.byteLength
-      if (!buf.byteLength) return null
-      return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+      if (!bytes) return null
+      return { bytes: buf, tag: res.headers.get('etag') }
     } catch (err) {
       dl.abort(err)
       throw err
@@ -5860,10 +5894,10 @@ export class MetalWarmPool {
       if (res.status === 413) return 'too-large'
       if (!res.ok) throw new Error(`/pool/export-home failed (${res.status}): ${await res.text()}`)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await res.arrayBuffer()
+      const buf = await this.readExportBody(res, `home ${handle.id}`)
       bytes = buf.byteLength
       if (!bytes) return null
-      return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+      return { bytes: buf, tag: res.headers.get('etag') }
     } finally {
       memProbe.end(mem, bytes)
     }
@@ -8618,6 +8652,10 @@ export class MetalWarmPool {
     metrics.gauge(M.agentRssBytes, own.rss)
     metrics.gauge(M.agentExternalBytes, own.external)
     metrics.gauge(M.agentArrayBuffersBytes, own.arrayBuffers)
+    // How much of the export budget is spoken for, and how long exports queued
+    // for it: the pair that says whether the bound is costing latency (SHO-593).
+    metrics.gauge(M.exportInflightBytes, this.exportBudget.inUse)
+    metrics.gauge(M.exportBudgetWaitMs, Math.round(this.exportBudget.waitedMs))
     const disk = this.disk()
     metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
     metrics.gauge(M.diskFreeBytes, disk.freeBytes)

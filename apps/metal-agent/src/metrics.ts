@@ -279,6 +279,13 @@ export const M = {
   agentRssBytes: 'metal_agent_rss_bytes',
   agentExternalBytes: 'metal_agent_external_bytes',
   agentArrayBuffersBytes: 'metal_agent_array_buffers_bytes',
+  // Guest exports are read whole into memory, so they are bounded by a byte
+  // budget (SHO-593). `inflight` shows how much of it is spoken for, `waited`
+  // how often an export had to queue, and `tooLarge` counts bodies refused
+  // rather than buffered — the tail the budget exists to keep off the host.
+  exportInflightBytes: 'metal_export_inflight_bytes',
+  exportBudgetWaitMs: 'metal_export_budget_wait_ms',
+  exportTooLarge: 'metal_export_too_large_total',
   ksmPagesSharing: 'metal_ksm_pages_sharing',
   ksmPagesShared: 'metal_ksm_pages_shared',
   ksmFullScans: 'metal_ksm_full_scans',
