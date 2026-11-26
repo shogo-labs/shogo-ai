@@ -13,54 +13,37 @@
  * must see at least 95. A `start`/`end` range must narrow the labels to that
  * range only.
  *
- * The frame labels are drawn with ffmpeg's `drawtext`, which some builds omit —
- * that is a skip, not a failure, because the recipe cannot be reproduced
- * without it.
+ * The frame labels are drawn by `fixtures/stamped-clip.ts` (a bitmap font
+ * rasterised to PNGs), not by ffmpeg's `drawtext` — Homebrew's ffmpeg has no
+ * freetype, and gating on `drawtext` skipped both live checks even when the
+ * keys were present. Only ffmpeg itself is required.
  *
  * Run: bun test apps/api/src/routes/__tests__/ai-proxy-video-fps.smoke.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
-import { spawnSync } from 'child_process'
 import { proxyOpenAINonStream } from '../ai-proxy'
 import { retimeVideo, resolveFfmpeg, VIDEO_FRAME_TOKEN_BUDGET } from '@shogo/agent-runtime/src/video-retime'
 import { buildVideoMimeType } from '@shogo/model-catalog'
+import { buildStampedClip } from './fixtures/stamped-clip'
 
 const WORK_DIR = '/tmp/test-ai-proxy-video-fps'
 const CLIP = join(WORK_DIR, 'stamped-10s-10fps.mp4')
-const FONT = '/System/Library/Fonts/Supplemental/Arial.ttf'
 
 const googleKey = process.env.GOOGLE_API_KEY
 const openRouterKey = process.env.OPENROUTER_API_KEY
 const ffmpeg = resolveFfmpeg().ffmpeg
 
-function drawtextSupported(): boolean {
-  if (!ffmpeg) return false
-  const result = spawnSync(ffmpeg, ['-hide_banner', '-filters'], { encoding: 'utf8' })
-  return (result.stdout ?? '').includes('drawtext')
-}
-
-const canBuildClip = !!ffmpeg && drawtextSupported()
-
-/** 10 s / 10 fps, one stamped frame per 0.1 s: F000 … F099. */
-function buildStampedClip(): void {
-  const fontArg = spawnSync('test', ['-f', FONT]).status === 0 ? `:fontfile=${FONT}` : ''
-  const result = spawnSync(ffmpeg!, [
-    '-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'lavfi', '-i', 'color=c=black:size=320x240:rate=10:duration=10',
-    '-vf', `drawtext=text='F%{eif\\:n\\:d\\:3}'${fontArg}:fontsize=48:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2`,
-    '-pix_fmt', 'yuv420p',
-    '-c:v', 'libx264', '-preset', 'ultrafast',
-    CLIP,
-  ])
-  if (result.status !== 0) throw new Error(`clip build failed: ${result.stderr?.toString() ?? ''}`)
-}
+// The clip is drawn by `fixtures/stamped-clip.ts` rather than ffmpeg's
+// `drawtext`, which Homebrew's ffmpeg (and many CI images) omit — that alone
+// used to skip both live checks even with the provider keys present.
+const canBuildClip = !!ffmpeg
 
 beforeAll(() => {
   rmSync(WORK_DIR, { recursive: true, force: true })
   mkdirSync(WORK_DIR, { recursive: true })
-  if (canBuildClip) buildStampedClip()
+  if (canBuildClip) buildStampedClip(ffmpeg!, CLIP, WORK_DIR)
 }, 120_000)
 
 afterAll(() => {
