@@ -72,7 +72,7 @@ mock.module('../lib/prisma', () => ({
       update: async () => ({}),
     },
     chatMessage: { create: async (args: any) => ({ id: 'm-1', ...args.data }) },
-    chatSession: { findUnique: async () => ({ id: 's-1' }) },
+    chatSession: { findUnique: async () => ({ id: 's-1', contextType: 'project', contextId: 'p-1' }) },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
     member: { findFirst: async () => memberFindFirstImpl() },
   },

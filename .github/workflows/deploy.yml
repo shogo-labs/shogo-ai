@@ -938,7 +938,14 @@ jobs:
     name: Promote staging images
     runs-on: ubuntu-latest
     needs: [resolve-config, detect-changes, rebuild-release-runtime]
+    # always(): rebuild-release-runtime depends on build-base-image, which is
+    # skipped on a tag. Without it the implicit success() sees that skipped
+    # ancestor and skips this job even when the rebuild succeeded, so deploy-us
+    # finds no production-<sha> image (v2.6.5, run 45447860619).
     if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.promote == 'true' &&
       needs.resolve-config.outputs.dry_run != 'true' &&
       (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')

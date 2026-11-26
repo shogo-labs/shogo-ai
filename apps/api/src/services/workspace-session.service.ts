@@ -322,15 +322,32 @@ export async function assertWorkspaceSessionAccess(
  * empty chat instead of minting a new one on every cold start).
  */
 export async function listWorkspaceSessions(workspaceId: string, userId: string) {
+  // No `_count` relation include here. In Postgres it compiles to a nested loop
+  // that re-aggregates the whole `chat_messages_sessionId_idx` once per session:
+  // EXPLAIN ANALYZE on the prod replica for a 124-chat workspace read 6.86 s
+  // (2.4M rows removed by the join filter) inside a 5.5 s request (SHO-564).
   const rows = (await prisma.chatSession.findMany({
     where: { contextType: 'workspace', workspaceId, createdByUserId: userId } as any,
     orderBy: { lastActiveAt: 'desc' },
-    include: { attachedProjects: true, _count: { select: { messages: true } } } as any,
+    include: { attachedProjects: true } as any,
   })) as any[]
 
-  return rows.map(({ _count, ...row }) => ({
+  const ids = rows.map((row: { id: string }) => row.id)
+  // One grouped scan over the same index for every session on the page.
+  const counts = ids.length
+    ? await prisma.chatMessage.groupBy({
+        by: ['sessionId'],
+        where: { sessionId: { in: ids } },
+        _count: { _all: true },
+      })
+    : []
+  const countBySession = new Map<string, number>(
+    counts.map((row) => [row.sessionId, row._count._all]),
+  )
+
+  return rows.map((row) => ({
     ...row,
-    messageCount: _count?.messages ?? 0,
+    messageCount: countBySession.get(row.id) ?? 0,
   }))
 }
 

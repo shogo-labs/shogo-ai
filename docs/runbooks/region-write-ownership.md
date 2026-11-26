@@ -321,6 +321,32 @@ columns (like `homeRegion`) go in its allow-list. Keep that list current.
 
 ---
 
+## Part F — Paths that bypassed the router (closed, SHO-585)
+
+The 2026-11-24 outage was not a routing bug in the router: it was three write
+paths that never reached it, plus a watchdog that could not see the result.
+
+| Path | Why it escaped | Closed by |
+|---|---|---|
+| `POST /api/chat-queued-messages {sessionId}` (and every body-only create) | The resolver never read the body, so the row fell through to the identity rule and was written in whichever region served the request. Draining happens in the home region, so the message was never sent — and "send now"/delete were *correctly* forwarded to a region that had no such row. | `resolve-workspace-id.ts` step 7 (`BODY_CREATE_LOOKUPS`), the router forwarding the bytes it consumed (`FORWARD_BODY_KEY`), and `/api/chat-queued-messages` added to the fail-closed set. |
+| Zernio inbox writes (`handleZernioWebhook`, and the runtime-token reply/backfill routes under `/api/internal`, which `SKIP_PREFIXES` excludes) | Provider webhooks carry no Shogo session, and the agent surface is mounted where the router never looks. Both regions imported the same Instagram comments and collided on `zernioCommentId`. | `handleZernioWebhook` → `routeToHomeRegion('/api/internal/social/apply')`; a single guard inside `inbox.service` (`forwardInboxWrite`) → `/api/internal/social/inbox`, before the provider is called. |
+| Team-chat inserts from background callers (agent dispatcher, work boards, huddles, polls, mail) | `postMessage` had ~40 callers and the guard would have had to live in each; no HTTP router sees the service paths at all. | One guard at the insert point (`conversation.service.postMessage`) → `routeToHomeRegion('/api/internal/conversations/post-message')`. Mentions, wakes, `seq` and hooks run in the home region, once. |
+
+All three are no-ops in single-region/desktop (`isMultiRegionActive()` false),
+so there is still one code path for both surfaces.
+
+The **watchdog** side (Part E) is what let it run for 10 hours: it looked for
+the conflict LSN in `kubectl logs --since=15m`, missed it, re-enabled the
+subscription, and printed a *green* "nothing to do" run whenever the re-enable
+momentarily worked. `conflict-watchdog.yaml` now finds the failing transaction
+by peeking the publisher's slot from the database, classifies from
+`pg_stat_subscription_stats`, re-enables an unknown cause at most
+`MAX_BLIND_ENABLE` times, and pages (`REPLICATION_STALLED`, alert
+`ReplicationStalled`) when an origin LSN has not moved for 15 minutes — enabled
+or not.
+
+---
+
 ## Part E — Demote the watchdog to a safety net
 
 The watchdog should **never** be the thing keeping the mesh alive. Target

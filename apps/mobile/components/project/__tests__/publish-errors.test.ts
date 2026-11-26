@@ -7,7 +7,7 @@
  */
 // @ts-ignore Bun resolves this module at test runtime; app tsconfig does not include Bun ambient types.
 import { describe, expect, test } from "bun:test"
-import { isPublishPlanError, publishErrorMessage } from "../publish-errors"
+import { isPublishPlanError, publishErrorMessage, publishStatusMessage } from "../publish-errors"
 
 const planError = Object.assign(new Error("Publishing to a subdomain is available on Pro and higher plans. Upgrade to publish."), {
   details: { error: { code: "plan_not_allowed" } },
@@ -33,5 +33,15 @@ describe("publishErrorMessage", () => {
     )
     expect(publishErrorMessage({ name: "AbortError" })).toMatch(/taking longer than expected/)
     expect(publishErrorMessage(new Error("Subdomain is already in use"))).toBe("Subdomain is already in use")
+  })
+})
+
+describe("publishStatusMessage", () => {
+  test("says an out-of-memory build needs a smaller build, not a retry", () => {
+    const oom = publishStatusMessage("build_oom")
+    expect(oom).toMatch(/out of memory/i)
+    expect(oom).toMatch(/publish again/i)
+    // Distinct from a plain build failure — that copy asks for a retry.
+    expect(oom).not.toBe(publishStatusMessage("build_failed"))
   })
 })

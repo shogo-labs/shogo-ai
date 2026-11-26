@@ -2,7 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
+import {
+  encodeProjectSettingsForWrite,
+  normalizeProjectSettings,
+  parseProjectSettings,
+} from '../lib/project-settings'
 
 describe('parseProjectSettings', () => {
   test('returns objects untouched (marketplace install shape)', () => {
@@ -50,5 +54,49 @@ describe('normalizeProjectSettings', () => {
     expect(normalizeProjectSettings(obj)).toBe(obj)
     expect(normalizeProjectSettings('{not valid json')).toBe('{not valid json')
     expect(normalizeProjectSettings(null)).toBeNull()
+  })
+})
+
+describe('encodeProjectSettingsForWrite', () => {
+  function withEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]))
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    try {
+      return fn()
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  }
+
+  const settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
+
+  test('pre-stringifies for SQLite, which json-parses the column on read', () => {
+    const encoded = withEnv(
+      { SHOGO_LOCAL_MODE: 'true', DATABASE_URL: 'postgresql://u:p@localhost:5432/db', SHOGO_APP_DATABASE_URL: undefined },
+      () => encodeProjectSettingsForWrite(settings),
+    )
+    expect(encoded).toBe(JSON.stringify(settings))
+  })
+
+  test('sends a bare object to Postgres so jsonb holds an object, not a string scalar', () => {
+    const encoded = withEnv(
+      { SHOGO_LOCAL_MODE: undefined, DATABASE_URL: 'postgresql://u:p@localhost:5432/db', SHOGO_APP_DATABASE_URL: undefined },
+      () => encodeProjectSettingsForWrite(settings),
+    )
+    expect(encoded).toEqual(settings)
+  })
+
+  test('treats a file: app database url as SQLite', () => {
+    const encoded = withEnv(
+      { SHOGO_LOCAL_MODE: undefined, DATABASE_URL: 'postgresql://u:p@localhost:5432/db', SHOGO_APP_DATABASE_URL: 'file:./dev.db' },
+      () => encodeProjectSettingsForWrite(settings),
+    )
+    expect(encoded).toBe(JSON.stringify(settings))
   })
 })

@@ -11,7 +11,6 @@ import { generateProxyToken } from '../ai-proxy-token'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import {
   INSTANCE_SIZES,
-  meetsMinimumInstanceSize,
   accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
@@ -178,20 +177,23 @@ export async function buildProjectEnv(
       // alone. Nothing persists an explicit `settings.runtimeClass` today (no
       // creation-flow write site), but if one is ever added, deriving from
       // the tech stack registry rather than trusting a project-settings field
-      // directly keeps `minimumInstanceSize`/`SHOGO_EXPOSED_PORTS`/warm-pool
-      // placement consistent with what the assigned stack actually declares
-      // — an unchecked `settings.runtimeClass` override could otherwise grant
-      // a docker-class VM (and its bigger instance floor) to a stack that
-      // never asked for one. A `settings.runtimeClass === 'docker'` that
-      // disagrees with the tech stack is logged (possible misconfiguration)
-      // but does not grant docker class on its own. Re-check the platform
-      // gate on every assignment (not just at creation) so flipping it off
-      // stops NEW assignments from requesting the docker-class VM pool
-      // without needing to touch every project row. A project that wants
-      // docker but is refused here silently gets a standard VM, where the
-      // `docker-compose` stack cannot actually run — that mismatch is a
-      // placement/gating bug to fix, not something this builder can repair,
-      // so it's logged loudly rather than swallowed.
+      // directly keeps `SHOGO_EXPOSED_PORTS`/warm-pool placement consistent
+      // with what the assigned stack actually declares — an unchecked
+      // `settings.runtimeClass` override could otherwise grant a docker-class
+      // VM to a stack that never asked for one. A `settings.runtimeClass ===
+      // 'docker'` that disagrees with the tech stack is logged (possible
+      // misconfiguration) but does not grant docker class on its own.
+      //
+      // The platform flag is the ONLY gate: docker is a VM class, not a
+      // compute tier (instance-size purchases were retired in SHO-424 and
+      // compute is metered per VM), so a docker stack runs on any workspace
+      // size. Re-check the flag on every assignment (not just at creation) so
+      // flipping it off stops NEW assignments from requesting the
+      // docker-class VM pool without needing to touch every project row. A
+      // project that wants docker but is refused here silently gets a
+      // standard VM, where the `docker-compose` stack cannot actually run —
+      // that mismatch is a placement/gating bug to fix, not something this
+      // builder can repair, so it's logged loudly rather than swallowed.
       const stackIsDockerClass = isDockerTechStack(techStackFromSettings)
       if (settings?.runtimeClass === 'docker' && !stackIsDockerClass) {
         console.error(
@@ -200,28 +202,12 @@ export async function buildProjectEnv(
             `ignoring the override and assigning a standard VM`,
         )
       }
-      const wantsDockerClass = stackIsDockerClass
-      if (wantsDockerClass) {
+      if (stackIsDockerClass) {
         if (!isDockerClassEnabled()) {
           console.error(
             `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
               `${techStackFromSettings ?? '?'}) but the platform gate ` +
               `(runtime.docker_class_enabled) is off — assigning a standard VM`,
-          )
-        } else if (!meetsMinimumInstanceSize(instanceSize as InstanceSizeName, techStackFromSettings)) {
-          // Defense-in-depth: the project-creation / stack-switch route
-          // should already have refused this via
-          // `billing.service.ts`'s `canRunTechStackOnInstanceSize()` — a
-          // workspace on `micro` should never be able to set
-          // `techStackId: 'docker-compose'` in the first place. If one
-          // slips through anyway (a bug, a manual DB edit, a workspace that
-          // was downsized after the fact), refuse the docker-class VM here
-          // too rather than silently handing out `large`-tier compute the
-          // workspace never paid for.
-          console.error(
-            `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
-              `${techStackFromSettings ?? '?'}) but workspace ${project.workspaceId ?? '?'} is on ` +
-              `instance size '${instanceSize}', below the stack's declared minimum — assigning a standard VM`,
           )
         } else {
           env.SHOGO_RUNTIME_CLASS = 'docker'
@@ -232,11 +218,7 @@ export async function buildProjectEnv(
         Object.assign(
           env,
           metalVmSizeEnv(
-            resolveMetalVmSize(
-              instanceSize as InstanceSizeName,
-              [techStackFromSettings],
-              env.SHOGO_RUNTIME_CLASS === 'docker',
-            ),
+            resolveMetalVmSize(instanceSize as InstanceSizeName, [techStackFromSettings]),
           ),
         )
         // Workspace-drive size for this assignment (SHO-349). The host grows the
@@ -549,6 +531,12 @@ export async function buildPublishedProjectEnv(
 
   env.SHOGO_PUBLISHED_MODE = 'true'
   env.PUBLISHED_SUBDOMAIN = subdomain
+  // The pages of a published app are built once, on the editing runtime, at
+  // publish: the bundle this same publish uploaded is what the `*.shogo.one`
+  // Worker serves. This pod answers `/api/*` only, so it must not re-run
+  // `expo export` — a cold Metro build needs ~2 GB and OOM-killed a size-`s`
+  // VM before `server.tsx` ever started (SHO-587).
+  env.SHOGO_PUBLISHED_WEB = 'artifact'
   env.PUBLISH_DOMAIN = publishDomain
   env.PUBLIC_PREVIEW_URL = `https://${subdomain}.${publishDomain}`
   // Source is restored read-only from the durable git repo (carries the

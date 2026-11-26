@@ -28,7 +28,15 @@ export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
 export type VideoProvider = 'higgsfield' | 'google'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
+/**
+ * Every model family, as a runtime array so consumers that *validate* against
+ * it (the super-admin catalog API, the admin form's segmented control) share
+ * one list with the {@link ModelFamily} type instead of hand-copying it. A
+ * hand-copied copy silently loses a member — `gemini` went missing that way
+ * and every Gemini edit was rejected with a 400 (SHO-558).
+ */
+export const MODEL_FAMILIES = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'gemini', 'other'] as const
+export type ModelFamily = (typeof MODEL_FAMILIES)[number]
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
@@ -85,6 +93,17 @@ export interface ModelCapabilities {
    * only decide whether video may leave the process.
    */
   supportsVideoInput?: boolean
+  /**
+   * What one sampled video frame costs this model, in prompt tokens.
+   *
+   * Each provider converts the frames it receives into image tokens, and the
+   * rate differs enough to matter: Gemini 4 charges about 73 tokens per frame
+   * while OpenRouter-hosted video models charge about 300 (both measured in
+   * #2268). `read_file` divides its frame budget by this number, so an
+   * unknown rate makes the budget wrong rather than merely imprecise. Absent
+   * means `DEFAULT_VIDEO_TOKENS_PER_FRAME`.
+   */
+  videoTokensPerFrame?: number
 }
 
 /**
@@ -693,7 +712,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: "Google's strongest reasoner: deep maths, complex software engineering and long-horizon agentic tasks.",
-    capabilities: { supportsVideoInput: true },
+    capabilities: { supportsVideoInput: true, videoTokensPerFrame: 73 },
   },
   'gemini-4-argon': {
     id: 'gemini-4-argon',
@@ -709,7 +728,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'high',
     description: "Google's flagship reasoner: complex software engineering, deep maths and multimodal analysis.",
-    capabilities: { supportsVideoInput: true },
+    capabilities: { supportsVideoInput: true, videoTokensPerFrame: 73 },
   },
   'gemini-4-neon': {
     id: 'gemini-4-neon',
@@ -725,7 +744,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: 'Fast frontier model: low-latency reasoning for time-sensitive agent turns.',
-    capabilities: { supportsVideoInput: true },
+    capabilities: { supportsVideoInput: true, videoTokensPerFrame: 73 },
   },
   'gemini-4-hydrogen': {
     id: 'gemini-4-hydrogen',
@@ -741,7 +760,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'low',
     description: 'Everyday workhorse: fast, affordable, and capable enough for most agent sub-tasks.',
-    capabilities: { supportsVideoInput: true },
+    capabilities: { supportsVideoInput: true, videoTokensPerFrame: 73 },
   },
   'gemini-3.1-pro-preview': {
     id: 'gemini-3.1-pro-preview',

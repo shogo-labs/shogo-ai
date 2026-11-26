@@ -120,7 +120,10 @@ describe('pool home-state durability', () => {
 
       pool.outcome = { status: 'refused', reason: 'untrusted', quarantineKey: 'conflict/p1/x-home.enc' }
       expect(await pool.saveHomeStateToStore(a, { final: true })).toBe(false)
-      expect(pool.uploads[0].opts).toEqual({ lineage: { kind: 'untrusted', reason: 'hydrate failed' }, preserveOnRefusal: true })
+      expect(pool.uploads[0].opts).toMatchObject({
+        lineage: { kind: 'untrusted', reason: 'hydrate failed' },
+        preserveOnRefusal: true,
+      })
     })
 
     test('a conflict distrusts the VM for the rest of its life', async () => {

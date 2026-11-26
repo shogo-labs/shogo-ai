@@ -10,7 +10,9 @@
  * timeline on wide screens (replacing the other panes), in its place on narrow.
  * `?files=1` lists the conversation's files in the same pane.
  * `?file=<url>` opens a file from chat (a `share_file` link or a stored chat
- * attachment) in that pane, in the app's own viewer — never a browser tab.
+ * attachment) in that pane, in the app's own viewer — never a browser tab. A
+ * file opened while a thread or a card is open keeps it in the URL, so it sits
+ * beside it where there is room and closing the file brings it back.
  * `?board=<id>` shows one of the channel's boards in place of the timeline;
  * `?card=<id>` opens a card beside it on wide screens (taking over from the
  * other panes) and in its place on narrow ones. `?profile=<userId>` shows a
@@ -44,10 +46,10 @@ import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { FilesPane } from '../../../components/team-chat/FilesPane'
-import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
+import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/layout/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
-import { ChannelTabs, channelSupportsDoc, channelTabItems } from '../../../components/team-chat/ChannelTabs'
+import { ChannelTabs, channelSupportsDoc, channelSupportsTabs, channelTabItems } from '../../../components/team-chat/ChannelTabs'
 import { ShareFileView } from '../../../components/chat/ShareFileViewer'
 import { ShareFileProvider, type ShareFileTarget } from '../../../components/chat/share-file-context'
 import { parseInAppFileHref } from '../../../lib/share-file-links'
@@ -146,12 +148,28 @@ export default function ConversationScreen() {
     minWidth: THREAD_PANE_MIN,
     maxWidth: maxPaneWidth,
   })
+  /**
+   * A file opened from a card shares the pane column with it when the timeline,
+   * the card and the file all fit (SHO-589). Decided here from the widths the
+   * panes actually have, so the file pane can shrink to leave the card its
+   * room, and `resolvePanes` only has to know the answer.
+   */
+  const fitsCardAndFile =
+    sidePane && !!cardId && width >= MAIN_TIMELINE_MIN + cardPane.width + THREAD_PANE_MIN
   const filePane = useSidePaneWidth({
     storageKey: 'shogo.teamChat.filePaneWidth',
     defaultWidth: FILE_PANE_DEFAULT,
     minWidth: THREAD_PANE_MIN,
-    maxWidth: maxPaneWidth,
+    maxWidth: Math.max(THREAD_PANE_MIN, maxPaneWidth - (fitsCardAndFile ? cardPane.width : 0)),
   })
+  // Beside a card the file pane never grows into the card's room, and the card
+  // never grows into the file's, so both stay visible while either is dragged.
+  const cardPaneMaxWidth = fitsCardAndFile
+    ? Math.max(THREAD_PANE_MIN, maxPaneWidth - filePane.width)
+    : maxPaneWidth
+  const filePaneMaxWidth = fitsCardAndFile
+    ? Math.max(THREAD_PANE_MIN, maxPaneWidth - cardPane.width)
+    : maxPaneWidth
   const { features } = usePlatformConfig()
   const boardsOn = !!features.workBoards
   const channelBoards = useChannelBoards(workspaceId, conversationId, boardsOn && !!conversation && channelSupportsDoc(conversation))
@@ -274,7 +292,7 @@ export default function ConversationScreen() {
   )
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openFiles = useCallback(
-    () => router.setParams({ files: '1', doc: undefined, thread: undefined, project: undefined } as any),
+    () => router.setParams({ files: '1', doc: undefined, board: undefined, card: undefined, thread: undefined, project: undefined } as any),
     [router],
   )
   const closeFiles = useCallback(() => router.setParams({ files: undefined } as any), [router])
@@ -294,6 +312,8 @@ export default function ConversationScreen() {
     [router],
   )
   const closeDoc = useCallback(() => router.setParams({ doc: undefined, board: undefined } as any), [router])
+  /** The Messages tab: out of the doc, a board or the files list, back to the timeline. */
+  const showMessages = useCallback(() => router.setParams({ doc: undefined, board: undefined, files: undefined } as any), [router])
   const openBoard = useCallback(
     (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined, from: undefined } as any),
     [router],
@@ -305,12 +325,14 @@ export default function ConversationScreen() {
   const closeCard = useCallback(() => router.setParams({ card: undefined } as any), [router])
   /**
    * Open a file from chat in the pane. A thread left in the URL is kept (as a
-   * profile is) so closing the file brings it back, and the other panes step
-   * aside — a file link should never open a tab or a second window.
+   * profile is) so closing the file brings it back, and so is a card: a file
+   * clicked inside a card sits beside it where there is room and takes its
+   * place where there is not, and either way closing the file shows the card
+   * again instead of dropping to the timeline (SHO-589).
    */
   const openShareFile = useCallback(
     (target: ShareFileTarget) =>
-      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined, card: undefined } as any),
+      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined } as any),
     [router],
   )
   const closeShareFile = useCallback(() => router.setParams({ file: undefined } as any), [router])
@@ -386,6 +408,8 @@ export default function ConversationScreen() {
 
   const visible = focused && foreground
   const supportsDoc = channelSupportsDoc(conversation)
+  // DMs list their files too, so every conversation but #activity gets tabs.
+  const supportsTabs = channelSupportsTabs(conversation)
   const boardId = supportsDoc && boardsOn ? boardParam : null
   const docOpen = supportsDoc && docParam && !boardId
   const {
@@ -409,6 +433,7 @@ export default function ConversationScreen() {
     cardId,
     profilePaneId,
     fileOpen: !!openFile,
+    fitsCardAndFile,
   })
   const projectPaneName =
     (projectPaneId &&
@@ -427,14 +452,16 @@ export default function ConversationScreen() {
     conversation,
     docOpen,
     onOpenDoc: openDoc,
-    onShowMessages: closeDoc,
+    onShowMessages: showMessages,
+    filesOpen,
+    onOpenFiles: openFiles,
     boards,
     activeBoardId: boardId,
     onOpenBoard: openBoard,
     onAddBoard,
   }
   // On a phone the tabs live in the header's glass panel (like Slack), not in a strip under it.
-  const tabsMenu = supportsDoc && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
+  const tabsMenu = supportsTabs && floating ? { items: channelTabItems(tabProps), onAddBoard } : undefined
   const header = (
     <ConversationHeader
       conversation={conversation}
@@ -445,7 +472,6 @@ export default function ConversationScreen() {
       onDeleted={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
-      onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
       onFilterByMember={filterByMember}
       onClearMemberFilter={clearMemberFilter}
@@ -454,7 +480,7 @@ export default function ConversationScreen() {
       tabsMenu={tabsMenu}
     />
   )
-  const tabs = supportsDoc && !floating ? <ChannelTabs {...tabProps} /> : null
+  const tabs = supportsTabs && !floating ? <ChannelTabs {...tabProps} /> : null
   // The phone header floats over the content; the content clears it with this inset.
   const topInset = headerHeight
 
@@ -570,7 +596,7 @@ export default function ConversationScreen() {
                 <SidePaneResizeHandle
                   width={cardPane.width}
                   minWidth={THREAD_PANE_MIN}
-                  maxWidth={maxPaneWidth}
+                  maxWidth={cardPaneMaxWidth}
                   onResize={cardPane.setWidth}
                   onResizeEnd={cardPane.commit}
                   onReset={cardPane.reset}
@@ -599,7 +625,7 @@ export default function ConversationScreen() {
                 <SidePaneResizeHandle
                   width={filePane.width}
                   minWidth={THREAD_PANE_MIN}
-                  maxWidth={maxPaneWidth}
+                  maxWidth={filePaneMaxWidth}
                   onResize={filePane.setWidth}
                   onResizeEnd={filePane.commit}
                   onReset={filePane.reset}

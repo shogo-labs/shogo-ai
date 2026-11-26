@@ -13,8 +13,11 @@ export const ACCENT_PRESETS = {
   'shogo-orange': {
     label: 'Shogo Orange',
     swatch: '#E27927',
+    // Shogo orange is one colour in both themes: #E27927, the brand orange the
+    // update bar and the app icon use. A lighter dark-mode tint read as a
+    // washed-out peach once SHO-544 moved every bar/spinner onto primary.
     light: { primary: '226 121 39', primaryForeground: '255 255 255', ring: '226 121 39' },
-    dark: { primary: '240 144 80', primaryForeground: '255 255 255', ring: '240 144 80' },
+    dark: { primary: '226 121 39', primaryForeground: '255 255 255', ring: '226 121 39' },
   },
   blue: {
     label: 'Blue',

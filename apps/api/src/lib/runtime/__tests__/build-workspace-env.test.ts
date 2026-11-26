@@ -92,31 +92,40 @@ describe('buildWorkspaceEnv', () => {
     expect(env.TECH_STACK_ID).toBeUndefined()
   })
 
-  it('requests a docker VM when a member is docker-compose, the gate is on, and the workspace is large enough', async () => {
+  it('requests a docker VM when a member is docker-compose and the gate is on', async () => {
     setDockerClassOverride(true)
     try {
+      // SHO-578: no instance-size floor — a micro workspace (nearly every
+      // workspace in prod) gets the docker VM too.
       const env = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,
-        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'large' }),
+        forMetal: true,
+        anchorProjectId: 'p1',
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
         _loadProjects: async (ids: string[]) =>
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
       } as any)
       expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+      expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+      expect(env.SHOGO_VM_MEM_MIB).not.toBe('16384')
     } finally {
       setDockerClassOverride(null)
     }
   })
 
-  it('keeps a docker-compose workspace on a standard VM when the compute tier is too small', async () => {
-    setDockerClassOverride(true)
+  it('keeps a docker-compose workspace on a standard VM when the platform gate is off', async () => {
+    setDockerClassOverride(false)
     try {
       const env = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,
-        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
+        forMetal: true,
+        anchorProjectId: 'p1',
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'large' }),
         _loadProjects: async (ids: string[]) =>
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
       } as any)
       expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+      expect(env.SHOGO_VM_MEM_MIB).toBe('4096')
     } finally {
       setDockerClassOverride(null)
     }
@@ -153,7 +162,9 @@ describe('buildWorkspaceEnv', () => {
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
       } as any)
       expect(docker.SHOGO_VM_VCPUS).toBe('8')
-      expect(docker.SHOGO_VM_MEM_MIB).toBe('16384')
+      // SHO-578: the docker stack no longer lifts the budget accounting to
+      // 16 GiB — a docker VM is metered like any other VM.
+      expect(docker.SHOGO_VM_MEM_MIB).toBe('4096')
 
       const standard = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,

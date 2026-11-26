@@ -36,6 +36,7 @@ export const MODEL_TABLE: Readonly<Record<string, string>> = {
   GoalEvent: 'goal_events',
   AgentSchedule: 'agent_schedules',
   EventSubscription: 'event_subscriptions',
+  AgentCostMetric: 'agent_cost_metrics',
   Conversation: 'conversations',
   Huddle: 'huddles',
   HuddleParticipant: 'huddle_participants',

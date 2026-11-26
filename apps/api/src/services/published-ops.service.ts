@@ -73,6 +73,11 @@ export interface PublishedEnvironmentStatus {
     scale: PublishedScaleSettings
     dbProvider: string | null
     dbName: string | null
+    /**
+     * What the last successful publish left out — the Postgres seed's orphan
+     * report. Null when nothing was skipped.
+     */
+    publishNotice: string | null
   }
   replicas: { ready: number; total: number; desired: number | null }
   revision: string | null
@@ -125,6 +130,7 @@ export async function getEnvironmentStatus(
         scale: scaleSettingsOf(env),
         dbProvider: env.dbProvider,
         dbName: env.dbName,
+        publishNotice: env.publishNotice,
       },
       replicas: {
         ready: pods.filter((p) => p.ready).length,

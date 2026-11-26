@@ -32,6 +32,8 @@ export interface TimelineState {
     tools?: Array<{ name: string; done: boolean }>
     queue?: QueuePosition | null
     waiting?: { tool: string | null } | null
+    /** The run is summarizing its context, so the dock says "Summarizing…" (SHO-556). */
+    summarizing?: boolean
   }>
 }
 
@@ -143,7 +145,14 @@ export function applyTimelineEvent(state: TimelineState, event: TeamChatEvent, s
             ...(event.queue !== undefined ? { queue: event.queue } : {}),
             ...(event.waiting !== undefined ? { waiting: event.waiting } : {}),
           }
-        : { ...(prev ?? {}), text: event.text, tool: event.tool, tools: event.tools }
+        : {
+            ...(prev ?? {}),
+            text: event.text,
+            tool: event.tool,
+            tools: event.tools,
+            // "Summarizing…" replaces the working line on the dock (SHO-556).
+            summarizing: event.summarizing ?? false,
+          }
       return { ...state, streaming: { ...state.streaming, [event.messageId]: next } }
     }
     default:

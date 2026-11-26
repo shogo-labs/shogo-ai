@@ -20,7 +20,7 @@
  */
 
 import type { HttpClient } from '@shogo-ai/sdk'
-import { api, type ActiveChatTurn, type AgentTask } from './api'
+import { api, type ActiveChatTurn, type AgentTask, type RecentAgentChat } from './api'
 
 /** How long one answer is reused. Matches the activity hooks' 5 s cadence. */
 export const ACTIVITY_TTL_MS = 5_000
@@ -110,6 +110,29 @@ export class WorkspaceActivityCache {
       `active-chats:${workspaceId}`,
       () => api.listWorkspaceActiveChats(http, workspaceId),
       opts,
+    )
+  }
+
+  /**
+   * The person's recent agent chats (`GET .../agent-chats/recent`). Shared so
+   * the menu-bar publisher and any screen asking for the same slice join one
+   * request per poll window instead of each running their own.
+   */
+  recentAgentChats(
+    http: HttpClient,
+    workspaceId: string | undefined,
+    opts: { limit?: number; perAgent?: boolean; includePinned?: boolean; fresh?: boolean } = {},
+  ): Promise<RecentAgentChat[]> {
+    const limit = opts.limit ?? 5
+    const perAgent = opts.perAgent ?? false
+    const includePinned = opts.includePinned ?? false
+    return this.read(
+      `recent-agent-chats:${workspaceId ?? 'none'}:${limit}:${perAgent ? 1 : 0}:${includePinned ? 1 : 0}`,
+      () =>
+        workspaceId
+          ? api.listRecentAgentChats(http, workspaceId, { limit, perAgent, includePinned })
+          : Promise.resolve([]),
+      { fresh: opts.fresh },
     )
   }
 

@@ -72,6 +72,10 @@ let autoStopTimer: ReturnType<typeof setTimeout> | null = null
 // the recording in progress.
 let meetingState: IslandMeetingState = EMPTY_ISLAND_MEETING_STATE
 const meetingListeners = new Set<(state: IslandMeetingState) => void>()
+/** Everyone who draws the recording state (the menu-bar item's icon and
+ * timer). Separate from the meeting listeners: those follow the prompt, this
+ * follows capture, and a recording can start without any prompt. */
+const recordingStateListeners = new Set<() => void>()
 let meetingPromptTimer: ReturnType<typeof setTimeout> | null = null
 /** Returns true when the island will show the prompt, so the native
  * notification would only duplicate it. */
@@ -245,6 +249,7 @@ function handleRecordingEvent(evt: RecordingEvent): void {
       startLiveTranscript(evt.session.id)
       sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
       dispatchMeeting({ type: 'recording-started', id: evt.session.id, now: Date.now() })
+      dispatchRecordingState()
       break
     case 'session-stopped': {
       console.log(
@@ -252,6 +257,7 @@ function handleRecordingEvent(evt: RecordingEvent): void {
         `(mic=${evt.micBytes} bytes, system=${evt.systemBytes} bytes, mixed=${evt.mixedCreated})`,
       )
       dispatchMeeting({ type: 'recording-stopped' })
+      dispatchRecordingState()
       // The renderer finishes the meeting on this event, so hold it until the
       // last live chunk lands (bounded by the transcriber's timeout).
       const { session, duration } = evt
@@ -269,6 +275,7 @@ function handleRecordingEvent(evt: RecordingEvent): void {
       stopLiveTranscript()
       console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)
       dispatchMeeting({ type: 'recording-stopped' })
+      dispatchRecordingState()
       break
     case 'source-ready':
       console.log(`[Recording] ${evt.source} source ready: ${evt.sampleRate}Hz x${evt.channels}`)
@@ -305,6 +312,29 @@ export function onMeetingStateChange(listener: (state: IslandMeetingState) => vo
   meetingListeners.add(listener)
   return () => {
     meetingListeners.delete(listener)
+  }
+}
+
+function dispatchRecordingState(): void {
+  for (const listener of recordingStateListeners) {
+    try {
+      listener()
+    } catch (err) {
+      console.warn('[Recording] recording-state listener failed:', err)
+    }
+  }
+}
+
+/**
+ * Fires on every capture start, stop and abort, whoever began it — the tray,
+ * the island, the renderer, the HTTP bridge or auto-detect. Without it the
+ * menu-bar item never learns a recording began: no recording icon, no timer,
+ * and the menu keeps offering Start while capture is running.
+ */
+export function onRecordingStateChange(listener: () => void): () => void {
+  recordingStateListeners.add(listener)
+  return () => {
+    recordingStateListeners.delete(listener)
   }
 }
 

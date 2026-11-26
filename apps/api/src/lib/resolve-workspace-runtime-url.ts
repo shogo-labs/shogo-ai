@@ -24,6 +24,7 @@
 
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
+import { workspaceRuntimeMembers } from './runtime/workspace-runtime-members'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
 import { metrics } from '@opentelemetry/api'
 import { getBillingWorkspaceTrustHold } from './signup-trust'
@@ -314,7 +315,8 @@ export async function resolveWorkspaceRuntimeUrl(
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
     // On metal a project is online only in its own `ws:proj:<id>` runtime;
     // other runtimes reach it through the remote-tool channel, never a mount.
-    const metalMembers = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    // One definition, shared with the `/pod-config` token refresh (SHO-560).
+    const metalMembers = workspaceRuntimeMembers({ anchorProjectId: opts.anchorProjectId, forMetal: true })
     const leaseStartedAt = performance.now()
     const url = await spawnLease(leaseKey, () => {
       spawnLeaseWait.record(performance.now() - leaseStartedAt, { phase: 'api.spawn_lease', mode: 'workspace' })

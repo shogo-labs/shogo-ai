@@ -13,6 +13,7 @@ import { usePathname } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
+import { PhoneBackButton } from './PhoneBackButton'
 import { NATIVE_PHONE_HEADER_ICON_SIZE,
   WEB_WIDE_MIN_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 import { PHONE_DENSITY } from '../../lib/phone-density'
@@ -51,9 +52,11 @@ const overlayControlClass =
 interface AppHeaderProps {
   onMenuPress?: () => void
   menuOpen?: boolean
+  /** The header sits above a pushed screen: Back leaves it instead of opening the menu. */
+  back?: boolean
 }
 
-export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
+export function AppHeader({ onMenuPress, menuOpen = false, back = false }: AppHeaderProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
@@ -90,15 +93,19 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
               }
         }
       >
-        <Pressable
-          onPress={onMenuPress}
-          accessibilityRole="button"
-          accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
-          hitSlop={4}
-          className={overlayControlClass}
-        >
-          <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
-        </Pressable>
+        {back ? (
+          <PhoneBackButton />
+        ) : (
+          <Pressable
+            onPress={onMenuPress}
+            accessibilityRole="button"
+            accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
+            hitSlop={4}
+            className={overlayControlClass}
+          >
+            <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
+          </Pressable>
+        )}
         {useFloatingChrome ? (
           <View className="flex-1" pointerEvents="none" />
         ) : (

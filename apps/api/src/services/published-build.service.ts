@@ -58,6 +58,8 @@ export type PublishedBuildFailureCode =
   | 'build_failed'
   | 'build_timeout'
   | 'build_digest_missing'
+  /** The runtime handed back a SQLite build context for a Postgres environment. */
+  | 'postgres_context_failed'
 
 export interface PublishedImageReady {
   ok: true
@@ -87,6 +89,12 @@ export interface EnsurePublishedImageInput {
   commitSha: string
   createdBy?: string | null
   /**
+   * The database the published app will use. A Postgres app requires a
+   * different image from a SQLite app of the same commit — they differ in
+   * `src/lib/db.tsx` — so the driver is part of the image identity (SHO-551 B).
+   */
+  dbProvider?: 'sqlite' | 'postgres'
+  /**
    * The caller already ran the app build for this publish, so the runtime's
    * publish staging dir is current. Skips the redundant build inside
    * `uploadArtifact` — a second full Vite/Expo build that the publish step
@@ -105,12 +113,13 @@ export interface EnsurePublishedImageInput {
  */
 export interface PublishedBuildDeps {
   config: () => { ok: boolean; config: PublishedBuildConfig | null; missing: string[] }
-  findReusableImage: (input: { projectId: string; commitSha: string }) => Promise<{ imageRef: string; imageDigest: string } | null>
+  findReusableImage: (input: { projectId: string; commitSha: string; variant?: string }) => Promise<{ imageRef: string; imageDigest: string } | null>
   uploadArtifact: (input: {
     projectId: string
     subdomain: string
     commitSha: string
     alreadyBuilt?: boolean
+    dbProvider?: 'sqlite' | 'postgres'
   }) => Promise<{ url: string; bytes?: number } | { error: string; code?: PublishedBuildFailureCode }>
   createJob: (job: BuildKitJobObject) => Promise<void>
   readJob: (name: string, namespace: string) => Promise<{
@@ -150,10 +159,23 @@ export async function ensurePublishedImage(
   }
   const config = setup.config
 
+  // A Postgres image differs from a SQLite image of the same commit (the db
+  // driver is baked in), so the variant is part of the reuse key (SHO-551 B).
+  const variant = input.dbProvider === 'postgres' ? 'pg' : undefined
+
   // The image does not depend on the environment — only env vars differ — so a
-  // commit built for staging is the same image production runs.
-  const reusable = await deps.findReusableImage({ projectId: input.projectId, commitSha })
-  if (reusable?.imageDigest) {
+  // commit built for staging is the same image production runs. The variant is
+  // part of the reuse key, because the db driver is baked into the image (SHO-551 B):
+  // the default `findReusableImage` filters on the recorded tag, and this check
+  // makes a deps implementation that returns the wrong variant unusable rather
+  // than silently serving a SQLite client to a Postgres pod.
+  const reusable = await deps.findReusableImage({ projectId: input.projectId, commitSha, variant })
+  const { publishedImageCommitTag: commitTagFn } = await import('@shogo/shared-runtime/published-image-ref')
+  const expectedTag = commitTagFn(commitSha, variant)
+  // A tag ref carries the variant as its suffix. A digest-pinned ref carries no
+  // variant, so it cannot be attributed to this publish shape and is not reused.
+  const reusableMatchesVariant = !!reusable?.imageRef.endsWith(`:${expectedTag}`)
+  if (reusable?.imageDigest && reusableMatchesVariant) {
     deps.log(`[PublishedBuild] Reusing ${reusable.imageDigest} for ${input.projectId}@${commitSha.slice(0, 8)}`)
     return {
       ok: true,
@@ -169,6 +191,7 @@ export async function ensurePublishedImage(
     subdomain: input.subdomain,
     commitSha,
     alreadyBuilt: input.alreadyBuilt === true,
+    dbProvider: input.dbProvider,
   })
   if ('error' in artifact) {
     return {
@@ -181,11 +204,13 @@ export async function ensurePublishedImage(
     }
   }
 
-  const imageRef = publishedImageTagRef({ ...config, projectId: input.projectId, commitSha })
-  const jobName = buildJobName(input.projectId, commitSha)
+  const imageRef = publishedImageTagRef({ ...config, projectId: input.projectId, commitSha, variant })
+  const jobName = buildJobName(input.projectId, commitSha, variant)
   const job = buildPublishedImageJob({
     projectId: input.projectId,
     commitSha,
+    variant,
+    jobName,
     imageRef,
     artifactUrl: artifact.url,
     namespace: config.k8sNamespace,
@@ -311,12 +336,19 @@ function defaultDeps(): PublishedBuildDeps {
 }
 
 /**
- * The commit's image if this project (in any environment) already has one.
+ * The commit's image if this project (in any environment) already has one, for
+ * **this build variant**.
+ *
  * `imageDigest` is what makes reuse safe: a tag can be moved, a digest cannot.
+ * The variant is in the key too, because the database driver is baked into the
+ * image — reusing a SQLite build for a Postgres publish (or the reverse) boots a
+ * pod with the wrong driver, and the recorded `:<sha>` / `:<sha>-pg` tag is the
+ * only place that distinction is stored (SHO-551 B, QA round 1).
  */
 async function findReusableImage(input: {
   projectId: string
   commitSha: string
+  variant?: string
 }): Promise<{ imageRef: string; imageDigest: string } | null> {
   // Deployments hang off environments, and there is no relation from a
   // deployment back to the project — so resolve the project's environments
@@ -328,12 +360,17 @@ async function findReusableImage(input: {
   const environmentIds = (environments ?? []).map((row: { id: string }) => row.id)
   if (environmentIds.length === 0) return null
 
+  const { publishedImageCommitTag } = await import('@shogo/shared-runtime/published-image-ref')
+  const expectedTag = publishedImageCommitTag(input.commitSha, input.variant)
+
   const row = await (prisma as any).publishedDeployment.findFirst({
     where: {
       commitSha: input.commitSha,
       environmentId: { in: environmentIds },
       imageDigest: { not: null },
       status: 'ready',
+      // Exact tag match, both ways: `:abc123` never matches `:abc123-pg`.
+      imageRef: { endsWith: `:${expectedTag}` },
     },
     orderBy: { createdAt: 'desc' },
   })
@@ -440,6 +477,8 @@ export async function uploadPublishedArtifact(input: {
   subdomain: string
   commitSha: string
   alreadyBuilt?: boolean
+  /** SHO-551 B: when 'postgres', tells the runtime to swap the schema and db.ts in the build context. */
+  dbProvider?: 'sqlite' | 'postgres'
 }): Promise<{ url: string; bytes?: number } | { error: string; code?: PublishedBuildFailureCode }> {
   try {
     // The publish flow builds the app before it gets here, so the runtime's
@@ -457,7 +496,12 @@ export async function uploadPublishedArtifact(input: {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const { getS3Client } = await import('../lib/s3')
     const podUrl = await getProjectPodUrl(input.projectId)
-    const key = `${input.subdomain}/artifacts/${input.commitSha}.tar.gz`
+    // The variant is part of the key: a SQLite context and a Postgres one are
+    // different build inputs for the same commit, and reusing the SQLite tar in
+    // a Postgres environment is how a LibSQL client ended up talking to
+    // projects-pg on staging (SHO-551, QA round 5).
+    const artifactVariant = input.dbProvider === 'postgres' ? '-pg' : ''
+    const key = `${input.subdomain}/artifacts/${input.commitSha}${artifactVariant}.tar.gz`
 
     // The runtime may have no object store of its own (a runtime whose env never
     // got `S3_LFS_BUCKET`/`S3_WORKSPACES_BUCKET`), and base64 cannot carry a
@@ -473,6 +517,7 @@ export async function uploadPublishedArtifact(input: {
 
     const requestArtifact = async (projectId: string) => {
       const query = new URLSearchParams({ projectId, bucket, key, putUrl })
+      if (input.dbProvider === 'postgres') query.set('db', 'postgres')
       const res = await fetch(`${podUrl}/agent/publish-artifact?${query.toString()}`, {
         headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
         signal: AbortSignal.timeout(publishArtifactUploadTimeoutMs()),
@@ -486,7 +531,22 @@ export async function uploadPublishedArtifact(input: {
         bytes?: number
         archive?: string
         message?: string
+        dbContext?: string
         offload?: { skipped?: string }
+      }
+      if (input.dbProvider === 'postgres' && body.dbContext !== 'postgres') {
+        // The runtime tarred a SQLite context for a Postgres environment — an
+        // older runtime that ignores `db=postgres`. The API rolls out before the
+        // runtimes, so this has to be caught on this side as well: shipping it
+        // loses every write made on another pod (SHO-551, QA round 5).
+        return {
+          ok: false as const,
+          status: 502,
+          body:
+            'the runtime did not produce a Postgres build context for this environment' +
+            (body.dbContext ? ` (it reported "${body.dbContext}")` : ' (it reported none)') +
+            ' — the published pod would run a SQLite client against the Postgres database',
+        }
       }
       if (body.offload?.skipped === 'no_object_store') {
         console.warn(
@@ -548,9 +608,11 @@ export async function uploadPublishedArtifact(input: {
     )
     if ('error' in artifact) {
       const tooLarge = artifact.error.includes('artifact_too_large')
+      const wrongDb = artifact.error.includes('Postgres build context')
       return {
         error: artifact.error,
         ...(tooLarge ? { code: 'artifact_too_large' as const } : {}),
+        ...(wrongDb ? { code: 'postgres_context_failed' as const } : {}),
       }
     }
     if (artifact.ref.bytes === 0) return { error: 'artifact tarball was empty' }

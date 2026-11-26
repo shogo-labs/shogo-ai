@@ -23,6 +23,7 @@ import { guestBusy } from './runtime-busy'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
+import { lfsPushFailureBody } from './lfs-failure-body'
 import {
   existsSync,
   readFileSync,
@@ -575,17 +576,6 @@ async function awaitLfsPush(
   return { state, job }
 }
 
-/** The 503 body for a failed push: the reason, the real stderr, and what is missing. */
-function lfsPushFailureBody(err: LfsPushError) {
-  return {
-    error: `lfs push failed (${err.reason}): ${err.message}`,
-    code: 'lfs-push-failed',
-    reason: err.reason,
-    stderr: err.stderr.slice(0, 16_000),
-    missing: err.missing,
-  }
-}
-
 /**
  * Push this repo's new LFS objects for a save, through the SAME runner the
  * `/pool/export*` routes use, and answer whether the bytes are now durable.
@@ -1034,6 +1024,12 @@ const { app, state, logTiming } = await createRuntimeApp({
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
     const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
+    // A merged workspace runtime keeps its projects' repos in subfolders and
+    // never has a root `.git`, and a runtime whose repo was dropped has none
+    // either. Reporting a HEAD it can never export refused that VM for
+    // durability on every sweep, forever (SHO-540).
+    const repoPresent = existsSync(join(WORKSPACE_DIR, '.git'))
+    if (!repoPresent) cachedRepoHeadSha = null
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -1043,7 +1039,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       activeTurns: work.turns,
       activeTasks: work.tasks,
       activeChildren: work.children ?? 0,
-      repoHeadSha: cachedRepoHeadSha,
+      repoHeadSha: repoPresent ? cachedRepoHeadSha : null,
+      repoPresent,
       previewHealth: safePreviewHealth(),
     }
   },
@@ -3848,18 +3845,28 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s)) throw new Error('since must be object ids')
       return s
     })
+    // A workspace runtime keeps its members' repos in subfolders and has no
+    // root `.git`, so there is nothing here to bundle. Asking git for a
+    // snapshot used to answer 500, which the host recorded as a failed export
+    // for a VM that has no repo at all — and, since the guest kept reporting a
+    // HEAD, refused it for durability forever (SHO-540). Say "no repo" instead.
+    if (!existsSync(join(destinationDir, '.git'))) {
+      return c.json({ code: 'no-repo', error: 'this runtime has no root git repo' }, 404)
+    }
     await flushGitBeforeExport(destinationDir)
-    // A workspace runtime keeps its members' repos in subfolders and drops
-    // the root `.git`, so the root can have no repo and nothing to push.
-    //
     // The push is a background job (SHO-442): a media-heavy history takes
     // minutes, so the request waits only `waitMs` and then answers 202 with
     // progress. The next call joins the same job instead of starting over, and
     // a host that stopped waiting cannot make it restart.
     let lfsMissing: import('@shogo/shared-runtime').LfsMissingObject[] = []
-    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+    if (isLfsActive()) {
       const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
-      const push = await awaitLfsPush(destinationDir, since, waitMs)
+      // Both lower bounds are valid: the refs the host's last manifest covered,
+      // and the tips this repo recorded as pushed. Naming both walks the union
+      // of what is still unsent instead of everything since the older one.
+      const marker = since ? lfsPushedTips(destinationDir) : null
+      const base = since && marker?.length ? [...new Set([...since, ...marker])] : since
+      const push = await awaitLfsPush(destinationDir, base, waitMs)
       if (push?.state === 'pending') {
         return c.json(
           {
@@ -4481,9 +4488,13 @@ app.post('/templates/copy', async (c) => {
     console.log(`[templates/copy] Prisma schema left as-is (Prisma 7.x adapter mode)`)
 
     // Rewrite db.tsx to use @prisma/adapter-libsql for SQLite
-    // (templates ship with PrismaPg adapter but run on SQLite in the runtime)
+    // (templates ship with PrismaPg adapter but run on SQLite in the runtime),
+    // but only when the project is NOT already on Postgres: a published pod whose
+    // DATABASE_URL points at projects-pg must keep its Postgres adapter (SHO-551 B).
+    const projectDatabaseUrl = (process.env.DATABASE_URL ?? '').trim()
+    const isPostgresDatabaseUrl = /^postgres(ql)?:\/\//.test(projectDatabaseUrl)
     const dbTsxPath = join(projectDir, 'src', 'lib', 'db.tsx')
-    if (existsSync(dbTsxPath)) {
+    if (existsSync(dbTsxPath) && !isPostgresDatabaseUrl) {
       const SQLITE_DB_TSX = `import { PrismaLibSql } from '@prisma/adapter-libsql'
 import { PrismaClient } from '../generated/prisma/client'
 
@@ -6668,6 +6679,31 @@ app.post('/agent/published-data/suspend', (c) => {
     return c.json({ ok: true, suspended: true })
   }
   return c.json({ ok: true, suspended: false })
+})
+
+/**
+ * Upload this pod's writable state NOW instead of at the next sync interval
+ * (§G3). The publish flow calls it inside a write freeze, so the archive it is
+ * about to seed Postgres from holds the last write the SQLite site accepted —
+ * without it, up to `PUBLISHED_DATA_SYNC_INTERVAL` (30 s) of real writes stay on
+ * a pod that the new revision replaces.
+ *
+ * `flushed: false, unchanged: true` is a success: the archive already holds this
+ * pod's current bytes, so there is nothing newer to wait for.
+ */
+app.post('/agent/published-data/flush', async (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode', message: 'Only server-backed published pods can be flushed' }, 400)
+  }
+  if (!publishedDataSyncInstance) {
+    return c.json({ ok: true, flushed: false, unchanged: true })
+  }
+  try {
+    const flushed = await publishedDataSyncInstance.flush()
+    return c.json({ ok: true, flushed, unchanged: !flushed })
+  } catch (err: any) {
+    return c.json({ error: 'flush_failed', message: err?.message ?? String(err) }, 500)
+  }
 })
 
 /**

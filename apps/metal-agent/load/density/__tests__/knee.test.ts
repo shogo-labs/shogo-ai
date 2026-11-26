@@ -29,6 +29,23 @@ function healthy(n: number, over: Partial<StepMetrics> = {}): StepMetrics {
   }
 }
 
+describe('a bound with no sample is not a pass', () => {
+  // A burst window never probes suspend/resume, so `percentile([], 95)` used to
+  // hand the verdict a 0 ms — a bound it "passed" without measuring anything, and
+  // the report printed "resume p95 0 ms".
+  test('skips the resume bound when the window has no resume sample', () => {
+    const v = evaluateStep(healthy(80, { resumeP95Ms: null }), baseline)
+    expect(v.cpuPass).toBe(true)
+    expect(v.cpuReasons.join(' ')).not.toContain('resume')
+  })
+
+  test('still fails a step whose measured resume misses the SLO', () => {
+    const v = evaluateStep(healthy(80, { resumeP95Ms: 2400 }), baseline)
+    expect(v.cpuPass).toBe(false)
+    expect(v.cpuReasons.join(' ')).toContain('resume p95 2400ms')
+  })
+})
+
 describe('evaluateStep', () => {
   test('a healthy step passes both knees', () => {
     const v = evaluateStep(healthy(40), baseline)

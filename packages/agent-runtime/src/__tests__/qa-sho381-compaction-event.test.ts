@@ -54,7 +54,11 @@ async function runTurn(opts: { name: string; toolCalls: number; charsPerResult: 
     await (gw as any).agentTurn('read every file', 'sess-qa381', false, undefined, {
       write: (chunk: any) => { frames.push(chunk) },
     })
-    return { compactionFrames: frames.filter((f) => f.type === 'data-context-summarized') }
+    return {
+      frames,
+      compactionFrames: frames.filter((f) => f.type === 'data-context-summarized'),
+      summarizingFrames: frames.filter((f) => f.type === 'data-context-summarizing'),
+    }
   } finally {
     clearTrustForTests()
     try { await gw.stop() } catch {}
@@ -73,6 +77,27 @@ describe('SHO-381 acceptance: the compaction event carries what prod needs', () 
     expect(r.compactionFrames.length).toBeGreaterThanOrEqual(1)
     const dropped = r.compactionFrames.map((f) => f.data.droppedToolResults)
     expect(dropped.some((n) => typeof n === 'number' && n > 0)).toBe(true)
+  }, 180_000)
+
+  /**
+   * SHO-556 AC7: a mid-turn compaction tells the UI it started before the
+   * summarizer runs, and resolves that row when it is done. Summarizing a big
+   * head is the one part of a turn that produces nothing for minutes.
+   */
+  test('a mid-turn compaction emits data-context-summarizing before data-context-summarized', async () => {
+    const r = await runTurn({ name: 'frames', toolCalls: 40, charsPerResult: 30_000 })
+    expect(r.summarizingFrames.length).toBeGreaterThanOrEqual(1)
+    for (const frame of r.summarizingFrames) {
+      expect(frame.data.trigger).toBe('mid-turn')
+      expect(frame.data.chunks).toBeGreaterThanOrEqual(1)
+      expect(typeof frame.data.tokensBefore).toBe('number')
+      // Its resolving row comes later in the same turn.
+      const start = r.frames.indexOf(frame)
+      const done = r.frames.findIndex(
+        (f, i) => i > start && f.type === 'data-context-summarized',
+      )
+      expect(done).toBeGreaterThan(start)
+    }
   }, 180_000)
 
   test('every compaction frame reports the prompt overhead the compactor used', async () => {

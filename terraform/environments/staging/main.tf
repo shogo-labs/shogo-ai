@@ -441,6 +441,10 @@ module "publish_hosting" {
   # The Worker proxies their `/api/*` to the staging cluster's Knative ingress
   # (SHO-308): without it every server-backed site on staging answers its API
   # with the SPA's index.html. `var.kourier_origin` still overrides.
+  #
+  # Staging stamps `knative:staging` (REGION_ID=staging) and deliberately passes
+  # no `kourier_origins` map: one cluster means the code is unknown to the
+  # Worker, which then falls back to this same default origin (SHO-588).
   kourier_origin = coalesce(var.kourier_origin, "http://${cloudflare_record.kourier_staging.hostname}")
 
   # Shared secret the Worker sends to the API on the published `/api/*` proxy.

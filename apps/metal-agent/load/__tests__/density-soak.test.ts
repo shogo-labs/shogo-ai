@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
-import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl, runKeepAliveTick, touchTargets } from '../density-soak'
+import { DensitySoak, parseArgs, parseDuration, parseEnvFile, planSeeding, renderEnvFile, resolveGuestUrl, runKeepAliveTick, touchTargets } from '../density-soak'
 
 interface FakeState {
   assigned: { projectId: string }[]
@@ -290,6 +290,42 @@ describe('parseArgs', () => {
 
   test('--abc-out defaults to abc.md only when the flag is absent', () => {
     expect(parseArgs(['--abc', 'A=a,B=b'], {}).abcOut).toBeUndefined()
+  })
+})
+
+describe('planSeeding', () => {
+  // The 2026-11-26 run started the app role against a guest that had never been
+  // seeded — `cd /app/workspace/density/tpl: No such file or directory` — so the
+  // app column of every report was empty. Only agent VMs were ever primed.
+  const vm = (role: 'agent' | 'app' | 'idle', assigned = true, url = 'http://10.0.0.1:8080') => ({
+    projectId: `soak-x-${role}-0001`,
+    role,
+    url,
+    assigned,
+  })
+
+  test('seeds the app role, not just the agent role', () => {
+    const plan = planSeeding([vm('agent'), vm('app'), vm('idle')])
+    expect(plan.prime.map((v) => v.role)).toEqual(['agent'])
+    expect(plan.seed.map((v) => v.role)).toEqual(['app'])
+  })
+
+  test('leaves idle guests cold', () => {
+    const plan = planSeeding([vm('idle'), vm('idle')])
+    expect(plan).toEqual({ seed: [], prime: [] })
+  })
+
+  test('skips a guest that never came up', () => {
+    const plan = planSeeding([vm('app', false), { ...vm('agent'), url: undefined }])
+    expect(plan).toEqual({ seed: [], prime: [] })
+  })
+
+  test('does not redo work already done for a guest', () => {
+    const plan = planSeeding([
+      { ...vm('agent'), seeded: 'prime' as const },
+      { ...vm('app'), seeded: 'seed' as const },
+    ])
+    expect(plan).toEqual({ seed: [], prime: [] })
   })
 })
 

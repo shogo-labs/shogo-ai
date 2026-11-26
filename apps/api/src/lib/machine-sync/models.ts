@@ -71,6 +71,15 @@ export const MIRROR_MODELS: readonly string[] = [
   'EventSubscription',
   'AgentTask',
 
+  // ── Cost analytics (SHO-590) ──
+  // The desktop writes one row per finished agent run, which is what the Cost
+  // Optimizer and the Heartbeats cost column read. It is analytics, not money:
+  // no billing path touches it, and the wallet is metered by the cloud's own
+  // per-call ledger. Without the mirror a hosted workspace's Cost Optimizer is
+  // empty on both surfaces (SHO-590 §B). `UsageEvent` stays `never` — that one
+  // IS the billing ledger, and a second copy would double-count the money.
+  'AgentCostMetric',
+
   // ── Team chat ──
   'Conversation',
   'Huddle',
@@ -180,7 +189,6 @@ const NEVER_BILLING = [
   'StorageUsageDaily',
   'VoiceCallMeter',
   'LiveSessionMeter',
-  'AgentCostMetric',
   'BudgetAlert',
   'ProxyTurn', // token accounting for billing
   'Affiliate',
@@ -385,6 +393,9 @@ export const UNIQUE_SAFE: ReadonlySet<string> = new Set([
   // The account whose Personal this is (SHO-285 Update 2): one user id, the same
   // on both sides, so two devices cannot collide on it.
   'Workspace.personalOwnerId',
+  // A subagent run id (`a-<label>-<hex>`), minted per run by the machine that
+  // ran it, so two desktops cannot collide (SHO-590).
+  'AgentCostMetric.agentRunId',
 ])
 
 /** Values the cloud must rewrite on the way in, because they are globally unique. */

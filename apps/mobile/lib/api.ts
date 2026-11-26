@@ -19,6 +19,20 @@ function getNativeAuthCookie(): string | null {
 }
 
 /**
+ * How long a GET may go without an answer on mobile.
+ *
+ * A phone on a dying connection can leave a request open indefinitely: the
+ * socket is still up, the answer never comes, and the screen sits on a spinner
+ * that looks like the app has frozen (SHO-580). 20 s is well past a slow 3G
+ * round trip and short enough that a person sees an error and a retry instead of
+ * waiting. It measures silence, not slowness: the SDK clock only runs while the
+ * JS thread can watch the request, and it stops the moment the answer arrives,
+ * so a busy or cold-starting phone is never cut off (SHO-582). Non-GET requests,
+ * streams and uploads keep no deadline.
+ */
+export const MOBILE_REQUEST_TIMEOUT_MS = 20_000
+
+/**
  * Create a standalone HttpClient for contexts where the SDK domain
  * provider is not mounted (e.g. onboarding). Prefer `useDomainHttp()`
  * when inside the app shell.
@@ -28,6 +42,7 @@ export function createHttpClient(baseUrl?: string): HttpClient {
     baseUrl: baseUrl ?? API_URL!,
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     getAuthCookie: Platform.OS === 'web' ? undefined : getNativeAuthCookie,
+    requestTimeoutMs: MOBILE_REQUEST_TIMEOUT_MS,
   })
 }
 
@@ -924,9 +939,8 @@ export interface ProjectMachineState {
     label: string
     vcpus: number
     memMiB: number
-    allowed: boolean
-    /** Smallest workspace plan that allows this size; null for Standard. */
-    requiredTier: string | null
+    /** USD for one active hour of this size, from the platform's VM pricing. */
+    hourlyUsd: number
   }>
   instanceSize: string
   substrate: 'metal' | 'knative' | 'local'
@@ -943,6 +957,10 @@ export interface RecentAgentChat {
   agentName: string | null
   lastActiveAt: string
   preview: string | null
+  /** The person pinned this chat, so it leads the list. */
+  isPinned: boolean
+  /** A turn is running in it right now. */
+  running: boolean
 }
 
 export const api = {
@@ -2772,11 +2790,12 @@ export const api = {
   async listRecentAgentChats(
     http: HttpClient,
     workspaceId: string,
-    opts: { limit?: number; perAgent?: boolean } = {},
+    opts: { limit?: number; perAgent?: boolean; includePinned?: boolean } = {},
   ): Promise<RecentAgentChat[]> {
     const params = new URLSearchParams()
     if (opts.limit !== undefined) params.set('limit', String(opts.limit))
     if (opts.perAgent) params.set('perAgent', '1')
+    if (opts.includePinned) params.set('includePinned', '1')
     const query = params.toString() ? `?${params}` : ''
     const res = await http.get<{ chats?: RecentAgentChat[] }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-chats/recent${query}`,

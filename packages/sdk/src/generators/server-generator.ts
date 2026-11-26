@@ -204,6 +204,43 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
 }
 
 /**
+ * The Postgres URL test, in one place: `databaseUrlGuard` compiles it, and the
+ * generated client modules embed it as a literal so an image that boots with a
+ * mismatched client and URL stops before serving a single request.
+ */
+const POSTGRES_URL_SOURCE = '^postgres(ql)?:\\/\\/'
+const POSTGRES_URL_RE = new RegExp(POSTGRES_URL_SOURCE, 'i')
+
+/**
+ * Lines every generated client module carries: refuse to start when
+ * `DATABASE_URL` and the driver disagree (SHO-551 AC 3).
+ *
+ * A published Postgres pod that boots with the SQLite client (or the reverse)
+ * otherwise answers 500 on every query, and the revision still reports ready.
+ * Exiting with one named line makes it a failed revision instead. An unset
+ * `DATABASE_URL` is left alone — local dev and CI boot without one.
+ */
+function databaseBootGuardLines(kind: 'postgres' | 'sqlite'): string[] {
+  const urlCheck = kind === 'postgres' ? `!POSTGRES_URL.test(databaseUrl)` : `POSTGRES_URL.test(databaseUrl)`
+  const expected = kind === 'postgres' ? 'a Postgres URL (PrismaPg client)' : 'the SQLite client'
+  return [
+    `// Database URL / driver boot guard: a mismatch is a failed revision, not a 500 on every query.`,
+    `const POSTGRES_URL = /${POSTGRES_URL_SOURCE}/i`,
+    `const databaseUrl = (process.env.DATABASE_URL ?? '').trim()`,
+    `if (databaseUrl && ${urlCheck}) {`,
+    `  console.error(`,
+    `    '[db] Refusing to start: DATABASE_URL is "' +`,
+    `      databaseUrl.replace(/:[^:@/]*@/, ':***@') +`,
+    `      '" but this client expects ${expected}. ' +`,
+    `      (${kind === 'postgres' ? `'Point DATABASE_URL at Postgres, or publish with the SQLite client.'` : `'Re-publish so the Postgres db client is generated for this environment.'`}),`,
+    `  )`,
+    `  process.exit(1)`,
+    `}`,
+    '',
+  ]
+}
+
+/**
  * Generate Prisma database module (PostgreSQL with adapter)
  */
 export function generateDbModule(): string {
@@ -219,6 +256,7 @@ export function generateDbModule(): string {
     "import { PrismaPg } from '@prisma/adapter-pg'",
     "import { PrismaClient } from '../generated/prisma/client'",
     '',
+    ...databaseBootGuardLines('postgres'),
     'const globalForPrisma = globalThis as unknown as {',
     '  prisma: PrismaClient | undefined',
     '}',
@@ -241,6 +279,30 @@ export function generateDbModule(): string {
 }
 
 /**
+ * Guard that refuses to generate a SQLite db module when the app's DATABASE_URL
+ * is already a Postgres connection string (SHO-551 B).
+ *
+ * A published Postgres pod boots with `DATABASE_URL=postgres://...`. Silently
+ * replacing its db.tsx with a libsql adapter would make every query fail on a
+ * driver mismatch. The guard is called before any rewrite that would down-convert
+ * a Postgres app to SQLite; if the URL is Postgres the caller skips the rewrite.
+ *
+ * The same test is embedded in the generated client modules by
+ * {@link databaseBootGuardLines}, so a mismatch already in the image fails the
+ * boot rather than every request.
+ */
+export function databaseUrlGuard(databaseUrl: string | null | undefined): {
+  isPostgres: boolean
+  isSqlite: boolean
+} {
+  const url = (databaseUrl ?? '').trim()
+  return {
+    isPostgres: POSTGRES_URL_RE.test(url),
+    isSqlite: !url || /^file:|\.db($|\?)|^sqlite/i.test(url),
+  }
+}
+
+/**
  * Generate Prisma database module for SQLite using prisma-adapter-bun-sqlite (Prisma 7)
  */
 export function generateSqliteDbModule(): string {
@@ -256,6 +318,7 @@ export function generateSqliteDbModule(): string {
     "import { PrismaBunSqlite } from 'prisma-adapter-bun-sqlite'",
     "import { PrismaClient } from './generated/prisma/client'",
     '',
+    ...databaseBootGuardLines('sqlite'),
     'const globalForPrisma = globalThis as unknown as {',
     '  prisma: PrismaClient | undefined',
     '}',

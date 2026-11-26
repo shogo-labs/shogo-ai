@@ -100,4 +100,25 @@ describe('routeToHomeRegion', () => {
     expect((await routeToHomeRegion('ws-1', '/p', {})).outcome).toBe('unavailable')
     expect(state.peerCalls).toHaveLength(0)
   })
+
+  it('hands a definitive refusal back instead of calling it unavailable', async () => {
+    // "No account linked yet" is the peer's final answer. Reporting it as
+    // `unavailable` told the caller to retry a write that can never succeed.
+    state.peerResult = { status: 409, ok: false, data: { error: 'no_account_linked', message: 'Link an account first' } }
+    const routed = await routeToHomeRegion('ws-1', '/api/internal/social/inbox', {})
+
+    expect(routed.outcome).toBe('rejected')
+    expect(routed.status).toBe(409)
+    expect(routed.error).toEqual({ error: 'no_account_linked', message: 'Link an account first' })
+  })
+
+  it('keeps a retryable 4xx retryable', async () => {
+    for (const status of [401, 403, 404, 408, 429]) {
+      state.peerResult = { status, ok: false, data: null }
+      expect((await routeToHomeRegion('ws-1', '/p', {})).outcome).toBe('unavailable')
+    }
+    // …and a 5xx from the peer is still an outage.
+    state.peerResult = { status: 500, ok: false, data: null }
+    expect((await routeToHomeRegion('ws-1', '/p', {})).outcome).toBe('unavailable')
+  })
 })

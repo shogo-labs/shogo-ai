@@ -117,7 +117,7 @@ mock.module('../lib/runtime-class-setting', () => ({
   isDockerClassEnabled: isDockerClassEnabledMock,
 }))
 
-const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
+const { buildProjectEnv, buildPublishedProjectEnv } = await import('../lib/runtime/build-project-env')
 
 // ─── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -1012,7 +1012,7 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
-  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack, the platform gate is on, AND the workspace meets the tier floor', async () => {
+  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack and the platform gate is on', async () => {
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
@@ -1024,9 +1024,9 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
   })
 
   test('ignores settings.runtimeClass="docker" when the tech stack is NOT docker-capable, logging the mismatch', async () => {
-    // settings.runtimeClass alone must never grant the docker-class VM (and
-    // its bigger instance floor) — only the tech-stack registry's
-    // isDockerTechStack() can. See build-project-env.ts for the rationale.
+    // settings.runtimeClass alone must never grant the docker-class VM — only
+    // the tech-stack registry's isDockerTechStack() can. See
+    // build-project-env.ts for the rationale.
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
@@ -1064,46 +1064,70 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
   })
 
-  test('allows docker-compose on a workspace above the minimum tier (xlarge)', async () => {
-    isDockerClassEnabledMock.mockImplementation(() => true)
-    findUniqueProjectMock.mockImplementation(async () => ({
-      workspaceId: 'ws-1',
-      workspace: { instanceSize: 'xlarge' },
-      settings: { techStackId: 'docker-compose' },
-    }))
-    const env = await buildProjectEnv('proj-rc-above-floor')
-    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
-  })
-
-  test('refuses (falls back to standard) when the workspace instance size is below the stack\'s minimum, even with the platform gate on', async () => {
-    // The project-creation/stack-switch route should refuse this via
-    // canRunTechStackOnInstanceSize() before it ever gets here — this is the
-    // defense-in-depth check for when that upstream gate is bypassed (bug,
-    // manual DB edit, or a workspace downsized after the project was created).
+  test('grants the docker VM on a micro workspace when the platform gate is on', async () => {
+    // SHO-578: the retired instance-size floor is gone, so the platform flag
+    // is the only gate — the size of the workspace is irrelevant. The VM is
+    // accounted like any other (small capped at the tier), never the old
+    // 16 GiB docker floor against a 2 GiB micro budget.
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       workspace: { instanceSize: 'micro' },
       settings: { techStackId: 'docker-compose' },
     }))
-    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
-    const env = await buildProjectEnv('proj-rc-too-small')
-    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
-    expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
-      "below the stack's declared minimum",
-    )
-    errorSpy.mockRestore()
+    const env = await buildProjectEnv('proj-rc-micro', { forMetal: true })
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+    expect(env.SHOGO_VM_MEM_MIB).not.toBe('16384')
   })
 
-  test('refuses docker-compose on "small" (still below the "large" floor)', async () => {
+  test('boots a docker project at its picked machine size (SHOGO_VM_BOOT_MEM_MIB)', async () => {
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
-      workspace: { instanceSize: 'small' },
+      vmMemoryMiB: 8192,
+      workspace: { instanceSize: 'micro' },
       settings: { techStackId: 'docker-compose' },
     }))
-    const env = await buildProjectEnv('proj-rc-still-too-small')
+    const env = await buildProjectEnv('proj-rc-machine', { forMetal: true })
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('8192')
+  })
+
+  test('accounts an XLarge picked machine at the micro budget while booting it at 32 GiB', async () => {
+    // SHO-578 §E lets any workspace pick any preset. The host boots the picked
+    // size, but the workspace budget only ever accounts the tier's own memory
+    // (`accountedVmMemMiB`), so one big machine cannot evict the rest of a
+    // micro workspace's running projects.
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 32768,
+      vmVcpus: 8,
+      workspace: { instanceSize: 'micro' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-xlarge-micro', { forMetal: true })
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('32768')
+  })
+
+  test('refuses with docker_class_disabled and a standard VM when the platform gate is off', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => false)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'micro' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    const env = await buildProjectEnv('proj-rc-gate-off', { forMetal: true })
     expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+    expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
+      'runtime.docker_class_enabled) is off',
+    )
+    errorSpy.mockRestore()
   })
 
   test('does not derive docker class from an unrelated tech stack', async () => {
@@ -1166,5 +1190,25 @@ describe('buildProjectEnv — return shape', () => {
       expect(typeof k).toBe('string')
       expect(typeof v).toBe('string')
     }
+  })
+})
+
+// ─── published mode (SHO-587) ──────────────────────────────────────────────
+
+describe('buildPublishedProjectEnv — publish artifact signal', () => {
+  test('tells the pod its pages come from the publish artifact, not a boot export', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      name: 'Samsara',
+      settings: {},
+    }))
+
+    const env = await buildPublishedProjectEnv('proj-pub', 'samsara')
+
+    // `SHOGO_PUBLISHED_WEB=artifact` is what keeps `expo export` out of the
+    // published boot (a ~2 GB build on a 1 GiB instance, SHO-587).
+    expect(env.SHOGO_PUBLISHED_MODE).toBe('true')
+    expect(env.SHOGO_PUBLISHED_WEB).toBe('artifact')
+    expect(env.PUBLISHED_SUBDOMAIN).toBe('samsara')
   })
 })

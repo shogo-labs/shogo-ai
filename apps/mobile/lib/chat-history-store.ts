@@ -19,6 +19,7 @@
  * `resolveHistoryPaint`'s job, not this module's.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from './storage'
 import { messageBytesOf, transcriptBytes } from './message-bytes'
 
 /**
@@ -376,14 +377,14 @@ const asyncStorageBackend: ChatHistoryBackend = {
 
   async write(kind, key, entry) {
     try {
-      await AsyncStorage.setItem(asyncKey(kind, key), JSON.stringify(entry))
+      await setStorageJson(asyncKey(kind, key), entry)
     } catch {
       return
     }
     const index = [{ key, savedAt: entry.savedAt }, ...(await readIndex(kind)).filter((e) => e.key !== key)]
     const evicted = index.slice(chatHistoryLimits().chats)
     try {
-      await AsyncStorage.setItem(asyncIndex(kind), JSON.stringify(index.slice(0, chatHistoryLimits().chats)))
+      await setStorageJson(asyncIndex(kind), index.slice(0, chatHistoryLimits().chats))
       if (evicted.length) {
         await AsyncStorage.multiRemove(evicted.map((e) => asyncKey(kind, e.key)))
       }
@@ -396,7 +397,7 @@ const asyncStorageBackend: ChatHistoryBackend = {
     try {
       await AsyncStorage.removeItem(asyncKey(kind, key))
       const index = (await readIndex(kind)).filter((e) => e.key !== key)
-      await AsyncStorage.setItem(asyncIndex(kind), JSON.stringify(index))
+      await setStorageJson(asyncIndex(kind), index)
     } catch {
       // Best effort.
     }

@@ -213,6 +213,9 @@ export function ChatSessionList({
   loaded = true,
   emptyLabel,
   loadingLabel = "Loading…",
+  loadError = false,
+  errorLabel = "Couldn't load chats.",
+  onRetry,
   hasMore = false,
   loadingMore = false,
   onLoadMore,
@@ -260,6 +263,16 @@ export function ChatSessionList({
   /** Copy shown when there are no chats at all. */
   emptyLabel: string;
   loadingLabel?: string;
+  /**
+   * The fetch failed. An error is never an empty list: a person seeing "No
+   * chats yet" when their chats merely failed to load is told their work is
+   * gone, which is worse than a spinner (SHO-582).
+   */
+  loadError?: boolean;
+  /** Copy shown instead of `emptyLabel` when `loadError` and `onRetry` is given. */
+  errorLabel?: string;
+  /** Re-runs the failed fetch. Without it the error row carries no retry. */
+  onRetry?: () => void;
   /** The server has older chats than the ones loaded (project paging). */
   hasMore?: boolean;
   loadingMore?: boolean;
@@ -555,16 +568,43 @@ export function ChatSessionList({
         />
       ) : null}
       {sessions.length === 0 && archived.length === 0 ? (
-        <View
-          className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}
-        >
-          <Text
-            className="text-sm text-muted-foreground opacity-70"
-            numberOfLines={1}
+        loadError ? (
+          <View
+            className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}
           >
-            {loaded ? emptyLabel : loadingLabel}
-          </Text>
-        </View>
+            <Text
+              className="text-sm text-muted-foreground"
+              numberOfLines={2}
+              accessibilityLiveRegion="polite"
+            >
+              {errorLabel}
+            </Text>
+            {onRetry ? (
+              <Pressable
+                onPress={onRetry}
+                accessibilityRole="button"
+                role="button"
+                accessibilityLabel={`Retry loading ${scopeLabel ?? "these"} chats`}
+                className="self-start pt-1 active:opacity-70"
+              >
+                <Text className="text-sm font-medium text-foreground">
+                  Retry
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : (
+          <View
+            className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}
+          >
+            <Text
+              className="text-sm text-muted-foreground opacity-70"
+              numberOfLines={1}
+            >
+              {loaded ? emptyLabel : loadingLabel}
+            </Text>
+          </View>
+        )
       ) : mobileProjectDetail ? (
         <ScrollView
           nestedScrollEnabled

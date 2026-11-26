@@ -223,7 +223,7 @@ export async function queueAgentReplyNotice(handle: AgentReplyHandle, queue: { p
 /** Live progress. Shogo clients get every delta; external providers get throttled edits. */
 export async function streamAgentReply(
   handle: AgentReplyHandle,
-  state: { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> },
+  state: { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; summarizing?: boolean },
 ): Promise<void> {
   await shogoProvider.streamUpdate(handle.conversation, handle.messageId, state, handle.audience)
   const ext = handle.external

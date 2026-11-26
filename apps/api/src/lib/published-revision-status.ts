@@ -18,6 +18,21 @@ export type PublishedRevisionState =
   | { state: 'failed'; reason: string }
 
 /**
+ * `Ready=False` reasons that never resolve on their own.
+ *
+ * Everything else — `Deploying`, `ContainerCreating`, a Revision that has not
+ * been observed yet — is a rollout in progress, which is what a Revision looks
+ * like for its first seconds of life.
+ */
+const TERMINAL_REVISION_REASONS = new Set([
+  'RevisionFailed',
+  'ProgressDeadlineExceeded',
+  'ContainerMissing',
+  'InvalidRevision',
+])
+
+
+/**
  * Ready / pending / failed for one Revision, from its `status`.
  *
  * A container that exited non-zero is reported as failed even before the Ready
@@ -47,10 +62,15 @@ export function publishedRevisionState(revision: unknown): PublishedRevisionStat
 
   const detail = [ready.reason, ready.message].filter(Boolean).join(': ')
   if (ready.status === 'True') return { state: 'ready' }
-  if (ready.status === 'False') {
+  // Ready=False is normal while a Revision is deploying — Knative reports it
+  // with `reason: Deploying` until the pod answers. Reading that as a failure
+  // failed a publish that came up 12 seconds later and printed "not Ready
+  // within 120s" without ever having waited. Only a terminal reason fails here;
+  // a container that died is caught above by its exit status.
+  if (ready.status === 'False' && TERMINAL_REVISION_REASONS.has(ready.reason ?? '')) {
     return { state: 'failed', reason: `${name} is not Ready — ${detail || 'no reason given'}` }
   }
-  return { state: 'pending', reason: `${name} is still starting — ${detail || 'Ready is Unknown'}` }
+  return { state: 'pending', reason: `${name} is still starting — ${detail || 'Ready is False'}` }
 }
 
 /**

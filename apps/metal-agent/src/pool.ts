@@ -33,7 +33,7 @@ import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 import { hostFullness, resolveMemReserveMiB, selectEvictionVictim } from './evict'
 import { FcApi } from './fc-api'
-import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
+import { FirecrackerVMManager, readSerialTail, serialLastLine, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
@@ -94,10 +94,10 @@ import {
   type RepoManifestBundle,
   type RepoManifestLfsMissing,
 } from './vendor/repo-bundles'
-import { readSerialTail } from './serial-watcher'
-import { stagedRootfsPath } from './self-update'
+import { getRootfsPrev, getRootfsWatch, keptRootfsImage, reportColdBoot, stagedRootfsPath, type KeptImageName } from './self-update'
 import type { ArchiveRef } from './archive-ref'
 import { describeHomeStateArchive, uploadHomeStateGuarded } from './home-state-archive'
+import type { QuarantineBookkeeping, QuarantineState } from './quarantine'
 
 /**
  * How long a presigned hydrate URL stays valid.
@@ -148,6 +148,39 @@ export class RepoBundleLfsPushError extends Error {}
  * (SHO-442). Never a reason to fall back to the tarball.
  */
 export class RepoBundleLfsPendingError extends Error {}
+
+/**
+ * The guest's `.git` is CORRUPT (`bad object` / `missing blob` on the export's
+ * rev-list). Distinct from a transient LFS/network failure because no retry
+ * repairs it: the same objects are still missing next time. Retrying it every
+ * ten minutes re-exported and re-quarantined 525 MB for six days (SHO-584), so
+ * the pool blocks rotation on it instead (see `noteRepoCorrupt`).
+ */
+export class RepoCorruptError extends Error {}
+
+/** The guest's own code for that state, in the export's 503 body. */
+export const REPO_CORRUPT_CODE = 'repo-corrupt'
+
+/** The guest's `code`/`reason` from a failed export body, best-effort. */
+function exportFailureCode(body: string): { code?: string; reason?: string } {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; reason?: unknown }
+    return {
+      code: typeof parsed.code === 'string' ? parsed.code : undefined,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+/** True when a failed export body says the repository itself is corrupt. */
+function isRepoCorrupt(body: string): boolean {
+  const { code, reason } = exportFailureCode(body)
+  if (code === REPO_CORRUPT_CODE || reason === REPO_CORRUPT_CODE) return true
+  // A guest too old to send the code still names the damage in the message.
+  return /\bbad object\b|\bmissing blob\b|\bcorrupt\b/i.test(body)
+}
 
 /**
  * A stop was refused because the VM's current HEAD is not in the durable repo
@@ -452,6 +485,30 @@ export interface PooledVm {
   handle: FcVmHandle
   ready: boolean
   createdAt: number
+  /** How long the guest took to answer /health after boot, for a probe's report. */
+  healthMs?: number
+}
+
+/** What a rootfs boot probe saw. `POST /admin/probe-rootfs` returns this shape. */
+export interface RootfsProbeResult {
+  ok: boolean
+  /** Why the probe failed, with the firecracker exit and the guest's last line. */
+  error: string | null
+  /** Time to the first healthy `/health`, or null when it never answered. */
+  healthyAfterMs: number | null
+  /** How the firecracker process ended, when it did. */
+  fcExit: { code: number | null; signal: string | null } | null
+  /** Last 20 serial lines of the probe VM. */
+  serialTail: string
+  /** How long the probe held the VM up after it answered /health. */
+  heldMs: number
+}
+
+export interface RootfsProbeOptions {
+  /** Override the hold window (METAL_ROOTFS_PROBE_HOLD_MS). */
+  holdMs?: number
+  /** Force the dm-snapshot boot path on or off (defaults per class, see probeBoot). */
+  dmBase?: boolean
 }
 
 /** `POST /status` body: the substrate contract fields plus what re-warm needs. */
@@ -995,6 +1052,13 @@ export interface AssignedVm {
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
   /**
+   * The guest reported that its root holds no git repo at all (a merged
+   * workspace runtime keeps its projects' repos in subfolders). There is
+   * nothing to export and nothing that can be undurable, so the sweep must not
+   * ask — and a HEAD cached before that report must not pin it (SHO-540).
+   */
+  repoAbsent?: boolean
+  /**
    * The `repoHeadSha` whose `.git` is already durable (written or
    * quarantined). The periodic sweep skips the VM while HEAD still matches.
    */
@@ -1027,6 +1091,31 @@ export interface AssignedVm {
   apiUnhealthyProjects?: string[]
   /** Observe-mode watchdog already logged this unhealthy episode. */
   apiWatchdogObserved?: boolean
+  /**
+   * `conflict/` bookkeeping: the last copy per archive kind (for dedupe) and the
+   * number written today against this project's daily cap. Persisted so an agent
+   * restart does not reset the cap — twelve restarts a day would otherwise mean
+   * twelve fresh caps and the same unbounded loop (SHO-584).
+   */
+  quarantine?: QuarantineState
+  /**
+   * Whether the open that created this VM ever finished hydrating (SHO-584).
+   * `'opening'` is written BEFORE any hydrate runs, so an entry still carrying
+   * it was cut off — its source/data/home/repo are a partial tree, never a
+   * workspace to back up over the durable one.
+   */
+  openState?: 'opening' | 'ready'
+  /**
+   * The guest reported its `.git` as corrupt (`bad object` / `missing blob` on
+   * the export's rev-list). Permanent for this VM: no retry repairs it, so
+   * rotation is blocked instead of re-exporting 525 MB every ten minutes
+   * (SHO-584). Persisted so an adopt does not reset the retry clock.
+   */
+  repoCorruptFailure?: { code: string; message: string; since: number; attempts: number; retryAt: number }
+  /** Rollout rotation waits until then after an aborted attempt. Persisted (SHO-584). */
+  rotateRetryAt?: number
+  /** Rotation has given up on this VM's rootfs, and why. Persisted (SHO-584). */
+  rotationBlocked?: { reason: string; since: number }
 }
 
 /**
@@ -1720,40 +1809,193 @@ export class MetalWarmPool {
   async waitForHealth(handle: FcVmHandle, isAlive: () => boolean): Promise<number> {
     const start = performance.now()
     for (let i = 0; i < this.cfg.healthRetries; i++) {
-      if (!isAlive()) throw new Error(`VM ${handle.id} exited before healthy`)
+      if (!isAlive()) throw this.diedError(handle)
       if (await probeHealth(handle.agentUrl, 500)) return performance.now() - start
       await Bun.sleep(this.cfg.healthIntervalMs)
     }
     throw new Error(`VM ${handle.id} never became healthy`)
   }
 
+  /**
+   * The error for a VM whose firecracker process went away before it answered
+   * /health. It carries the FC exit code or signal (the host killed it, or the
+   * guest shut down) and the guest's own last serial line (the kernel or PID 1
+   * died), because "exited before healthy" alone cannot tell those apart — and
+   * telling them apart is the difference between a host bug and a bad image
+   * (SHO-563). The 20-line tail rides along on the error for the caller.
+   */
+  private diedError(handle: FcVmHandle): Error & { serialTail?: string } {
+    const last = serialLastLine(handle.serialLog)
+    const how = this.mgr.exitSummary(handle.id)
+    const err = new Error(
+      `VM ${handle.id} exited before healthy (${how}${last ? `, last: ${last}` : ''})`,
+    ) as Error & { serialTail?: string }
+    err.serialTail = readSerialTail(handle.serialLog, 20)
+    return err
+  }
+
+  /**
+   * Boot one VM, reporting every cold boot from the LIVE image to the rootfs
+   * watch (SHO-552). `rootfsBase` given means it is not a boot of the image
+   * currently serving: an assignment pinned to another class image, the
+   * activation boot-probe, or a rollout rotation — none of those say anything
+   * about whether the image we just activated works.
+   */
   private async bootOne(
     pool = true,
     vmClass: VmClass = 'standard',
     rootfsBase?: string,
     size?: { memoryMB?: number; cpus?: number },
+    opts: { dmBase?: boolean } = {},
   ): Promise<PooledVm> {
     // startVM resolves memory and vCPUs from the class's own config
     // (classConfig in config.ts) unless an assignment asked for a bigger VM.
-    const handle = await this.mgr.startVM({
-      vmClass,
-      ...(rootfsBase ? { rootfsBase } : {}),
-      ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
-      ...(size?.cpus ? { cpus: size.cpus } : {}),
-    })
+    const fromLiveImage = !rootfsBase
+    let handle: FcVmHandle
+    try {
+      handle = await this.mgr.startVM({
+        vmClass,
+        ...(rootfsBase ? { rootfsBase } : {}),
+        ...(opts.dmBase ? { rootfsBaseBecomesClassBase: true } : {}),
+        ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
+        ...(size?.cpus ? { cpus: size.cpus } : {}),
+      })
+    } catch (err: any) {
+      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err))
+      throw err
+    }
     // startVM self-cleans a partial boot; a VM that boots but never becomes
     // healthy is our responsibility to stop, or its FC process leaks (never
     // enters `available`/`assigned`, so nothing else would ever kill it).
     this.inFlight.add(handle.id)
+    let healthMs: number | undefined
     try {
-      await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
-    } catch (err) {
+      healthMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+    } catch (err: any) {
       await this.mgr.stopVM(handle).catch(() => {})
+      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err), handle.serialLog)
       throw err
     } finally {
       this.inFlight.delete(handle.id)
     }
-    return { handle, ready: true, createdAt: Date.now() }
+    if (fromLiveImage) reportColdBoot(true)
+    return { handle, ready: true, createdAt: Date.now(), healthMs: Math.round(healthMs ?? 0) }
+  }
+
+  /**
+   * Boot VMs from `rootfsBase` and hold them: the activation gate (SHO-552,
+   * SHO-563). Returns why the image could not serve a VM, or null when every
+   * probe VM became healthy AND was still answering `/health` at the end of the
+   * hold window.
+   *
+   * This is the only check that proves an image works — the static probe only
+   * proves `/usr/local/bin/fc-init` is inside it. Three things make it boot the
+   * way production boots:
+   *
+   *   1. `dmBase` provisions the rootfs through the same dm snapshot live will
+   *      use once the staged file is renamed into place. Before SHO-563 this
+   *      booted a full COPY of the staged image, which is a different boot path
+   *      from every live VM (provisionDm → a loop of the base) and could pass
+   *      while live failed.
+   *   2. `min(2, poolBootConcurrency)` VMs boot in parallel, the way the
+   *      post-restart fill boots them, so a race that only shows up in a group
+   *      is exercised.
+   *   3. The hold window (`METAL_ROOTFS_PROBE_HOLD_MS`): an image that answers
+   *      /health and then dies is a bad image, and a probe that stops at the
+   *      first 200 OK scores it healthy. The VM must still be alive and
+   *      answering at the end of the hold.
+   *
+   * A probe never enters `available`/`assigned` and is never reported to the
+   * watch: a probe that fails is already fatal on its own, and counting it twice
+   * would roll a good image back on its first activation. Never throws.
+   */
+  async probeBoot(vmClass: VmClass, rootfsBase: string, opts: RootfsProbeOptions = {}): Promise<RootfsProbeResult> {
+    const parallelism = Math.max(1, Math.min(2, this.cfg.poolBootConcurrency))
+    const holdMs = opts.holdMs ?? this.cfg.rootfsProbeHoldMs
+    // dm mode snapshots the standard golden base and copies the docker one, so a
+    // probe must use the same strategy per class to be a probe of the live path.
+    const dmBase = opts.dmBase ?? vmClass === 'standard'
+    const results = await Promise.all(
+      Array.from({ length: parallelism }, () => this.probeOne(vmClass, rootfsBase, holdMs, dmBase)),
+    )
+    const failed = results.find((r) => !r.ok)
+    if (failed) return failed
+    const healthy = results
+      .map((r) => r.healthyAfterMs ?? 0)
+      .sort((a, b) => b - a)[0] ?? 0
+    return { ok: true, error: null, healthyAfterMs: healthy, fcExit: null, serialTail: '', heldMs: holdMs }
+  }
+
+  /** One probe VM: boot → healthy → hold → still healthy → stop. Never throws. */
+  private async probeOne(
+    vmClass: VmClass,
+    rootfsBase: string,
+    holdMs: number,
+    dmBase: boolean,
+  ): Promise<RootfsProbeResult> {
+    let vm: PooledVm | null = null
+    try {
+      vm = await this.bootOne(false, vmClass, rootfsBase, undefined, { dmBase })
+      const handle = vm.handle
+      const healthyAfterMs = vm.healthMs ?? 0
+      // The hold: the whole point. An image that answers once and dies is a bad
+      // image, and a user's next cold boot is the one that finds out.
+      const deadline = Date.now() + holdMs
+      while (Date.now() < deadline) {
+        await Bun.sleep(Math.min(500, Math.max(0, deadline - Date.now())))
+        if (!this.mgr.isRunning(handle)) {
+          return this.probeFailure(handle, healthyAfterMs, holdMs, `died inside the ${holdMs}ms hold window`)
+        }
+        if (!(await probeHealth(handle.agentUrl, 2000))) {
+          return this.probeFailure(handle, healthyAfterMs, holdMs, `stopped answering /health inside the ${holdMs}ms hold window`)
+        }
+      }
+      return { ok: true, error: null, healthyAfterMs, fcExit: null, serialTail: '', heldMs: holdMs }
+    } catch (err: any) {
+      const handle = vm?.handle
+      if (!handle) {
+        return { ok: false, error: err?.message ?? String(err), healthyAfterMs: null, fcExit: null, serialTail: '', heldMs: holdMs }
+      }
+      return this.probeFailure(handle, null, holdMs, err?.message ?? String(err))
+    } finally {
+      if (vm) await this.mgr.stopVM(vm.handle).catch(() => {})
+    }
+  }
+
+  private probeFailure(handle: FcVmHandle, healthyAfterMs: number | null, heldMs: number, why: string): RootfsProbeResult {
+    const exit = this.mgr.procExit(handle.id)
+    console.error(`[pool] rootfs probe VM ${handle.id} failed: ${why} (${this.mgr.exitSummary(handle.id)})`)
+    return {
+      ok: false,
+      error: `${why} (${this.mgr.exitSummary(handle.id)})`,
+      healthyAfterMs,
+      fcExit: exit ? { code: exit.code, signal: exit.signal } : null,
+      serialTail: readSerialTail(handle.serialLog, 20),
+      heldMs,
+    }
+  }
+
+  /**
+   * Probe one kept image on demand: `live`, `prev`, `staged` or `failed` (see
+   * `keptRootfsImage`). Reuses the activation probe, never touches the live
+   * image, the pool or the watch ledger — the operator route behind it is
+   * `POST /admin/probe-rootfs`.
+   */
+  async probeKeptRootfs(name: KeptImageName, vmClass: VmClass, holdMs?: number): Promise<RootfsProbeResult & { image: string | null }> {
+    const image = keptRootfsImage(name, vmClass)
+    if (!image) {
+      return {
+        ok: false,
+        error: `no ${name} image for the ${vmClass} class on this host`,
+        healthyAfterMs: null,
+        fcExit: null,
+        serialTail: '',
+        heldMs: holdMs ?? this.cfg.rootfsProbeHoldMs,
+        image: null,
+      }
+    }
+    const res = await this.probeBoot(vmClass, image, { holdMs })
+    return { ...res, image }
   }
 
   /**
@@ -1915,6 +2157,7 @@ export class MetalWarmPool {
   async adopt(): Promise<{ adopted: string[]; reaped: number }> {
     const adoptedIds = new Set<string>()
     const adoptedProjects: string[] = []
+    const midOpen: AssignedVm[] = []
     for (const e of this.live.all()) {
       if (this.assigned.has(e.projectId)) continue // already tracked (defensive)
       if (!pidAlive(e.pid) || !existsSync(e.socketPath)) {
@@ -2014,15 +2257,95 @@ export class MetalWarmPool {
         stateSince: e.stateSince ?? e.assignedAt,
         repoLinked: e.repoLinked,
         lastHealthOk: healthy,
+        quarantine: e.quarantine,
+        openState: e.openState,
+        // A person's activity before the restart decides whether a mid-open VM
+        // may be retired (SHO-584): their work exists only in that guest.
+        userSeenSinceAssign: e.userSeenSinceAssign,
+        repoCorruptFailure: e.repoCorruptFailure,
+        rotateRetryAt: e.rotateRetryAt,
+        rotationBlocked: e.rotationBlocked,
+        refuseCount: e.refuseCount,
+        refusedSince: e.refusedSince,
+        refuseRetryAt: e.refuseRetryAt,
+        refusalLogged: e.refusalLogged,
       })
       adoptedIds.add(e.vmId)
       adoptedProjects.push(e.projectId)
+      // The assign that created this VM never finished hydrating (SHO-584). Its
+      // tree is a partial hydrate — source, database, home and `.git` are only
+      // some of what they should be, and it carries no lineage. Adopting it as a
+      // normal assigned VM is how one 525 MB half-open VM spent six days writing
+      // 10,391 quarantine copies because it could never back up and therefore
+      // could never stop.
+      if (e.openState === 'opening') midOpen.push(this.assigned.get(e.projectId)!)
     }
-    const reaped = this.mgr.reapHostOrphans(adoptedIds)
+    // Every id the pool owns, not just the adopted ones: a fill that started
+    // while these health probes were running (a claim, the reaper tick's
+    // `reconcile`) has already spawned warm VMs, and they are in neither the live
+    // registry nor `adoptedIds`. Killing those is how one activation restart on
+    // staging made 8/8 cold boots fail and rolled a good image back (SHO-563).
+    const keep = this.liveHandleIds()
+    for (const id of adoptedIds) keep.add(id)
+    const reaped = this.mgr.reapHostOrphans(keep)
     if (adoptedProjects.length) {
       console.log(`[pool] adopted ${adoptedProjects.length} live microVM(s) across restart: ${adoptedProjects.join(', ')}`)
     }
+    for (const a of midOpen) await this.handleAdoptedMidOpen(a)
     return { adopted: adoptedProjects, reaped }
+  }
+
+  /**
+   * An adopted VM whose open never finished (SHO-584).
+   *
+   * Every archive it would write is marked untrusted FIRST, so nothing it holds
+   * can reach the durable backups however this ends. Then:
+   *   - no person has used it → retire it without a snapshot, after one
+   *     quarantine copy. The durable backup is the truth (that is what the
+   *     interrupted open was hydrating when it was cut off), so the next open
+   *     cold-boots from it instead of resuming a half tree.
+   *   - a person has used it → keep it running and alert. Their work exists only
+   *     in this guest, so destroying it is not ours to decide.
+   */
+  private async handleAdoptedMidOpen(a: AssignedVm): Promise<void> {
+    const reason =
+      'adopted mid-open: the assign that created this VM was cut off by a restart, so its tree is a partial hydrate'
+    metrics.inc(M.midOpenAdopted)
+    this.distrustSource(a, reason)
+    this.distrustData(a, reason)
+    this.distrustHome(a, reason)
+    this.distrustRepo(a, reason)
+    // `ws:` runtimes keep their writable state per member, not on the VM.
+    for (const id of a.workspaceMemberIds ?? []) {
+      const member = this.memberDataState(a, id)
+      member.sourceUntrustedReason ??= reason
+      member.untrustedReason ??= reason
+    }
+    a.repoHydratePending = false
+    a.openState = undefined
+    this.writeLive(a)
+    if (a.userSeenSinceAssign) {
+      console.error(
+        `[pool] adopted ${a.projectId} MID-OPEN but a person has used it since — keeping it running and NOT ` +
+          `retiring it. Every one of its exports goes to conflict/ until it is healed; the durable backups ` +
+          `are untouched.`,
+      )
+      return
+    }
+    const steps: RecycleStep[] = []
+    try {
+      await this.backupForRecycle(a, steps, { reason: 'adopted-mid-open' })
+    } catch (err: any) {
+      console.error(`[pool] mid-open retirement of ${a.projectId}: backup pass ended early:`, err?.message ?? err)
+    }
+    this.closeMeter(a)
+    this.assigned.delete(a.projectId)
+    this.live.remove(a.projectId)
+    await this.mgr.stopVM(a.handle).catch(() => {})
+    console.error(
+      `[pool] RETIRED ${a.projectId} (adopted mid-open, no user activity): stopped without a snapshot so its ` +
+        `next open cold-boots from the durable backup. Steps: ${JSON.stringify(steps)}`,
+    )
   }
 
   /**
@@ -2038,6 +2361,17 @@ export class MetalWarmPool {
     for (const vm of this.available) await this.mgr.stopVM(vm.handle).catch(() => {})
     this.available = []
     return { releasedWarm, keptAssigned: this.assigned.size }
+  }
+
+  /**
+   * A person used this VM since its assign: record it, and persist it so an
+   * adopt-after-restart can still tell "a person's work exists only here" from
+   * "nobody has touched it" (SHO-584).
+   */
+  private noteUserSeen(a: AssignedVm): void {
+    if (a.userSeenSinceAssign) return
+    a.userSeenSinceAssign = true
+    this.writeLive(a)
   }
 
   /** Persist an assigned VM's connection info so the next instance can adopt it. */
@@ -2079,8 +2413,33 @@ export class MetalWarmPool {
       sourceUntrustedReason: a.sourceUntrustedReason,
       stateSince: a.stateSince,
       repoLinked: a.repoLinked,
+      quarantine: a.quarantine,
+      openState: a.openState,
+      userSeenSinceAssign: a.userSeenSinceAssign,
+      repoCorruptFailure: a.repoCorruptFailure,
+      rotateRetryAt: a.rotateRetryAt,
+      rotationBlocked: a.rotationBlocked,
+      refuseCount: a.refuseCount,
+      refusedSince: a.refusedSince,
+      refuseRetryAt: a.refuseRetryAt,
+      refusalLogged: a.refusalLogged,
       v: 1,
     })
+  }
+
+  /**
+   * The dedupe slots + daily cap for this VM's `conflict/` writes (SHO-584).
+   * One bookkeeping object, persisted with the live entry, shared by all four
+   * archive writers so a project's cap counts them together.
+   */
+  private quarantineFor(a: AssignedVm): QuarantineBookkeeping {
+    return {
+      state: a.quarantine,
+      onChange: (state: QuarantineState) => {
+        a.quarantine = state
+        this.writeLive(a)
+      },
+    }
   }
 
   /**
@@ -2733,6 +3092,11 @@ export class MetalWarmPool {
       // below iff hydrate applies real source; a hydrate that CAN'T confirm the
       // template is correct fails the open rather than leave a mislabeled VM.
       workspaceOrigin: 'template',
+      // Written BEFORE any hydrate runs, and cleared only when the open is
+      // complete. A restart that adopts this entry with `'opening'` still on it
+      // therefore knows the tree is a partial hydrate, not a workspace — the
+      // 525 MB half-open VM that could never back up or suspend (SHO-584).
+      openState: 'opening',
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
@@ -2930,6 +3294,11 @@ export class MetalWarmPool {
         ),
       )
     }
+    // The open is complete: every archive this VM may ever write over has been
+    // hydrated (or explicitly distrusted), so an adopt from here on is a normal
+    // VM. Anything that adopts the entry BEFORE this line sees a partial tree.
+    a.openState = 'ready'
+    this.writeLive(a)
     return a
   }
 
@@ -3155,7 +3524,12 @@ export class MetalWarmPool {
   protected uploadBackupGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean },
+    opts: {
+      parentEtag?: string
+      adoptWhenUnknown?: boolean
+      untrusted?: boolean
+      quarantine?: QuarantineBookkeeping
+    },
   ): Promise<BackupWriteOutcome> {
     return uploadWorkspaceArchiveGuarded(projectId, bytes, opts, this.cfg)
   }
@@ -3198,6 +3572,7 @@ export class MetalWarmPool {
     // Its source is the project's archive, which is already durable.
     if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
+      quarantine: this.quarantineFor(a),
       parentEtag: a.backupParentEtag,
       // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
       // may overwrite an object it can't prove it descends from. A template
@@ -3354,6 +3729,7 @@ export class MetalWarmPool {
   ): Promise<{ ok: boolean; outcome: BackupWriteOutcome }> {
     const state = this.memberDataState(a, memberId)
     const outcome = await this.uploadBackupGuarded(memberId, bytes, {
+      quarantine: this.quarantineFor(a),
       parentEtag: state.sourceParentEtag,
       // Unknown lineage is trusted only for the runtime's own project restored
       // from a snapshot that predates member stamping. A member this VM merely
@@ -3583,7 +3959,7 @@ export class MetalWarmPool {
   protected uploadDataGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
+    opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<DataWriteOutcome> {
     return uploadProjectDataGuarded(projectId, bytes, opts, this.cfg)
   }
@@ -3720,7 +4096,15 @@ export class MetalWarmPool {
     })
     if (res.status === 204) return null
     if (res.status === 404) return null
-    if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
+    if (!res.ok) {
+      // Both export paths classify here or nowhere: a corrupt `.git` must
+      // become RepoCorruptError whichever endpoint the guest answered on, or
+      // the pool would keep re-exporting 525 MB every sweep (SHO-584).
+      const text = await res.text()
+      const message = `/pool/export-repo failed (${res.status}): ${text}`
+      if (isRepoCorrupt(text)) throw new RepoCorruptError(message)
+      throw new Error(message)
+    }
     const path = this.exportSpoolPath(handle.id, 'repo')
     const dispose = () => rmSync(path, { force: true })
     let spooled: { size: number; sha256: string }
@@ -3757,17 +4141,88 @@ export class MetalWarmPool {
   protected uploadRepoGuarded(
     projectId: string,
     bytes: RepoBody,
-    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<RepoWriteOutcome> {
     return uploadRepoArchiveGuarded(projectId, bytes, opts, this.cfg)
   }
 
   async saveRepoToStore(a: AssignedVm): Promise<boolean> {
-    return this.repoFlight.run(a.projectId, () => this.saveRepoInner(a))
+    try {
+      const saved = await this.repoFlight.run(a.projectId, () => this.saveRepoInner(a))
+      // A repo that saves again is no longer corrupt: a heal (or the guest's own
+      // gc) can repair it, and keeping the block would pin the VM to its old
+      // rootfs for six hours at a time.
+      if (saved && a.repoCorruptFailure) {
+        a.repoCorruptFailure = undefined
+        this.writeLive(a)
+      }
+      return saved
+    } catch (err) {
+      // A corrupt `.git` is permanent for this VM, not a slow guest: record it so
+      // rotation blocks (SHO-584) instead of re-exporting every ten minutes.
+      if (err instanceof RepoCorruptError) this.noteRepoCorrupt(a, err.message)
+      throw err
+    }
+  }
+
+  /**
+   * Record that this VM's `.git` cannot be exported because the repository
+   * itself is corrupt (`bad object` / `missing blob`).
+   *
+   * Only the first failure of a streak alerts: a corrupt repo does not heal by
+   * being retried, and the fleet-wide signal (the counter, one journal line
+   * naming the project) is what a human acts on. The state is persisted so an
+   * adopt does not restart the clock, and `rotateStale` reads it to block
+   * rotation for {@link ROTATE_BLOCKED_RETRY_MS}.
+   */
+  private noteRepoCorrupt(a: AssignedVm, message: string, now = Date.now()): void {
+    const prev = a.repoCorruptFailure
+    a.repoCorruptFailure = {
+      code: REPO_CORRUPT_CODE,
+      message: message.slice(0, 500),
+      since: prev?.since ?? now,
+      attempts: (prev?.attempts ?? 0) + 1,
+      // Not tried again until this passes, even across a restart: retrying a
+      // corrupt repo is what produced the 525 MB-every-ten-minutes loop.
+      retryAt: now + ROTATE_BLOCKED_RETRY_MS,
+    }
+    this.writeLive(a)
+    if (prev) return
+    metrics.inc(M.repoCorrupt)
+    console.error(
+      `[pool] repo of ${a.projectId} is CORRUPT (${REPO_CORRUPT_CODE}): ${a.repoCorruptFailure.message}. ` +
+        `Its git history cannot be exported until the guest's .git is repaired; rotation will not retry it ` +
+        `every pass, and its exports are not re-attempted until then.`,
+    )
+  }
+
+  /**
+   * Export this VM's `.git`, classifying a CORRUPT repository on the way out.
+   *
+   * The single funnel for both export paths (the tarball/bundle writer and a
+   * recycle's final backup), so whichever one meets `bad object` records the
+   * same persistent block instead of only the tarball path noticing (SHO-584).
+   */
+  private async exportRepoOf(a: AssignedVm, opts: { skipLfsPush?: boolean } = {}): Promise<RepoExport | null> {
+    try {
+      return await this.fetchRepoExport(a.handle, a.runtimeToken, opts)
+    } catch (err) {
+      if (err instanceof RepoCorruptError) this.noteRepoCorrupt(a, err.message)
+      throw err
+    }
   }
 
   private async saveRepoInner(a: AssignedVm): Promise<boolean> {
     if (publishedSourceId(a.projectId)) return false
+    // A corrupt `.git` is permanent until something repairs it, so it is not
+    // re-exported inside the block window. One attempt is made when the window
+    // expires: a guest-side heal (or gc) can fix it, and a success clears the
+    // mark in `saveRepoToStore` (SHO-584).
+    if (a.repoCorruptFailure && Date.now() < a.repoCorruptFailure.retryAt) return false
+    // No root repo in the guest: there are no commits to make durable, and
+    // asking for an export only produced a 500 `not a git repository` every
+    // sweep (SHO-540).
+    if (a.repoAbsent) return false
     if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
@@ -3788,7 +4243,7 @@ export class MetalWarmPool {
     }
     let exported: RepoExport | null
     try {
-      exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+      exported = await this.exportRepoOf(a)
     } catch (err) {
       if (err instanceof ExportTooLargeError) metrics.inc(M.repoTooLarge)
       throw err
@@ -3835,7 +4290,7 @@ export class MetalWarmPool {
   protected async quarantineRepo(a: AssignedVm): Promise<boolean> {
     let exported: RepoExport | null
     try {
-      exported = await this.fetchRepoExport(a.handle, a.runtimeToken, { skipLfsPush: true })
+      exported = await this.exportRepoOf(a, { skipLfsPush: true })
     } catch (err: any) {
       console.error(`[pool] quarantine export for ${a.projectId} failed:`, err?.message ?? err)
       return false
@@ -4036,6 +4491,7 @@ export class MetalWarmPool {
   ): Promise<'written' | 'quarantined' | 'lost'> {
     if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
+      quarantine: this.quarantineFor(a),
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
     })
@@ -4091,7 +4547,7 @@ export class MetalWarmPool {
   private async promoteUnlinkedRepo(a: AssignedVm, bytes: RepoBody, rootCommitAt: number | null): Promise<boolean> {
     return this.promoteUnlinkedWith(a, rootCommitAt, {
       preserve: () => this.preserveDurableRepo(a.projectId),
-      write: (lineage) => this.uploadRepoGuarded(a.projectId, bytes, { lineage }),
+      write: (lineage) => this.uploadRepoGuarded(a.projectId, bytes, { lineage, quarantine: this.quarantineFor(a) }),
     })
   }
 
@@ -4242,6 +4698,7 @@ export class MetalWarmPool {
     if (!res.ok) {
       const text = await res.text()
       const message = `/pool/export-repo-bundle failed (${res.status}): ${text}`
+      if (isRepoCorrupt(text)) throw new RepoCorruptError(message)
       if (res.status === 503 && isLfsPushFailure(text)) throw new RepoBundleLfsPushError(message)
       throw new Error(message)
     }
@@ -4284,6 +4741,7 @@ export class MetalWarmPool {
 
   private async writeRepoManifest(a: AssignedVm, manifest: RepoManifest): Promise<RepoPersist> {
     const outcome = await this.uploadManifestGuarded(a.projectId, manifest, {
+      quarantine: this.quarantineFor(a),
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
     })
@@ -4341,14 +4799,15 @@ export class MetalWarmPool {
   private promoteUnlinkedManifest(a: AssignedVm, manifest: RepoManifest): Promise<boolean> {
     return this.promoteUnlinkedWith(a, manifest.rootCommitAt, {
       preserve: () => this.preserveDurableManifest(a.projectId),
-      write: (lineage) => this.uploadManifestGuarded(a.projectId, manifest, { lineage }),
+      write: (lineage) =>
+        this.uploadManifestGuarded(a.projectId, manifest, { lineage, quarantine: this.quarantineFor(a) }),
     })
   }
 
   protected uploadManifestGuarded(
     projectId: string,
     manifest: RepoManifest,
-    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+    opts: { lineage: RepoLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<RepoWriteOutcome> {
     return uploadRepoManifestGuarded(projectId, manifest, opts, this.cfg)
   }
@@ -4766,6 +5225,7 @@ export class MetalWarmPool {
         await this.healUntrustedRepo(a)
         continue
       }
+      if (a.repoAbsent) continue
       if (a.repoHeadSha && a.repoHeadSha === a.repoExportedHeadSha) continue
       if (a.repoExportRetryAt && now < a.repoExportRetryAt) continue
       try {
@@ -4995,6 +5455,7 @@ export class MetalWarmPool {
     if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
 
     const outcome = await this.uploadDataGuarded(slot.storageId, bytes, {
+      quarantine: this.quarantineFor(a),
       lineage,
       preserveOnRefusal: opts.final === true,
     })
@@ -5060,6 +5521,12 @@ export class MetalWarmPool {
             `${outcome.limit}-byte durability limit — NOT persisted. This project's data is ` +
             `only as durable as its VM snapshot; it needs a real storage backend.`,
         )
+        // A FINAL export that could not be persisted fails the recycle/suspend
+        // step, or the VM would be rotated on data that exists only in its own
+        // snapshot (SHO-584). Periodic sweeps still return quietly.
+        if (opts.final) {
+          throw new Error(`writable state is ${outcome.bytes} bytes, over the ${outcome.limit}-byte durability limit`)
+        }
         return false
       case 'skipped':
         return false
@@ -5304,7 +5771,7 @@ export class MetalWarmPool {
   protected uploadHomeGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
+    opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<DataWriteOutcome> {
     return uploadHomeStateGuarded(projectId, bytes, opts, this.cfg)
   }
@@ -5413,11 +5880,15 @@ export class MetalWarmPool {
     if (exported === 'too-large') {
       metrics.inc(M.homeTooLarge)
       console.error(`[pool] home directory for ${a.projectId} is over the guest's limit — NOT persisted`)
+      // A final export that did not persist fails the step: the cold boot would
+      // hydrate an older home than the one this VM holds (SHO-584).
+      if (opts.final) throw new Error("home directory is over the guest's export limit")
       return false
     }
     if (!exported) return false
 
     const outcome = await this.uploadHomeGuarded(a.projectId, exported.bytes, {
+      quarantine: this.quarantineFor(a),
       lineage,
       preserveOnRefusal: opts.final === true,
     })
@@ -5459,6 +5930,7 @@ export class MetalWarmPool {
       case 'too-large':
         metrics.inc(M.homeTooLarge)
         console.error(`[pool] home archive for ${a.projectId} is ${outcome.bytes} bytes, over ${outcome.limit} — NOT persisted`)
+        if (opts.final) throw new Error(`home archive is ${outcome.bytes} bytes, over the ${outcome.limit}-byte limit`)
         return false
       case 'skipped':
         return false
@@ -5514,6 +5986,37 @@ export class MetalWarmPool {
       // Best-effort — the snapshot below is the primary cross-host resume path.
       let finalBackupFailed = false
       if (!untouchedPrewarm) {
+        // The repo goes FIRST because it is the only step that can make a
+        // non-durable HEAD durable. If it cannot, this suspend is going to be
+        // REFUSED (SHO-442), and every step after it — data, home, source, the
+        // published state — would export bytes that then get quarantined for a
+        // lineage this VM cannot prove. That ordering is how one VM re-wrote 525
+        // MB into `conflict/` every ten minutes for six days (SHO-584).
+        //
+        // A repo the guest already reported as CORRUPT is not asked again: the
+        // failure is permanent for this VM (see `noteRepoCorrupt`), so the export
+        // would only burn the guest's CPU to fail the same way.
+        if (a.repoCorruptFailure) {
+          finalBackupFailed = true
+        } else {
+          await this.saveRepoToStore(a).catch((err) => {
+            finalBackupFailed = true
+            console.error(`[pool] repo backup for ${a.projectId} failed:`, err?.message ?? err)
+          })
+        }
+
+        // Never stop a VM whose current HEAD is not in the durable repo: a cold
+        // boot restores the durable copy, so suspending here is how a day and a
+        // half of work disappeared (SHO-442). The VM keeps running and the next
+        // sweep retries; the alert fires on the unsaved age. Checked HERE, before
+        // the remaining exports, so a refused suspend does no more of them.
+        if (!this.repoDurable(a)) {
+          this.refuseUndurable(a, 'suspend')
+          throw new RepoNotDurableError(
+            `refusing to suspend ${a.projectId}: its current HEAD is not in the durable repo`,
+          )
+        }
+
         if (a.projectId.startsWith('ws:')) {
           // A legacy VM's foreign members are only in this guest; once suspended,
           // its snapshot is never resumed (see foreignStampedMembers).
@@ -5547,11 +6050,6 @@ export class MetalWarmPool {
           console.error(`[pool] home-directory backup for ${a.projectId} failed:`, err?.message ?? err)
         })
 
-        await this.saveRepoToStore(a).catch((err) => {
-          finalBackupFailed = true
-          console.error(`[pool] repo backup for ${a.projectId} failed:`, err?.message ?? err)
-        })
-
         // Server-backed published VM: also flush the live writable state to the
         // published-data bucket so a resume on a DIFFERENT host (snapshot miss)
         // — or a republish/data-push — sees the latest end-user data.
@@ -5560,17 +6058,6 @@ export class MetalWarmPool {
             console.error(`[pool] published-data export for ${a.publishedSubdomain} failed (snapshot still durable):`, err?.message ?? err),
           )
         }
-      }
-
-      // Never stop a VM whose current HEAD is not in the durable repo: a cold
-      // boot restores the durable copy, so suspending here is how a day and a
-      // half of work disappeared (SHO-442). The VM keeps running and the next
-      // sweep retries; the alert fires on the unsaved age.
-      if (!untouchedPrewarm && !this.repoDurable(a)) {
-        this.refuseUndurable(a, 'suspend')
-        throw new RepoNotDurableError(
-          `refusing to suspend ${a.projectId}: its current HEAD is not in the durable repo`,
-        )
       }
       // A snapshot from a superseded rootfs can never be pushed, so the final
       // backups are the only copy. If any of them failed, stopping would drop
@@ -5832,6 +6319,23 @@ export class MetalWarmPool {
    */
   private localSnapshotIsStale(s: SuspendedVm): boolean {
     return !!s.rootfsIdentity && s.rootfsIdentity !== this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')
+  }
+
+  /**
+   * Rootfs identities a rollback could restore — empty unless a watch is open
+   * (SHO-552). An image is only restorable while it is still the one at
+   * `<base>.prev`, and those identities come from the marker written before the
+   * activation renamed it there.
+   *
+   * Snapshots for these are stale relative to the LIVE rootfs, so reclaim would
+   * drop them: the fleet would come back from a rollback with an empty cache and
+   * cold-boot everything, which is the cost the rollback exists to avoid.
+   */
+  private rollbackSnapshotIdentities(): Set<string> {
+    if (!getRootfsWatch()) return new Set()
+    const prev = getRootfsPrev()
+    if (!prev) return new Set()
+    return new Set(Object.values(prev.identities).filter((id): id is string => !!id))
   }
 
   /** Whether a snapshot taken from this VM right now could never be pushed. */
@@ -6208,6 +6712,10 @@ export class MetalWarmPool {
       memberData: resumedMemberData(s),
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
+      // A restore is an open too: the guest hooks below (rehydrate, drift
+      // repair, drive growth) have not run yet, so an adopt before they finish
+      // must not treat this as a normal VM (SHO-584).
+      openState: 'opening',
     }
     this.assigned.set(projectId, a)
     this.writeLive(a)
@@ -6243,6 +6751,9 @@ export class MetalWarmPool {
         )
     }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
+    // The restore is complete, so an adopt from here on is a normal VM (SHO-584).
+    a.openState = 'ready'
+    this.writeLive(a)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, suspendReason: s.suspendReason, drive: wantDriveMiB ?? null }
   }
 
@@ -6412,6 +6923,7 @@ export class MetalWarmPool {
             appRequestCount?: number
             lastAgentRequestAt?: number | null
             repoHeadSha?: string | null
+            repoPresent?: boolean
             previewHealth?: Array<{ projectId: string; apiPhase: string; apiReady: boolean }>
           }
           a.lastHealthOk = true
@@ -6495,7 +7007,7 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
               a.lastUserActivityAt = now
-              a.userSeenSinceAssign = true
+              this.noteUserSeen(a)
             }
           }
           if (typeof agentAt === 'number') {
@@ -6505,7 +7017,7 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
               a.lastUserActivityAt = now
-              a.userSeenSinceAssign = true
+              this.noteUserSeen(a)
             }
           }
           // The one clock the reaper, the meter and the fleet gauges share
@@ -6526,6 +7038,18 @@ export class MetalWarmPool {
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
+          // A guest whose root has no repo says so: nothing to export, and a
+          // HEAD cached from an earlier boot must not pin it as undurable for
+          // the rest of its life (SHO-540).
+          if (body.repoPresent === false) {
+            a.repoAbsent = true
+            if (a.repoHeadSha) {
+              a.repoHeadSha = undefined
+              a.repoExportedHeadSha = undefined
+            }
+          } else if (body.repoPresent === true) {
+            a.repoAbsent = false
+          }
           const sha = typeof body.repoHeadSha === 'string' && body.repoHeadSha ? body.repoHeadSha : undefined
           if (sha && sha !== a.repoHeadSha) {
             a.repoHeadSha = sha
@@ -6539,7 +7063,7 @@ export class MetalWarmPool {
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
             a.lastUserActivityAt = now
-            a.userSeenSinceAssign = true
+            this.noteUserSeen(a)
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -6866,13 +7390,18 @@ export class MetalWarmPool {
   private noteSuspendRefused(a: AssignedVm, reason: string, now: number): void {
     a.refuseCount = (a.refuseCount ?? 0) + 1
     a.refusedSince ??= now
-    a.refuseRetryAt = now + this.refuseBackoffMs(a.refuseCount)
+    // A corrupt `.git` will not be durable no matter how often this is retried,
+    // so it backs off like a blocked rotation (six hours), not like a HEAD that
+    // simply has not been exported yet (SHO-584).
+    const backoff = a.repoCorruptFailure ? ROTATE_BLOCKED_RETRY_MS : this.refuseBackoffMs(a.refuseCount)
+    a.refuseRetryAt = now + backoff
+    this.writeLive(a)
     metrics.inc(M.idleSuspendRefused)
     if (!a.refusalLogged) {
       a.refusalLogged = true
       console.warn(
         `[pool] idle-suspend is HELD for ${a.projectId} by a non-durable HEAD: ${reason}. ` +
-          `Backing off ${Math.round(this.refuseBackoffMs(a.refuseCount) / 60_000)}m per attempt ` +
+          `Backing off ${Math.round(backoff / 60_000)}m per attempt ` +
           `(refused since ${new Date(a.refusedSince).toISOString()}); counted in ${M.idleSuspendRefused}.`,
       )
     }
@@ -6883,6 +7412,9 @@ export class MetalWarmPool {
     a.refusedSince = undefined
     a.refuseRetryAt = undefined
     a.refusalLogged = undefined
+    // Deliberately no `writeLive`: this runs after the VM left the assigned set,
+    // and writing an entry back would resurrect it in the adopt-on-restart
+    // registry for a process that is gone.
   }
 
   /**
@@ -7068,11 +7600,12 @@ export class MetalWarmPool {
     for (const id of this.staleSince.keys()) if (!staleIds.has(id)) this.staleSince.delete(id)
     for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
 
-    for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
-    for (const id of this.rotationBlocked.keys()) if (!staleIds.has(id)) this.rotationBlocked.delete(id)
-
     const due = stale.filter((a) => {
-      if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
+      if (now < (a.rotateRetryAt ?? 0)) return false
+      // A corrupt `.git` blocks rotation on its own clock, persisted with the VM:
+      // a rotation that cannot back up must not be retried after every deploy
+      // just because `rotateRetryAt` was in memory (SHO-584).
+      if (a.repoCorruptFailure && now < a.repoCorruptFailure.retryAt) return false
       const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
       const pastDeadline = now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
       // Past the deadline a turn is the only thing that still blocks rotation:
@@ -7102,19 +7635,29 @@ export class MetalWarmPool {
           // once, and stop burning a 1.7 GB source export every ten minutes on a
           // rotation that cannot succeed (SHO-541: four days of exactly that).
           const dataOnly = failed.length > 0 && failed.every((s) => s.step === 'data') && !!a.dataSnapshotFailure
-          if (dataOnly) {
+          // A corrupt `.git` is the same shape of dead end as an un-snapshottable
+          // database: no retry repairs it, and every attempt runs the backup (and
+          // used to re-quarantine the source) before aborting. Block it for the
+          // same six hours instead of every ten minutes (SHO-584).
+          const repoCorrupt = !!a.repoCorruptFailure && failed.some((s) => s.step === 'repo')
+          if (dataOnly || repoCorrupt) {
             this.markRotationBlocked(
               a,
-              `its database cannot be snapshotted (${a.dataSnapshotFailure!.message}), so the final backup ` +
-                `rotation requires will not happen; the VM stays on its current runtime`,
+              dataOnly
+                ? `its database cannot be snapshotted (${a.dataSnapshotFailure!.message}), so the final backup ` +
+                    `rotation requires will not happen; the VM stays on its current runtime`
+                : `its git repository is corrupt (${a.repoCorruptFailure!.message}), so the final repo backup ` +
+                    `rotation requires will not happen; the VM stays on its current runtime`,
             )
-            this.rotateRetryAt.set(a.projectId, now + ROTATE_BLOCKED_RETRY_MS)
+            a.rotateRetryAt = now + ROTATE_BLOCKED_RETRY_MS
+            this.writeLive(a)
             console.warn(
               `[pool] rollout rotation of ${a.projectId} BLOCKED (${detail}); ` +
                 `retrying in ${ROTATE_BLOCKED_RETRY_MS / 3_600_000}h`,
             )
           } else {
-            this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+            a.rotateRetryAt = now + ROTATE_RETRY_MS
+            this.writeLive(a)
             console.warn(
               `[pool] rollout rotation of ${a.projectId} aborted (${detail}); ` +
                 `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
@@ -7123,13 +7666,15 @@ export class MetalWarmPool {
           continue
         }
       } catch (err: any) {
-        this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+        a.rotateRetryAt = now + ROTATE_RETRY_MS
+        this.writeLive(a)
         console.error(`[pool] rollout rotation failed for ${a.projectId}:`, err?.message ?? err)
         continue
       }
       this.staleSince.delete(a.projectId)
-      this.rotateRetryAt.delete(a.projectId)
-      this.rotationBlocked.delete(a.projectId)
+      a.rotateRetryAt = undefined
+      a.rotationBlocked = undefined
+      this.writeLive(a)
       metrics.inc(M.rolloutRotated)
       ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
     }
@@ -7147,16 +7692,16 @@ export class MetalWarmPool {
 
   /** Why rotation gave up on this project's VM, if it did. */
   private rotationBlockedOf(projectId: string): RotationBlocked | undefined {
-    const b = this.rotationBlocked.get(projectId)
+    const b = this.assigned.get(projectId)?.rotationBlocked
     return b ? { code: 'stale_rootfs_blocked', reason: b.reason, since: b.since } : undefined
   }
 
   /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
   private staleSince = new Map<string, number>()
-  /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
-  private rotateRetryAt = new Map<string, number>()
-  /** VMs on a superseded rootfs that rotation has given up on, and why. */
-  private rotationBlocked = new Map<string, { reason: string; since: number }>()
+  // `rotateRetryAt` and `rotationBlocked` live on the AssignedVm (and in its live
+  // registry entry), not in maps: a restart used to reset them to "retry now",
+  // which is why a rotation that could never succeed retried on every deploy —
+  // ~12 times a day (SHO-584).
 
   /**
    * Record — and report once — that a VM cannot leave a superseded rootfs.
@@ -7164,9 +7709,10 @@ export class MetalWarmPool {
    * the status field is what the pool and Ops views read (SHO-541).
    */
   private markRotationBlocked(a: AssignedVm, reason: string): void {
-    const prev = this.rotationBlocked.get(a.projectId)
+    const prev = a.rotationBlocked
     if (prev && prev.reason === reason) return
-    this.rotationBlocked.set(a.projectId, { reason, since: prev?.since ?? Date.now() })
+    a.rotationBlocked = { reason, since: prev?.since ?? Date.now() }
+    this.writeLive(a)
     metrics.inc(M.rotationBlocked)
     console.error(
       `[pool] stale_rootfs_blocked: ${a.projectId} is on a superseded rootfs and rotation cannot take it — ` +
@@ -7692,6 +8238,12 @@ export class MetalWarmPool {
    *
    * The guard keeps one drain in flight: the sweep timer keeps firing during a
    * long drain, and a second pass over the same entries would be wasted work.
+   *
+   * One extra skip while a post-activation watch is open (SHO-552): a snapshot
+   * taken against the generation we just replaced is exactly what a rollback
+   * needs, and reclaiming it would leave a rollback that boots every project
+   * cold — or, worse, one that "succeeds" and loses the home states. The watch
+   * ends in 15 minutes and normal reclaim resumes; nothing is lost by waiting.
    */
   private async reclaimStaleSnapshots(
     max = STALE_RECLAIM_PER_SWEEP,
@@ -7701,6 +8253,8 @@ export class MetalWarmPool {
     if (this.staleReclaimRunning) return { projectIds, bytes }
     this.staleReclaimRunning = true
     try {
+      // Read once per sweep: one agentDir read pair, not one per snapshot.
+      const rollbackTargets = this.rollbackSnapshotIdentities()
       // Snapshot the ids: we await inside the loop, so the live map may gain a
       // freshly-suspended entry underneath us. Anything new is next sweep's.
       for (const id of [...this.suspended.keys()]) {
@@ -7709,6 +8263,7 @@ export class MetalWarmPool {
         // project may have woken and re-suspended onto the CURRENT rootfs.
         const s = this.suspended.get(id)
         if (!s || !this.localSnapshotIsStale(s)) continue
+        if (s.rootfsIdentity && rollbackTargets.has(s.rootfsIdentity)) continue
         // Never race the paths that own the entry: a running VM is not suspended
         // at all, and an in-flight open is already deciding this snapshot's fate.
         if (this.assigned.has(id)) continue
@@ -8065,7 +8620,7 @@ export class MetalWarmPool {
     }
     metrics.gauge(M.dataSnapshotFailedVms, snapshotFailing)
     metrics.gauge(M.dataSnapshotFailedOldestSec, oldestSnapshotFailingSec)
-    metrics.gauge(M.rotationBlockedVms, this.rotationBlocked.size)
+    metrics.gauge(M.rotationBlockedVms, [...this.assigned.values()].filter((v) => v.rotationBlocked).length)
 
     // Idle reclaim + host memory (SHO-534). Emitted BEFORE the dm-only early
     // return below, because a reflink host (every prod host today) is exactly
@@ -8489,8 +9044,6 @@ export class MetalWarmPool {
     let removedLocal = false
     let removedDurable = false
 
-    this.rotationBlocked.delete(projectId)
-    this.rotateRetryAt.delete(projectId)
     const a = this.assigned.get(projectId)
     if (a) {
       await this.mgr.stopVM(a.handle).catch(() => {})
@@ -8642,6 +9195,7 @@ export class MetalWarmPool {
         stopBackgroundTasks: opts.stopBackgroundTasks,
         reason: opts.reason,
         noteTmp,
+        force,
       })
       if (!ok && !force) {
         console.error(`[pool] recycle ${runtimeKey} ABORTED — a backup step failed; nothing removed`)
@@ -8668,14 +9222,32 @@ export class MetalWarmPool {
       stopBackgroundTasks?: boolean
       reason?: string
       noteTmp?: (tmp: DroppedTmpReport) => void
+      /**
+       * Run every step even after one fails, keeping today's behaviour for an
+       * operator-initiated force recycle. A non-forced recycle STOPS at the
+       * first failure (SHO-584): it is going to abort, and each remaining export
+       * is a full pull-and-upload whose refusal would land in `conflict/` again.
+       */
+      force?: boolean
     } = {},
   ): Promise<boolean> {
+    // The first step that failed. Once set, a non-forced pass records every
+    // remaining step as skipped and does no more work: after the repo export
+    // failed on a corrupt `.git`, running data → home → source anyway is how one
+    // VM re-quarantined 525 MB every ten minutes for six days (SHO-584).
+    let failed: string | null = null
     const run = async (step: string, fn: () => Promise<string | null>) => {
+      if (failed && !opts.force) {
+        steps.push({ step, ok: false, detail: `skipped: ${failed} failed` })
+        return
+      }
       try {
         const problem = await fn()
         steps.push(problem ? { step, ok: false, detail: problem } : { step, ok: true })
+        if (problem && !failed) failed = step
       } catch (err: any) {
         steps.push({ step, ok: false, detail: err?.message ?? String(err) })
+        if (!failed) failed = step
       }
     }
     const isWorkspace = a.projectId.startsWith('ws:')
@@ -8724,7 +9296,7 @@ export class MetalWarmPool {
             out = bundled === 'unchanged' ? 'written' : bundled
             return out === 'written'
           }
-          const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+          const exported = await this.exportRepoOf(a)
           try {
             out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
           } finally {

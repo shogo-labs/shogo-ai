@@ -24,11 +24,13 @@ import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-
 import { metrics, M } from './metrics'
 import type { MetalWarmPool } from './pool'
 import {
+  getRejectedRootfs,
   getRootfsRevision,
   getRootfsSha,
   getStagedRootfs,
   maybeActivateRootfs,
   maybeRebuildRootfs,
+  maybeRollbackRootfs,
   maybeSelfUpdate,
   type DesiredAgent,
   type RootfsHooks,
@@ -81,6 +83,10 @@ async function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {})
     // gate (scripts/ci/metal-rootfs-gate.sh) reads this one.
     rootfsRevision: getRootfsRevision() ?? undefined,
     stagedRootfs: stagedRootfsReport(pool),
+    // The generation most recently proven unusable (SHO-552): never rebuilt here
+    // and never re-applied. Worth reporting because the host silently stays on
+    // the image it has — the release is broken and nobody would otherwise know.
+    rootfsRejected: getRejectedRootfs() ?? undefined,
     // Sent once, by the shutting-down process: the control port is about to
     // drop for a few seconds, so callers retry instead of failing an open.
     ...(opts.restarting ? { restarting: true } : {}),
@@ -241,6 +247,13 @@ export function rootfsHooks(pool: MetalWarmPool): RootfsHooks {
   return {
     onStaged: (ids) => pool.dropStagedSnapshots(list(ids)),
     promote: (ids) => pool.promoteStagedSnapshots(list(ids)),
+    // The gate that proves a staged image works: real cold boots from it, on the
+    // ordinary health timeout, held for METAL_ROOTFS_PROBE_HOLD_MS (SHO-552,
+    // SHO-563).
+    probeBoot: async (image, vmClass) => {
+      const res = await pool.probeBoot(vmClass, image)
+      return res.ok ? null : (res.error ?? 'boot probe failed')
+    },
   }
 }
 
@@ -267,6 +280,11 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     // restart the process and lose whatever is still unacked.
     if (res?.meterAck) pool.ackMeters(res.meterAck)
     if (res?.idleSuspend) setIdleDirective(res.idleSuspend)
+    // The generation we activated is on probation: if its cold boots mostly
+    // fail, put the previous one back now (SHO-552). Checked first, and also
+    // when the heartbeat failed — a host that cannot reach the control plane is
+    // exactly the one that must not sit on a broken image waiting for a human.
+    if (await maybeRollbackRootfs()) return
     // A staged rootfs switches on the control plane's word, or on our own once
     // it has waited too long. Checked even when the heartbeat failed, so a host
     // cut off from the control plane still converges.

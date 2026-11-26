@@ -2073,7 +2073,11 @@ export class AgentGateway {
     // (SHO-327) instead of a copy that measures itself.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
-    this.sessionManager.setSummarizeFn(createCompactionSummarizer({ model: summarizerModel }))
+    // The summarizer's own window clamps the per-call chunk budget: the chunks
+    // are 100k by default, and a smaller summarizer must not be handed one.
+    this.sessionManager.setSummarizeFn(createCompactionSummarizer({ model: summarizerModel }), {
+      contextWindowTokens: getContextWindowTokens(summarizerModel.id),
+    })
 
     // Finish (or at least explain) turns this runtime was killed in the middle
     // of, before pruning can drop their sessions (SHO-121).
@@ -4299,6 +4303,28 @@ export class AgentGateway {
     // floor: below it the kept tail is the whole context, so a summary would
     // fold nothing and only lose detail.
     const contextBeforeLayer4 = this.sessionManager.estimateTokens(session)
+    // Live status for a compaction whose summarizer calls are running. Without
+    // it a 350k head is 2–5 minutes of a turn that has visibly not started
+    // (SHO-556). Transient on purpose: the API persists only
+    // `data-context-summarized`, so a reload can never show a stuck spinner.
+    const emitContextSummarizing = (data: {
+      trigger: 'pre-turn' | 'idle' | 'mid-turn' | 'reactive' | 'manual'
+      tokensBefore: number
+      chunks: number
+    }) => {
+      try {
+        uiWriter?.write({ type: 'data-context-summarizing', data })
+      } catch { /* client disconnected mid-turn — this is status, nothing to persist */ }
+    }
+    /**
+     * The frame that resolves the "Summarizing…" row into the transcript
+     * divider. Persisted API-side, so the divider survives a reload.
+     */
+    const emitContextSummarized = (data: Record<string, unknown>) => {
+      try {
+        uiWriter?.write({ type: 'data-context-summarized', data })
+      } catch { /* client disconnected mid-turn — the row still persists API-side */ }
+    }
     const idleCompactAfterMs = resolveIdleCompactAfterMs()
     const idleCompaction =
       idleCompactAfterMs > 0 &&
@@ -4309,7 +4335,16 @@ export class AgentGateway {
       const fileStateSummary = this.fileStateCache.size > 0
         ? this.fileStateCache.getSummary(this.workspaceDir)
         : undefined
-      const preCompactResult = await this.sessionManager.compact(sessionId, fileStateSummary)
+      const preCompactResult = await this.sessionManager.compact(
+        sessionId,
+        fileStateSummary,
+        undefined,
+        ({ chunks }) => emitContextSummarizing({
+          trigger: compactionTrigger,
+          tokensBefore: contextBeforeLayer4,
+          chunks,
+        }),
+      )
       if (preCompactResult) {
         turnCompaction = { before: preCompactResult.messagesBefore, after: preCompactResult.messagesAfter }
         recordCompaction({
@@ -4321,6 +4356,17 @@ export class AgentGateway {
           filesTouched: preCompactResult.filesTouched ?? [],
           toolsUsed: preCompactResult.toolsUsed ?? [],
           foldedRounds: preCompactResult.foldedRounds ?? 0,
+        })
+        // The turn-boundary compaction is a transcript row too: without it the
+        // "Summarizing…" row emitted above would never resolve.
+        emitContextSummarized({
+          trigger: 'auto',
+          tokensBefore: contextBeforeLayer4,
+          tokensAfter: this.sessionManager.estimateTokens(session),
+          messagesBefore: preCompactResult.messagesBefore,
+          messagesAfter: preCompactResult.messagesAfter,
+          summaryChars: preCompactResult.summary.length,
+          contextWindowTokens: autoCompactTokens,
         })
         console.log(
           `${this.logPrefix} ${idleCompaction ? 'Idle' : 'Pre-turn'} autocompact after ${Math.round(idleGapMs / 1000)}s idle: ${preCompactResult.messagesBefore} -> ${preCompactResult.messagesAfter} messages`
@@ -5103,6 +5149,13 @@ export class AgentGateway {
         idleCompactAfterMs: resolveIdleCompactAfterMs(),
         idleCompactFloorTokens: this.sessionManager.compactionTailBudgetTokens,
         summarize: (head, previousSummary) => this.sessionManager.summarizeHead(head, previousSummary),
+        // Say "Summarizing…" before the calls run, with how many calls are
+        // coming, so the user sees the reason the turn has not answered yet.
+        onSummarizeStart: ({ head, tokensBefore, reason }) => emitContextSummarizing({
+          trigger: reason === 'manual' ? 'manual' : reason === 'idle' ? 'idle' : 'mid-turn',
+          tokensBefore,
+          chunks: this.sessionManager.planSummarizeChunks(head).count,
+        }),
         apply: (summary, splitIndex, opts) => {
           // Session-relative index: the loop's array may include a head that a
           // previous compaction already folded away.
@@ -5219,7 +5272,17 @@ export class AgentGateway {
           const fileStateSummary = this.fileStateCache.size > 0
             ? this.fileStateCache.getSummary(this.workspaceDir)
             : undefined
-          const r = await this.sessionManager.compact(sessionId, fileStateSummary, 4)
+          const tokensBeforeReactive = this.sessionManager.estimateTokens(session)
+          const r = await this.sessionManager.compact(
+            sessionId,
+            fileStateSummary,
+            4,
+            ({ chunks }) => emitContextSummarizing({
+              trigger: 'reactive',
+              tokensBefore: tokensBeforeReactive,
+              chunks,
+            }),
+          )
           if (!r) return null
           turnCompaction = { before: r.messagesBefore, after: r.messagesAfter }
           recordCompaction({
@@ -5231,6 +5294,15 @@ export class AgentGateway {
             filesTouched: r.filesTouched ?? [],
             toolsUsed: r.toolsUsed ?? [],
             foldedRounds: r.foldedRounds ?? 0,
+          })
+          emitContextSummarized({
+            trigger: 'auto',
+            tokensBefore: tokensBeforeReactive,
+            tokensAfter: this.sessionManager.estimateTokens(session),
+            messagesBefore: r.messagesBefore,
+            messagesAfter: r.messagesAfter,
+            summaryChars: r.summary.length,
+            contextWindowTokens: autoCompactTokens,
           })
           console.log(`${this.logPrefix} Reactive compaction: ${r.messagesBefore} -> ${r.messagesAfter} messages`)
           // LLM autocompact rewrites the prefix — drop per-session replacement

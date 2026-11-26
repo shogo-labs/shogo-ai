@@ -80,6 +80,13 @@ export const M = {
   suspendRetiredStale: 'metal_suspend_retired_stale_total',
   // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
   rolloutRotated: 'metal_rollout_rotated_total',
+  // A staged rootfs was refused because a real VM could not boot from it
+  // (SHO-552). Non-zero means a release is broken and this host stayed on the
+  // image it had — the log line names the error.
+  rootfsBootProbeFailed: 'metal_rootfs_boot_probe_failed_total',
+  // Activations undone automatically after a burst of failed cold boots, and by
+  // an operator (`POST /admin/rollback-rootfs`).
+  rootfsRollback: 'metal_rootfs_rollback_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
@@ -347,6 +354,23 @@ export const M = {
   // workspace was in use by then, so it was left on the source's .git),
   // `failed`, `abandoned` (the VM went away first).
   repoHydrateDeferred: 'metal_repo_hydrate_deferred_total',
+  // Quarantine writes (`conflict/`), all four writers through quarantine.ts.
+  // `deduped` = identical bytes already durable, so no PUT was made; `capped` =
+  // the project is over its daily cap and the copy was NOT written (callers
+  // must treat that as not saved); `bytes` is what actually reached the bucket.
+  // One identical 525 MB copy every ten minutes for six days is what these
+  // three counters make visible (SHO-584).
+  quarantineDeduped: 'metal_quarantine_deduped_total',
+  quarantineCapped: 'metal_quarantine_capped_total',
+  quarantineBytes: 'metal_quarantine_bytes_total',
+  // A VM adopted after a restart whose open never finished (its assign was cut
+  // off by the drain): the tree is a partial hydrate, so it is marked untrusted
+  // and retired without a snapshot (SHO-584).
+  midOpenAdopted: 'metal_mid_open_adopted_total',
+  // A `.git` the guest reports as corrupt (`bad object` / `missing blob` on the
+  // export's rev-list). Permanent for that VM, so rotation is blocked rather
+  // than retried every ten minutes (SHO-584).
+  repoCorrupt: 'metal_repo_corrupt_total',
   // Bytes and bundles the guest was asked to download, and the wall time of
   // each restore (foreground or deferred) — divide by repoHydrate for averages.
   repoHydrateBytes: 'metal_repo_hydrate_bytes_total',

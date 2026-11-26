@@ -185,6 +185,144 @@ describe('publish-artifact upload target', () => {
     expect(typeof body.archive).toBe('string')
     expect(puts.length).toBe(0)
   })
+
+  // SHO-551 QA round 5: staging published an environment whose database was
+  // Postgres and whose pod still ran `PrismaLibSql`, so a write on one pod was
+  // lost on every other pod. The artifact is the only place the build context
+  // can be converted, so a context that cannot be converted must not upload.
+  it('rewrites the build context for Postgres and says so in the response', async () => {
+    const { store, puts } = fakeStore()
+    mkdirSync(join(workspace, 'src', 'lib'), { recursive: true })
+    writeFileSync(
+      join(workspace, 'src', 'lib', 'db.ts'),
+      "import { PrismaLibSql } from '@prisma/adapter-libsql'\n" +
+        "import { PrismaClient } from '../generated/prisma/client'\n" +
+        'export const prisma = new PrismaClient({ adapter: new PrismaLibSql({}) })\n',
+    )
+    mkdirSync(join(workspace, 'prisma'), { recursive: true })
+    writeFileSync(
+      join(workspace, 'prisma', 'schema.prisma'),
+      'datasource db {\n  provider = "sqlite"\n}\n\ngenerator client {\n  provider = "prisma-client"\n' +
+        '  output   = "../src/generated/prisma"\n}\n\nmodel Todo {\n  id    String @id\n  title String\n}\n',
+    )
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc-pg.tar.gz&db=postgres'),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { dbContext?: string }
+    expect(body.dbContext).toBe('postgres')
+    // The tar the Job builds from carries the Postgres client, not the SQLite one.
+    const tarBytes = Buffer.from(Bun.gunzipSync(new Uint8Array(puts[0].body))).toString('utf8')
+    expect(tarBytes).toContain('@prisma/adapter-pg')
+    expect(tarBytes).toContain('provider = "postgresql"')
+    expect(tarBytes).not.toContain('@prisma/adapter-libsql')
+  })
+
+  it('refuses to upload a context it cannot make Postgres', async () => {
+    const { store, puts } = fakeStore()
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc-pg.tar.gz&db=postgres'),
+    )
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body.error).toBe('postgres_context_failed')
+    expect(body.message).toContain('No src/lib/db.ts')
+    expect(puts.length).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A metal host with a bucket but no credentials (SHO-551 §C, AC 4)
+//
+// Prod built zero images in three days because `/agent/publish-artifact`
+// answered 500 `artifact_failed: Could not load credentials from any providers`:
+// `S3_LFS_BUCKET` is set on a metal host, so `objectStore()` is non-null, but the
+// host has no access key, so writing through it throws. The API's presigned
+// `putUrl` is minted with credentials that are known to work, so it must win.
+// ---------------------------------------------------------------------------
+describe('publish-artifact with an object store that has no credentials', () => {
+  /** What the AWS SDK throws on a metal host with `S3_LFS_BUCKET` and no keys. */
+  function credentialsError(): Error {
+    const err = new Error('Could not load credentials from any providers')
+    err.name = 'CredentialsProviderError'
+    return err
+  }
+
+  function mountWithBrokenStore(workspaceDir: string): Hono {
+    const deps: PublishEndpointDeps = {
+      projectDir: () => workspaceDir,
+      outputRoot: (_projectId, projectDir) => projectDir,
+      objectStore: () => ({
+        bucket: 'workspaces',
+        client: {
+          async send() {
+            throw credentialsError()
+          },
+        },
+      }),
+    }
+    const hono = new Hono()
+    hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+    return hono
+  }
+
+  it('uploads through the API presigned putUrl and returns 200, media kept in the tar', async () => {
+    // An offload candidate (>= 5 MB dist asset) is what makes the media offload
+    // touch the broken store at all — without one the store is never called and
+    // the credentials failure never happens.
+    writeFileSync(join(workspace, PUBLISH_STAGING_DIR, 'assets', 'big.png'), Buffer.alloc(5 * 1024 * 1024))
+    let received: Buffer | null = null
+    const receiver = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        received = Buffer.from(await req.arrayBuffer())
+        return new Response('', { status: 200 })
+      },
+    })
+    try {
+      const hono = mountWithBrokenStore(workspace)
+      const putUrl = `http://127.0.0.1:${receiver.port}/upload`
+      const res = await hono.fetch(
+        new Request(
+          'http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish' +
+            `&key=acme/artifacts/abc.tar.gz&putUrl=${encodeURIComponent(putUrl)}`,
+        ),
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        bucket: string
+        key: string
+        bytes: number
+        archive?: string
+        offload?: { skipped?: string }
+      }
+      expect(body.key).toBe('acme/artifacts/abc.tar.gz')
+      expect(body.archive).toBeUndefined()
+      // The tar went through the API's PUT, not the runtime's dead store.
+      expect(received).toBeTruthy()
+      expect(received!.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]))
+      expect(body.bytes).toBe(received!.length)
+      // Media could not be offloaded, so it stayed inside the archive rather
+      // than failing the publish — and the response says why.
+      expect(body.offload?.skipped).toBe('credentials')
+    } finally {
+      receiver.stop(true)
+    }
+  })
+
+  it('names the credential problem when there is no putUrl, instead of artifact_failed', async () => {
+    const hono = mountWithBrokenStore(workspace)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc.tar.gz'),
+    )
+    expect(res.status).toBe(502)
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body.error).toBe('object_store_credentials_unavailable')
+    expect(body.error).not.toBe('artifact_failed')
+    expect(body.message).toContain('presigned putUrl')
+  })
 })
 
 describe('publish-artifact size guard', () => {

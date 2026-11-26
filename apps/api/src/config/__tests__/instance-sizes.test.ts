@@ -8,8 +8,6 @@ const {
   INSTANCE_SIZES,
   INSTANCE_SIZE_ORDER,
   applyTechStackFloor,
-  applyDockerStackFloor,
-  meetsMinimumInstanceSize,
   getInstanceDisplayPrice,
   getInstanceSizeSpec,
   getKubernetesResourceOverrides,
@@ -22,26 +20,32 @@ const {
 
 describe('resolveMetalVmSize', () => {
   it('sizes a standard VM at small, capped by the tier', () => {
-    expect(resolveMetalVmSize('micro', ['nextjs'], false)).toEqual({ vcpus: 1, memMiB: 2048 })
-    expect(resolveMetalVmSize('small', ['nextjs'], false)).toEqual({ vcpus: 1, memMiB: 4096 })
-    expect(resolveMetalVmSize('large', ['nextjs'], false)).toEqual({ vcpus: 4, memMiB: 4096 })
+    expect(resolveMetalVmSize('micro', ['nextjs'])).toEqual({ vcpus: 1, memMiB: 2048 })
+    expect(resolveMetalVmSize('small', ['nextjs'])).toEqual({ vcpus: 1, memMiB: 4096 })
+    expect(resolveMetalVmSize('large', ['nextjs'])).toEqual({ vcpus: 4, memMiB: 4096 })
   })
 
   it('keeps the unbilled mobile floor on a micro workspace', () => {
-    expect(resolveMetalVmSize('micro', ['expo-app'], false)).toEqual({ vcpus: 1, memMiB: 4096 })
+    expect(resolveMetalVmSize('micro', ['expo-app'])).toEqual({ vcpus: 1, memMiB: 4096 })
   })
 
-  it('sizes a docker VM at the stack floor, with vCPUs following the tier', () => {
-    expect(resolveMetalVmSize('large', ['docker-compose'], true)).toEqual({ vcpus: 4, memMiB: 16384 })
-    expect(resolveMetalVmSize('xlarge', ['docker-compose'], true)).toEqual({ vcpus: 8, memMiB: 16384 })
+  it('accounts a docker stack like any other VM — no retired instance-size floor', () => {
+    // SHO-424 retired instance-size purchases; SHO-578 dropped the docker
+    // stack floor that came with them. A docker project is metered like
+    // every other VM, so its budget accounting is the standard small VM
+    // (not the old 16 GiB floor), with vCPUs still following the tier.
+    expect(resolveMetalVmSize('micro', ['docker-compose'])).toEqual({ vcpus: 1, memMiB: 2048 })
+    expect(resolveMetalVmSize('large', ['docker-compose'])).toEqual({ vcpus: 4, memMiB: 4096 })
+    expect(resolveMetalVmSize('xlarge', ['docker-compose'])).toEqual({ vcpus: 8, memMiB: 4096 })
   })
 
   it('treats an unknown tier as micro', () => {
-    expect(resolveMetalVmSize('bogus' as any, [], false)).toEqual({ vcpus: 1, memMiB: 2048 })
+    expect(resolveMetalVmSize('bogus' as any, [])).toEqual({ vcpus: 1, memMiB: 2048 })
   })
 
-  it('takes the largest floor across a merged runtime\'s members', () => {
-    expect(resolveMetalVmSize('xlarge', ['nextjs', 'docker-compose'], true)).toEqual({ vcpus: 8, memMiB: 16384 })
+  it('applies the largest member floor across a merged runtime', () => {
+    expect(resolveMetalVmSize('xlarge', ['nextjs', 'docker-compose'])).toEqual({ vcpus: 8, memMiB: 4096 })
+    expect(resolveMetalVmSize('micro', ['nextjs', 'expo-app'])).toEqual({ vcpus: 1, memMiB: 4096 })
   })
 })
 
@@ -154,54 +158,6 @@ describe('applyTechStackFloor', () => {
     expect(applyTechStackFloor('medium', 'expo-app')).toBe('medium')
     expect(applyTechStackFloor('large', 'expo-app')).toBe('large')
     expect(applyTechStackFloor('xlarge', 'expo-app')).toBe('xlarge')
-  })
-})
-
-describe('applyDockerStackFloor', () => {
-  it('returns the input size unchanged for a stack with no declared floor', () => {
-    expect(applyDockerStackFloor('micro', 'nextjs')).toBe('micro')
-    expect(applyDockerStackFloor('small', null)).toBe('small')
-    expect(applyDockerStackFloor('medium', undefined)).toBe('medium')
-  })
-
-  it('lifts a too-small size up to the docker-compose stack floor (large)', () => {
-    expect(applyDockerStackFloor('micro', 'docker-compose')).toBe('large')
-    expect(applyDockerStackFloor('small', 'docker-compose')).toBe('large')
-    expect(applyDockerStackFloor('medium', 'docker-compose')).toBe('large')
-  })
-
-  it('does not downgrade a size already at/above the floor', () => {
-    expect(applyDockerStackFloor('large', 'docker-compose')).toBe('large')
-    expect(applyDockerStackFloor('xlarge', 'docker-compose')).toBe('xlarge')
-  })
-})
-
-describe('meetsMinimumInstanceSize', () => {
-  it('always true for a stack with no declared floor', () => {
-    for (const size of INSTANCE_SIZE_ORDER) {
-      expect(meetsMinimumInstanceSize(size, 'nextjs')).toBe(true)
-      expect(meetsMinimumInstanceSize(size, null)).toBe(true)
-      expect(meetsMinimumInstanceSize(size, undefined)).toBe(true)
-    }
-  })
-
-  it('false below the docker-compose floor (large)', () => {
-    expect(meetsMinimumInstanceSize('micro', 'docker-compose')).toBe(false)
-    expect(meetsMinimumInstanceSize('small', 'docker-compose')).toBe(false)
-    expect(meetsMinimumInstanceSize('medium', 'docker-compose')).toBe(false)
-  })
-
-  it('true at/above the docker-compose floor', () => {
-    expect(meetsMinimumInstanceSize('large', 'docker-compose')).toBe(true)
-    expect(meetsMinimumInstanceSize('xlarge', 'docker-compose')).toBe(true)
-  })
-
-  it('agrees with applyDockerStackFloor: meets iff the floor leaves the size unchanged', () => {
-    for (const size of INSTANCE_SIZE_ORDER) {
-      expect(meetsMinimumInstanceSize(size, 'docker-compose')).toBe(
-        applyDockerStackFloor(size, 'docker-compose') === size,
-      )
-    }
   })
 })
 

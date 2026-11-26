@@ -748,6 +748,13 @@ export interface PublishOptions {
    * `destructive_schema_change`, so the agent has to ask the user first.
    */
   allowDataLoss?: boolean
+  /**
+   * `'empty'`: start this environment's first Postgres database with the app's
+   * schema and no rows (SHO-551 §G4) — the way past `seed_too_large` for an app
+   * whose builder database is not worth seeding. Refused with
+   * `data_empty_not_allowed` wherever rows could be lost.
+   */
+  data?: 'empty'
 }
 
 async function publishFetch<T>(

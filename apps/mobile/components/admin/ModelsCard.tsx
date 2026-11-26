@@ -39,6 +39,7 @@ import {
   AlertTriangle,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { MODEL_FAMILIES, getModelFamily, type ModelFamily } from '@shogo/model-catalog'
 import {
   PlatformApi,
   type ModelProvider,
@@ -78,12 +79,14 @@ function isDiscoveryProvider(p: string): p is DiscoveryProviderId {
 
 const PROVIDER_OPTIONS = ['anthropic', 'openai', 'openrouter', 'google', 'local', 'custom'] as const
 const MODEL_TIER_OPTIONS = ['economy', 'standard', 'premium'] as const
-const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'gemini', 'other'] as const
+// The catalog's list, not a copy: the API validates against the same array, so
+// the form can never offer a family the save rejects (SHO-558).
+const MODEL_FAMILY_OPTIONS = MODEL_FAMILIES
 const MODEL_GENERATION_OPTIONS = ['current', 'legacy'] as const
 const MODEL_REASONING_EFFORT_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
 
 type ReasoningEffortOption = (typeof MODEL_REASONING_EFFORT_OPTIONS)[number]
-type FamilyOption = (typeof MODEL_FAMILY_OPTIONS)[number]
+type FamilyOption = ModelFamily
 
 type DiscoveredModel = DiscoveredProviderModel
 
@@ -145,17 +148,6 @@ function timeAgo(iso: string | null): string {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
-}
-
-/** Best-effort family bucket from a model id, for labeling/billing parity. */
-function inferFamily(id: string): FamilyOption {
-  const lower = id.toLowerCase()
-  if (lower.includes('opus')) return 'opus'
-  if (lower.includes('sonnet')) return 'sonnet'
-  if (lower.includes('haiku')) return 'haiku'
-  if (lower.includes('fable')) return 'fable'
-  if (lower.includes('gpt')) return 'gpt'
-  return 'other'
 }
 
 function num(s: string): number {
@@ -583,6 +575,11 @@ function PublicModelsSection({
             </ScrollView>
 
             <View className="px-5 py-3 border-t border-border">
+              {error && (
+                <Text testID="public-model-form-error" className="text-xs text-red-500 mb-2">
+                  {error}
+                </Text>
+              )}
               <Pressable
                 onPress={submit}
                 disabled={!canSubmit || busy}
@@ -795,7 +792,9 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
       apiModel: m.id,
       displayName: m.displayName,
       shortDisplayName: m.displayName,
-      family: inferFamily(m.id),
+      // The catalog owns the family heuristic — the local copy that used to
+      // live here dropped `gemini` (SHO-558).
+      family: getModelFamily(m.id),
       contextWindow: m.contextLength ? String(m.contextLength) : f.contextWindow,
       // Prefill the LiteLLM-resolved pricing the server returns with discovery
       // so "Customize details" reflects the rate that will be saved.
@@ -1129,7 +1128,12 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                     {m.enabled ? 'Enabled' : 'Disabled'}
                   </Text>
                 </Pressable>
-                <Pressable onPress={() => openEdit(m)} disabled={busy} className="p-1.5 rounded-md border border-border">
+                <Pressable
+                  testID={`edit-model-${m.id}`}
+                  onPress={() => openEdit(m)}
+                  disabled={busy}
+                  className="p-1.5 rounded-md border border-border"
+                >
                   <Pencil size={13} className="text-muted-foreground" />
                 </Pressable>
                 <Pressable onPress={() => remove(m.id)} disabled={busy} className="p-1.5 rounded-md border border-border">
@@ -1484,6 +1488,11 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
 
               {/* Footer */}
               <View className="px-5 py-3 border-t border-border">
+                {error && (
+                  <Text testID="model-form-error" className="text-xs text-red-500 mb-2">
+                    {error}
+                  </Text>
+                )}
                 <Pressable
                   onPress={submit}
                   disabled={!canSubmit || busy}

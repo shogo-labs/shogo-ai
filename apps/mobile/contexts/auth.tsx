@@ -17,9 +17,10 @@ import { clearTeamChatCache } from '../lib/team-chat-cache'
 import { clearChatHistory } from '../lib/chat-history-store'
 import { clearWorkspaceChatsCache } from '../lib/workspace-chats-cache'
 import { clearChatPanelMessageCache } from '../lib/chat-panel-message-cache'
+import { clearAuthSessionCache, readCachedAuthUser, rememberAuthUser } from '../lib/auth-session-cache'
+import { clearProjectsCache } from '../lib/projects-cache'
 
-export { useAuth, useAuthOptional, getAuthUserSnapshot } from '@shogo/shared-app/auth'
-export type { AuthUser, AuthContextValue } from '@shogo/shared-app/auth'
+export { useAuth, useAuthOptional, getAuthUserSnapshot, type AuthUser, type AuthContextValue } from '@shogo/shared-app/auth'
 
 function onSignOut(): void {
   clearActiveWorkspaceId()
@@ -32,6 +33,9 @@ function onSignOut(): void {
   // this device must not see the previous one's rows (SHO-391).
   void clearWorkspaceChatsCache()
   clearChatPanelMessageCache()
+  // Last, so the next launch cannot paint the previous account (SHO-580).
+  void clearAuthSessionCache()
+  void clearProjectsCache()
 }
 
 /**
@@ -67,6 +71,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authClient={authClient}
       onSignOut={onSignOut}
       onAuthError={reportAuthError}
+      // Native only: the app paints from the session already on the device and
+      // confirms it in the background, so a signed-in launch never waits on a
+      // `get-session` round trip (SHO-580). The browser has a cookie jar that
+      // answers synchronously, so web keeps the network-gated behaviour it has
+      // always had.
+      {...(Platform.OS === 'web'
+        ? {}
+        : { cachedUser: readCachedAuthUser, onUserChanged: rememberAuthUser })}
       // In the browser the auth client resolves `signIn.social` after setting
       // `window.location.href`, so the session it reports is read before the
       // provider is even contacted. On native the Expo plugin awaits the OAuth

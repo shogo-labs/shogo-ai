@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Pressable, ScrollView, Text, View } from 'react-native'
-import { Check, FileText, KanbanSquare, MessageSquare, Plus } from 'lucide-react-native'
+import { Check, FileText, KanbanSquare, MessageSquare, Paperclip, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { ConversationDetail } from '../../lib/team-chat-api'
 import type { Board } from '../../lib/work-boards-api'
@@ -11,9 +11,14 @@ export function channelSupportsDoc(conversation: Pick<ConversationDetail, 'kind'
   return conversation.kind === 'public' || conversation.kind === 'private'
 }
 
+/** Everything but #activity has a Messages tab, and files are listable in all of them. */
+export function channelSupportsTabs(conversation: Pick<ConversationDetail, 'kind'>): boolean {
+  return conversation.kind !== 'activity'
+}
+
 export interface ChannelTabItem {
   key: string
-  kind: 'messages' | 'board' | 'doc'
+  kind: 'messages' | 'files' | 'board' | 'doc'
   label: string
   active: boolean
   onPress: () => void
@@ -27,17 +32,22 @@ export interface ChannelTabsProps {
   docOpen: boolean
   onOpenDoc: () => void
   onShowMessages: () => void
+  filesOpen?: boolean
+  onOpenFiles?: () => void
   boards?: Board[]
   activeBoardId?: string | null
   onOpenBoard?: (boardId: string) => void
   onAddBoard?: () => void
 }
 
-/** Messages, then each board, then the doc: the order the tabs read in. */
-export function channelTabItems({ conversation, docOpen, onOpenDoc, onShowMessages, boards = [], activeBoardId = null, onOpenBoard }: ChannelTabsProps): ChannelTabItem[] {
+/** Messages, the files shared here, then each board, then the doc: the order the tabs read in. */
+export function channelTabItems({ conversation, docOpen, onOpenDoc, onShowMessages, filesOpen, onOpenFiles, boards = [], activeBoardId = null, onOpenBoard }: ChannelTabsProps): ChannelTabItem[] {
   const hasDoc = !!conversation.hasDoc
   return [
-    { key: 'messages', kind: 'messages', label: 'Messages', active: !docOpen && !activeBoardId, onPress: onShowMessages },
+    { key: 'messages', kind: 'messages', label: 'Messages', active: !docOpen && !filesOpen && !activeBoardId, onPress: onShowMessages },
+    ...(onOpenFiles && channelSupportsTabs(conversation)
+      ? [{ key: 'files', kind: 'files', label: 'Files', active: !!filesOpen, onPress: onOpenFiles, testID: 'channel-tab-files' } as ChannelTabItem]
+      : []),
     ...boards.map((board): ChannelTabItem => ({
       key: board.id,
       kind: 'board',
@@ -46,12 +56,15 @@ export function channelTabItems({ conversation, docOpen, onOpenDoc, onShowMessag
       onPress: () => onOpenBoard?.(board.id),
       testID: `channel-tab-board-${board.slug}`,
     })),
-    { key: 'doc', kind: 'doc', label: hasDoc ? 'Doc' : 'Add doc', active: docOpen && !activeBoardId, onPress: onOpenDoc, placeholder: !hasDoc },
+    ...(channelSupportsDoc(conversation)
+      ? [{ key: 'doc', kind: 'doc', label: hasDoc ? 'Doc' : 'Add doc', active: docOpen && !activeBoardId, onPress: onOpenDoc, placeholder: !hasDoc } as ChannelTabItem]
+      : []),
   ]
 }
 
 function TabIcon({ kind, active, size }: { kind: ChannelTabItem['kind']; active: boolean; size: number }) {
   const className = active ? 'text-foreground' : 'text-muted-foreground'
+  if (kind === 'files') return <Paperclip size={size} className={className} />
   if (kind === 'board') return <KanbanSquare size={size} className={className} />
   if (kind === 'doc') return <FileText size={size} className={className} />
   return <MessageSquare size={size} className={className} />

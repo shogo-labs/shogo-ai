@@ -47,6 +47,8 @@ async function publishStateBody(projectId: string) {
     siteTitle: state.siteTitle,
     siteDescription: state.siteDescription,
     publishError: state.publishError,
+    /** Why it failed, when the step recorded one — the same pair the cloud reports. */
+    publishErrorMessage: state.publishErrorMessage,
     cloudConnected: state.cloudConnected,
     cloudHostProjectId: state.cloudHostProjectId,
     publishDomain: state.publishDomain,

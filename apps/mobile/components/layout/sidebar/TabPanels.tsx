@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Settings, Share2, Store } from 'lucide-react-native'
+import { BarChart3, Bookmark, ChevronRight, FileText, Folder, KanbanSquare, ListTodo, Settings, Share2, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
@@ -24,6 +24,7 @@ import { WorkspaceChatsPanel } from './WorkspaceChatsPanel'
 
 const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
   analytics: BarChart3,
+  projects: Folder,
   tasks: ListTodo,
   work: KanbanSquare,
   marketplace: Store,
@@ -102,7 +103,7 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
     }
   }, [http, workspace?.id])
 
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social, analytics: can('workspace.analytics:read') })
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social, analytics: can('workspace.analytics:read'), projects: variant === 'screen' })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">

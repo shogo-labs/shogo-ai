@@ -10,6 +10,8 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { routeToHomeRegion } from '../lib/home-region-route'
+import { RAW_REGION_ID } from '../lib/region'
 import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { addedMembersNoticeText, membershipChannelLabel } from './conversation-membership-notice'
@@ -46,7 +48,7 @@ export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer'
 
 export class ConversationError extends Error {
   constructor(
-    public status: 400 | 403 | 404 | 409 | 502,
+    public status: 400 | 403 | 404 | 409 | 502 | 503,
     public code: string,
     message: string,
     public details?: Record<string, unknown>,
@@ -54,6 +56,12 @@ export class ConversationError extends Error {
     super(message)
   }
 }
+
+/**
+ * The home region's half of a forwarded `postMessage` (`POST
+ * /api/internal/conversations/post-message`). Mirrors `MAIL_FORWARD_PATH`.
+ */
+export const POST_MESSAGE_FORWARD_PATH = '/api/internal/conversations/post-message'
 
 const notFound = () => new ConversationError(404, 'not_found', 'Conversation not found')
 
@@ -1432,6 +1440,129 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
 
   const conversation = await db.conversation.findUnique({ where: { id: input.conversationId } })
   if (!conversation) throw notFound()
+
+  const forwarded = await forwardPostMessage(input, conversation)
+  if (forwarded) return forwarded
+
+  return insertMessage(input, conversation, { text, attachmentIds })
+}
+
+/**
+ * The home region's half of a forwarded `postMessage` (`POST
+ * /api/internal/conversations/post-message`). Runs the insert here — seq,
+ * mentions, wakes and hooks happen in this region, once — and never routes
+ * again.
+ */
+export async function postMessageInHomeRegion(input: PostMessageInput & { createdAt?: string | Date | null }): Promise<PostMessageResult> {
+  return insertMessageWithForwardingDisabled({
+    ...input,
+    createdAt: input.createdAt ? new Date(input.createdAt) : undefined,
+  })
+}
+
+/** `postMessage` with the home-region guard skipped (the caller already routed). */
+async function insertMessageWithForwardingDisabled(input: PostMessageInput): Promise<PostMessageResult> {
+  const text = (input.text ?? '').toString()
+  const attachmentIds = (input.attachmentIds ?? []).filter((id) => typeof id === 'string')
+  const conversation = await db.conversation.findUnique({ where: { id: input.conversationId } })
+  if (!conversation) throw notFound()
+  return insertMessage(input, conversation, { text, attachmentIds })
+}
+
+/**
+ * Forward a message insert to the conversation's home region when this region
+ * does not own it. Returns the home region's result, or null to insert locally.
+ *
+ * The guard lives here, at the single insert point, because `postMessage` has
+ * ~40 callers (work boards, the agent dispatcher, chat providers, huddles,
+ * polls, approvals, mail) and many are background paths no HTTP router ever
+ * sees — exactly how Odin's EU channel ended up with rows written in both
+ * regions (SHO-585). A caller that forwards gets the home region's message and
+ * must not re-run its own side effects; `unavailable` is a retryable 503, never
+ * a local write.
+ */
+async function forwardPostMessage(
+  input: PostMessageInput,
+  conversation: { workspaceId: string },
+): Promise<PostMessageResult | null> {
+  const routed = await routeToHomeRegion<{ result: PostMessageResult }>(
+    conversation.workspaceId,
+    POST_MESSAGE_FORWARD_PATH,
+    { input: { ...input, createdAt: input.createdAt ? input.createdAt.toISOString() : null } },
+  )
+  if (routed.outcome === 'local') return null
+  if (routed.outcome === 'rejected') {
+    // The home region understood and refused (empty, too long, not a member).
+    // That answer is final — retrying it would loop — so hand it back as the
+    // caller's own error rather than a 503 that invites another attempt.
+    const answer = routed.error as { error?: unknown; message?: unknown } | null
+    throw new ConversationError(
+      refusedStatus(routed.status),
+      typeof answer?.error === 'string' ? answer.error : 'home_region_refused',
+      typeof answer?.message === 'string' ? answer.message : 'The region that serves this conversation refused the message',
+    )
+  }
+  if (routed.outcome !== 'forwarded' || !routed.data?.result) {
+    throw new ConversationError(
+      503,
+      'home_region_unavailable',
+      'This workspace is served from another region right now — retry in a moment',
+    )
+  }
+  console.log('[region-write] forwarded postMessage', {
+    workspaceId: conversation.workspaceId,
+    conversationId: input.conversationId,
+    authorType: input.authorType ?? 'user',
+    caller: postMessageCaller(),
+    from: RAW_REGION_ID,
+  })
+  return reviveForwardedResult(routed.data.result, conversation)
+}
+
+/**
+ * The home region's refusal as a `ConversationError` status. Only the codes the
+ * error class models are passed through; anything else is a conflict, which is
+ * the honest default — the write was refused, and the caller must not retry.
+ */
+function refusedStatus(status: number | undefined): 400 | 403 | 404 | 409 {
+  return status === 400 || status === 403 || status === 404 || status === 409 ? status : 409
+}
+
+/** The first frame outside this module — how we learn which caller wrote it. */
+function postMessageCaller(): string {
+  const frames = (new Error().stack ?? '').split('\n').slice(2)
+  for (const frame of frames) {
+    if (frame.includes('conversation.service.ts')) continue
+    const match = frame.match(/([^\s(]+\.tsx?:\d+)/)
+    if (match) return match[1]
+  }
+  return 'unknown'
+}
+
+/**
+ * JSON turned the home region's `Date`s into strings. Callers here expect the
+ * same shape `postMessage` returns, and the conversation row is theirs (the
+ * home region's copy catches up by replication), so restore both.
+ */
+function reviveForwardedResult(result: any, conversation: any): PostMessageResult {
+  const toDate = (value: unknown) => (typeof value === 'string' ? new Date(value) : value)
+  if (result?.message) {
+    result.message.createdAt = toDate(result.message.createdAt)
+    result.message.lastReplyAt = toDate(result.message.lastReplyAt)
+  }
+  for (const key of ['createdAt', 'updatedAt', 'lastReplyAt', 'editedAt', 'deletedAt']) {
+    if (result?.row?.[key]) result.row[key] = toDate(result.row[key])
+  }
+  return { ...result, conversation }
+}
+
+/** The insert itself. Everything below here runs in one region, once. */
+async function insertMessage(
+  input: PostMessageInput,
+  conversation: any,
+  prepared: { text: string; attachmentIds: string[] },
+): Promise<PostMessageResult> {
+  const { text, attachmentIds } = prepared
 
   if (input.clientMsgId) {
     const existing = await db.conversationMessage.findFirst({

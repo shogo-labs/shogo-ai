@@ -507,20 +507,23 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   /**
    * The person's most recently active agent chats (workspace + project).
    * Returns up to `limit` (default 5, max 100) chats ordered by lastActiveAt.
-   * Pass `perAgent=1` to keep at most one chat per agent.
+   * Pass `perAgent=1` to keep at most one chat per agent, `includePinned=1` to
+   * lead with pinned chats (so one is returned even when it is older than the
+   * limit).
    */
   router.get('/workspaces/:workspaceId/agent-chats/recent', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const rawLimit = c.req.query('limit')
     const perAgent = c.req.query('perAgent') === '1'
+    const includePinned = c.req.query('includePinned') === '1'
     const limit = rawLimit !== undefined ? parseInt(rawLimit, 10) : 5
     if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       return c.json({ error: { code: 'invalid_request', message: 'limit must be 1–100' } }, 400)
     }
     try {
       const { listRecentAgentChats } = await import('../services/agent-chat.service')
-      const chats = await listRecentAgentChats(auth.workspaceId, auth.userId, { limit, perAgent })
+      const chats = await listRecentAgentChats(auth.workspaceId, auth.userId, { limit, perAgent, includePinned })
       return c.json({ chats })
     } catch (err) {
       return errorResponse(c, err)

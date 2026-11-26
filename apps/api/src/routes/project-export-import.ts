@@ -7,7 +7,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node
 import { join, resolve, relative } from 'node:path'
 import { spawn } from '@shogo/shared-runtime/child-process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { createS3SyncForProject } from '@shogo/shared-runtime'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { prisma } from '../lib/prisma'
 import { decide, loadAccess, type Principal } from '../lib/authz'
@@ -312,29 +312,16 @@ export async function runImport(
     importedSettings.canvasEnabled = true
   }
 
-  // Docker-class minimum compute tier: an imported bundle can carry
+  // Docker-class platform gate: an imported bundle can carry
   // `techStackId: 'docker-compose'` (or infer it from `docker-compose.yml`
   // in the archive) the same way a fresh create or marketplace install can —
-  // refuse the import rather than silently landing an under-provisioned
-  // project the workspace never paid for.
+  // refuse the import rather than silently landing a project the host cannot
+  // run.
   const importedTechStackId =
     typeof importedSettings.techStackId === 'string' ? importedSettings.techStackId : undefined
   const dockerBlocked = dockerClassBlockedMessage(importedTechStackId)
   if (dockerBlocked) {
     return { ok: false, status: 403, error: dockerBlocked }
-  }
-  if (getMinimumInstanceSize(importedTechStackId)) {
-    const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
-      workspaceId,
-      importedTechStackId,
-    )
-    if (!allowed) {
-      return {
-        ok: false,
-        status: 402,
-        error: `This bundle's stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
-      }
-    }
   }
 
   const project = await prisma.project.create({

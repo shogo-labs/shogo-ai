@@ -407,6 +407,13 @@ jobs:
     needs: [publish]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # The workflow default is `contents: read` only, so a GITHUB_TOKEN login here
+    # cannot pull the package `publish` just pushed: the smoke test failed every
+    # tag with "could not be pulled" (v2.6.3, v2.6.4) while the manifest itself
+    # was published and verified. Read access must be granted explicitly.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

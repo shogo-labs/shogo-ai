@@ -1188,18 +1188,41 @@ export class KnativeProjectManager {
     timeoutMs: number = 5000,
     environment: PublishedEnvironmentName = 'production',
   ): Promise<boolean> {
-    const url = this.publishedServiceUrl(projectId, environment)
-    try {
-      const response = await fetch(`${url}/ready`, {
-        method: "GET",
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      return response.ok
-    } catch {
-      // Timeout / connection refused / still cold-starting — not ready yet. The
-      // request still reached the activator, so scale-from-zero is in flight.
-      return false
+    return this.probePublishedHealth(this.publishedServiceUrl(projectId, environment), timeoutMs)
+  }
+
+  /**
+   * Does the published pod's API answer, or is only its static build being served?
+   *
+   * `response.ok` was never evidence of readiness: a published app answers every
+   * unmatched path with `index.html`, so `/ready` on a deployed artifact returns
+   * the SPA document with a 200 (measured on two staging pods — `/ready` was
+   * `text/html`, `/health` was the app's JSON). A status-only probe therefore
+   * went green for a pod whose inner API was down. Readiness has to be a JSON
+   * body from a route the app itself serves: `/health` on a generated server,
+   * `/ready` on the shared runtime in published mode. HTML from either is not
+   * ready, and neither is a 2xx that carries no JSON.
+   */
+  private async probePublishedHealth(baseUrl: string, timeoutMs: number): Promise<boolean> {
+    for (const path of ["/health", "/ready"]) {
+      try {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method: "GET",
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        if (!response.ok) continue
+        const contentType = response.headers.get("content-type") ?? ""
+        if (!contentType.includes("json")) continue
+        const body = (await response.json().catch(() => null)) as
+          | { ok?: boolean; ready?: boolean }
+          | null
+        if (body?.ok === true || body?.ready === true) return true
+      } catch {
+        // Timeout / connection refused / still cold-starting — not ready yet. The
+        // request still reached the activator, so scale-from-zero is in flight.
+      }
     }
+    return false
   }
 
   /**
@@ -1211,17 +1234,9 @@ export class KnativeProjectManager {
     return `http://${name}.${this.namespace}.svc.cluster.local`
   }
 
-  /** `/ready` probe of a ksvc addressed by name (rehearsal services). */
+  /** Readiness probe of a ksvc addressed by name (rehearsal services). */
   async healthCheckServiceName(name: string, timeoutMs: number = 5000): Promise<boolean> {
-    try {
-      const response = await fetch(`${this.serviceUrlForName(name)}/ready`, {
-        method: "GET",
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      return response.ok
-    } catch {
-      return false
-    }
+    return this.probePublishedHealth(this.serviceUrlForName(name), timeoutMs)
   }
 
   /**
@@ -2184,6 +2199,11 @@ export class KnativeProjectManager {
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Published-mode switches: run server.tsx, no agent gateway.
       { name: "SHOGO_PUBLISHED_MODE", value: "true" },
+      // Pages come from the bundle this publish uploaded (the Worker serves
+      // them from the bucket), so the pod must not re-run `expo export` — a
+      // cold Metro build needs ~2 GB and OOM-killed a size-`s` pod before
+      // server.tsx started (SHO-587).
+      { name: "SHOGO_PUBLISHED_WEB", value: "artifact" },
       { name: "PUBLISHED_ENVIRONMENT", value: environment },
       { name: "PUBLISHED_SUBDOMAIN", value: subdomain },
       { name: "PUBLISH_DOMAIN", value: publishDomain },

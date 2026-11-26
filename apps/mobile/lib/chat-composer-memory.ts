@@ -20,6 +20,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import { AppState, Platform } from "react-native"
 import type { ChatReference } from "./chat-references"
 import { safeGetItem } from "./safe-storage"
+import { removeStorageItem, setStorageItem } from "./storage"
 
 export const CHAT_COMPOSER_KEY_PREFIX = "shogo:chat-composer:"
 export const CHAT_COMPOSER_INDEX_KEY = "shogo:chat-composer:index"
@@ -403,8 +404,8 @@ export class ComposerMemory {
 
 const asyncStorageAdapter: ComposerMemoryStorage = {
   getItem: (key) => AsyncStorage.getItem(key),
-  setItem: (key, value) => AsyncStorage.setItem(key, value),
-  removeItem: (key) => AsyncStorage.removeItem(key),
+  setItem: (key, value) => setStorageItem(key, value),
+  removeItem: (key) => removeStorageItem(key),
 }
 
 let defaultMemory: ComposerMemory | null = null

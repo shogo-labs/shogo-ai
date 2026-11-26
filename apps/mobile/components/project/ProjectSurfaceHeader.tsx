@@ -19,16 +19,26 @@ import { PhoneScreenHeader } from "../layout/PhoneScreenHeader";
  */
 export const ProjectSurfaceHeader = observer(function ProjectSurfaceHeader({
   projectId,
+  title,
   onHeight,
 }: {
   projectId: string | undefined;
+  /**
+   * The name to show when the collection has not caught up — the row the
+   * screen already holds from the device (SHO-581), so the header is not
+   * "Project" for the length of a round trip.
+   */
+  title?: string | null;
   /** Reports the measured height, so the surface can start below the glass. */
   onHeight?: (height: number) => void;
 }) {
   const router = useRouter();
   const { width, height } = useWindowDimensions();
   const projects = useProjectCollection();
-  const name = projects.all.find((project: any) => project.id === projectId)?.name;
+  const name =
+    projects.all.find((project: any) => project.id === projectId)?.name ??
+    title ??
+    undefined;
   const leaveProject = useCallback(() => {
     if (router.canGoBack()) router.back();
     else router.replace("/(app)/home" as any);

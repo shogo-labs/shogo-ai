@@ -10,7 +10,13 @@
 import { describe, expect, it } from 'bun:test'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { PUSH_CONFIG, pushEnv, pushPublishedSchema, resolvePrismaCli } from '../published-schema-push'
+import {
+  describeDatabaseFailure,
+  PUSH_CONFIG,
+  pushEnv,
+  pushPublishedSchema,
+  resolvePrismaCli,
+} from '../published-schema-push'
 
 const TARGET = 'postgres://project_x:pw@projects-pg-rw:5432/project_x'
 
@@ -95,5 +101,40 @@ describe('pushPublishedSchema', () => {
 
   it('finds the Prisma CLI the API ships', () => {
     expect(existsSync(resolvePrismaCli())).toBe(true)
+  })
+})
+
+// SHO-551: a seed failure must name the table and constraint, not dump a Prisma
+// stack trace. describeDatabaseFailure is used for both push and seed errors.
+describe('describeDatabaseFailure', () => {
+  it('names the table and the foreign key of an orphaned row', () => {
+    const text = describeDatabaseFailure(
+      'Error: ERROR: insert or update on table "stage_changes" violates foreign key constraint "stage_changes_applicationId_fkey"\n    at Psql.raw (prisma.ts:12)',
+      'seed',
+    )
+    expect(text).toContain('table "stage_changes"')
+    expect(text).toContain('constraint "stage_changes_applicationId_fkey"')
+    expect(text).not.toContain('at Psql.raw')
+  })
+
+  it('still names the constraint when the message carries no table', () => {
+    const text = describeDatabaseFailure('violates foreign key constraint "payments_applicationId_fkey"', 'seed')
+    expect(text).toContain('constraint "payments_applicationId_fkey"')
+  })
+
+  it('describes a missing NOT NULL value, a duplicate and a missing table', () => {
+    expect(
+      describeDatabaseFailure('null value in column "handledBy" of relation "applications" violates not-null constraint', 'push'),
+    ).toContain('column "handledBy" of table "applications"')
+    expect(
+      describeDatabaseFailure('duplicate key value violates unique constraint "User_email_key"', 'seed'),
+    ).toContain('constraint "User_email_key"')
+    expect(describeDatabaseFailure('relation "notes" does not exist', 'push')).toContain('table "notes"')
+  })
+
+  it('falls back to a bounded tail for anything it cannot name', () => {
+    const text = describeDatabaseFailure(`P1001: Can't reach database server\n${'x'.repeat(2000)}`, 'seed')
+    expect(text.startsWith('the rows were refused:')).toBe(true)
+    expect(text.length).toBeLessThan(500)
   })
 })

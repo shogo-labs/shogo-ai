@@ -45,6 +45,9 @@ function step(n: number, occur: Partial<StepMetrics> = {}): StepRow {
     turnP50: metrics.turnP95,
     runDelayP95MsPerSec: 0.5,
     apiP95Ms: 8,
+    appP50Ms: 4.1,
+    appP95Ms: 12.6,
+    appSamples: 480,
     verdict: evaluateStep(metrics, BASELINE),
   }
 }
@@ -64,6 +67,8 @@ function input(): ReportInput {
       kernel: '6.8.0-124-generic',
       firecrackerVersion: 'Firecracker v1.16.1',
       gitSha: 'abc1234',
+      harnessRevision: 'unknown',
+      harnessSha256: 'unknown',
       region: 'us',
       controlPlaneUrl: 'https://api-staging.shogo.ai',
       vcpus: 2,

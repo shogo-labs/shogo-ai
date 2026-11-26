@@ -125,7 +125,6 @@ mock.module('@shogo-ai/sdk/tech-stack-registry', () => ({
   // out of the shared-runtime barrel mock on purpose: `instance-sizes.test.ts`
   // imports this module directly and needs the real registry values.
   isDockerTechStack: (stack?: any) => stack === 'docker-compose',
-  getMinimumInstanceSize: (stack?: any) => (stack === 'docker-compose' ? 'large' : null),
   getDeclaredPorts: (_stack?: any) => [],
 }))
 
@@ -228,10 +227,8 @@ mock.module('@shogo/shared-runtime', () => ({
     stack === 'unity-game' ||
     stack === 'none',
   // Keep in sync with the `docker-compose` registry entry in
-  // packages/core/src/tech-stack-registry.ts (vmClass: 'docker',
-  // minimumInstanceSize: 'large'). Used by apps/api/src/config/instance-sizes.ts.
+  // packages/core/src/tech-stack-registry.ts (vmClass: 'docker').
   isDockerTechStack: (stack?: any) => stack === 'docker-compose',
-  getMinimumInstanceSize: (stack?: any) => (stack === 'docker-compose' ? 'large' : null),
   // Keep in sync with the `docker-compose` registry entry's `ports` array.
   getDeclaredPorts: (stack?: any) =>
     stack === 'docker-compose'

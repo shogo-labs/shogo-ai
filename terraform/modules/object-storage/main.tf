@@ -228,6 +228,47 @@ resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
       inclusion_patterns = ["*/project-data/daily/*"]
     }
   }
+
+  # ── Rules that were live but only in the OCI console ──────────────────────
+  # Both of these run on `shogo-workspaces-production` today and existed
+  # nowhere in this module, so every environment that DOES manage this bucket
+  # (staging directly, prod-us and prod-eu through `modules/oci-region`) had
+  # drifted from it in silence. Recorded here exactly as they are live
+  # (SHO-584).
+  #
+  # OVERLAP: when two rules match the same object, OCI applies the SHORTER
+  # period. `expire-previous-versions-14d` therefore EXCLUDES
+  # `metal-snapshots/*`, or its 14 days would win over the 1-day rule below.
+
+  # A VM snapshot is rewritten on every suspend of its project, so the
+  # superseded versions are only useful for one same-host resume. Keep a day.
+  rules {
+    name        = "expire-previous-snapshot-versions-1d"
+    action      = "DELETE"
+    time_amount = 1
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "previous-object-versions"
+
+    object_name_filter {
+      inclusion_prefixes = ["metal-snapshots/"]
+    }
+  }
+
+  # Everything else — live source, writable state, home, `.git`, published
+  # data — keeps a replaced version for 14 days, except snapshots above.
+  rules {
+    name        = "expire-previous-versions-14d"
+    action      = "DELETE"
+    time_amount = 14
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "previous-object-versions"
+
+    object_name_filter {
+      exclusion_patterns = ["metal-snapshots/*"]
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------

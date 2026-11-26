@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
-import { HttpClient } from '../client'
+import { HttpClient, createDeadline } from '../client'
 import { ShogoError } from '../../errors.js'
 
 type FetchCall = { url: string; init: RequestInit }
@@ -615,5 +615,132 @@ describe('HttpClient — MCP', () => {
     await client.callTool('q', {})
     expect((fetchCalls[0].init as any).credentials).toBe('include')
     expect((fetchCalls[1].init as any).credentials).toBe('include')
+  })
+})
+
+/**
+ * A stalled request must end (SHO-580).
+ *
+ * On a phone with a dying connection a GET can stay open forever: the socket is
+ * up, no answer comes, and the screen keeps its spinner. `requestTimeoutMs` puts
+ * a deadline on GETs only — a long POST, a stream or an upload is work in
+ * progress, not a hang.
+ */
+describe('HttpClient — GET deadline', () => {
+  /** A request that never gets an answer, and rejects like `fetch` on abort. */
+  function neverAnswers(init?: RequestInit): Promise<Response> {
+    return new Promise((_, reject) => {
+      init?.signal?.addEventListener('abort', () =>
+        reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+      )
+    })
+  }
+
+  test('a GET that stalls fails with a network error after the deadline', async () => {
+    fetchImpl = (_url, init) => neverAnswers(init)
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 25 })
+
+    const error = await client.get('/api/projects').then(
+      () => null,
+      (err) => err as ShogoError
+    )
+
+    expect(error).toBeInstanceOf(ShogoError)
+    expect(error!.code).toBe('NETWORK_ERROR')
+    expect(error!.message).toContain('timed out')
+  })
+
+  test('a POST keeps waiting — uploads and long writes are exempt', async () => {
+    fetchImpl = (_url, init) => neverAnswers(init)
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 25 })
+
+    const settled = await Promise.race([
+      client.post('/api/projects/import', { big: true }).then(() => 'settled'),
+      new Promise((resolve) => setTimeout(() => resolve('still waiting'), 120)),
+    ])
+
+    expect(settled).toBe('still waiting')
+  })
+
+  test('without a timeout configured a GET keeps waiting, as before', async () => {
+    fetchImpl = (_url, init) => neverAnswers(init)
+    const client = new HttpClient({ baseUrl: 'https://api.test' })
+
+    const settled = await Promise.race([
+      client.get('/api/projects').then(() => 'settled'),
+      new Promise((resolve) => setTimeout(() => resolve('still waiting'), 120)),
+    ])
+
+    expect(settled).toBe('still waiting')
+  })
+
+  test('the caller cancelling is not reported as a timeout', async () => {
+    fetchImpl = (_url, init) => neverAnswers(init)
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 5_000 })
+    const controller = new AbortController()
+
+    const promise = client.request('/api/projects', { method: 'GET', signal: controller.signal })
+    controller.abort()
+
+    const error = await promise.then(
+      () => null,
+      (err) => err as Error
+    )
+    expect(error!.name).toBe('AbortError')
+    expect(error!.message).not.toContain('timed out')
+  })
+
+  test('an answered GET clears its timer and returns the body', async () => {
+    fetchImpl = async () => makeJsonResponse({ ok: true })
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 25 })
+
+    const response = await client.get<{ ok: boolean }>('/api/projects')
+    expect(response.data).toEqual({ ok: true })
+    // The deadline must not fire into a later request's signal.
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  })
+
+  /**
+   * The deadline exists for a stalled *network*, and a wall clock cannot tell
+   * that apart from a client that never got a turn. A busy device is not a
+   * stalled request (SHO-582).
+   */
+  test('time the client could not observe is not charged', async () => {
+    const deadline = createDeadline(200)
+    const start = Date.now()
+    // The thread is gone: nothing — not the deadline, not the fetch — can run.
+    while (Date.now() - start < 500) {
+      /* burn the CPU the way a cold start or a throttled renderer does */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(deadline.signal.aborted).toBe(false)
+    deadline.clear()
+  })
+
+  test('…and a deadline that really is unanswered still fires', async () => {
+    const deadline = createDeadline(60)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(deadline.signal.aborted).toBe(true)
+    expect(deadline.timedOut()).toBe(true)
+    deadline.clear()
+  })
+
+  /**
+   * Once the answer is in, the request is alive: decoding and parsing the body
+   * is the client's own work, and a starved device does it slowly.
+   */
+  test('a GET whose body is slower than the deadline is not aborted', async () => {
+    fetchImpl = async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: () =>
+          new Promise((resolve) => setTimeout(() => resolve('{"ok":true}'), 120)),
+      }) as unknown as Response
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 25 })
+
+    const response = await client.get<{ ok: boolean }>('/api/chat-sessions')
+    expect(response.data).toEqual({ ok: true })
   })
 })

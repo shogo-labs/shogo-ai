@@ -55,9 +55,17 @@ export function publishedDockerfile(): string {
     "# lockfile may also be stale relative to the app's manifest (a user app pins",
     '# whatever Bun it was scaffolded with), so a failed frozen install resolves',
     '# from the manifest instead of failing the image build.',
+    '#',
+    '# The stale lockfile has to be REMOVED, not just un-frozen: on Bun 1.4.4',
+    '# `--production` is implicitly frozen whenever a lockfile is present, so',
+    '# `bun install --production` fails with the identical "lockfile had changes,',
+    '# but lockfile is frozen" on the same stale file. A Postgres build context',
+    '# always adds @prisma/adapter-pg and pg to the manifest, so without the rm',
+    '# every Postgres image build fails and no Postgres environment can publish.',
     'RUN if [ ! -f bun.lockb ] && [ ! -f bun.lock ]; then bun install --production; ' +
       'elif ! bun install --production --frozen-lockfile; then ' +
       'echo "published build: lockfile out of date, resolving from package.json"; ' +
+      'rm -f bun.lock bun.lockb; ' +
       'bun install --production; fi',
     '',
     '# The generated Prisma client is part of the image, so boot never runs',

@@ -28,6 +28,7 @@ import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './a
 import { config } from './config'
 import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
+import { GuestIsolation } from './guest-isolation'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
@@ -43,7 +44,21 @@ import {
 import { PortForward } from './port-forward'
 import { announceRestarting, reportPlacement, startRegistration } from './register'
 import { RequestDrain } from './request-drain'
-import { getRootfsRevision, getRootfsSha, getStagedRootfs, imagesToKeep, maybeImageGc } from './self-update'
+import {
+  getRejectedRootfs,
+  getRootfsFailed,
+  getRootfsPrev,
+  getRootfsRevision,
+  getRootfsSha,
+  getRootfsWatch,
+  getStagedRootfs,
+  imagesToKeep,
+  keptRootfsImage,
+  maybeImageGc,
+  restartAgent,
+  rollbackRootfs,
+  type KeptImageName,
+} from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -69,6 +84,14 @@ try {
   console.log(`[metal-agent] control firewall: ${ctrlFirewall.describe()}`)
 } catch (err: any) {
   console.error(`[metal-agent] control firewall FAILED to apply (port stays open): ${err?.message ?? err}`)
+}
+
+// SEC-31: no guest may open a connection to another guest on this host.
+try {
+  new GuestIsolation().apply()
+  console.log('[metal-agent] guest isolation: tap-to-tap forwarding dropped')
+} catch (err: any) {
+  console.error(`[metal-agent] guest isolation FAILED to apply (guests can reach each other): ${err?.message ?? err}`)
 }
 
 async function json(req: Request): Promise<any> {
@@ -131,7 +154,23 @@ function stoppedResponse(projectId: string, outcome: SuspendOutcome) {
 
 /** How long a restart waits for in-flight control calls before exiting anyway. */
 const DRAIN_TIMEOUT_MS = 10_000
+/**
+ * How much longer a restart waits for a cold OPEN already hydrating (SHO-584).
+ *
+ * An `/assign` on a cold host pulls the member, `.git`, data and home and takes
+ * about a minute — far past the 10 s above. Cutting one off used to leave a
+ * half-hydrated VM the next agent adopted as a normal assigned one, which could
+ * never back up (no lineage) and therefore never stop: 10,391 quarantine copies
+ * of 525 MB in six days. It is bounded on purpose (the control plane retries a
+ * failed open), but generous enough for the archives prod actually has.
+ */
+const DRAIN_OPEN_TIMEOUT_MS = 180_000
 const drain = new RequestDrain()
+
+/** Routes whose normal duration is minutes, not milliseconds (an open). */
+function isLongControlCall(path: string, method: string): boolean {
+  return method === 'POST' && (path === '/assign' || path === '/resume')
+}
 
 const server = Bun.serve({
   hostname: config.listenHost,
@@ -142,7 +181,8 @@ const server = Bun.serve({
     // an /assign still in flight is waiting on it.
     const exempt =
       req.method === 'GET' || path === '/status' || path === '/touch' || path.startsWith(HYDRATE_STREAM_PREFIX)
-    return drain.run(() => handle(req, srv), { exempt })
+    const long = isLongControlCall(path, req.method)
+    return drain.run(() => handle(req, srv), { exempt, long })
   },
 })
 
@@ -181,9 +221,58 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           rootfsSha: getRootfsSha(),
           rootfsRevision: getRootfsRevision(),
           stagedRootfs: getStagedRootfs(),
+          // The rollback state (SHO-552): what a rollback would put back, whether
+          // the live image is still on probation, and what was rejected last —
+          // otherwise none of it is visible without catting the markers.
+          rootfsPrevious: getRootfsPrev(),
+          rootfsWatch: getRootfsWatch(),
+          // The generation a rollback took out of service and kept for inspection
+          // (SHO-563): what it was, why, and where its evidence is.
+          rootfsFailed: getRootfsFailed(),
+          rootfsRejected: getRejectedRootfs(),
         })
       }
       if (path === '/vms') return Response.json(pool.status())
+
+
+      // Manual rollback (SHO-552): put `<base>.prev` back now, instead of waiting
+      // for the watch to decide. The automatic path covers a host whose cold
+      // boots fail; this covers the failure a boot cannot see (a bad kernel
+      // config, a project that could never boot on the new image) and a
+      // watchdog-only host. Same auth tier as /gc.
+      if (path === '/admin/rollback-rootfs' && req.method === 'POST') {
+        const res = await rollbackRootfs('manual', {
+          // Let this response flush before the process goes down: the handler
+          // lives in the agent being restarted.
+          restart: () => setTimeout(restartAgent, 500),
+        })
+        return Response.json(res, { status: res.ok ? 200 : 409 })
+      }
+
+      // Boot a kept image on demand (SHO-563): `live`, `prev`, `staged` or
+      // `failed`. This is how an operator answers "would that image have
+      // booted?" without activating it, and how the image a rollback kept is
+      // inspected after the fact. It boots real VMs and holds them for `holdMs`
+      // (default METAL_ROOTFS_PROBE_HOLD_MS), so it is slow by design; it never
+      // touches the live image, the pool or the watch ledger, and a probe VM is
+      // never counted as a cold boot of the live image.
+      if (path === '/admin/probe-rootfs' && req.method === 'POST') {
+        const body = await json(req).catch(() => ({}) as any)
+        const name = String(body?.image ?? '').trim() as KeptImageName
+        if (!['live', 'prev', 'staged', 'failed'].includes(name)) {
+          return Response.json(
+            { error: `image must be one of live, prev, staged, failed (got '${body?.image ?? ''}')` },
+            { status: 400 },
+          )
+        }
+        const vmClass = body?.vmClass === 'docker' ? 'docker' : 'standard'
+        const holdMs = Number.isFinite(body?.holdMs) ? Math.max(0, Math.min(10 * 60_000, Number(body.holdMs))) : undefined
+        if (!keptRootfsImage(name, vmClass)) {
+          return Response.json({ ok: false, error: `no ${name} image for the ${vmClass} class on this host` }, { status: 404 })
+        }
+        const res = await pool.probeKeptRootfs(name, vmClass, holdMs)
+        return Response.json(res, { status: res.ok ? 200 : 422 })
+      }
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
 
       // A guest redeeming a hydrate grant. Not part of the control-plane API:
@@ -735,11 +824,11 @@ process.on('SIGTERM', async () => {
   imageGc?.stop()
   await announceRestarting(pool).catch(() => {})
   const inFlight = drain.active
-  const drained = await drain.drain(DRAIN_TIMEOUT_MS)
+  const drained = await drain.drain(DRAIN_TIMEOUT_MS, { openTimeoutMs: DRAIN_OPEN_TIMEOUT_MS })
   if (inFlight) {
     console.log(
       `[metal-agent] ${drained ? 'drained' : 'timed out draining'} ${inFlight} in-flight request(s)` +
-        (drained ? '' : ` (${drain.active} still running)`),
+        (drained ? '' : ` (${drain.active} still running, ${drain.activeLong} open(s))`),
     )
   }
   server.stop(false)

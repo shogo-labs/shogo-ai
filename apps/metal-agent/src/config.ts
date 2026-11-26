@@ -11,6 +11,7 @@
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { DEFAULT_MIN_FAILURES, DEFAULT_ROLLBACK_RATE, DEFAULT_WATCH_MS } from './rootfs-rollback'
 
 const env = (k: string, d: string) => process.env[k] ?? d
 
@@ -233,6 +234,15 @@ export const config = {
    * 0 = no cap.
    */
   reapMaxPerPass: parseInt(env('METAL_REAP_MAX_PER_PASS', '20'), 10),
+  /**
+   * Most quarantine writes (`conflict/`) one project may make per UTC day, all
+   * kinds together. Over the cap nothing is written and the caller is told the
+   * bytes are not saved, so a VM cannot be destroyed on the strength of a copy
+   * that does not exist. One VM retrying a recycle that could never succeed
+   * wrote 10,391 identical 525 MB copies in six days (SHO-584); 24 is a few
+   * hours of genuine incidents, not a loop. 0 disables quarantine entirely.
+   */
+  quarantineDailyCap: parseInt(env('METAL_QUARANTINE_DAILY_CAP', '24'), 10),
   /**
    * Rootfs rollout. A VM still on a superseded image is rotated onto the new
    * one once it has been idle this long, whatever the idle-suspend window
@@ -668,6 +678,38 @@ export const config = {
   rootDiskGcPct: parseInt(env('METAL_ROOT_DISK_GC_PCT', '70'), 10),
   /** How often the unattended image sweep runs (it still waits for the disk % above). */
   imageGcIntervalMs: parseInt(env('METAL_IMAGE_GC_INTERVAL_MS', String(60 * 60_000)), 10),
+
+  // --- Rootfs watch window (auto-rollback after an activation) --------------
+
+  /**
+   * How long a freshly activated rootfs is on probation. The pool reports every
+   * cold boot it starts from the live image and `maybeRollbackRootfs` puts the
+   * previous generation back when the window fills with failures — a bad image
+   * is live for at most this long instead of until someone notices (staging,
+   * 2026-11-23: an hour of failed boots). Must outlast a normal release's boot
+   * churn (re-warm, users returning) so ordinary load is not mistaken for a
+   * broken image, and stay short enough that the bad image cannot serve a burst.
+   */
+  rootfsWatchMs: parseInt(env('METAL_ROOTFS_WATCH_MS', String(DEFAULT_WATCH_MS)), 10),
+  /** Cold-boot failures in the window before a rollback is considered at all. */
+  rootfsRollbackMinFailures: parseInt(env('METAL_ROOTFS_ROLLBACK_MIN_FAILURES', String(DEFAULT_MIN_FAILURES)), 10),
+  /**
+   * …and the failure RATE they must exceed (`failures / (failures + successes)`).
+   * Both are required: a floor alone rolls back a healthy host having a bad
+   * minute, a rate alone rolls back on two failures out of three boots.
+   */
+  rootfsRollbackRate: parseFloat(env('METAL_ROOTFS_ROLLBACK_RATE', String(DEFAULT_ROLLBACK_RATE))),
+
+  /**
+   * How long a boot probe holds its VM up after it first answers /health
+   * (METAL_ROOTFS_PROBE_HOLD_MS, default 30 s). An image that answers once and
+   * then dies is a bad image, and stopping the probe at the first 200 OK scored
+   * one of those healthy (SHO-563: the probe passed, then every live boot on the
+   * activated image died). Long enough to catch a start-up crash that happens
+   * after the server binds, short enough that a probe of a big image stays
+   * inside an operator's patience and the activation's own timeout.
+   */
+  rootfsProbeHoldMs: parseInt(env('METAL_ROOTFS_PROBE_HOLD_MS', '30000'), 10),
 
   // --- Phase 1 (Tier 2 docker project class): VM classes --------------------
   dockerClass,

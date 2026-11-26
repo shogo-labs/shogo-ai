@@ -153,11 +153,6 @@ mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
 
 mock.module('../../services/billing.service', () => ({
   hasAdvancedModelAccess: async (_workspaceId: string) => false,
-  canRunTechStackOnInstanceSize: async (_workspaceId: string, _techStackId: string | null | undefined) => ({
-    allowed: true,
-    currentSize: 'micro',
-    requiredSize: null,
-  }),
 }))
 
 // Real `S3Sync` — the whole point of this file.
@@ -173,7 +168,6 @@ mock.module('@shogo/shared-runtime', () => ({
   ...realS3Sync,
   // None of these fixtures declare a docker-class stack, so the route's tier
   // gate short-circuits; the junk helpers are irrelevant to the bundle.
-  getMinimumInstanceSize: (_techStackId?: string | null) => null,
   isMacOSJunkName: (_name: string) => false,
   isMacOSJunkPath: (_relPath: string) => false,
 }))

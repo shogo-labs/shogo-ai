@@ -39,12 +39,45 @@ const STRIP_RESPONSE_HEADERS = new Set([
 ])
 
 /**
- * Request headers the local proxy relays to Shogo Cloud so cloud capture can
- * group desktop calls by chat.
+ * Attribution a paired desktop attaches to a forwarded call (SHO-590): the
+ * workspace the turn ran in, its project, and the person it was for. The cloud
+ * accepts them only for a device key that provably hosts that workspace, and
+ * uses them to record usage — never to decide who pays.
  */
-export function cloudPassthroughHeaders(c: Context): Record<string, string> {
+export interface CloudUsageAttribution {
+  /** The local (hosted) workspace the call belongs to. */
+  workspaceId?: string | null
+  /** Its project — omit for the workspace agent or a sentinel. */
+  projectId?: string | null
+  /** The person the turn was for. */
+  memberId?: string | null
+}
+
+/** Attribution headers → the record the request carries. Empty when unset. */
+export function usageAttributionHeaders(
+  attribution?: CloudUsageAttribution | null,
+): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (attribution?.workspaceId) headers['x-shogo-workspace-id'] = attribution.workspaceId
+  if (attribution?.projectId) headers['x-shogo-project-id'] = attribution.projectId
+  if (attribution?.memberId) headers['x-shogo-member-id'] = attribution.memberId
+  return headers
+}
+
+/**
+ * Request headers the local proxy relays to Shogo Cloud so cloud capture can
+ * group desktop calls by chat, and the cloud can attribute the usage to the
+ * workspace, project and person the turn actually ran for.
+ */
+export function cloudPassthroughHeaders(
+  c: Context,
+  attribution?: CloudUsageAttribution | null,
+): Record<string, string> {
   const chatSessionId = c.req.header('x-chat-session-id')
-  return chatSessionId ? { 'x-chat-session-id': chatSessionId } : {}
+  return {
+    ...(chatSessionId ? { 'x-chat-session-id': chatSessionId } : {}),
+    ...usageAttributionHeaders(attribution),
+  }
 }
 
 export interface CloudForwardOptions {
@@ -63,6 +96,13 @@ export interface CloudForwardOptions {
    * through, which is what the multipart routes need.
    */
   body?: string
+  /**
+   * Local workspace / project / person this call was made for (SHO-590). The
+   * cloud meters a forwarded desktop call to its device key's workspace unless
+   * it can prove the hosted workspace the call belongs to, so every billing
+   * family must carry it.
+   */
+  attribution?: CloudUsageAttribution
 }
 
 /**
@@ -75,7 +115,7 @@ export async function forwardToShogoCloud(
 ): Promise<Response> {
   const upstreamUrl = `${getShogoCloudUrl()}/api${opts.pathname}${opts.search ?? ''}`
 
-  const headers = new Headers(cloudPassthroughHeaders(c))
+  const headers = new Headers(cloudPassthroughHeaders(c, opts.attribution))
   for (const [key, value] of Object.entries(opts.headers ?? {})) headers.set(key, value)
   headers.set('Authorization', `Bearer ${process.env.SHOGO_API_KEY!}`)
   headers.set('x-shogo-client', 'desktop')

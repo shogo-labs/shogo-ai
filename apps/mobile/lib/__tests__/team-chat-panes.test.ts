@@ -20,6 +20,7 @@ const base: PaneInputs = {
   cardId: null,
   profilePaneId: null,
   fileOpen: false,
+  fitsCardAndFile: false,
 }
 
 const panes = (over: Partial<PaneInputs>) => resolvePanes({ ...base, ...over })
@@ -122,6 +123,61 @@ describe('resolvePanes', () => {
     const doc = panes({ fileOpen: true, docOpen: true })
     expect(doc.showDocPane).toBe(true)
     expect(doc.showFilePane).toBe(false)
+  })
+
+  test('a file opened from a card sits beside it when the width has room for both (SHO-589)', () => {
+    const wide = panes({ cardId: 'card-1', fileOpen: true, fitsCardAndFile: true })
+    expect(wide.showCardPane).toBe(true)
+    expect(wide.showFilePane).toBe(true)
+    expect(wide.showFileFull).toBe(false)
+    expect(wide.showMain).toBe(true)
+  })
+
+  test('without room the file takes the card’s place, and the card comes back when it closes (SHO-589)', () => {
+    const narrowPane = panes({ cardId: 'card-1', fileOpen: true, fitsCardAndFile: false })
+    expect(narrowPane.showFilePane).toBe(true)
+    expect(narrowPane.showCardPane).toBe(false)
+    expect(narrowPane.showMain).toBe(true)
+
+    // `card` stays in the URL while the file is open, so closing the file is
+    // just `fileOpen: false` with the card still there.
+    const closed = panes({ cardId: 'card-1', fitsCardAndFile: false })
+    expect(closed.showFilePane).toBe(false)
+    expect(closed.showCardPane).toBe(true)
+  })
+
+  test('on a phone a file opened from a card takes the screen, and the card is back when it closes (SHO-589)', () => {
+    const phone = panes({ sidePane: false, cardId: 'card-1', fileOpen: true })
+    expect(phone.showFileFull).toBe(true)
+    expect(phone.showFilePane).toBe(false)
+    expect(phone.showCardPane).toBe(false)
+    expect(phone.showMain).toBe(false)
+
+    const closed = panes({ sidePane: false, cardId: 'card-1' })
+    expect(closed.showFileFull).toBe(false)
+    expect(closed.showCardPane).toBe(true)
+  })
+
+  test('a file opened from a thread keeps today’s behaviour whether or not it could fit beside a card', () => {
+    for (const fitsCardAndFile of [false, true]) {
+      const open = panes({ threadRootId: 'm-1', fileOpen: true, fitsCardAndFile })
+      expect(open.showFilePane).toBe(true)
+      expect(open.showThreadPane).toBe(false)
+      expect(open.showCardPane).toBe(false)
+      expect(open.showMain).toBe(true)
+    }
+  })
+
+  test('a doc or the files list still takes the whole screen from a card and its file', () => {
+    const doc = panes({ sidePane: false, cardId: 'card-1', fileOpen: true, docOpen: true })
+    expect(doc.showDocFull).toBe(true)
+    expect(doc.showCardPane).toBe(false)
+    expect(doc.showFilePane).toBe(false)
+
+    const files = panes({ sidePane: false, cardId: 'card-1', fileOpen: true, filesOpen: true })
+    expect(files.showFilesFull).toBe(true)
+    expect(files.showCardPane).toBe(false)
+    expect(files.showFilePane).toBe(false)
   })
 
   test('resolvePanes does not have showMemberPane / showMemberFull — the member filter lives in TimelinePane', () => {

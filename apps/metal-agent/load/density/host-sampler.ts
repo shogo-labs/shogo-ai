@@ -100,6 +100,47 @@ export interface HostSample {
   memAvailablePct: number | null
 }
 
+/** The worst sample in a measurement window, which is what a bound should see. */
+export interface WindowWorst {
+  /** Highest `some avg60` seen in the window, percent. */
+  cpuPsiSomeAvg60: number
+  /** Highest `full avg60` seen in the window, percent. */
+  memPsiFullAvg60: number
+  /** Lowest MemAvailable seen in the window, percent of MemTotal. */
+  memAvailablePct: number
+  /** Mean swap-in over the window, pages/s. */
+  swapInPagesPerSec: number
+}
+
+/**
+ * Summarise a window by its worst sample rather than its last one.
+ *
+ * `memPressure.full60` is a **60-second rolling average**, so the final sample of
+ * a 60 s burst window still carries most of the preceding hold inside it, and the
+ * last sample of a longer step is an arbitrary point in the window. Neither is
+ * the window's pressure. Taking the worst sample is the conservative reading for
+ * a limit: if any sample inside the window crossed it, the window crossed it.
+ */
+export function windowWorst(win: HostSample[]): WindowWorst {
+  if (win.length === 0) return { cpuPsiSomeAvg60: 0, memPsiFullAvg60: 0, memAvailablePct: 0, swapInPagesPerSec: 0 }
+  let cpu = 0
+  let mem = 0
+  let avail = Infinity
+  let swap = 0
+  for (const s of win) {
+    cpu = Math.max(cpu, s.cpuPressure?.some60 ?? 0)
+    mem = Math.max(mem, s.memPressure?.full60 ?? 0)
+    if (s.memAvailablePct != null) avail = Math.min(avail, s.memAvailablePct)
+    swap += s.swapInPagesPerSec ?? 0
+  }
+  return {
+    cpuPsiSomeAvg60: cpu,
+    memPsiFullAvg60: mem,
+    memAvailablePct: Number.isFinite(avail) ? avail : 0,
+    swapInPagesPerSec: +(swap / win.length).toFixed(1),
+  }
+}
+
 const num = (s: string | undefined): number => {
   const n = Number(s)
   return Number.isFinite(n) ? n : 0

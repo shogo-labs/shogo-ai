@@ -60,7 +60,7 @@ import { prisma } from '../lib/prisma'
 import { generateLyriaMusic, LyriaError } from '../lib/lyria'
 import { getMusicModelEntry, MUSIC_MODEL_CATALOG, type MusicModelEntry } from '@shogo/model-catalog'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
-import { forwardToShogoCloud } from '../lib/cloud-request-forward'
+import { forwardToShogoCloud, type CloudUsageAttribution } from '../lib/cloud-request-forward'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { apiKeyOrSession, authorizeProject } from '../middleware/auth'
 import { consumeUsage } from '../services/billing.service'
@@ -111,12 +111,14 @@ function forwardVoiceToCloud(
   c: Context,
   pathname: string,
   body?: unknown,
+  attribution?: CloudUsageAttribution,
 ): Promise<Response> {
   return forwardToShogoCloud(c, {
     pathname,
     search: new URL(c.req.url).search,
     headers: { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(attribution ? { attribution } : {}),
   })
 }
 
@@ -338,6 +340,14 @@ async function executeVoiceOp(
       c,
       voiceOpForwardPath(op),
       invocation.form ? undefined : invocation.fields,
+      // The cloud bills the device key's workspace; naming the local workspace,
+      // project and person is what makes the charge show up in this workspace's
+      // Analytics (SHO-590). The cloud verifies the binding before using it.
+      {
+        workspaceId: authz.workspaceId ?? null,
+        projectId: projectId ?? null,
+        memberId: (c.get('auth') as { userId?: string } | undefined)?.userId ?? null,
+      },
     )
   }
 

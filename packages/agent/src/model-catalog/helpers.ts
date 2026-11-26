@@ -241,6 +241,35 @@ export function modelSupportsVideoInput(id: string): boolean {
 }
 
 /**
+ * What one sampled video frame costs this model in prompt tokens.
+ *
+ * Measured rates live on the catalog entry (`capabilities.videoTokensPerFrame`);
+ * everything else — including DB-defined rows and OpenRouter models — costs
+ * about 300, the rate measured for the OpenRouter video path in #2268. A
+ * default this far off the measured value would make `read_file`'s frame
+ * budget meaningless, so unknown means "assume the expensive one".
+ */
+export const DEFAULT_VIDEO_TOKENS_PER_FRAME = 300
+
+export function getVideoTokensPerFrame(id: string): number {
+  const fromCatalog = getModelEntry(id)?.capabilities?.videoTokensPerFrame
+  if (typeof fromCatalog === 'number' && fromCatalog > 0) return fromCatalog
+  return DEFAULT_VIDEO_TOKENS_PER_FRAME
+}
+
+/**
+ * The provider a model is routed to, when we know it: the static catalog
+ * first, then the dynamic (DB-defined) registry the API hands the runtime.
+ * Returns undefined for a model neither knows, rather than guessing from the
+ * id — an opaque UUID says nothing about where its bytes go.
+ */
+export function getProviderForModel(id: string): string | undefined {
+  const entry = getModelEntry(id)
+  if (entry) return entry.provider
+  return getDynamicModel(id)?.provider
+}
+
+/**
  * The model's real context window in tokens, when the catalog knows it.
  *
  * Used to derive the summarize threshold (window − output/buffer reserve,

@@ -65,11 +65,15 @@ interface CtxOpts {
   vars?: Record<string, unknown>
   query?: Record<string, string>
   method?: string
+  /** Parsed JSON body the resolver may read for a body-only create. */
+  body?: unknown
+  contentType?: string
 }
 
 function makeCtx(opts: CtxOpts) {
   const store = new Map<string, unknown>(Object.entries(opts.vars ?? {}))
   const query = opts.query ?? {}
+  const contentType = opts.contentType ?? (opts.body === undefined ? undefined : 'application/json')
   return {
     get: (k: string) => store.get(k),
     set: (k: string, v: unknown) => void store.set(k, v),
@@ -78,7 +82,12 @@ function makeCtx(opts: CtxOpts) {
       method: opts.method ?? 'POST',
       query: (k?: string) => (k ? query[k] : query),
       param: () => undefined,
-      header: () => undefined,
+      header: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : undefined),
+      json: async () => {
+        if (opts.body === undefined) throw new SyntaxError('no body')
+        return opts.body
+      },
+      text: async () => JSON.stringify(opts.body),
     },
   } as any
 }
@@ -152,6 +161,72 @@ describe('resolveWorkspaceIdForRequest', () => {
 
   test('returns null when an unknown project cannot be resolved', async () => {
     const c = makeCtx({ path: '/api/projects/missing/chat' })
+    expect(await resolveWorkspaceIdForRequest(c)).toBeNull()
+  })
+})
+
+/**
+ * A create has no id in its path, so the body is the only thing naming the
+ * workspace. These rows are drained / deleted / replied to by the home region —
+ * a wrong-region write strands them (SHO-585).
+ */
+describe('resolveWorkspaceIdForRequest — body-only creates', () => {
+  test('resolves a queued chat message from its sessionId', async () => {
+    const c = makeCtx({ path: '/api/chat-queued-messages', body: { sessionId: 'sess_ws', content: 'hi' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBe('ws_2')
+  })
+
+  test('resolves a chat message through a project-scoped session', async () => {
+    const c = makeCtx({ path: '/api/chat-messages', body: { sessionId: 'sess_proj', role: 'user' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBe('ws_1')
+  })
+
+  test('accepts chatSessionId as well as sessionId', async () => {
+    const c = makeCtx({ path: '/api/tool-call-logs', body: { chatSessionId: 'sess_ws', toolName: 'x' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBe('ws_2')
+  })
+
+  test('resolves a project folder from projectId', async () => {
+    const c = makeCtx({ path: '/api/project-folders', body: { projectId: 'proj_a', name: 'Docs' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBe('ws_1')
+  })
+
+  test('resolves starred-projects and folders from a literal workspaceId', async () => {
+    for (const collection of ['starred-projects', 'folders']) {
+      const c = makeCtx({ path: `/api/${collection}`, body: { workspaceId: 'ws_body' } })
+      expect(await resolveWorkspaceIdForRequest(c)).toBe('ws_body')
+    }
+  })
+
+  test('stashes the bytes it consumed for the router to forward', async () => {
+    const { FORWARD_BODY_KEY } = await import('../resolve-workspace-id')
+    const body = { sessionId: 'sess_ws', content: 'hi' }
+    const c = makeCtx({ path: '/api/chat-queued-messages', body })
+    await resolveWorkspaceIdForRequest(c)
+    expect(c.get(FORWARD_BODY_KEY)).toBe(JSON.stringify(body))
+  })
+
+  test('does not read a body for a non-create path', async () => {
+    const c = makeCtx({ path: '/api/chat-queued-messages', method: 'GET', body: { sessionId: 'sess_ws' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBeNull()
+  })
+
+  test('does not read a non-JSON body', async () => {
+    const c = makeCtx({
+      path: '/api/chat-queued-messages',
+      body: { sessionId: 'sess_ws' },
+      contentType: 'application/x-www-form-urlencoded',
+    })
+    expect(await resolveWorkspaceIdForRequest(c)).toBeNull()
+  })
+
+  test('stays local (null) when the body names an unknown session', async () => {
+    const c = makeCtx({ path: '/api/chat-queued-messages', body: { sessionId: 'sess_missing' } })
+    expect(await resolveWorkspaceIdForRequest(c)).toBeNull()
+  })
+
+  test('does not read the body of a collection it has no lookup for', async () => {
+    const c = makeCtx({ path: '/api/notifications', body: { workspaceId: 'ws_body', userId: 'u1' } })
     expect(await resolveWorkspaceIdForRequest(c)).toBeNull()
   })
 })

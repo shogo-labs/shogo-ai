@@ -333,9 +333,11 @@ describe('workspace runtimes', () => {
     expect(untar(s3.body('m1/project-src.tar.gz')!)['App.tsx']).toBe('m1 v4 from the other writer\n')
     expect(s3.keys('conflict/m1/')).toHaveLength(1)
 
-    // A quarantine never re-anchors lineage, so the next save is refused too.
+    // A quarantine never re-anchors lineage, so the next save is refused too —
+    // and because it is the same bytes, the copy is deduped, not written twice
+    // (SHO-584: one stuck VM must not fill conflict/ with identical copies).
     expect(await (pool as any).saveWorkspaceMembersToStore(a)).toEqual([{ projectId: 'm1', reason: 'not promoted (conflict)' }])
-    expect(s3.keys('conflict/m1/')).toHaveLength(2)
+    expect(s3.keys('conflict/m1/')).toHaveLength(1)
   })
 
   test("suspend and resume carry the member's source lineage", async () => {

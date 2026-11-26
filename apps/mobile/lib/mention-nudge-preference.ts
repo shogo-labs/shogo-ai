@@ -8,6 +8,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from './storage'
 
 const STORAGE_KEY = 'shogo:mention-nudge-dismissed'
 
@@ -33,7 +34,7 @@ export function getMentionNudgeDismissed(): boolean {
 export async function dismissMentionNudgeForever(): Promise<void> {
   cachedValue = true
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, 'true')
+    await setStorageItem(STORAGE_KEY, 'true')
   } catch {
     // ignore persistence errors
   }

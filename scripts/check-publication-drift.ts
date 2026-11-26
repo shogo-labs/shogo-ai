@@ -83,7 +83,17 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * pages if that happens. Keep this list in sync with the monitor's
  * EXCLUDED_TABLES and exclude-region-local-tables.sql.
  */
-export const INTENTIONALLY_UNPUBLISHED = ['storage_usage', 'usage_wallets', 'proxy_turns'] as const
+export const INTENTIONALLY_UNPUBLISHED = [
+  'storage_usage',
+  'usage_wallets',
+  'proxy_turns',
+  // SHO-585: the conflict watchdog's run-to-run state (last applied LSN + stall
+  // clock, blind re-enable streak, last skip). It describes one region's apply
+  // worker, and its `subname` primary key would collide on every run. The
+  // watchdog creates it with `CREATE TABLE IF NOT EXISTS`, so it does not need
+  // a migration — only the exclusion above.
+  'logical_replication_watchdog_state',
+] as const
 
 interface Violation {
   file: string

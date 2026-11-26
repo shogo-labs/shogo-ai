@@ -58,6 +58,7 @@ import { NotificationPermissionBanner } from "../../components/notifications/Not
 import { AgentLimitBanner } from "../../components/AgentLimitBanner";
 import { DurabilityBanner } from "../../components/DurabilityBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
+import { DesktopTrayPublisher } from "../../components/layout/DesktopTrayPublisher";
 import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -258,6 +259,10 @@ function AppLayoutInner() {
     /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, "/")) &&
     pathname !== "/projects" &&
     pathname !== "/(app)/projects";
+  // The Projects list is reached from More on a phone, so its header goes back
+  // there instead of opening the sidebar drawer (SHO-570).
+  const isProjectsList =
+    pathname.replace(/^\/(app\/)?/, "/").replace(/\/+$/, "") === "/projects";
   // The mobile shell is coupled to the workspace runtime: without it, the
   // legacy home remains available instead of exposing a chat that cannot run
   // turns. All workspace kinds share this mobile chrome; wide web keeps the
@@ -695,7 +700,7 @@ function AppLayoutInner() {
         !isIdeEmbed &&
         !suppressNarrowAppHeader &&
         !useMobileWorkspaceShell ? (
-          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} back={isProjectsList} />
         ) : null
       }
       bottomNav={
@@ -712,6 +717,7 @@ function AppLayoutInner() {
       {!isIdeEmbed ? <AgentLimitBanner /> : null}
       {!isIdeEmbed ? <DurabilityBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
+      {!isIdeEmbed ? <DesktopTrayPublisher /> : null}
       {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {/* The shell stays mounted on every phone route and only toggles its

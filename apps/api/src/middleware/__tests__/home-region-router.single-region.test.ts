@@ -39,6 +39,7 @@ mock.module('../../lib/prisma', () => ({
 
 mock.module('../../lib/resolve-workspace-id', () => ({
   resolveWorkspaceIdForRequest: async () => 'ws_legacy',
+  FORWARD_BODY_KEY: 'homeRegionForwardBody',
 }))
 mock.module('../../lib/resolve-user-id', () => ({
   resolveUserHomeRegionUserId: async () => null,

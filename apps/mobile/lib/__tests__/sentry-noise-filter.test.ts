@@ -30,6 +30,7 @@ const {
   isExpectedClientError,
   isNoiseEvent,
   isVirtualAndroidDevice,
+  transientTransportMessage,
 } = await import('../sentry-noise-filter')
 type NoiseFilterEvent = import('../sentry-noise-filter').NoiseFilterEvent
 
@@ -126,6 +127,41 @@ describe('isNoiseEvent — intentional Shogo captures bypass the filter', () => 
 
   test('the SAME message WITHOUT the marker tag is still filtered as noise', () => {
     expect(isNoiseEvent(exc('TypeError', 'Failed to fetch'))).toBe(true)
+  })
+})
+
+describe('isNoiseEvent — dropped connections are transport noise, not defects (SHO-566)', () => {
+  test('drops the exact messages from the 14-day mobile review', () => {
+    // SHOGO-ANDROID-5 (515 events / 119 users) and SHOGO-ANDROID-7 / -1F.
+    expect(isNoiseEvent(exc('Error', 'Software caused connection abort'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'Unable to resolve host "studio.shogo.ai": No address associated with hostname'))).toBe(true)
+    // SHOGO-IOS-4 (255 events), straight from NSURLErrorDomain via FetchResponse.
+    expect(isNoiseEvent(exc('Error', 'The network connection was lost.'))).toBe(true)
+    // RN's own fetch rejection and the two other transport phrasings.
+    expect(isNoiseEvent(exc('TypeError', 'Network request failed'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'The Internet connection appears to be offline.'))).toBe(true)
+    expect(isNoiseEvent(exc('Error', 'Connection reset by peer'))).toBe(true)
+  })
+
+  test('a real error that merely mentions "network" still reports', () => {
+    expect(isNoiseEvent(exc('TypeError', "Cannot read property 'network' of undefined"))).toBe(false)
+    expect(isNoiseEvent(exc('Error', 'Network request failed because the response body was not JSON'))).toBe(false)
+    expect(isNoiseEvent(exc('TypeError', 'networkState.get is not a function'))).toBe(false)
+  })
+
+  test('a 5xx ShogoError still reports', () => {
+    // A server that answers 5xx is the server failing — never transport noise.
+    expect(
+      isNoiseEvent({ exception: { values: [{ type: 'ShogoError', value: 'Request failed with status 500' }] } }),
+    ).toBe(false)
+  })
+
+  test('reports which message was dropped, so beforeSend can leave a breadcrumb', () => {
+    expect(transientTransportMessage(exc('Error', 'The network connection was lost.'))).toBe(
+      'The network connection was lost.',
+    )
+    expect(transientTransportMessage(exc('TypeError', 'Cannot read property x of undefined'))).toBe(null)
+    expect(transientTransportMessage({})).toBe(null)
   })
 })
 

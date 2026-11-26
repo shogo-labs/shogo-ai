@@ -81,6 +81,13 @@ export interface AuthContext {
    */
   via?: 'apiKey' | 'session' | 'tunnel' | 'runtimeToken'
   /**
+   * `api_keys.kind` for a `via: 'apiKey'` request (`'device'` for a key minted
+   * by the desktop cloud login, `'user'` for one created by hand). A device key
+   * stands for the machine that holds it, which is what lets it read a
+   * workspace that machine hosts (SHO-590 §C).
+   */
+  apiKeyKind?: string
+  /**
    * True when the request was authenticated via tunnel headers
    * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
    * membership, so local DB membership checks can be skipped.
@@ -281,6 +288,7 @@ export async function authMiddleware(c: Context, next: Next) {
           workspaceId: result.workspaceId,
           isAuthenticated: true,
           via: 'apiKey',
+          apiKeyKind: result.kind,
         })
         await next()
         return

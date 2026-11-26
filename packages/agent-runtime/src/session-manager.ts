@@ -268,8 +268,10 @@ export interface SessionManagerConfig {
   maxOutputTokens?: number
   /** Buffer tokens reserved for system prompt and safety margin (default: 15000) */
   bufferTokens?: number
-  /** Max tokens passed to the summarizer per call (default: 24000) */
+  /** Max tokens passed to the summarizer per call (default: 100000) */
   summarizeChunkTokens?: number
+  /** Chunk summaries in flight at once (default: 3) */
+  summarizeConcurrency?: number
   /** Max consecutive summarization failures before circuit breaker trips (default: 3) */
   maxSummarizeFailures?: number
   /**
@@ -555,13 +557,62 @@ export const TURN_KEEP_MAX_RATIO = 0.4
  * Function signature for the summarization backend.
  *
  * Called once per chunk of the head being folded away. `previousSummary` is
- * the running fold (undefined for the first chunk), so a 400k head survives
- * as a real summary instead of the first 12k characters of it.
+ * the running fold when there is only one chunk (or an earlier fold this
+ * compaction continues): the model then merges the excerpt into it. With more
+ * than one chunk the chunks run in parallel with no shared state, and the
+ * partial summaries are combined by `SummarizeMergeFn` afterwards.
  */
 export type SummarizeFn = (messages: Message[], previousSummary?: string) => Promise<string>
 
+/**
+ * Combine the partial summaries of a parallel map back into one. Optional: a
+ * runtime without it (tests, evals) joins the parts in chunk order.
+ */
+export type SummarizeMergeFn = (partials: string[], previousSummary?: string) => Promise<string>
+
+/** Installable summarizer: the per-chunk call and the optional merge call. */
+export interface SummarizeBackend {
+  summarize: SummarizeFn
+  merge?: SummarizeMergeFn
+  /**
+   * The summarizer model's context window, when it is known. The chunk budget
+   * is clamped to it so a 100k chunk can never overflow a smaller summarizer.
+   */
+  contextWindowTokens?: number
+}
+
+/** What a caller is told just before a head goes to the summarizer (SHO-556). */
+export interface SummarizeStartInfo {
+  /** The head about to be folded away. */
+  head: Message[]
+  /** How many summarizer calls this head is about to make. */
+  chunks: number
+  /** The per-call token budget, after the window clamp. */
+  chunkBudgetTokens: number
+}
+
 /** Max tokens of message text handed to the summarizer in one call. */
-export const DEFAULT_SUMMARIZE_CHUNK_TOKENS = 24_000
+export const DEFAULT_SUMMARIZE_CHUNK_TOKENS = 100_000
+
+/** Chunk summaries in flight at once (the summarizer is the slow part of a turn). */
+export const DEFAULT_SUMMARIZE_CONCURRENCY = 3
+
+/** Reported output budget of the summarizer, reserved out of its window. */
+const SUMMARIZER_OUTPUT_TOKENS = 16_000
+
+/** Prompt overhead (instructions, contract, section headings) reserved per call. */
+const SUMMARIZER_PROMPT_OVERHEAD_TOKENS = 8_000
+
+/**
+ * Combine partial chunk summaries with no model call: in chunk order, each
+ * under its own heading so nothing is silently dropped. This is what a runtime
+ * with no merge installed gets (tests, evals), and the fallback when a merge
+ * call fails.
+ */
+export function joinPartialSummaries(partials: string[], previousSummary?: string): string {
+  const parts = partials.map((part, index) => `### Part ${index + 1}\n${part}`).join('\n\n')
+  return previousSummary ? `${previousSummary}\n\n${parts}` : parts
+}
 
 /** Days a message-less persisted session is kept before reclamation. */
 export const DEFAULT_EMPTY_SESSION_RETENTION_DAYS = 30
@@ -584,6 +635,8 @@ export class SessionManager {
   private config: SessionManagerConfig
   private pruneTimer: ReturnType<typeof setInterval> | null = null
   private summarizeFn: SummarizeFn | null = null
+  private summarizeMergeFn: SummarizeMergeFn | null = null
+  private summarizerContextWindowTokens: number | undefined
   private persistence: SessionPersistence | null = null
   /** Saves started but not finished, per session — drained on shutdown (SHO-274). */
   private pendingSaves: Map<string, Promise<void>> = new Map()
@@ -632,9 +685,19 @@ export class SessionManager {
     this.circuitBreakerTripped = false
   }
 
-  /** Set the summarization function (called during compaction) */
-  setSummarizeFn(fn: SummarizeFn): void {
-    this.summarizeFn = fn
+  /**
+   * Set the summarization backend (called during compaction). `backend` is
+   * either the plain `SummarizeFn` the evals install, or a `SummarizeBackend`
+   * carrying the merge call and the summarizer's window.
+   */
+  setSummarizeFn(fn: SummarizeFn | SummarizeBackend, opts?: { merge?: SummarizeMergeFn; contextWindowTokens?: number }): void {
+    const backend: SummarizeBackend = typeof fn === 'function'
+      ? { summarize: fn, merge: (fn as unknown as SummarizeBackend).merge }
+      : fn
+    this.summarizeFn = backend.summarize
+    this.summarizeMergeFn = opts?.merge ?? backend.merge ?? null
+    this.summarizerContextWindowTokens =
+      opts?.contextWindowTokens ?? backend.contextWindowTokens ?? undefined
   }
 
   /** Set the persistence backend for durable sessions */
@@ -972,18 +1035,23 @@ export class SessionManager {
   }
 
   /**
-   * Summarize a head of history in chunks and fold each chunk into a running
-   * summary (map-reduce). The old single-shot path sent `12k chars` of a head
-   * that could be 400k tokens — a "successful" summarize that dropped the
-   * decisions it exists to preserve.
-   *
-   * `previousSummary` continues an earlier fold (a second mid-turn
-   * compaction), so the new summary supersedes the old one instead of
-   * duplicating it.
+   * The token budget one summarizer call is allowed, clamped by the summarizer
+   * model's own window when it is known: a 100k chunk must never overflow a
+   * summarizer that only accepts 40k, and the window has to cover the chunk
+   * *plus* the output it writes and the instructions it is sent.
    */
-  async summarizeHead(head: Message[], previousSummary?: string): Promise<string> {
-    if (head.length === 0) return '(summary unavailable)'
-    const chunkBudget = this.config.summarizeChunkTokens ?? DEFAULT_SUMMARIZE_CHUNK_TOKENS
+  get summarizeChunkBudgetTokens(): number {
+    const configured = this.config.summarizeChunkTokens ?? DEFAULT_SUMMARIZE_CHUNK_TOKENS
+    const window = this.summarizerContextWindowTokens
+    if (!window || window <= 0) return configured
+    const fitsInWindow = window - SUMMARIZER_OUTPUT_TOKENS - SUMMARIZER_PROMPT_OVERHEAD_TOKENS
+    if (fitsInWindow <= 0) return configured
+    return Math.min(configured, fitsInWindow)
+  }
+
+  /** Split `head` at the chunk budget: one call's worth of messages per chunk. */
+  private chunkHead(head: Message[]): Message[][] {
+    const chunkBudget = this.summarizeChunkBudgetTokens
     const chunks: Message[][] = []
     let current: Message[] = []
     let currentTokens = 0
@@ -998,33 +1066,157 @@ export class SessionManager {
       currentTokens += tokens
     }
     if (current.length > 0) chunks.push(current)
+    return chunks
+  }
+
+  /**
+   * How many summarizer calls a head of this size is about to make, so the UI
+   * can say "· 4 parts" before the first one starts.
+   */
+  planSummarizeChunks(head: Message[]): { count: number; chunkBudgetTokens: number } {
+    return { count: this.chunkHead(head).length, chunkBudgetTokens: this.summarizeChunkBudgetTokens }
+  }
+
+  /**
+   * Summarize a head of history (map-reduce). The old single-shot path sent
+   * `12k chars` of a head that could be 400k tokens — a "successful" summarize
+   * that dropped the decisions it exists to preserve (SHO-96).
+   *
+   * One chunk (the common case, since the budget is 100k) is a single fold
+   * call carrying `previousSummary`. More than one chunk is a **parallel
+   * map** — up to `summarizeConcurrency` calls in flight, each with no shared
+   * state — followed by **one merge call**, so a 350k head costs two
+   * round-trips instead of the fourteen sequential folds it used to
+   * (SHO-556). Partial results are kept in chunk order whichever call finishes
+   * first, and a failed chunk keeps its extractive text in its own slot so no
+   * part of the head is silently dropped.
+   *
+   * `previousSummary` continues an earlier fold (a second mid-turn
+   * compaction), so the new summary supersedes the old one instead of
+   * duplicating it.
+   */
+  async summarizeHead(head: Message[], previousSummary?: string): Promise<string> {
+    if (head.length === 0) return '(summary unavailable)'
+    const chunks = this.chunkHead(head)
 
     if (!this.summarizeFn || this.circuitBreakerTripped) return this.fallbackSummarize(head)
 
     const maxFailures = this.config.maxSummarizeFailures ?? 3
-    let summary: string | undefined = previousSummary
-    for (const chunk of chunks) {
+
+    // One chunk: the whole head is one call, and `previousSummary` rides along
+    // so the model folds the excerpt into it instead of replacing it.
+    if (chunks.length === 1) {
       try {
-        summary = await this.summarizeFn(chunk, summary)
+        const summary = await this.summarizeFn(chunks[0]!, previousSummary)
         this.consecutiveSummarizeFailures = 0
+        return summary
       } catch (err: any) {
-        this.consecutiveSummarizeFailures++
-        console.error(
-          `[SessionManager] Summarization failed (${this.consecutiveSummarizeFailures}/${maxFailures}):`,
-          err.message,
-        )
-        if (this.consecutiveSummarizeFailures >= maxFailures) {
-          this.circuitBreakerTripped = true
-          console.warn(`[SessionManager] Circuit breaker tripped — falling back to extractive summary`)
-          return this.fallbackSummarize(head)
-        }
-        // A failed chunk must not silently drop its content: keep the
-        // extractive text for that chunk and keep folding.
-        const extract = this.fallbackSummarize(chunk)
-        summary = summary ? `${summary}\n\n${extract}` : extract
+        this.recordSummarizeFailure(err, maxFailures)
+        return this.withPreviousFold(this.fallbackSummarize(head), previousSummary)
       }
     }
-    return summary ?? this.fallbackSummarize(head)
+
+    const partials = await this.summarizeChunksInParallel(chunks, maxFailures)
+    // The breaker tripped while the map was running: the head is answered
+    // extractively, once, instead of being half summarized.
+    if (!partials) return this.withPreviousFold(this.fallbackSummarize(head), previousSummary)
+
+    return this.mergePartials(partials, previousSummary, maxFailures)
+  }
+
+  /**
+   * Run `this.summarizeFn` over every chunk with at most
+   * `summarizeConcurrency` in flight, writing each result into its own slot so
+   * the order is the chunk order, never the completion order.
+   *
+   * Returns `null` when the failure breaker tripped: the caller then answers
+   * with one extractive summary of the whole head, after the in-flight calls
+   * have settled (this method does not resolve until they do).
+   */
+  private async summarizeChunksInParallel(
+    chunks: Message[][],
+    maxFailures: number,
+  ): Promise<string[] | null> {
+    const concurrency = Math.max(1, this.config.summarizeConcurrency ?? DEFAULT_SUMMARIZE_CONCURRENCY)
+    const partials: string[] = new Array(chunks.length).fill('')
+    let next = 0
+    let tripped = false
+
+    const worker = async (): Promise<void> => {
+      while (!tripped) {
+        const index = next++
+        if (index >= chunks.length) return
+        const chunk = chunks[index]!
+        try {
+          partials[index] = await this.summarizeFn!(chunk)
+          this.consecutiveSummarizeFailures = 0
+        } catch (err: any) {
+          this.recordSummarizeFailure(err, maxFailures)
+          if (this.consecutiveSummarizeFailures >= maxFailures) tripped = true
+          // A failed chunk must not silently drop its content: its extractive
+          // text takes the chunk's own slot, and the map keeps going.
+          partials[index] = this.fallbackSummarize(chunk)
+        }
+      }
+    }
+
+    const workers: Promise<void>[] = []
+    for (let i = 0; i < Math.min(concurrency, chunks.length); i++) workers.push(worker())
+    await Promise.all(workers)
+
+    return tripped ? null : partials
+  }
+
+  /**
+   * One merge call combining the partial summaries (and `previousSummary`,
+   * when this compaction continues an earlier fold). With no merge installed —
+   * tests, evals — the parts are joined in order instead: no model call, and
+   * nothing is lost. A failed merge falls back to the same ordered join.
+   */
+  private async mergePartials(
+    partials: string[],
+    previousSummary: string | undefined,
+    maxFailures: number,
+  ): Promise<string> {
+    if (!this.summarizeMergeFn) return joinPartialSummaries(partials, previousSummary)
+    // A head whose chunks all fell back is already extractive: merging it
+    // would cost a call to restate what the extractive summary says.
+    if (partials.every((part) => part.startsWith('[Compacted '))) {
+      return joinPartialSummaries(partials, previousSummary)
+    }
+    try {
+      const merged = await this.summarizeMergeFn(partials, previousSummary)
+      if (merged.trim()) {
+        this.consecutiveSummarizeFailures = 0
+        return merged
+      }
+      throw new Error('empty merge result')
+    } catch (err: any) {
+      this.recordSummarizeFailure(err, maxFailures)
+      return joinPartialSummaries(partials, previousSummary)
+    }
+  }
+
+  /**
+   * Append an extractive summary under the running fold, so a summarizer
+   * failure never discards the decisions an earlier compaction already
+   * captured. With no earlier fold the extractive text stands alone.
+   */
+  private withPreviousFold(extract: string, previousSummary?: string): string {
+    return previousSummary ? `${previousSummary}\n\n${extract}` : extract
+  }
+
+  /** One failed call, logged and counted toward the circuit breaker. */
+  private recordSummarizeFailure(err: any, maxFailures: number): void {
+    this.consecutiveSummarizeFailures++
+    console.error(
+      `[SessionManager] Summarization failed (${this.consecutiveSummarizeFailures}/${maxFailures}):`,
+      err?.message ?? err,
+    )
+    if (this.consecutiveSummarizeFailures >= maxFailures) {
+      this.circuitBreakerTripped = true
+      console.warn(`[SessionManager] Circuit breaker tripped — falling back to extractive summary`)
+    }
   }
 
   /**
@@ -1041,8 +1233,15 @@ export class SessionManager {
    *
    * @param extraContext Optional extra context (e.g. file state summary) appended to the compacted summary.
    * @param aggressiveKeep Override keepRecentMessages (for reactive compaction after errors).
+   * @param onSummarizeStart Fires right before the summarizer runs, so the UI
+   *   can show "Summarizing…" for the length of the calls (SHO-556).
    */
-  async compact(id: string, extraContext?: string, aggressiveKeep?: number): Promise<CompactionResult | null> {
+  async compact(
+    id: string,
+    extraContext?: string,
+    aggressiveKeep?: number,
+    onSummarizeStart?: (info: SummarizeStartInfo) => void,
+  ): Promise<CompactionResult | null> {
     const session = this.sessions.get(id)
     if (!session) return null
 
@@ -1070,6 +1269,8 @@ export class SessionManager {
     const toCompact = session.messages.slice(0, splitIndex)
     if (toCompact.length === 0) return null
 
+    const plan = this.planSummarizeChunks(toCompact)
+    onSummarizeStart?.({ head: toCompact, chunks: plan.count, chunkBudgetTokens: plan.chunkBudgetTokens })
     const summary = await this.summarizeHead(toCompact)
     const result = this.applyCompaction(id, { summary, splitIndex, extraContext })
     if (!result) return null

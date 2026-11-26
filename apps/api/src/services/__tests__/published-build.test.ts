@@ -98,7 +98,13 @@ describe('ensurePublishedImage', () => {
     const res = await ensurePublishedImage(
       input,
       deps({
-        findReusableImage: async () => ({ imageRef: `repo@${digest}`, imageDigest: digest }),
+        // A recorded ref carries the commit tag (plus the variant suffix when the
+        // build was Postgres). Only a tag ref can be attributed to a variant, so
+        // only a tag ref is reused (SHO-551 B, QA round 1).
+        findReusableImage: async () => ({
+          imageRef: `repo:${input.commitSha.toLowerCase()}`,
+          imageDigest: digest,
+        }),
         createJob: async () => {
           created++
         },
@@ -524,5 +530,134 @@ describe('jobPodsVerdict', () => {
 
   it('fails fast when the pod itself failed (evicted)', () => {
     expect(jobPodsVerdict([pod('Failed', [])])).toBe('failed')
+  })
+})
+
+// SHO-551 B: a Postgres image has a different tag from a SQLite image of the
+// same commit, so they cannot be confused and neither can be accidentally reused
+// as the other.
+describe('ensurePublishedImage on a Postgres environment', () => {
+  const fakeConfig = () => ({
+    ok: true,
+    config: {
+      registry: 'iad.ocir.io',
+      namespace: 'shogo',
+      k8sNamespace: 'default',
+      registrySecret: 'ocir-push',
+      builderImage: 'moby/buildkit:v0.19.0-rootless',
+    },
+    missing: [],
+  })
+  const fakeArtifact = async () => ({ url: 'https://bucket/artifact.tar.gz' })
+  const fakeJob = async () => {}
+  const fakeRead = async () => ({ status: 'succeeded' as const, message: JSON.stringify({ imageRef: '', config: { digest: 'sha256:' + 'a'.repeat(64) } }) })
+  const fakeDelete = async () => {}
+  const fakeSleep = async () => {}
+
+  it('reuses a digest that was built for Postgres', async () => {
+    const pgRef = 'iad.ocir.io/shogo/shogo/published/proj1:abc123def0-pg'
+    const result = await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0', dbProvider: 'postgres' },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => ({ imageRef: pgRef, imageDigest: 'sha256:' + 'a'.repeat(64) }),
+        uploadArtifact: fakeArtifact, createJob: fakeJob, readJob: fakeRead, deleteJob: fakeDelete, sleep: fakeSleep, log: () => {},
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.reused).toBe(true)
+  })
+
+  it('does not reuse a SQLite image for a Postgres publish', async () => {
+    // A SQLite image has the plain commit sha tag (no -pg suffix).
+    const sqliteRef = 'iad.ocir.io/shogo/shogo/published/proj1:abc123def0'
+    const calls: string[] = []
+    const result = await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0', dbProvider: 'postgres' },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => ({ imageRef: sqliteRef, imageDigest: 'sha256:' + 'b'.repeat(64) }),
+        uploadArtifact: async () => { calls.push('upload'); return { url: 'https://bucket/artifact.tar.gz' } },
+        createJob: async () => { calls.push('create') },
+        readJob: fakeRead,
+        deleteJob: fakeDelete,
+        sleep: fakeSleep,
+        log: () => {},
+      },
+    )
+    // Should NOT have reused — the SQLite image was rejected and a new build
+    // was triggered instead.
+    expect(calls).toContain('upload')
+    expect(calls).toContain('create')
+  })
+
+  it('does not reuse a Postgres image for a SQLite publish', async () => {
+    const pgRef = 'iad.ocir.io/shogo/shogo/published/proj1:abc123def0-pg'
+    const calls: string[] = []
+    const result = await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0' /* no dbProvider = sqlite */ },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => ({ imageRef: pgRef, imageDigest: 'sha256:' + 'a'.repeat(64) }),
+        uploadArtifact: async () => { calls.push('upload'); return { url: 'https://bucket/artifact.tar.gz' } },
+        createJob: async () => { calls.push('create') },
+        readJob: fakeRead,
+        deleteJob: fakeDelete,
+        sleep: fakeSleep,
+        log: () => {},
+      },
+    )
+    expect(calls).toContain('upload')
+    expect(calls).toContain('create')
+  })
+
+  // QA round 1: a digest-pinned ref carries no variant at all, so it cannot be
+  // attributed to this publish shape. Reusing it was how a SQLite image could
+  // end up as a Postgres pod.
+  it('does not reuse a digest-pinned ref for a Postgres publish', async () => {
+    const calls: string[] = []
+    await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0', dbProvider: 'postgres' },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => ({
+          imageRef: `iad.ocir.io/shogo/shogo/published/proj1@sha256:${'c'.repeat(64)}`,
+          imageDigest: `sha256:${'c'.repeat(64)}`,
+        }),
+        uploadArtifact: async () => {
+          calls.push('upload')
+          return { url: 'https://bucket/artifact.tar.gz' }
+        },
+        createJob: async () => {
+          calls.push('create')
+        },
+        readJob: fakeRead,
+        deleteJob: fakeDelete,
+        sleep: fakeSleep,
+        log: () => {},
+      },
+    )
+    expect(calls).toContain('upload')
+    expect(calls).toContain('create')
+  })
+
+  it('tells the artifact upload which database the context is for', async () => {
+    const uploadCalls: Array<{ dbProvider?: string }> = []
+    await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0', dbProvider: 'postgres' },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => null,
+        uploadArtifact: async (inp) => { uploadCalls.push({ dbProvider: (inp as any).dbProvider }); return { url: 'https://bucket/artifact.tar.gz' } },
+        createJob: fakeJob,
+        readJob: fakeRead,
+        deleteJob: fakeDelete,
+        sleep: fakeSleep,
+        log: () => {},
+      },
+    )
+    // The input does carry dbProvider through to uploadArtifact (the runtime
+    // uses it to decide which db driver to bake into the image).
+    expect(uploadCalls[0]?.dbProvider).toBe('postgres')
   })
 })

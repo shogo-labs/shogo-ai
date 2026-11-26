@@ -414,6 +414,20 @@ export interface CutoverImage {
   reused: boolean
 }
 
+/**
+ * The image variant an environment must run, derived from its database.
+ *
+ * A cutover used to call `ensurePublishedImage` with no `dbProvider`, which
+ * resolves to the SQLite image. Rolling that into a Postgres environment gave
+ * the pod a `PrismaLibSql` client and the Postgres URL — writes landed in a
+ * per-pod LibSQL file and vanished for every other pod (SHO-551, QA round 5).
+ */
+export function publishedImageDbProvider(
+  dbProvider: string | null | undefined,
+): 'postgres' | 'sqlite' {
+  return dbProvider === 'postgres' ? 'postgres' : 'sqlite'
+}
+
 export type CutoverOk<T> = { ok: true; value: T }
 export type CutoverFailure = { ok: false; code: string; message: string; details?: Record<string, unknown> }
 
@@ -1071,7 +1085,7 @@ export function defaultCutoverDeps(): CutoverDeps {
 
     async ensureImage(site, env) {
       const { publishedBuildSetup, shouldBuildPublishedImage } = await import('../lib/published-build-config')
-      if (!shouldBuildPublishedImage('knative')) {
+      if (!shouldBuildPublishedImage('knative', site.projectId)) {
         return {
           ok: false,
           code: 'build_not_configured',
@@ -1093,6 +1107,10 @@ export function defaultCutoverDeps(): CutoverDeps {
         environmentId: env.id,
         subdomain: site.subdomain,
         commitSha,
+        // The variant follows the environment, not the caller (see
+        // `publishedImageDbProvider`): the cutover used to leave it off, which
+        // rolled a SQLite image into a Postgres environment.
+        dbProvider: publishedImageDbProvider(env.dbProvider),
       })
       if (!image.ok) return { ok: false, code: image.code, message: image.message }
       return {

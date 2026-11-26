@@ -80,9 +80,24 @@ describe("MorePanel", () => {
     features = { marketplace: false, workBoards: false }
     render(<MorePanel variant="screen" />)
     const rows = screen.getAllByRole("link")
-    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["Analytics", "Settings"])
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["Projects", "Analytics", "Settings"])
     fireEvent.click(screen.getByRole("link", { name: "Settings" }))
     expect(push).toHaveBeenCalledWith("/(app)/account")
+  })
+
+  test("the phone More screen opens the full Projects screen from its first row", () => {
+    render(<MorePanel variant="screen" />)
+    const rows = screen.getAllByRole("link")
+    expect(rows[0].getAttribute("aria-label")).toBe("Projects")
+    expect(rows[0].textContent).toContain("Every project in this workspace")
+    fireEvent.click(rows[0])
+    expect(push).toHaveBeenCalledWith("/(app)/projects")
+  })
+
+  test("the desktop sidebar More panel has no Projects row: the rail already has that tab", () => {
+    render(<MorePanel />)
+    expect(screen.queryByRole("link", { name: "Projects" })).toBeNull()
+    expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy()
   })
 
   test("the desktop sidebar More panel lists Settings too", () => {

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from './storage'
 import { DEFAULT_BOARD_SORT, type BoardSort } from './board-layout'
 
 const PREFIX = 'shogo:board-sort:'
@@ -46,7 +47,7 @@ export function loadBoardSort(boardId: string): Promise<BoardSort> {
 export async function setBoardSort(boardId: string, sort: BoardSort): Promise<void> {
   memory.set(boardId, sort)
   try {
-    await AsyncStorage.setItem(PREFIX + boardId, sort)
+    await setStorageItem(PREFIX + boardId, sort)
   } catch {
     // ignore persistence errors
   }

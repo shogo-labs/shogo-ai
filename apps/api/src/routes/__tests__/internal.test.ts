@@ -11,6 +11,9 @@ const store = {
   runtimeVerify: null as null | { ok: boolean; reason?: string; projectId?: string; format?: string },
   workspaceVerify: null as null | { ok: boolean; reason?: string; workspaceId?: string },
   resolvedWorkspaceId: null as null | string,
+  warmPoolCalls: [] as string[],
+  workspaceEnvCalls: [] as Array<{ workspaceId: string; members: string[]; opts: any }>,
+  workspaceEnvThrow: null as null | Error,
   previewVerify: null as null | { projectId: string; exp: number },
   warmPoolEnv: { foo: 'bar' } as any,
   warmPoolThrow: null as null | Error,
@@ -94,11 +97,32 @@ mock.module('../../lib/preview-token', () => ({
 
 mock.module('../../lib/warm-pool-controller', () => ({
   getWarmPoolController: () => ({
-    buildProjectEnv: async (_p: string) => {
+    buildProjectEnv: async (p: string) => {
+      store.warmPoolCalls.push(p)
       if (store.warmPoolThrow) throw store.warmPoolThrow
       return store.warmPoolEnv
     },
   }),
+}))
+
+// The env builder reaches billing/model-registry/prisma; what this route owes it
+// is the right target (which workspace, which members, which substrate) and the
+// returned `AI_PROXY_*` subset. Real minting + member derivation are covered by
+// lib/runtime/__tests__/workspace-runtime-members.test.ts.
+mock.module('../../lib/runtime/build-workspace-env', () => ({
+  buildWorkspaceEnv: async (workspaceId: string, members: string[], opts: any = {}) => {
+    store.workspaceEnvCalls.push({ workspaceId, members, opts })
+    if (store.workspaceEnvThrow) throw store.workspaceEnvThrow
+    const tokens = Object.fromEntries(members.map((m) => [m, `fresh-token-${m}`]))
+    return {
+      WORKSPACE_ID: workspaceId,
+      WORKSPACE_PROJECT_IDS: members.join(','),
+      WORKSPACE_AVAILABLE_PROJECTS: '[{"id":"p9"}]',
+      AI_PROXY_URL: 'http://api.test/api/ai/v1',
+      AI_PROXY_TOKENS: JSON.stringify(tokens),
+      AI_PROXY_TOKEN: members[0] ? tokens[members[0]] : 'fresh-token-workspace',
+    }
+  },
 }))
 
 mock.module('../../lib/prisma', () => ({
@@ -246,6 +270,9 @@ beforeEach(() => {
   store.workspaceMember = { id: 'member-1' }
   store.workspaceProjects = []
   store.projectFindManyCalledWith = null
+  store.warmPoolCalls = []
+  store.workspaceEnvCalls = []
+  store.workspaceEnvThrow = null
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -320,6 +347,111 @@ describe('GET /pod-config/:projectId', () => {
     store.runtimeVerify = { ok: false, reason: 'bad_hmac' }
     const res = await app.request('/pod-config/p6', { headers: { 'x-runtime-token': 'rt_v1_p6_bad' } })
     expect(res.status).toBe(401)
+  })
+})
+
+/**
+ * SHO-560. A merged-root workspace runtime calls itself `ws:<workspaceId>` (or
+ * `ws:proj:<anchor>`), never a project id. `buildProjectEnv` cannot answer for
+ * those keys, so every refresh tick 401'd with `workspace_token_mismatch` and
+ * the runtime's AI proxy token expired for good — turns then ended with 0
+ * tokens. These pin the key's auth matrix, not the env contents (that is
+ * lib/runtime/__tests__/workspace-runtime-members.test.ts).
+ */
+describe('GET /pod-config/ws:… (workspace runtime key)', () => {
+  const WS_TOKEN = { 'x-runtime-token': 'wrt_v1_W_token' }
+  /**
+   * A workspace runtime's `x-runtime-token` is a `wrt_v1_` token, so the project
+   * verifier has to miss for the workspace verifier to judge it — same order the
+   * real `authenticateRuntimeToken` uses.
+   */
+  const asWorkspaceToken = (workspaceId: string) => {
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId }
+  }
+
+  test('200 for a `ws:` key carrying that workspace’s own token', async () => {
+    asWorkspaceToken('W')
+    const res = await app.request('/pod-config/ws%3AW', { headers: WS_TOKEN })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { projectId: string; env: Record<string, string> }
+    expect(body.projectId).toBe('ws:W')
+    // Only AI proxy credentials: a refresh never rewrites live topology.
+    expect(Object.keys(body.env).sort()).toEqual(['AI_PROXY_TOKEN', 'AI_PROXY_TOKENS', 'AI_PROXY_URL'])
+    expect(body.env.AI_PROXY_TOKEN).toBe('fresh-token-workspace')
+    expect(store.workspaceEnvCalls).toHaveLength(1)
+    expect(store.workspaceEnvCalls[0]).toMatchObject({ workspaceId: 'W', members: [] })
+    expect(store.warmPoolCalls).toEqual([])
+  })
+
+  test('200 for an SA bearer on a `ws:` key, and never buildProjectEnv', async () => {
+    const res = await app.request('/pod-config/ws%3AW-sa', { headers: SA })
+    expect(res.status).toBe(200)
+    expect(store.workspaceEnvCalls[0]).toMatchObject({ workspaceId: 'W-sa', members: [] })
+    expect(store.warmPoolCalls).toEqual([])
+  })
+
+  test('401 when the token belongs to another workspace', async () => {
+    asWorkspaceToken('OTHER')
+    const res = await app.request('/pod-config/ws%3AW-other', { headers: WS_TOKEN })
+    expect(res.status).toBe(401)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('workspace_runtime_key_mismatch')
+    expect(body.error).toContain('tokenWorkspace=OTHER')
+    expect(store.workspaceEnvCalls).toEqual([])
+  })
+
+  test('401 when a project token is used on a `ws:` key', async () => {
+    store.runtimeVerify = { ok: true, projectId: 'p1', format: 'v1' }
+    const res = await app.request('/pod-config/ws%3AW-proj', { headers: { 'x-runtime-token': 'rt_v1_p1_x' } })
+    expect(res.status).toBe(401)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('tokenProject=p1')
+    expect(store.workspaceEnvCalls).toEqual([])
+  })
+
+  test('401 without credentials', async () => {
+    const res = await app.request('/pod-config/ws%3AW-anon')
+    expect(res.status).toBe(401)
+  })
+
+  test('200 for `ws:proj:<anchor>` resolved into the token’s workspace, with the anchor as the member', async () => {
+    asWorkspaceToken('W')
+    store.resolvedWorkspaceId = 'W'
+    const res = await app.request('/pod-config/ws%3Aproj%3Ap1', { headers: WS_TOKEN })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { env: Record<string, string> }
+    expect(JSON.parse(body.env.AI_PROXY_TOKENS)).toEqual({ p1: 'fresh-token-p1' })
+    expect(body.env.AI_PROXY_TOKEN).toBe('fresh-token-p1')
+  })
+
+  test('401 for `ws:proj:<anchor>` in another workspace', async () => {
+    asWorkspaceToken('W')
+    store.resolvedWorkspaceId = 'OTHER'
+    const res = await app.request('/pod-config/ws%3Aproj%3Ap2', { headers: WS_TOKEN })
+    expect(res.status).toBe(401)
+    expect(store.workspaceEnvCalls).toEqual([])
+  })
+
+  test('404 for `ws:proj:<anchor>` naming no project', async () => {
+    asWorkspaceToken('W')
+    store.resolvedWorkspaceId = null
+    const res = await app.request('/pod-config/ws%3Aproj%3Amissing', { headers: WS_TOKEN })
+    expect(res.status).toBe(404)
+  })
+
+  test('400 for a key that starts `ws:` but names nothing', async () => {
+    const bare = await app.request('/pod-config/ws%3A', { headers: SA })
+    expect(bare.status).toBe(400)
+    const anchorless = await app.request('/pod-config/ws%3Aproj%3A', { headers: SA })
+    expect(anchorless.status).toBe(400)
+  })
+
+  test('500 when the env builder throws', async () => {
+    asWorkspaceToken('W')
+    store.workspaceEnvThrow = new Error('vault down')
+    const res = await app.request('/pod-config/ws%3AW', { headers: WS_TOKEN })
+    expect(res.status).toBe(500)
   })
 })
 
@@ -1355,12 +1487,30 @@ describe('POST /projects/:projectId/publish', () => {
     expect(res.status).toBe(400)
   })
 
-  test('400 when subdomain missing', async () => {
+  test('forwards a missing subdomain untouched — the shared runner owns subdomain_required', async () => {
+    // The route used to pre-empt the runner with its own check and `?? ''`,
+    // which is why a re-publish of a live app could not omit the name (SHO-559).
+    // Refusal and fallback both belong to `preparePublish`.
+    store.publishResult = {
+      ok: false,
+      status: 400,
+      code: 'subdomain_required',
+      message: 'A subdomain is required for the first publish.',
+    }
     const res = await app.request('/projects/p1/publish', {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({}),
     })
     expect(res.status).toBe(400)
     expect((await res.json()).error.code).toBe('subdomain_required')
+    expect(store.publishCalledWith).toEqual({
+      projectId: 'p1',
+      opts: {
+        subdomain: undefined, accessLevel: undefined, password: undefined,
+        siteTitle: undefined, siteDescription: undefined,
+        environment: 'production',
+        allowDataLoss: false,
+      },
+    })
   })
 
   test('202 accepts and forwards options to startPublish', async () => {

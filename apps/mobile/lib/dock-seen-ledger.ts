@@ -17,6 +17,7 @@
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { setStorageItem } from './storage'
 import {
   markSeenRow,
   pruneSeenLedger,
@@ -66,7 +67,7 @@ function scheduleWrite(): void {
   writeTimer = setTimeout(() => {
     writeTimer = null
     const snapshot = JSON.stringify(ledger)
-    void Promise.resolve(AsyncStorage.setItem(STORAGE_KEY, snapshot)).catch(() => {})
+    void Promise.resolve(setStorageItem(STORAGE_KEY, snapshot)).catch(() => {})
   }, WRITE_DEBOUNCE_MS)
 }
 

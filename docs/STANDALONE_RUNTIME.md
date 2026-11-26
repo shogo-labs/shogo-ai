@@ -144,7 +144,7 @@ the table does not list, or the table lists one the code no longer reads.
 
 <!-- BEGIN GENERATED ENV TABLE -->
 
-The runtime reads 178 environment variables. This table is generated from the source by
+The runtime reads 183 environment variables. This table is generated from the source by
 `scripts/gen-runtime-env-doc.ts`; a test fails when the code and the table disagree.
 
 | Variable | Standalone | Default | Purpose |
@@ -187,11 +187,14 @@ The runtime reads 178 environment variables. This table is generated from the so
 | `COMPOSIO_MAX_RESULT_CHARS` | ignored | — | — |
 | `COMPOSIO_NOTFOUND_RETRY_DELAY_MS` | ignored | — | — |
 | `COMPOSIO_USER_SCOPE` | ignored | — | — |
-| `DATABASE_URL` | optional | `file:./prisma/dev.db` | — |
+| `DATABASE_URL` | optional | `` | — |
 | `DEBUG_SCREENCAST` | optional | — | — |
 | `ELEVENLABS_API_KEY` | optional | — | — |
+| `FFMPEG_PATH` | optional | — | Explicit path to `ffmpeg`, for an install that is not on `PATH`. It re-encodes a video read for a model that samples at a fixed rate. |
+| `FFPROBE_PATH` | optional | — | Explicit path to `ffprobe`. When neither it nor the MP4 box walk can read a clip, the read reports no frame count rather than guessing. |
 | `GITHUB_TOKEN` | optional | — | — |
 | `HOME` | optional | — | Home directory for tool config and caches. The image sets `/app`. |
+| `HOMEBREW_PREFIX` | optional | — | Homebrew root: `<prefix>/bin` is searched for `ffmpeg`/`ffprobe`. `/opt/homebrew/bin` is searched anyway. |
 | `HOST` | optional | — | Bind address. Defaults to Bun's default (all interfaces). |
 | `K8S_SA_TOKEN_OVERRIDE` | optional | — | — |
 | `KNATIVE_SERVICE_NAME` | ignored | — | — |
@@ -214,6 +217,7 @@ The runtime reads 178 environment variables. This table is generated from the so
 | `PATH` | optional | `` | — |
 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` | optional | `` | — |
 | `PLAYWRIGHT_MCP_EXTENSION_TOKEN` | optional | — | — |
+| `POOL_BOOTSTRAP_SECRET` | ignored | `` | — |
 | `PORT` | optional | `8080` | HTTP port. Defaults to `8080`. |
 | `POSTGRES_BACKUP_INTERVAL` | optional | `60000` | — |
 | `POSTGRES_DB` | optional | `project` | — |
@@ -285,6 +289,7 @@ The runtime reads 178 environment variables. This table is generated from the so
 | `SHOGO_POOL_SENTINEL` | ignored | — | — |
 | `SHOGO_POOL_SKIP_PRESEED` | ignored | — | — |
 | `SHOGO_POOL_STATE_DIR` | ignored | — | — |
+| `SHOGO_PREBUILT_IMAGE` | optional | — | — |
 | `SHOGO_PREFIX_LOG` | optional | — | — |
 | `SHOGO_PUBLIC_API_URL` | ignored | — | — |
 | `SHOGO_PUBLISHED_MODE` | optional | — | — |

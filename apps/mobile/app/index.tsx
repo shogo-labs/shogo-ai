@@ -9,17 +9,23 @@ import { API_URL } from '../lib/api'
 import { autoSignInLocally } from '../lib/auth-client'
 import { appRedirectHref } from '../lib/root-redirect'
 import { peekLearnReturn, resumeLearnReturn } from '../lib/learn-return'
+import { readCachedOnboardingCompleted, rememberOnboardingCompleted } from '../lib/auth-session-cache'
 import { Spinner } from '@/components/ui/spinner'
 
 export default function RootIndex() {
-  const { isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
+  const { user, isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
   const platformConfig = usePlatformConfig()
   // `/` is the front door for every full page load, and the query string is
   // part of the destination: `?chatSessionId=X` is how the workspace agent chat
   // makes a reload, a second tab or Back reopen the running chat (SHO-300).
   const rootParams = useLocalSearchParams()
-  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(null)
-  const [checkingOnboarding, setCheckingOnboarding] = useState(false)
+  // The `/api/me` answer this device last saw. With one, the app routes on the
+  // first frame; without, the screen waits for the fetch as it always did
+  // (SHO-580). The fetch below still runs and still wins.
+  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(
+    () => (user?.id ? readCachedOnboardingCompleted(user.id) : null),
+  )
+  const onboardingUserId = useRef<string | null>(user?.id ?? null)
   const [autoSigningIn, setAutoSigningIn] = useState(false)
   const autoSignInAttempted = useRef(false)
   // A sign-in that started on learn.shogo.ai goes back there (lib/learn-return).
@@ -47,21 +53,31 @@ export default function RootIndex() {
 
   useEffect(() => {
     if (!isAuthenticated || authLoading) return
-    setCheckingOnboarding(true)
     fetch(`${API_URL}/api/me`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: any) => {
         // Only a well-formed `false` sends the user to onboarding; anything
         // else (error body, missing field) fails open like a network error.
-        setOnboardingCompleted(data?.data?.onboardingCompleted !== false)
+        const completed = data?.data?.onboardingCompleted !== false
+        setOnboardingCompleted(completed)
+        if (user?.id) rememberOnboardingCompleted(user.id, completed)
       })
       .catch(() => setOnboardingCompleted(true))
-      .finally(() => setCheckingOnboarding(false))
-  }, [isAuthenticated, authLoading])
+  }, [isAuthenticated, authLoading, user?.id])
+
+  // An account switch (a cached user answered by a different one) must not keep
+  // the previous account's onboarding answer.
+  useEffect(() => {
+    if ((user?.id ?? null) === onboardingUserId.current) return
+    onboardingUserId.current = user?.id ?? null
+    setOnboardingCompleted(user?.id ? readCachedOnboardingCompleted(user.id) : null)
+  }, [user?.id])
 
   // Wait for platform config to load from the API
   const onboardingUnknown = isAuthenticated && onboardingCompleted === null
-  if (!platformConfig.configLoaded || authLoading || checkingOnboarding || autoSigningIn || onboardingUnknown) {
+  // With no cached answer `onboardingUnknown` holds the screen; with one this
+  // device is ready to route on its first frame (SHO-580).
+  if (!platformConfig.configLoaded || authLoading || autoSigningIn || onboardingUnknown) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
         <Spinner size="large" />

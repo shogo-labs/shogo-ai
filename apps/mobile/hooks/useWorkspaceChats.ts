@@ -466,6 +466,11 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     [chatSessions],
   )
 
+  // "Clear all notifications" from the menu-bar dropdown: every chat's
+  // unopened-reply dot goes at once, here and on every other surface that keeps
+  // its own copy (the project tabs and the island) — see chat-session-events.
+  useEffect(() => chatSessionEvents.subscribeClearCompletions(() => setCompletedIds(new Set())), [])
+
   const markSeen = useCallback((sessionId: string | null | undefined) => {
     openChatIdRef.current = sessionId ?? null
     if (!sessionId) return

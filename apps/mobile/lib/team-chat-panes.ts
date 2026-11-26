@@ -24,6 +24,12 @@ export interface PaneInputs {
   profilePaneId: string | null
   /** A file from chat is open in the viewer. */
   fileOpen?: boolean
+  /**
+   * The conversation area fits the timeline, the card and the file side by
+   * side (SHO-589). Without it a file and a card contend for the one pane, the
+   * file wins while it is open, and closing it shows the card again.
+   */
+  fitsCardAndFile?: boolean
 }
 
 export interface PaneVisibility {
@@ -50,6 +56,9 @@ export interface PaneVisibility {
  * A profile only ever takes the *pane*, never the whole screen — narrow layouts
  * push the full page instead — so a thread left in the URL underneath it is
  * simply hidden, and closing the profile reveals it again.
+ *
+ * A file opened from a card is the one pair that shows at once: the card keeps
+ * the pane and the file sits beside it when the width allows.
  */
 export function resolvePanes(input: PaneInputs): PaneVisibility {
   const {
@@ -61,6 +70,7 @@ export function resolvePanes(input: PaneInputs): PaneVisibility {
     cardId,
     profilePaneId,
     fileOpen = false,
+    fitsCardAndFile = false,
   } = input
   const showDocPane = sidePane && docOpen
   const showDocFull = !sidePane && docOpen
@@ -71,8 +81,17 @@ export function resolvePanes(input: PaneInputs): PaneVisibility {
   const showFilePane = !!fileOpen && sidePane && !showDocPane && !showFilesPane
   const showFileFull = !!fileOpen && !sidePane
   const showProfilePane = sidePane && !!profilePaneId
+  // A card and a file opened from it are the one case where the pane column
+  // holds two panes: the file sits beside the card, so the card's info stays
+  // on screen while you look at the image or video (SHO-589). The file leaves
+  // `card` in the URL, so even when it has to take the card's place the card
+  // comes back when the file closes.
   const showCardPane =
-    !!cardId && !showDocFull && !showFilesFull && !showFileFull && !showFilePane
+    !!cardId &&
+    !showDocFull &&
+    !showFilesFull &&
+    !showFileFull &&
+    (!showFilePane || fitsCardAndFile)
   const showProjectPane =
     sidePane &&
     !!projectPaneId &&

@@ -410,9 +410,12 @@ describe('a project that is still loading keeps its header on a phone', () => {
   const layout = read('app/(app)/projects/[id]/_layout.tsx')
 
   test('the loading page shows Back and the project name above the spinner', () => {
-    // The route mounts the same glass header every pushed screen uses; it
-    // renders nothing off a phone, so no platform gate is needed here.
-    expect(layout).toMatch(/<ProjectSurfaceHeader projectId=\{projectId\} \/>/)
+    // The route mounts the same glass header every pushed screen uses, through
+    // the loading surface that draws the rest of the frame around it
+    // (SHO-581); it renders nothing off a phone, so no platform gate is needed.
+    expect(layout).toMatch(/<ProjectLoadingSurface[\s\S]*?projectId=\{projectId\}/)
+    const surface = read('components/project/ProjectLoadingSurface.tsx')
+    expect(surface).toMatch(/<ProjectSurfaceHeader\s+projectId=\{projectId\}\s+title=\{title\}/)
     const header = read('components/project/ProjectSurfaceHeader.tsx')
     expect(header).toMatch(/<PhoneScreenHeader/)
     expect(header).toMatch(/backTestID="project-surface-back"/)

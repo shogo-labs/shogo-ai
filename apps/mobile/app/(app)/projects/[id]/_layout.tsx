@@ -42,6 +42,7 @@ import { useRouter, Stack } from "expo-router";
 import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { removeStorageItem, setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
@@ -70,6 +71,13 @@ import {
 import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
 import { onChatInsertRequested } from "../../../../lib/chat-insert-bus";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
+import {
+  cachedProjectKey,
+  firstPaintProject,
+  peekCachedProject,
+  readCachedProject,
+  writeCachedProject,
+} from "../../../../lib/projects-cache";
 import { lifecycleNotificationKind } from "../../../../lib/notifications/lifecycle-click";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
@@ -122,6 +130,7 @@ import {
   previewTabUserPickKey,
 } from "../../../../lib/preview-auto-open";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { ChatPanelResizeHandle } from "../../../../components/layout/ChatPanelResizeHandle";
 import { TaskThreadPaneHost } from "../../../../components/chat/task/TaskThreadPaneHost";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
@@ -151,7 +160,7 @@ import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
 import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
-import { ProjectSurfaceHeader } from "../../../../components/project/ProjectSurfaceHeader";
+import { ProjectLoadingSurface } from "../../../../components/project/ProjectLoadingSurface";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
 import { useOpenAgentChat } from "../../../../lib/use-open-agent-chat";
@@ -512,6 +521,24 @@ export default observer(function ProjectLayout() {
   // Project state
   const [project, setProject] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  /**
+   * The row this device already holds for the project (SHO-581): the one the
+   * list just filled the collection with, or the copy kept from the last time
+   * the project was opened. It paints the header and the surface while
+   * `GET /api/projects/:id` is in flight, and never replaces the network
+   * answer — `firstPaintProject` prefers the loaded row.
+   */
+  const projectRowCacheKey = cachedProjectKey(user?.id, API_URL, projectId);
+  const [cachedProjectRow, setCachedProjectRow] = useState<any>(() =>
+    peekCachedProject<any>(projectRowCacheKey)
+  );
+  /**
+   * A load that ran out of retries. The screen keeps drawing its surface and
+   * offers a retry here instead of bouncing home (SHO-581).
+   */
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  /** Bumped by the retry button, which re-runs the load effect. */
+  const [loadRetryNonce, setLoadRetryNonce] = useState(0);
 
   // "Message agent": the project is an agent in the workspace's team chat, so
   // from here you can jump to a DM with it (the same thread as the DMs tab).
@@ -1424,6 +1451,9 @@ export default observer(function ProjectLayout() {
   );
 
   const splitRowRef = useRef<View>(null);
+  // Measured width of that row — the task-thread pane sizes itself against it,
+  // so its remembered width survives a window change (SHO-569).
+  const [splitRowWidth, setSplitRowWidth] = useState(0);
 
   // Connection state for the canvas. The canvas iframe owns its own data
   // (SSE / HMR / API calls happen inside the workspace SPA); the parent
@@ -1486,6 +1516,7 @@ export default observer(function ProjectLayout() {
     const loadProject = async (attempt = 1): Promise<void> => {
       if (cancelled) return;
       setIsLoading(true);
+      setProjectLoadError(null);
       csMark("project:load:start", { attempt });
 
       try {
@@ -1522,15 +1553,18 @@ export default observer(function ProjectLayout() {
         if (proj) {
           setProject(proj);
           setIsLoading(false);
+          writeCachedProject(projectRowCacheKey, proj);
         } else if (attempt < MAX_RETRIES) {
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
           return loadProject(attempt + 1);
         } else {
+          // The row never answered. Keep the surface and offer a retry here
+          // rather than dropping the person back on the list (SHO-581).
           console.warn(
-            "[ProjectLayout] Project not found after retries, redirecting home:",
+            "[ProjectLayout] Project not found after retries:",
             projectId
           );
-          router.replace("/(app)");
+          setProjectLoadError("The project didn't load. Check your connection and try again.");
         }
       } catch (err: any) {
         if (cancelled) return;
@@ -1550,7 +1584,11 @@ export default observer(function ProjectLayout() {
           return loadProject(attempt + 1);
         }
         console.error("[ProjectLayout] Failed to load project:", err);
-        router.replace("/(app)");
+        setProjectLoadError(
+          err?.message?.includes("Network request failed")
+            ? "We couldn't reach the server. Check your connection and try again."
+            : "We couldn't load this project. Try again in a moment."
+        );
       }
     };
 
@@ -1558,12 +1596,35 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, domainsReady, store, user?.id]);
+  }, [projectId, domainsReady, store, user?.id, loadRetryNonce, projectRowCacheKey]);
+
+  // Paint from the row already on the device while the network answers
+  // (SHO-581). `peek` is the same-session mirror; `read` is what an earlier run
+  // of the app left behind (a relaunch offline). The network answer is written
+  // back by the load effect above.
+  useEffect(() => {
+    setCachedProjectRow(peekCachedProject<any>(projectRowCacheKey));
+    if (!projectRowCacheKey) return;
+    let cancelled = false;
+    void readCachedProject<any>(projectRowCacheKey).then((row) => {
+      if (!cancelled && row) setCachedProjectRow(row);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRowCacheKey]);
+
+  /** Retry re-runs the load effect; the surface keeps drawing while it does. */
+  const retryProjectLoad = useCallback(() => {
+    setProjectLoadError(null);
+    setIsLoading(true);
+    setLoadRetryNonce((nonce) => nonce + 1);
+  }, []);
 
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `shogo:lastChatSession:${projectId}`,
         chatSessionId
       ).catch((e) =>
@@ -1951,7 +2012,7 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!projectId) return;
     if (showChatSessionsHydratedRef.current !== projectId) return;
-    AsyncStorage.setItem(
+    setStorageItem(
       `shogo:showChatHistory:${projectId}`,
       showChatSessions ? "1" : "0"
     ).catch(() => {});
@@ -1981,9 +2042,16 @@ export default observer(function ProjectLayout() {
 
   const persistChatPanelWidth = useCallback((w: number) => {
     setChatPanelWidth(w);
-    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
+    setStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
       () => {}
     );
+  }, []);
+
+  // Double-clicking the splitter drops the saved width, so the panel goes back
+  // to the default now and on every later load.
+  const resetChatPanelWidth = useCallback(() => {
+    setChatPanelWidth(DEFAULT_CHAT_PANEL_WIDTH);
+    removeStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY).catch(() => {});
   }, []);
 
   const PERSISTABLE_PREVIEW_TABS = useMemo(
@@ -2076,7 +2144,7 @@ export default observer(function ProjectLayout() {
     // A landing-tab deep link is an explicit choice of surface; it also means
     // the folder-project Preview auto-open must never override it.
     previewTabUserPickedRef.current.add(projectId);
-    AsyncStorage.setItem(previewTabUserPickKey(projectId), requested).catch(
+    setStorageItem(previewTabUserPickKey(projectId), requested).catch(
       () => {}
     );
     const nativePhoneChat = nativePhone;
@@ -2196,7 +2264,7 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`,
         previewTab
       ).catch(() => {});
@@ -2259,6 +2327,10 @@ export default observer(function ProjectLayout() {
     },
     []
   );
+  // "Clear all notifications" from the menu-bar dropdown drops every project
+  // tab's dot with one event, the same one the sidebar and the island listen to.
+  useEffect(() => chatSessionEvents.subscribeClearCompletions(() => setCompletedTabIds(new Set())), [])
+
   // Clear the "new activity" dot once the user opens that tab.
   useEffect(() => {
     if (!chatSessionId) return;
@@ -2390,7 +2462,7 @@ export default observer(function ProjectLayout() {
       // for this project — this session and every later one (SHO-200).
       if (projectId) {
         previewTabUserPickedRef.current.add(projectId);
-        AsyncStorage.setItem(previewTabUserPickKey(projectId), tabId).catch(
+        setStorageItem(previewTabUserPickKey(projectId), tabId).catch(
           () => {}
         );
       }
@@ -3632,6 +3704,17 @@ export default observer(function ProjectLayout() {
     !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady;
   const showStalledRecovery =
     stillBootingRuntime && (runtimeStalled || !!runtimeError);
+  /**
+   * The row the loading surface draws from (SHO-581): the network answer once it
+   * is in, otherwise the collection the projects list just filled, otherwise
+   * the copy kept on the device from the last time this project was opened.
+   */
+  const firstPaintRow = firstPaintProject<any>(
+    cachedProjectRow ??
+      projects?.all?.find((candidate: any) => candidate.id === projectId) ??
+      null,
+    project
+  );
 
   /**
    * No tabs are open and we've finished hydrating from storage. This is the
@@ -3960,86 +4043,84 @@ export default observer(function ProjectLayout() {
   };
 
   if (projectRouteLoading) {
+    // Recovery still owns the body when it has something to say; the surface
+    // draws everything else around it.
+    const runtimeRecovery = !showStalledRecovery ? null : runtimeCapacity ? (
+      <WorkspaceCapacityCard
+        capacity={runtimeCapacity}
+        onRetry={() => retryAgentUrl()}
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace("/(app)")
+        }
+      />
+    ) : (
+      <View className="w-full gap-3 items-center px-2 py-6">
+        <Spinner size="small" />
+        <Text className="text-foreground text-base font-semibold text-center">
+          This is taking longer than expected
+        </Text>
+        <Text className="text-muted-foreground text-sm text-center">
+          {runtimeError
+            ? `We couldn't reach your project's runtime${
+                runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
+              }. Check your connection or try again.`
+            : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
+        </Text>
+        <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
+          <Pressable
+            onPress={() => retryAgentUrl()}
+            className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            accessibilityLabel="Retry connecting to your project"
+          >
+            <Text className="text-foreground text-sm font-medium">
+              Try again
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              router.canGoBack() ? router.back() : router.replace("/(app)")
+            }
+            className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            accessibilityLabel="Go back to projects list"
+          >
+            <Text className="text-foreground text-sm font-medium">Go back</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              void openWebAppSession(`/projects/${projectId}`).catch((err) =>
+                console.warn("[ProjectLayout] open-on-web failed:", err)
+              );
+            }}
+            className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+            accessibilityLabel="Open this project on the web"
+          >
+            <Text className="text-primary-foreground text-sm font-medium">
+              Open on web
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
-        {/* A phone enters the project on this page, so keep the way back and
-            the name on screen while it loads instead of a bare spinner. */}
-        <ProjectSurfaceHeader projectId={projectId} />
-        <View className="flex-1 bg-background items-center justify-center px-6">
-          {!showStalledRecovery && (
-            <>
-              <Spinner size="large" />
-              <Text className="text-muted-foreground mt-3 text-sm">
-                {stillBootingRuntime
-                  ? "Starting your project…"
-                  : "Loading project..."}
-              </Text>
-            </>
-          )}
-          {showStalledRecovery && runtimeCapacity && (
-            <WorkspaceCapacityCard
-              capacity={runtimeCapacity}
-              onRetry={() => retryAgentUrl()}
-              onBack={() =>
-                router.canGoBack() ? router.back() : router.replace("/(app)")
-              }
-            />
-          )}
-          {showStalledRecovery && !runtimeCapacity && (
-            <View className="w-full max-w-sm gap-3 items-center">
-              <Spinner size="small" />
-              <Text className="text-foreground text-base font-semibold text-center">
-                This is taking longer than expected
-              </Text>
-              <Text className="text-muted-foreground text-sm text-center">
-                {runtimeError
-                  ? `We couldn't reach your project's runtime${
-                      runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
-                    }. Check your connection or try again.`
-                  : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
-              </Text>
-              <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
-                <Pressable
-                  onPress={() => retryAgentUrl()}
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Retry connecting to your project"
-                >
-                  <Text className="text-foreground text-sm font-medium">
-                    Try again
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    router.canGoBack()
-                      ? router.back()
-                      : router.replace("/(app)")
-                  }
-                  className="px-4 py-2 rounded-md border border-border active:bg-muted"
-                  accessibilityLabel="Go back to projects list"
-                >
-                  <Text className="text-foreground text-sm font-medium">
-                    Go back
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    void openWebAppSession(`/projects/${projectId}`).catch(
-                      (err) =>
-                        console.warn("[ProjectLayout] open-on-web failed:", err)
-                    );
-                  }}
-                  className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
-                  accessibilityLabel="Open this project on the web"
-                >
-                  <Text className="text-primary-foreground text-sm font-medium">
-                    Open on web
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
+        {/* A phone enters the project on this page, so the way back, the name,
+            the tab strip and the chat panel are all drawn while the row and the
+            runtime are still in flight — only the status line changes
+            (SHO-581). */}
+        <ProjectLoadingSurface
+          projectId={projectId}
+          title={firstPaintRow?.name}
+          phase={stillBootingRuntime ? "runtime" : "project"}
+          loadError={projectLoadError}
+          onRetryLoad={retryProjectLoad}
+          onBack={() =>
+            router.canGoBack() ? router.back() : router.replace("/(app)")
+          }
+        >
+          {runtimeRecovery}
+        </ProjectLoadingSurface>
       </>
     );
   }
@@ -4314,6 +4395,13 @@ export default observer(function ProjectLayout() {
                     return current === rounded ? current : rounded;
                   });
                 }
+                const nextWidth = event.nativeEvent?.layout?.width;
+                if (typeof nextWidth === "number" && nextWidth > 0) {
+                  setSplitRowWidth((current) => {
+                    const rounded = Math.round(nextWidth);
+                    return current === rounded ? current : rounded;
+                  });
+                }
               }}
             >
               {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
@@ -4535,7 +4623,7 @@ export default observer(function ProjectLayout() {
                             maxWidth={maxChatPanelWidth}
                             onResize={setChatPanelWidth}
                             onResizeEnd={persistChatPanelWidth}
-                            defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                            onReset={resetChatPanelWidth}
                             leftOffset={showChatSessions ? 280 : 0}
                             rightOffset={12}
                           />
@@ -4547,7 +4635,7 @@ export default observer(function ProjectLayout() {
 
               {/* The thread a pressed background task runs in: a pane beside the
                   canvas (wide) or a sheet (phone). The chat column stays put. */}
-              <TaskThreadPaneHost />
+              <TaskThreadPaneHost containerWidth={splitRowWidth || undefined} />
 
               {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
               <View
@@ -5225,145 +5313,6 @@ function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
           </Pressable>
         </View>
       )}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ChatPanelResizeHandle — web-only drag handle between chat column and canvas
-// ---------------------------------------------------------------------------
-
-function ChatPanelResizeHandle({
-  splitRowRef,
-  chatPanelWidth,
-  minWidth,
-  maxWidth,
-  onResize,
-  onResizeEnd,
-  defaultWidth,
-  leftOffset = 0,
-  rightOffset = 0,
-  hitWidth = 20,
-}: {
-  splitRowRef: React.RefObject<View | null>;
-  chatPanelWidth: number;
-  minWidth: number;
-  maxWidth: number;
-  onResize: (w: number) => void;
-  onResizeEnd: (w: number) => void;
-  defaultWidth: number;
-  /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
-  leftOffset?: number;
-  /** Pixels from the chat panel's right edge where the *visible* bar is drawn.
-   *  The grabbable hit zone always extends all the way to the right edge so
-   *  the (thin) scrollbar area is also a valid drag target. */
-  rightOffset?: number;
-  /** Total width of the (transparent) grab zone, measured from the chat
-   *  panel's right edge. Should be larger than `rightOffset` so the bar
-   *  itself is comfortably inside the hit area. */
-  hitWidth?: number;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const latestWidthRef = useRef(chatPanelWidth);
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      setDragging(true);
-
-      const container = splitRowRef.current as unknown as HTMLElement | null;
-      if (!container) return;
-      const containerRect = container.getBoundingClientRect();
-
-      // Distance from the cursor at pointerdown to the chat panel's right
-      // edge. We hold this constant during the drag so that grabbing the
-      // handle off-center doesn't snap the panel to the cursor position
-      // (the handle is now inset from the right edge by `rightOffset`, so
-      // the cursor is meaningfully to the left of the actual edge).
-      const currentRightEdgeX =
-        containerRect.left + leftOffset + chatPanelWidth;
-      const grabDx = currentRightEdgeX - e.clientX;
-
-      // Transparent fixed overlay over the whole viewport. Without this,
-      // any iframe under the cursor (canvas / preview) swallows the
-      // pointermove events and the resize freezes the moment the cursor
-      // crosses into the iframe. The overlay's high z-index keeps it on
-      // top of every iframe; pointer-events stays default ("auto") so
-      // pointermove fires on `document` as expected.
-      const overlay = document.createElement("div");
-      overlay.style.cssText =
-        "position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;";
-      document.body.appendChild(overlay);
-
-      const onPointerMove = (ev: PointerEvent) => {
-        const newWidth = Math.max(
-          minWidth,
-          Math.min(
-            maxWidth,
-            ev.clientX + grabDx - containerRect.left - leftOffset
-          )
-        );
-        latestWidthRef.current = newWidth;
-        onResize(newWidth);
-      };
-
-      const onPointerUp = () => {
-        document.removeEventListener("pointermove", onPointerMove);
-        document.removeEventListener("pointerup", onPointerUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        overlay.remove();
-        setDragging(false);
-        onResizeEnd(latestWidthRef.current);
-      };
-
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("pointermove", onPointerMove);
-      document.addEventListener("pointerup", onPointerUp);
-    },
-    [
-      splitRowRef,
-      minWidth,
-      maxWidth,
-      onResize,
-      onResizeEnd,
-      leftOffset,
-      chatPanelWidth,
-    ]
-  );
-
-  const handleDoubleClick = useCallback(() => {
-    onResizeEnd(defaultWidth);
-  }, [defaultWidth, onResizeEnd]);
-
-  const active = dragging || hovered;
-
-  return (
-    <View
-      // @ts-expect-error web-only event handlers
-      onPointerDown={handlePointerDown}
-      onDoubleClick={handleDoubleClick}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      style={{
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        right: 0,
-        width: hitWidth,
-        cursor: "col-resize" as any,
-        zIndex: 21,
-      }}
-    >
-      <View
-        className={cn(
-          "absolute top-0 bottom-0 transition-all duration-150",
-          active ? "bg-primary/40" : "bg-transparent"
-        )}
-        style={{ right: rightOffset, width: active ? 3 : 1 }}
-      />
     </View>
   );
 }

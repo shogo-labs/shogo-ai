@@ -75,7 +75,7 @@ import {
 } from '@/components/ui/popover'
 import { useAuth } from '../../../contexts/auth'
 import { ProjectCard } from '../../../components/home/ProjectCard'
-import { api } from '../../../lib/api'
+import { api, API_URL } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
 import {
@@ -85,6 +85,14 @@ import { useWorkspaceDataScope } from '../../../hooks/useWorkspaceInView'
 import { usePermissions, projectPermissionsFor } from '../../../hooks/usePermissions'
 import type { Permission } from '@shogo/authz'
 import { useDomainHttp } from '../../../contexts/domain'
+import {
+  peekCachedProjects,
+  projectsCacheKey,
+  readCachedProjects,
+  writeCachedProjects,
+  type CachedProjectLists,
+} from '../../../lib/projects-cache'
+import { rowsInWorkspace } from '../../../lib/project-load'
 
 // Types
 type SortBy = 'lastEdited' | 'dateCreated' | 'alphabetical'
@@ -93,6 +101,7 @@ type ViewMode = 'grid' | 'list'
 interface Project {
   id: string
   name: string
+  workspaceId?: string
   description?: string
   createdAt: number
   updatedAt?: number
@@ -105,6 +114,7 @@ interface Project {
 interface Folder {
   id: string
   name: string
+  workspaceId?: string
   parentId?: string | null
   createdAt: number
   updatedAt?: number
@@ -396,9 +406,54 @@ export default observer(function AllProjectsPage() {
   }, [projectScopeId, user?.id, store, listsEveryWorkspace])
 
   const rawProjects = store?.projectCollection?.all
-  const allProjects = (Array.isArray(rawProjects) ? rawProjects : []) as Project[]
+  const networkProjects = (Array.isArray(rawProjects) ? rawProjects : []) as Project[]
   const rawFolders = store?.folderCollection?.all
-  const allFolders = (Array.isArray(rawFolders) ? rawFolders : []) as Folder[]
+  const networkFolders = (Array.isArray(rawFolders) ? rawFolders : []) as Folder[]
+
+  // Only this workspace's rows count as "the network answered" for the key
+  // below (SHO-581, the switch half of SHO-580's §C).
+  const scopedNetworkProjects = useMemo(
+    () => rowsInWorkspace(networkProjects, projectScopeId, listsEveryWorkspace),
+    [networkProjects, projectScopeId, listsEveryWorkspace],
+  )
+  const scopedNetworkFolders = useMemo(
+    () => rowsInWorkspace(networkFolders, projectScopeId, listsEveryWorkspace),
+    [networkFolders, projectScopeId, listsEveryWorkspace],
+  )
+
+  // Paint the workspace's projects from the device first (SHO-580). The list
+  // used to be empty until `GET /api/projects` answered, so a slow network read
+  // as a blank screen; the cached rows are replaced the moment the network
+  // answers, and only a network answer is written back.
+  const cacheKey = projectsCacheKey(
+    user?.id,
+    API_URL,
+    listsEveryWorkspace ? null : projectScopeId,
+  )
+  const [cachedLists, setCachedLists] = useState<CachedProjectLists<Project, Folder> | null>(
+    () => peekCachedProjects<Project, Folder>(cacheKey),
+  )
+  useEffect(() => {
+    setCachedLists(peekCachedProjects<Project, Folder>(cacheKey))
+    if (!cacheKey) return
+    let cancelled = false
+    void readCachedProjects<Project, Folder>(cacheKey).then((lists) => {
+      if (!cancelled && lists) setCachedLists(lists)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey])
+
+  const projectSignature = useMemo(() => scopedNetworkProjects.map((p) => p.id).join(','), [scopedNetworkProjects])
+  const folderSignature = useMemo(() => scopedNetworkFolders.map((f) => f.id).join(','), [scopedNetworkFolders])
+  useEffect(() => {
+    if (!cacheKey || !scopedNetworkProjects.length) return
+    writeCachedProjects(cacheKey, { projects: scopedNetworkProjects, folders: scopedNetworkFolders })
+  }, [cacheKey, projectSignature, folderSignature])
+
+  const allProjects = scopedNetworkProjects.length ? scopedNetworkProjects : (cachedLists?.projects ?? [])
+  const allFolders = scopedNetworkFolders.length ? scopedNetworkFolders : (cachedLists?.folders ?? [])
 
   // Folders in current location
   const currentFolders = useMemo(() => {
@@ -418,14 +473,12 @@ export default observer(function AllProjectsPage() {
     : null
 
   // Filtered & sorted projects
+  // `allProjects` is already this workspace's rows (`scopedNetworkProjects` or
+  // the cache written for this workspace), so no second workspace filter here.
   const filteredProjects = useMemo(() => {
     let result = [...allProjects].filter((p) =>
       currentFolderId ? p.folderId === currentFolderId : !p.folderId,
     )
-
-    if (projectScopeId && !listsEveryWorkspace) {
-      result = result.filter((p: any) => p.workspaceId === projectScopeId)
-    }
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
@@ -457,7 +510,7 @@ export default observer(function AllProjectsPage() {
     })
 
     return result
-  }, [allProjects, currentFolderId, projectScopeId, listsEveryWorkspace, searchQuery, sortBy, visibilityFilter, statusFilter])
+  }, [allProjects, currentFolderId, searchQuery, sortBy, visibilityFilter, statusFilter])
 
   // Handlers
   const handleProjectPress = useCallback(

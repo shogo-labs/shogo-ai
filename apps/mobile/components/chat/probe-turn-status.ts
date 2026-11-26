@@ -57,17 +57,40 @@ export interface ChatTurnSnapshot {
    * and is worth retrying (Sentry REACT-5Z gave up on 4 blind probes).
    */
   answered: boolean
+  /**
+   * The API refused the credential (401/403) and re-establishing the session
+   * did not help (SHO-564). The turn state is unknown because we are not
+   * signed in — not because the runtime has no buffer — so the caller shows
+   * the signed-out state instead of treating the chat as idle.
+   */
+  refused?: boolean
 }
+
+/** Static headers, or a getter so a retry after reauth sends the fresh cookie. */
+export type ProbeTurnHeaders =
+  | Record<string, string>
+  | (() => Record<string, string> | undefined)
 
 export interface ProbeTurnStatusOptions {
   /** Resolved chat-turn URL — typically built via `buildChatTurnUrl`. */
   url: string
   /** Optional fetch override (e.g. `expo/fetch` for native streaming). */
   fetch?: typeof globalThis.fetch
-  /** Per-call headers (e.g. native auth cookies). */
-  headers?: Record<string, string>
+  /**
+   * Per-call headers (e.g. native auth cookies). Pass a getter when the
+   * caller can re-establish its session: the probe calls it again for the
+   * retry, so the retried request carries the refreshed credential.
+   */
+  headers?: ProbeTurnHeaders
   /** Fetch credentials mode (`'include'` for cross-origin cookie auth). */
   credentials?: RequestCredentials
+  /**
+   * Called once when the API refuses the probe's credential (401/403).
+   * Resolve `true` when the session was re-established — the probe then
+   * retries immediately with freshly built headers. Resolve `false` and the
+   * snapshot comes back `refused`, which the caller can show as signed out.
+   */
+  onRefused?: () => Promise<boolean>
   /**
    * Abort signal to cancel the probe (e.g. on tab close or session switch).
    * The probe is cheap (~50 bytes JSON) but should not outlive its caller.
@@ -132,11 +155,28 @@ export async function probeChatTurn(
   opts: ProbeTurnStatusOptions,
 ): Promise<ChatTurnSnapshot> {
   const delays = opts.retryDelaysMs ?? []
-  for (let attempt = 0; ; attempt++) {
+  let attempt = 0
+  let reestablished = false
+  for (;;) {
     const result = await probeOnce(opts)
+    // A refusal is about the credential, not the turn: re-establish the
+    // session once and retry with the refreshed cookie (SHO-564). Reporting it
+    // as `unknown` is what made the rejoin silently give up — the chat looked
+    // idle while the reply was still streaming.
+    if (result === "refused") {
+      if (!reestablished && opts.onRefused) {
+        reestablished = true
+        if (await opts.onRefused()) {
+          if (opts.signal?.aborted) return UNKNOWN_TURN
+          continue
+        }
+      }
+      return REFUSED_TURN
+    }
     if (result !== "error") return result
     if (attempt >= delays.length || opts.signal?.aborted) return UNKNOWN_TURN
     await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
+    attempt += 1
     if (opts.signal?.aborted) return UNKNOWN_TURN
   }
 }
@@ -180,21 +220,37 @@ export async function probeChatTurnBounded(
 const UNKNOWN_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null, answered: false }
 /** The runtime answered, and it has no turn for this session. */
 const NO_LIVE_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null, answered: true }
+/** The API refused the credential and re-establishing the session did not help. */
+const REFUSED_TURN: ChatTurnSnapshot = {
+  status: "unknown",
+  turnId: null,
+  answered: false,
+  refused: true,
+}
+
+/** Headers for this attempt — a getter is re-read so a reauth retry is fresh. */
+function headersForAttempt(headers: ProbeTurnHeaders | undefined): Record<string, string> {
+  if (!headers) return {}
+  const resolved = typeof headers === "function" ? headers() : headers
+  return resolved ?? {}
+}
 
 async function probeOnce(
   opts: ProbeTurnStatusOptions,
-): Promise<ChatTurnSnapshot | "error"> {
+): Promise<ChatTurnSnapshot | "error" | "refused"> {
   const fetchFn = opts.fetch ?? globalThis.fetch
   try {
     const res = await fetchFn(opts.url, {
       method: "GET",
-      headers: opts.headers ?? {},
+      headers: headersForAttempt(opts.headers),
       credentials: opts.credentials,
       signal: opts.signal,
     } as any)
 
     // 404 ⇒ runtime has no buffer for this session — treat as unknown.
     if (res.status === 404 || res.status === 204) return NO_LIVE_TURN
+    // 401/403 ⇒ the credential was refused. Not an answer about the turn.
+    if (res.status === 401 || res.status === 403) return "refused"
     if (!res.ok) return "error"
 
     const body = (await res.json().catch(() => null)) as

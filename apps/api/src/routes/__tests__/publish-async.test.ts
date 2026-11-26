@@ -14,6 +14,7 @@
 // Fetch (the project pod) and S3 are faked; the state machine is real.
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { publishInFlightTtlMs } from '@shogo/shared-runtime/publish-status'
 
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
 process.env.PUBLISH_BUCKET = 'test-publish-bucket'
@@ -94,7 +95,10 @@ const prismaApi = {
       if (!row) return { count: 0 }
       const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
       const at = row.publishStatusAt instanceof Date ? row.publishStatusAt.getTime() : 0
-      const stale = !at || Date.now() - at > 30 * 60_000
+      // Derived, like the route's `stalePublishBefore()`: a literal 30-minute
+      // lease here silently inverts the guard whenever the real lease is
+      // shorter, and the write-back then never happens.
+      const stale = !at || Date.now() - at > publishInFlightTtlMs()
       if (inFlight && !stale) return { count: 0 }
       if (typeof data?.publishStatus === 'string') {
         statusWrites.push({ status: data.publishStatus, error: data.publishError ?? null })
@@ -176,7 +180,9 @@ mock.module('../../lib/substrate/router', () => ({
   }),
 }))
 mock.module('../../lib/publish-substrate-config', () => ({
-  shouldProvisionPublishedDatabase: () => false,
+  // The publish route asks for the whole decision (§G1): an environment already
+  // on Postgres stays there. These tests keep everything on SQLite.
+  resolvePublishDbProvider: () => ({ provider: 'sqlite', reason: 'off' }),
   missingProjectsDatabaseConfig: () => [],
 }))
 mock.module('../../services/published-environments.service', () => ({
@@ -210,6 +216,9 @@ mock.module('../../services/checkpoint.service', () => ({
   recordCheckpointForCommit: async () => {},
 }))
 
+/** When set, `/agent/publish-build` answers with it (a failed build). */
+let buildFailure: { status: number; body: any } | null = null
+
 const DIST_FILES = [
   { path: 'index.html', content: Buffer.from('<html>async</html>').toString('base64') },
 ]
@@ -219,7 +228,10 @@ beforeEach(() => {
   globalThis.fetch = (async (url: any) => {
     const path = new URL(String(url)).pathname
     if (path === '/agent/server-info') return Response.json({ serverBacked: false })
-    if (path === '/agent/publish-build') return Response.json({ ok: true })
+    if (path === '/agent/publish-build') {
+      if (buildFailure) return Response.json(buildFailure.body, { status: buildFailure.status })
+      return Response.json({ ok: true })
+    }
     if (path === '/agent/dist-files') return Response.json(DIST_FILES)
     return new Response('{}', { status: 200 })
   }) as any
@@ -228,6 +240,7 @@ beforeEach(() => {
   lockPatches.length = 0
   uploadGate = null
   configureError = null
+  buildFailure = null
 })
 afterEach(() => {
   globalThis.fetch = realFetch
@@ -334,6 +347,39 @@ describe('publish as a background job', () => {
     await until(() => projects.get('p1')!.publishStatus === 'live', 'live after retry')
   })
 
+  it('reports an out-of-memory Expo export as build_oom with the runtime\'s own reason', async () => {
+    seed('p1')
+    buildFailure = {
+      status: 500,
+      body: {
+        ok: false,
+        code: 'build_oom',
+        error: 'expo export failed (exit 7) — out of memory on the editing runtime',
+      },
+    }
+
+    expect((await postPublish('p1', { subdomain: 'oom-app' })).status).toBe(202)
+    await until(() => projects.get('p1')!.publishStatus === 'failed', 'failed')
+
+    // The code survives the 500, and the reason is stored next to it.
+    expect(projects.get('p1')!.publishError).toBe(
+      'build_oom: expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+
+    const state = await (await getState('p1')).json()
+    expect(state.publishStatus).toBe('failed')
+    expect(state.publishError).toBe('build_oom')
+    expect(state.publishErrorMessage).toBe(
+      'expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+    // Nothing was uploaded or configured: a failed build is not a live roll.
+    const ladder = statusWrites.map((w) => w.status)
+    expect(ladder[ladder.length - 1]).toBe('failed')
+    expect(ladder).not.toContain('uploading')
+    expect(ladder).not.toContain('configuring')
+    expect(ladder).not.toContain('live')
+  })
+
   it('refuses a second publish while one is in flight with 409 publish_in_progress', async () => {
     seed('p1')
     let releaseUpload!: () => void
@@ -361,7 +407,11 @@ describe('publish as a background job', () => {
     // An API restart mid-publish leaves `building` behind with nobody running it.
     const row = projects.get('p1')!
     row.publishStatus = 'building'
-    row.publishStatusAt = new Date(Date.now() - 31 * 60_000)
+    // Older than the lease, whatever the lease currently is: it is derived from
+    // the step budgets (max(10m, request budget + 30s)), so a hardcoded age
+    // silently stops being stale the moment a budget grows — which is exactly
+    // what raising the readiness timeout to 300s did.
+    row.publishStatusAt = new Date(Date.now() - publishInFlightTtlMs() - 60_000)
 
     const state = await (await getState('p1')).json()
     expect(state.publishStatus).toBe('failed')
@@ -373,6 +423,18 @@ describe('publish as a background job', () => {
     expect((await postPublish('p1', { subdomain: 'recovered' })).status).toBe(202)
     await until(() => projects.get('p1')!.publishStatus === 'live', 'live')
     expect(projects.get('p1')!.publishedSubdomain).toBe('recovered')
+  })
+
+  it('leaves a publish inside its lease alone: a fresh in-flight row is still building', async () => {
+    seed('p1')
+    const row = projects.get('p1')!
+    row.publishStatus = 'building'
+    row.publishStatusAt = new Date(Date.now() - publishInFlightTtlMs() + 60_000)
+
+    const state = await (await getState('p1')).json()
+    expect(state.publishStatus).toBe('building')
+    // Not written back: a publish that could still be running must not be failed.
+    expect(projects.get('p1')!.publishStatus).toBe('building')
   })
 
   it('keeps validation synchronous: a bad subdomain is still a 400, not a 202', async () => {

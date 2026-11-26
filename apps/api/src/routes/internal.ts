@@ -7,13 +7,15 @@
  * These are NOT exposed via external ingress — only reachable within the K8s cluster.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { NativeReleaseError as NativeReleaseHttpError } from '../services/native-release/client'
 import { timingSafeEqual } from 'node:crypto'
 import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
+import { parseWorkspaceRuntimeKey, type WorkspaceRuntimeKey } from './internal-runtime-auth'
+import { buildWorkspaceRuntimeRefreshEnv } from '../lib/runtime/workspace-runtime-refresh-env'
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
 import { abilityDenial, type Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
@@ -59,13 +61,89 @@ function checkRateLimit(projectId: string): boolean {
 }
 
 /**
+ * `GET /pod-config/ws:…` — the AI-proxy credentials for a workspace runtime.
+ *
+ * A merged-root runtime calls itself `ws:<workspaceId>` (or `ws:proj:<anchor>`
+ * for a project canvas), never a real project id, so `buildProjectEnv` cannot
+ * answer for it: the key resolved no project and every refresh tick 401'd with
+ * `workspace_token_mismatch`, which is how the AI proxy token of every
+ * workspace runtime in prod went stale and its turns ended with 0 tokens
+ * (SHO-560).
+ *
+ * Authorisation comes from the token's own scope, never from the key: an SA is
+ * cluster-scoped, and a workspace token may only refresh its OWN workspace. A
+ * project token is refused outright — it is minted for a single-project runtime,
+ * and honouring it here would hand that runtime every token in the workspace.
+ *
+ * Only `AI_PROXY_*` keys are returned: the refresh applies env additively and
+ * never unsets, so shipping the boot env wholesale would overwrite the live
+ * runtime's topology (`WORKSPACE_PROJECT_IDS`, DB urls, …).
+ */
+async function workspacePodConfig(
+  c: Context,
+  key: string,
+  parsed: Extract<WorkspaceRuntimeKey, { kind: 'workspace' }>,
+) {
+  // `ws:<id>` names the workspace outright; `ws:proj:<anchor>` names a project,
+  // whose workspace is the only one such a key may ever be answered for.
+  let workspaceId = parsed.workspaceId
+  if (!workspaceId && parsed.anchorProjectId) {
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    workspaceId = await resolveProjectWorkspaceId(parsed.anchorProjectId)
+  }
+  if (!workspaceId) {
+    return c.json({ error: `Unknown project ${parsed.anchorProjectId}` }, 404)
+  }
+
+  // No projectId here on purpose: a workspace key names no project, and passing
+  // one is exactly what made a workspace token unresolvable.
+  const identity = await authenticate(c)
+  if (!identity) {
+    return c.json({ error: `Missing or invalid credentials for ${key}` }, 401)
+  }
+  if (identity.kind === 'project') {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenProject=${identity.projectId} key=${key}` },
+      401,
+    )
+  }
+  if (identity.kind === 'workspace' && identity.workspaceId !== workspaceId) {
+    return c.json(
+      { error: `workspace_runtime_key_mismatch tokenWorkspace=${identity.workspaceId} key=${key}` },
+      401,
+    )
+  }
+
+  try {
+    const { members, forMetal, env } = await buildWorkspaceRuntimeRefreshEnv({
+      workspaceId,
+      anchorProjectId: parsed.anchorProjectId,
+    })
+    console.log(
+      `[Internal] Pod config for workspace runtime ${key} (members=${members.length}, metal=${forMetal})`,
+    )
+    return c.json({ projectId: key, env })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to build pod config for ${key}:`, err?.message ?? err)
+    return c.json({ error: 'Failed to build pod configuration' }, 500)
+  }
+}
+
+/**
  * GET /api/internal/pod-config/:projectId
  *
- * Called by runtime pods on boot (self-assign path) to fetch project-specific
- * environment variables. Authenticated via K8s ServiceAccount token.
+ * Called by runtime pods on boot (self-assign path) and by their ~12 h AI-proxy
+ * token refresh. The key is either a real project id (a single-project runtime)
+ * or a workspace runtime key, which takes the `workspacePodConfig` path.
+ * Authenticated via K8s ServiceAccount token, or the runtime's own token.
  */
 app.get('/pod-config/:projectId', async (c) => {
   const projectId = c.req.param('projectId')
+  const workspaceKey = parseWorkspaceRuntimeKey(projectId)
+
+  if (workspaceKey?.kind === 'invalid') {
+    return c.json({ error: `Invalid runtime key: ${workspaceKey.reason}` }, 400)
+  }
 
   if (!checkRateLimit(projectId)) {
     return c.json({ error: 'Rate limit exceeded' }, 429)
@@ -80,6 +158,10 @@ app.get('/pod-config/:projectId', async (c) => {
   const hasBearer = authHeader?.startsWith('Bearer ') ?? false
   if (!hasBearer && !c.req.header('x-runtime-token')) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+
+  if (workspaceKey) {
+    return workspacePodConfig(c, projectId, workspaceKey)
   }
 
   if (hasBearer) {
@@ -514,6 +596,12 @@ app.post('/projects/:projectId/publish', async (c) => {
     environment?: 'production' | 'staging'
     /** Proceed when the schema change would destroy data (SHO-308 §1). */
     allowDataLoss?: boolean
+    /**
+     * `'empty'`: start this environment's first Postgres database with the
+     * schema and no rows (SHO-551 §G4). Refused with `data_empty_not_allowed`
+     * where rows could be lost.
+     */
+    data?: 'empty'
   }
   try {
     body = (await c.req.json()) as typeof body
@@ -521,9 +609,6 @@ app.post('/projects/:projectId/publish', async (c) => {
     return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
   }
   const environment = body.environment === 'staging' ? 'staging' : 'production'
-  if (!body.subdomain && environment !== 'staging') {
-    return c.json({ error: { code: 'subdomain_required', message: 'subdomain is required' } }, 400)
-  }
 
   try {
     const { startPublish } = await import('./publish')
@@ -532,14 +617,19 @@ app.post('/projects/:projectId/publish', async (c) => {
     // The tool polls the GET above for the outcome (SHO-542) — the metal
     // runtime reaches this API through the public URL, which has the same
     // ~100 s edge limit.
+    //
+    // `subdomain` is passed through untouched: the same runner owns both the
+    // `subdomain_required` refusal and the re-publish fallback to the saved
+    // subdomain (SHO-559), so this route must not pre-empt either.
     const started = await startPublish(projectId, {
-      subdomain: body.subdomain ?? '',
+      subdomain: body.subdomain,
       accessLevel: body.accessLevel,
       password: body.password,
       siteTitle: body.siteTitle,
       siteDescription: body.siteDescription,
       environment,
       allowDataLoss: body.allowDataLoss === true,
+      data: body.data === 'empty' ? 'empty' : undefined,
     })
     if (!started.ok) {
       return c.json(
@@ -1059,6 +1149,96 @@ app.post('/mail/apply', async (c) => {
 })
 
 /**
+ * POST /api/internal/social/apply
+ *
+ * A Zernio webhook's event for a workspace homed here, forwarded from the region
+ * that received it (see `handleZernioWebhook`). The sender verified Zernio's
+ * signature; this checks the region secret and applies it locally, replying with
+ * the same `{ status, body }` the webhook would have returned — so the receiving
+ * region's answer to Zernio (retry or accept) is decided by the region that
+ * actually wrote.
+ */
+app.post('/social/apply', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || typeof body.workspaceId !== 'string' || typeof body.type !== 'string') {
+    return c.json({ error: 'Invalid social event' }, 400)
+  }
+  const { applySocialEvent } = await import('../services/social/webhooks')
+  return c.json(await applySocialEvent(body as any))
+})
+
+/**
+ * POST /api/internal/social/inbox
+ *
+ * An inbox write (a DM/comment reply, or an inbox sweep) for a workspace homed
+ * here, forwarded from the region that received it (see `forwardInboxWrite`).
+ * Runs the write locally and never routes again.
+ */
+app.post('/social/inbox', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || typeof body.workspaceId !== 'string') return c.json({ error: 'Invalid inbox write' }, 400)
+  const inbox = await import('../services/social/inbox.service')
+  try {
+    if (body.kind === 'reply-conversation' && typeof body.conversationId === 'string') {
+      return c.json(
+        await inbox.replyToConversationHere(
+          body.workspaceId,
+          body.conversationId,
+          { text: body.input?.text, idempotencyKey: body.input?.idempotencyKey ?? null },
+          body.projectId ?? null,
+        ),
+      )
+    }
+    if (body.kind === 'reply-comment' && typeof body.commentId === 'string') {
+      return c.json(
+        await inbox.replyToCommentHere(
+          body.workspaceId,
+          body.commentId,
+          { text: body.input?.text, idempotencyKey: body.input?.idempotencyKey ?? null },
+          body.projectId ?? null,
+        ),
+      )
+    }
+    if (body.kind === 'backfill') {
+      const limit = Number(body.limit)
+      return c.json(await inbox.backfillInboxHere(body.workspaceId, Number.isFinite(limit) ? { limit } : {}))
+    }
+    return c.json({ error: 'Invalid inbox write kind' }, 400)
+  } catch (err: any) {
+    // Surface the reason to the caller: a 409 ("no account linked yet") must not
+    // reach the person as a generic 503.
+    const status = typeof err?.status === 'number' ? err.status : 500
+    if (status >= 500) console.error('[Internal] forwarded inbox write failed:', err?.message ?? err)
+    return c.json({ error: err?.code ?? 'inbox_write_failed', message: err?.message ?? String(err) }, status)
+  }
+})
+
+/**
+ * POST /api/internal/conversations/post-message
+ *
+ * A team-chat message for a conversation homed here, forwarded from the region
+ * whose caller wrote it (see `postMessage`). Sequenced, mentioned, woken and
+ * hooked here, once. Replies `{ result }` with the home region's message.
+ */
+app.post('/conversations/post-message', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as { input?: Record<string, any> } | null
+  if (!body?.input || typeof body.input.conversationId !== 'string' || typeof body.input.text !== 'string') {
+    return c.json({ error: 'Invalid postMessage params' }, 400)
+  }
+  const { postMessageInHomeRegion } = await import('../services/conversation.service')
+  try {
+    return c.json({ result: await postMessageInHomeRegion(body.input as any) })
+  } catch (err: any) {
+    const status = typeof err?.status === 'number' ? err.status : 500
+    if (status >= 500) console.error('[Internal] forwarded postMessage failed:', err?.message ?? err)
+    return c.json({ error: err?.code ?? 'post_message_failed', message: err?.message ?? String(err) }, status)
+  }
+})
+
+/**
  * POST /api/internal/chat-providers/:provider/resume
  *
  * Resume a message held for an unlinked person, in the workspace's home region
@@ -1326,6 +1506,7 @@ app.post('/projects/:projectId/native/releases/:releaseId/sources', async (c) =>
       releaseId: c.req.param('releaseId'),
       bucketKey: body.bucketKey,
       jobDraft: body.jobDraft,
+      projectId,
     })
     return c.json(result, 202)
   } catch (err) {

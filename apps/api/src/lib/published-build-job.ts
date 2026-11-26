@@ -43,6 +43,13 @@ export interface BuildKitJobSpecInput {
   dockerfile: string
   /** Filename the Dockerfile is written as, inside the context. */
   dockerfileName?: string
+  /**
+   * Build variant for this commit — when the same commit needs more than one
+   * image (e.g. a Postgres build and a SQLite build), passing the variant here
+   * makes `buildJobName` produce a distinct Job name (SHO-551 B). Ignored when
+   * `jobName` is provided.
+   */
+  variant?: string
   jobName?: string
   serviceAccountName?: string
   /** Wall clock cap for the build; the Job is deleted after the API gives up. */
@@ -61,11 +68,18 @@ export interface BuildKitJobObject {
   spec: Record<string, unknown>
 }
 
-/** `published-build-<project>-<sha8>`; DNS-1123, and stable per commit. */
-export function buildJobName(projectId: string, commitSha: string): string {
+/**
+ * `published-build-<project>-<sha8>[-<variant>]`; DNS-1123, stable per (commit, variant).
+ *
+ * A variant distinguishes two images built from the same commit — e.g. a
+ * Postgres build and a SQLite build (SHO-551 B). Without the variant suffix both
+ * would map to the same Job name, so only the first one would ever run.
+ */
+export function buildJobName(projectId: string, commitSha: string, variant?: string): string {
   const project = projectId.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 24)
   const sha = commitSha.trim().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10)
-  return `published-build-${project}-${sha}`.replace(/-+/g, '-').replace(/-$/, '')
+  const suffix = variant ? `-${variant.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')}` : ''
+  return `published-build-${project}-${sha}${suffix}`.replace(/-+/g, '-').replace(/-$/, '')
 }
 
 /**
@@ -100,7 +114,7 @@ export const TERMINATION_MESSAGE_PATH = '/dev/termination-log'
  * `--metadata-file /dev/termination-log` is how the digest comes back.
  */
 export function buildPublishedImageJob(input: BuildKitJobSpecInput): BuildKitJobObject {
-  const name = input.jobName?.trim() || buildJobName(input.projectId, input.commitSha)
+  const name = input.jobName?.trim() || buildJobName(input.projectId, input.commitSha, input.variant)
   const serviceAccount = input.serviceAccountName?.trim() || 'shogo-builds'
   const secretName = input.registrySecret?.trim() || 'ocir-push'
   const deadline = Math.max(60, Math.floor(input.activeDeadlineSeconds ?? 900))

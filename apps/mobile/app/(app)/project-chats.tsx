@@ -37,6 +37,8 @@ import {
   visibleProjectChatItems,
   type ProjectChatListItem,
 } from '../../lib/project-chat-sessions'
+import { projectSurfaceRoute, type ProjectSurface } from '../../lib/project-surface-route'
+import { ProjectSurfaceQuickButtons } from '../../components/project/ProjectSurfaceQuickButtons'
 import { Spinner } from '@/components/ui/spinner'
 
 export default observer(function ProjectChatsPage() {
@@ -49,6 +51,8 @@ export default observer(function ProjectChatsPage() {
   const header = usePhoneScreenHeaderInset()
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loading, setLoading] = useState(true)
+  // A failed fetch is not an empty project: never show "No chats yet" for it.
+  const [loadError, setLoadError] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -73,9 +77,11 @@ export default observer(function ProjectChatsPage() {
         const result = await fetchProjectChatSessions(http, projectId, limit)
         setSessions(result.sessions)
         setHasMore(result.hasMore)
+        setLoadError(false)
       } catch (e) {
         console.error('[ProjectChats] Failed to load chats:', e)
         setSessions([])
+        setLoadError(!paging)
       } finally {
         setLoading(false)
         setLoadingMore(false)
@@ -117,6 +123,15 @@ export default observer(function ProjectChatsPage() {
       params: { id: projectId, newChat: '1', newChatNonce: String(Date.now()) },
     } as any)
   }, [projectId, router])
+
+  // Push, not replace: Back from the surface comes back to this chat list.
+  const openSurface = useCallback(
+    (surface: ProjectSurface) => {
+      if (!projectId) return
+      router.push(projectSurfaceRoute(projectId, surface) as any)
+    },
+    [projectId, router],
+  )
 
   const loadMore = useCallback(() => {
     if (hasMore && !loadingMore) void load(sessions.length + PROJECT_CHAT_PAGE_SIZE)
@@ -164,13 +179,35 @@ export default observer(function ProjectChatsPage() {
             <Plus size={20} className="text-foreground" />
           </GlassButton>
         }
-      />
+      >
+        {projectId ? (
+          <ProjectSurfaceQuickButtons projectName={title} onOpen={openSurface} />
+        ) : null}
+      </PhoneScreenHeader>
 
       <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
       {loading && sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center">
           <Spinner />
         </View>
+      ) : loadError && activeSessions.length === 0 ? (
+        <PhoneListEmpty
+          icon={<MessageSquare size={44} className="text-muted-foreground" />}
+          title="Couldn't load chats"
+          message="The chats request failed. Your chats are still there — try again."
+          action={
+            <Pressable
+              onPress={() => {
+                setLoadError(false)
+                void load()
+              }}
+              accessibilityRole="button"
+              className="rounded-xl bg-orange-500 px-5 py-2.5 active:bg-orange-600"
+            >
+              <Text className="text-base font-medium text-white">Retry</Text>
+            </Pressable>
+          }
+        />
       ) : activeSessions.length === 0 ? (
         <PhoneListEmpty
           icon={

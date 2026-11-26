@@ -103,7 +103,10 @@ mock.module('../lib/prisma', () => ({
       findMany: async () => [],
     },
     chatSession: {
-      findUnique: async () => ({ id: 's-1' }),
+      findUnique: async (args: any) =>
+        args?.where?.id === 's-foreign'
+          ? { id: 's-foreign', contextType: 'project', contextId: 'p-other-tenant', createdByUserId: null }
+          : { id: 's-1', contextType: 'project', contextId: 'p-1' },
       update: async () => ({ id: 's-1' }),
       updateMany: async () => ({ count: 1 }),
     },
@@ -769,6 +772,28 @@ describe('POST /projects/:projectId/chat', () => {
 // =========================================================================
 // stream proxy
 // =========================================================================
+
+describe('SEC-27: a chat session id from another project is refused', () => {
+  test('POST /chat with a foreign session id answers 404 and never reaches the runtime', async () => {
+    let reachedRuntime = false
+    nextFetchResponse = () => { reachedRuntime = true; return new Response('{}', { status: 200 }) }
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Chat-Session-Id': 's-foreign' },
+      body: JSON.stringify({ messages: [{ id: 'm-x', role: 'user', parts: [{ type: 'text', text: 'hi' }] }] }),
+    }))
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as any).error.code).toBe('chat_session_not_found')
+    expect(reachedRuntime).toBe(false)
+  })
+
+  test('stream and turn refuse a foreign session id', async () => {
+    const app = buildApp()
+    expect((await app.fetch(new Request('http://x/api/projects/p-1/chat/s-foreign/stream'))).status).toBe(404)
+    expect((await app.fetch(new Request('http://x/api/projects/p-1/chat/s-foreign/turn'))).status).toBe(404)
+  })
+})
 
 describe('GET /projects/:projectId/chat/:chatSessionId/stream', () => {
   test('404 when project does not exist', async () => {

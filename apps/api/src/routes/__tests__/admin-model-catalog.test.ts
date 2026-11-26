@@ -16,6 +16,7 @@ process.env.SECRETS_ENCRYPTION_KEY = Buffer.from('0123456789abcdef0123456789abcd
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { MODEL_FAMILIES } from '@shogo/model-catalog'
 import { withPrismaExports } from '../../__tests__/helpers/prisma-mock-exports'
 
 // ─── In-memory prisma store ───────────────────────────────────────────────
@@ -377,6 +378,71 @@ describe('admin models CRUD', () => {
     const updated = await put(`/models/${ok.model.id}`, { reasoningEffort: 'high' })
     expect(updated.status).toBe(200)
     expect((await updated.json() as any).model.reasoningEffort).toBe('high')
+  })
+
+  // SHO-558: the admin edit form always PUTs the whole payload, `family`
+  // included. The route validated against a hand-copied family list that had
+  // lost `gemini`, so every save from a Gemini model's edit modal was a 400 —
+  // and the form hid it, which read as "it doesn't save".
+  test('accepts every family the catalog defines (no drift)', async () => {
+    const created = await (await post('/models', {
+      provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon',
+    })).json() as any
+    for (const family of MODEL_FAMILIES) {
+      const res = await put(`/models/${created.model.id}`, { family })
+      expect(res.status).toBe(200)
+      expect((await res.json() as any).model.family).toBe(family)
+    }
+  })
+
+  test("persists a Gemini model edit sent as the form's full payload", async () => {
+    const created = await (await post('/models', {
+      provider: 'google',
+      apiModel: 'gemini-4-carbon',
+      displayName: 'Gemini 4 Carbon',
+      shortDisplayName: 'Carbon',
+      tier: 'premium',
+      family: 'gemini',
+      generation: 'current',
+      maxOutputTokens: 64000,
+      aliases: ['gemini-4-carbon'],
+      description: null,
+      contextWindow: 1048576,
+      reasoningEffort: 'medium',
+      inputPerMillion: 1.25,
+      cachedInputPerMillion: 0,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 5,
+      enabled: true,
+    })).json() as any
+    // POST keeps the family instead of quietly degrading it to `other`.
+    expect(created.model.family).toBe('gemini')
+
+    const res = await put(`/models/${created.model.id}`, {
+      provider: 'google',
+      providerId: null,
+      apiModel: 'gemini-4-carbon',
+      displayName: 'Gemini 4 Carbon',
+      shortDisplayName: 'Carbon',
+      tier: 'premium',
+      family: 'gemini',
+      generation: 'current',
+      maxOutputTokens: 64000,
+      aliases: ['gemini-4-carbon'],
+      description: null,
+      contextWindow: 1048576,
+      reasoningEffort: 'high',
+      inputPerMillion: 1.25,
+      cachedInputPerMillion: 0,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 5,
+      enabled: true,
+    })
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.model.family).toBe('gemini')
+    expect(data.model.reasoningEffort).toBe('high')
+    expect(models.get(created.model.id)!.reasoningEffort).toBe('high')
   })
 
   test('update clears metadata when passed null/empty', async () => {

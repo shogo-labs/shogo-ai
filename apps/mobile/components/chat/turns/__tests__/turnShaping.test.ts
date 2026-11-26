@@ -10,6 +10,8 @@ import {
   groupWorkParts,
   partitionTurn,
   extractTurnTiming,
+  isGenericTool,
+  isTodoTool,
   isTurnInProgress,
   formatWorkedDuration,
   formatRelativeTime,
@@ -164,7 +166,7 @@ describe("groupWorkParts", () => {
     ]);
   });
 
-  test("ungroupable tools (ask_user, TodoWrite) pass through unchanged even in runs", () => {
+  test("ungroupable tools (ask_user) pass through unchanged even in runs", () => {
     const parts = [
       tool("ask_user", { questions: [] }),
       tool("ask_user", { questions: [] }),
@@ -290,6 +292,96 @@ describe("groupWorkParts", () => {
     ];
     const grouped = groupWorkParts(parts);
     expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
+  });
+});
+
+/**
+ * SHO-574. The checklist lives in the dock's Tasks panel; in the stream a
+ * `todo_write` is a quiet row that rides inside the work run around it. It
+ * never starts, ends or splits a group — which used to chop one stretch of
+ * work into "Explored 4 files · Updated tasks · Edited 2 files · …".
+ */
+describe("groupWorkParts — todo_write rides along (SHO-574)", () => {
+  const todo = (content = "Task") => tool("todo_write", { todos: [{ content }] });
+
+  test("read → todo → edit → todo → exec is one work group containing both todos", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      todo("first"),
+      tool("edit_file", { path: "/b.ts", old_string: "x", new_string: "y" }),
+      todo("second"),
+      tool("exec", { command: "bun test" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toEqual(parts);
+    }
+  });
+
+  test("a turn that opens with a todo folds it into the run the next work tool starts", () => {
+    const first = todo("first");
+    const parts = [first, tool("Read", { path: "/a.ts" }), tool("Read", { path: "/b.ts" })];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toEqual(parts);
+    }
+  });
+
+  test("a trailing todo stays inside the run that just finished instead of popping out", () => {
+    const parts = [tool("Read", { path: "/a.ts" }), todo("last")];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toEqual(parts);
+    }
+  });
+
+  test("a todo with no work tool on either side keeps its own row", () => {
+    const only = todo("only");
+    expect(groupWorkParts([only])).toEqual([only]);
+
+    const between = [text("thinking out loud"), todo("between"), text("and done")];
+    const grouped = groupWorkParts(between);
+    expect(grouped.map((p) => p.type)).toEqual(["text", "tool", "text"]);
+    expect(grouped[1]).toBe(between[1]!);
+  });
+
+  test("todos do not join the same-name tool-group fallback", () => {
+    const parts = [text("a"), todo("one"), todo("two")];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["text", "tool", "tool"]);
+  });
+
+  test("a todo is never generic, so it never counts as a work tool", () => {
+    expect(isTodoTool("todo_write")).toBe(true);
+    expect(isTodoTool("TodoWrite")).toBe(true);
+    expect(isTodoTool("ask_user")).toBe(false);
+    const todoTool = (tool("todo_write", { todos: [] }) as Extract<MessagePart, { type: "tool" }>).tool;
+    expect(isGenericTool(todoTool)).toBe(false);
+    // A run of only todos therefore stays out of a work-group entirely.
+    expect(groupWorkParts([todo("one"), todo("two")]).map((p) => p.type)).toEqual([
+      "tool",
+      "tool",
+    ]);
+  });
+
+  test("a todo is not swallowed into a generate_image gallery", () => {
+    const parts = [
+      tool("generate_image", { prompt: "a" }),
+      todo("mid"),
+      tool("generate_image", { prompt: "b" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["tool", "tool", "tool"]);
+  });
+
+  test("an unchanged run that contains a todo reuses the same group object", () => {
+    const parts = [tool("Read", { path: "/a.ts" }), todo("first")];
+    const first = groupWorkParts(parts);
+    const second = groupWorkParts(parts, first);
+    expect(second[0]).toBe(first[0]);
   });
 });
 

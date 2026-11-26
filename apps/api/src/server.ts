@@ -210,6 +210,7 @@ import { isMidCutoverStatus } from './services/published-cutover.service'
 import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
+import { isDevOriginAllowed } from './lib/dev-origins'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -322,6 +323,7 @@ const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () =>
 const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
 const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
 const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
+const drainInstanceTunnels: any = cloud.drainInstanceTunnels ?? (() => 0)
 const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
 const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
 const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
@@ -804,15 +806,9 @@ const apiCors = cors({
     }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
-    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
-    // In dev/local mode, allow any localhost origin, custom protocols, and null origins (Electron custom scheme)
-    if (isDevOrLocal && (origin === 'null' || origin?.startsWith('http://localhost:') || origin?.startsWith('shogo://'))) {
-      return origin
-    }
-    // Allow local network origins in dev/local (React Native on physical devices)
-    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
-      return origin
-    }
+    // Dev/local: localhost, custom schemes and LAN devices; `null` only on a
+    // local API (SEC-3).
+    if (isDevOriginAllowed(origin)) return origin
     // Check if origin is in allowed list
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },
@@ -856,13 +852,7 @@ const csrfMiddleware = csrf({
     // URL's origin comes from the Host header, which a browser cannot forge, so
     // a cross-site page still fails: its Origin is its own domain.
     if (origin === new URL(c.req.url).origin) return true
-    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
-    if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
-      return true
-    }
-    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
-      return true
-    }
+    if (isDevOriginAllowed(origin)) return true
     return allowedOrigins.includes(origin)
   },
 })
@@ -4794,7 +4784,7 @@ app.put('/api/projects/:projectId/machine', async (c) => {
     )
   }
   const body = await c.req.json<{ size?: string }>().catch(() => ({}) as { size?: string })
-  const plan = planMachineChange(body.size, before.instanceSize)
+  const plan = planMachineChange(body.size)
   if (!plan.ok) return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
 
   await prisma.project.update({
@@ -11094,6 +11084,17 @@ async function gracefulShutdown(signal: string) {
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
+
+  // Tell desktops to move their tunnel to another pod before this one goes
+  // away (SHO-565). Each one opens a replacement first and only then closes the
+  // socket here, so a turn being streamed over it is never cut — and, because
+  // the tunnel no longer arrives through queue-proxy, it is not a request this
+  // pod has to wait out either.
+  try {
+    drainInstanceTunnels()
+  } catch (err: any) {
+    console.error('[Server] Tunnel drain failed:', err?.message ?? err)
+  }
 
   // Hand chat turns this pod is following to another replica's reattach job
   // before the trackers die with the process.

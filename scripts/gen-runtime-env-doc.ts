@@ -117,6 +117,9 @@ const PURPOSE: Record<string, string> = {
   SHOGO_RUNTIME_REVISION: 'Commit the image was built from. Baked in at build time.',
   DRAIN_TIMEOUT_MS: 'How long SIGTERM waits for in-flight streams. See [Lifecycle](#lifecycle).',
   SHOGO_LFS_CONCURRENT_TRANSFERS: 'In-flight `git lfs push` transfers. Defaults to `2` (capped at `16`) so a small VM does not buffer eight objects at once.',
+  FFMPEG_PATH: 'Explicit path to `ffmpeg`, for an install that is not on `PATH`. It re-encodes a video read for a model that samples at a fixed rate.',
+  FFPROBE_PATH: 'Explicit path to `ffprobe`. When neither it nor the MP4 box walk can read a clip, the read reports no frame count rather than guessing.',
+  HOMEBREW_PREFIX: 'Homebrew root: `<prefix>/bin` is searched for `ffmpeg`/`ffprobe`. `/opt/homebrew/bin` is searched anyway.',
 }
 
 function walk(dir: string, out: string[]): void {

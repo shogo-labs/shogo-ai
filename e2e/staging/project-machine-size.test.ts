@@ -17,12 +17,14 @@ import { mustExec } from "./runtime-exec"
  * back to the standard size. The project's files survive both restarts.
  *
  *   1. Workspace on the Large tier (16 GB budget) through the e2e backdoor, so
- *      Medium (4 vCPU / 8 GB) fits next to the workspace agent's VM and XLarge
- *      is still locked.
+ *      Medium (4 vCPU / 8 GB) fits next to the workspace agent's VM. Every
+ *      preset is offered with its hourly price — sizes are billed per hour,
+ *      not gated by the tier (SHO-578).
  *   2. Baseline: `nproc` and MemTotal of the standard VM; a marker file.
  *   3. Upgrade in the UI → "Restart to apply" → confirm. The guest reports
  *      4 vCPUs and ≥ 90% of 8 GiB, the marker is intact, GET /machine says Medium.
- *   4. XLarge is refused by the API with the plan error (422 plan_ceiling).
+ *   4. A size that is not a preset is refused (400 invalid_request) and the
+ *      machine stays Medium.
  *   5. Downgrade to Standard in the UI and restart. The guest is back at the
  *      baseline size and the marker is still there.
  *
@@ -55,7 +57,7 @@ async function machineState(page: Page, projectId: string) {
   expect(res.ok(), await res.text()).toBe(true)
   return (await res.json()) as {
     current: { id: string; vcpus: number; memMiB: number }
-    options: Array<{ id: string; allowed: boolean }>
+    options: Array<{ id: string; hourlyUsd: number }>
     substrate: string
     running: boolean
   }
@@ -133,8 +135,8 @@ test.describe("Project machine size", () => {
     const state = await machineState(page, projectId)
     test.skip(state.substrate !== "metal", `project runs on ${state.substrate}, not a metal host`)
     expect(state.current.id).toBe("standard")
-    expect(state.options.find((o) => o.id === "large")?.allowed).toBe(true)
-    expect(state.options.find((o) => o.id === "xlarge")?.allowed).toBe(false)
+    expect(state.options.map((o) => o.id)).toEqual(["standard", "medium", "large", "xlarge"])
+    for (const o of state.options) expect(o.hourlyUsd, `${o.id} hourly price`).toBeGreaterThan(0)
 
     baseline = await guestSize(page, projectId)
     expect(baseline.vcpus).toBeGreaterThan(0)
@@ -160,15 +162,15 @@ test.describe("Project machine size", () => {
     expect(state.current).toMatchObject({ id: "medium", vcpus: 4, memMiB: 8192 })
   })
 
-  test("a size above the plan is refused", async () => {
+  test("a size that is not a preset is refused", async () => {
     test.skip(!projectId || !baseline.vcpus, "no metal project from the first step")
     const base = bootstrapApiBase()
     const res = await page.request.put(`${base}/api/projects/${projectId}/machine`, {
       headers: { Origin: base, "content-type": "application/json" },
-      data: { size: "xlarge" },
+      data: { size: "huge" },
     })
-    expect(res.status()).toBe(422)
-    expect((await res.json()).error?.code).toBe("plan_ceiling")
+    expect(res.status()).toBe(400)
+    expect((await res.json()).error?.code).toBe("invalid_request")
     expect((await machineState(page, projectId)).current.id).toBe("medium")
   })
 

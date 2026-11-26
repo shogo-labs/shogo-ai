@@ -105,7 +105,7 @@ describe('boot rootfs identity', () => {
   test('a claimed VM records the current identity and reports rootfsFresh', async () => {
     const guest = makeGuest()
     const cfg = makeCfg()
-    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
+    const pool = new MetalWarmPool(fakeMgr(guest.port!) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
 
     const a = await pool.assign('ws:proj:p1', {})
@@ -124,7 +124,7 @@ describe('boot rootfs identity', () => {
     const guest = makeGuest()
     const cfg = makeCfg()
     const { store, pushes } = recordingStore()
-    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, store)
+    const pool = new MetalWarmPool(fakeMgr(guest.port!) as any, cfg, store)
     await pool.start()
 
     const a = await pool.assign('ws:proj:p1', {})
@@ -146,7 +146,7 @@ describe('boot rootfs identity', () => {
     const guest = makeGuest()
     const cfg = makeCfg()
     const { store, pushes } = recordingStore()
-    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, store)
+    const pool = new MetalWarmPool(fakeMgr(guest.port!) as any, cfg, store)
     await pool.start()
 
     await pool.assign('ws:proj:p1', {})
@@ -162,7 +162,7 @@ describe('boot rootfs identity', () => {
   test('the identity is persisted to the live registry and restored on adopt', async () => {
     const guest = makeGuest()
     const cfg = makeCfg()
-    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
+    const pool = new MetalWarmPool(fakeMgr(guest.port!) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
     const a = await pool.assign('ws:proj:p1', {})
     expect(new LiveRegistry(cfg.runDir).all().find((e) => e.projectId === 'ws:proj:p1')?.bootRootfsIdentity)
@@ -194,7 +194,7 @@ describe('boot rootfs identity', () => {
     reg.remove('ws:proj:p1')
     reg.put(entry)
 
-    const next = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
+    const next = new MetalWarmPool(fakeMgr(guest.port!) as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await next.adopt()
     expect(next.getAssigned('ws:proj:adopted')?.bootRootfsIdentity).toBe('OLD-IMAGE')
     expect(next.getProjectStatus('ws:proj:adopted').rootfsFresh).toBe(false)
