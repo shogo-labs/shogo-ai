@@ -48,6 +48,14 @@
 # identical, there is no rollout, and `rollout status` returns
 # immediately — so this is a cheap no-op on api-only / web-only deploys.
 #
+# Extra prepulled tags (SHO-592): the prepuller now also pulls up to
+# PREPULL_MAX_EXTRA (default 3) additional runtime tags that always-on published
+# apps run, so a rollout waits for those pulls too — about 6 minutes each on a
+# cold node. `apply-release-images.sh` raises the budget it passes here
+# (`1800 + 360 * extras`) for exactly that reason; do not "fix" a slow gate by
+# dropping the extra tags, they are what stops an evicted app's replacement pod
+# from spending ~15 minutes pulling its own image with nothing running.
+#
 # Usage:
 #   .github/scripts/wait-runtime-prepulled.sh <system-ns> [timeout-seconds]
 

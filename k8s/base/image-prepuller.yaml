@@ -10,6 +10,14 @@
 # 3. This causes images to be pulled to every node
 # 4. When runtime pods start, the image is already cached locally
 #
+# Beyond the deploy's own RUNTIME_IMAGE, `.github/scripts/render-image-prepuller.sh`
+# adds up to PREPULL_MAX_EXTRA (default 3) more tags — the `shogo-runtime` tags
+# that always-on published apps (min-scale >= 1) actually run, ranked by how many
+# apps use them. Without that, an app evicted from a full node whose replacement
+# landed on a freshly created one spent 16m42s pulling its own tag with nothing
+# running (SHO-592). The cap is what keeps the boot disk sane: 29 runtime tags
+# are in use across prod, ~9 GB each, on a 189 GB disk.
+#
 # Resource Usage: Minimal (just sleeping containers per node)
 # =============================================================================
 apiVersion: apps/v1
@@ -79,5 +87,12 @@ spec:
             capabilities:
               drop:
                 - ALL
+        # PREPULL_EXTRA_PLACEHOLDER
+        # Replaced at deploy time by `.github/scripts/render-image-prepuller.sh`
+        # with up to PREPULL_MAX_EXTRA (default 3) `sleep infinity` containers,
+        # one per shogo-runtime tag that always-on published apps use — ranked
+        # by how many of them use it, so an evicted app's replacement pod does
+        # not spend ~15 minutes pulling its image on a cold node (SHO-592 §2).
+        # Left as a comment when the manifest is applied unrendered.
       # Restart if container fails
       restartPolicy: Always

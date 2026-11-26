@@ -297,6 +297,20 @@ spec:
                     else
                       SUFFIX=""
                     fi
+                    # SHO-592: node-image-gc taints a node at 80% so nothing new
+                    # lands on it. That is deliberately NOT a cordon, and it must
+                    # not become an exemption: a cordoned node is drained on
+                    # purpose and the deploy gate skips it, but a tainted node is
+                    # still serving its pods, still the gate's problem, and still
+                    # four points from evicting them. Report the taint, page
+                    # exactly as before.
+                    TAINTED=$(echo "$NODES_JSON" | jq -r --arg n "$node" '
+                      .items[] | select(.metadata.name == $n)
+                      | [ (.spec.taints // [])[] | select(.key == "shogo.ai/disk-high") ] | length
+                    ')
+                    if [ "${TAINTED:-0}" -gt 0 ] && [ "$CORDONED" != "true" ]; then
+                      SUFFIX=" (disk-high taint — scheduling blocked)"
+                    fi
                     PCT=$(kubectl get --raw "/api/v1/nodes/${node}/proxy/stats/summary" 2>/dev/null | jq -r '
                       def used($fs): ($fs.usedBytes // 0) as $u | ($fs.capacityBytes // 0) as $c
                         | if $c > 0 then (($u / $c) * 100) else 0 end;

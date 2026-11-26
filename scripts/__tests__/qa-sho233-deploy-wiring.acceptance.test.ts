@@ -27,7 +27,16 @@ import { join, resolve } from 'node:path'
 const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 const SCRIPT = join(REPO_ROOT, 'scripts', 'node-image-gc.sh')
 const SCRIPT_TEXT = readFileSync(SCRIPT, 'utf8')
-const SCRIPT_SHA = createHash('sha256').update(SCRIPT_TEXT).digest('hex')
+// The pod runs TWO scripts from one ConfigMap (SHO-592 §4 adds the taint
+// sidecar), so the template checksum covers both — a change to either must roll
+// the pods. `sha256sum a b | sha256sum` is what the workflow computes: the
+// per-file lines, in argument order, hashed together.
+const TAINT_SCRIPT_TEXT = readFileSync(join(REPO_ROOT, 'scripts', 'node-disk-taint.sh'), 'utf8')
+const sha = (s: string) => createHash('sha256').update(s).digest('hex')
+const SCRIPT_SHA = createHash('sha256')
+  .update(`${sha(SCRIPT_TEXT)}  scripts/node-image-gc.sh\n`)
+  .update(`${sha(TAINT_SCRIPT_TEXT)}  scripts/node-disk-taint.sh\n`)
+  .digest('hex')
 
 const STAGING_WF = join(REPO_ROOT, '.github', 'workflows', 'deploy-staging.yml')
 const DEPLOY_WF = join(REPO_ROOT, '.github', 'workflows', 'deploy.yml')
@@ -83,6 +92,7 @@ function runGcStep(wfPath: string): { calls: Call[]; stdout: string; status: num
   mkdirSync(join(dir, 'k8s', 'base'), { recursive: true })
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(dir, 'scripts', 'node-image-gc.sh'), SCRIPT_TEXT)
+  writeFileSync(join(dir, 'scripts', 'node-disk-taint.sh'), TAINT_SCRIPT_TEXT)
   writeFileSync(join(dir, 'k8s', 'base', 'node-image-gc.yaml'), readFileSync(MANIFEST, 'utf8'))
   writeFileSync(log, '')
 

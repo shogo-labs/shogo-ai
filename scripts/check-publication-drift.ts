@@ -73,18 +73,29 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * ids and a `(region, deviceId, version)` unique key, so the two regions can no
  * longer collide on it. Do not add it back — it is published on purpose.
  *
+ * `storage_usage_daily` (SHO-423) is the day-granularity version of
+ * `storage_usage`, and for exactly the same reason it cannot be published while
+ * `storage_usage` is region-local: each region measures and bills only the
+ * workspaces it homes, so a peer's stale copy would overwrite the day's peak,
+ * and its `(workspaceId, day)` unique is poison-pill-shaped. It sat in this list
+ * and in `region_local` from SHO-423 but was missing from the monitor's
+ * `EXCLUDED_TABLES`, which paged every 5 minutes for two days (SHO-592). The
+ * "keep in sync" comment below did not stop that;
+ * `scripts/__tests__/replication-publication-lists.test.ts` now does.
+ *
  * IMPORTANT DRIFT NOTE: a `FOR TABLES IN SCHEMA public` publication cannot
  * exclude individual tables (`ALTER PUBLICATION ... DROP TABLE` is unsupported
- * on schema-level pubs). To exclude these two, the LIVE publication was hand-
+ * on schema-level pubs). To exclude these, the LIVE publication was hand-
  * converted to `puballtables=false` (a hand-list), so the live DB drifts from
  * this CR. If the Publication CR is ever re-reconciled by CNPG it will recreate
- * `shogo_all_pub` as FOR-ALL-TABLES and re-add these two, reintroducing the
- * poison pills. `replication-monitor.yaml` has an inverse guard (READDED) that
- * pages if that happens. Keep this list in sync with the monitor's
- * EXCLUDED_TABLES and exclude-region-local-tables.sql.
+ * `shogo_all_pub` as FOR-ALL-TABLES and re-add them, reintroducing the poison
+ * pills. `replication-monitor.yaml` has an inverse guard (READDED) that pages
+ * if that happens. Keep this list in sync with the monitor's EXCLUDED_TABLES
+ * and exclude-region-local-tables.sql.
  */
 export const INTENTIONALLY_UNPUBLISHED = [
   'storage_usage',
+  'storage_usage_daily',
   'usage_wallets',
   'proxy_turns',
   // SHO-585: the conflict watchdog's run-to-run state (last applied LSN + stall

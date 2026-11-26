@@ -80,9 +80,21 @@ spec:
                   # to that region's capture bucket. device_version_events rejoined
                   # the mesh (SHO-142): random ids + a (region, deviceId, version)
                   # key, so it is published on purpose and must not be listed here.
-                  # Keep this list in sync with scripts/check-publication-drift.ts
-                  # and exclude-region-local-tables.sql.
-                  EXCLUDED_TABLES="'storage_usage','usage_wallets','proxy_turns','logical_replication_watchdog_state'"
+                  # logical_replication_watchdog_state (SHO-585) is the conflict
+                  # watchdog's run-to-run state.
+                  #
+                  # storage_usage_daily (SHO-423) is the same byte counter at day
+                  # granularity: it cannot be published while storage_usage is
+                  # region-local, because a peer's copy would overwrite the day's
+                  # peak. It went into the SQL list and INTENTIONALLY_UNPUBLISHED
+                  # when SHO-423 landed but was NOT added here — so from 25 Nov
+                  # 07:50Z this check paged every 5 minutes about a table that was
+                  # excluded on purpose (SHO-592).
+                  #
+                  # scripts/__tests__/replication-publication-lists.test.ts parses
+                  # all three lists and fails when they disagree — the "keep in
+                  # sync" comment alone did not.
+                  EXCLUDED_TABLES="'storage_usage','storage_usage_daily','usage_wallets','proxy_turns','logical_replication_watchdog_state'"
 
                   # Deploy window. `prisma migrate deploy` creates tables a few
                   # minutes before deploy.yml publishes them
@@ -294,10 +306,11 @@ spec:
 
                   if [ "$READDED" -gt 0 ]; then
                     echo "CRITICAL: $READDED region-local table(s) were re-added to the publication!"
-                    echo "storage_usage / usage_wallets must stay region-local until the"
-                    echo "single-writer work lands, and proxy_turns is region-local by"
-                    echo "design. Re-exclude them and check whether the Publication CR"
-                    echo "re-reconciled. See docs/runbooks/usage-wallet-single-writer-plan.md."
+                    echo "storage_usage / storage_usage_daily / usage_wallets must stay"
+                    echo "region-local until the single-writer work lands, and proxy_turns is"
+                    echo "region-local by design. Re-exclude them and check whether the"
+                    echo "Publication CR re-reconciled. See"
+                    echo "docs/runbooks/usage-wallet-single-writer-plan.md."
                     EXIT_RC=1
                   fi
 

@@ -86,6 +86,12 @@ check_headroom() {
   # Skip unschedulable (cordoned) nodes — they're intentionally drained and
   # shouldn't gate a deploy.
   #
+  # NOT skipped: a node carrying `shogo.ai/disk-high:NoSchedule` (SHO-592). That
+  # taint means "nearly full, do not place new pods here", which is exactly the
+  # node this gate exists to fail on. Honouring it here would turn the early
+  # warning into silence — the same mistake as treating a cordon and a taint as
+  # one thing.
+  #
   # NOTE (SHO-136): this list used to come from a kubectl jsonpath filter,
   # `{range .items[?(@.spec.unschedulable!=true)]}`. A schedulable node does NOT
   # set `spec.unschedulable` at all, and jsonpath's `!=` needs both sides to

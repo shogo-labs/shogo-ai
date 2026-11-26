@@ -149,22 +149,113 @@ no headroom while the reclaim is running. Re-run the job; the second attempt
 samples a node that has already been reclaimed. Do not raise the gate threshold
 to work around it.
 
+## When a pass fails (and what it does then)
+
+A pass used to be a no-op on failure: cri-o unreachable, 11 candidates, "skipped",
+marker written, exit 0. On 2026-11-26 that cost 36 evicted pods. A pass now
+**fails** — non-zero, **no** `last-pass` marker — when it could not do its job
+while the node needed it:
+
+| Situation | Before | Now |
+| --- | --- | --- |
+| `crictl info` cannot reach the socket, or `crictl images` fails, at/above `RECLAIM_PCT` | logged "skipping this pass", exit 0, marker written | `ERROR cri unreachable — … <socket>` one line, no marker, **exit 1** |
+| Candidates selected, **every** `crictl rmi` failed | `removed=0 skipped=11`, exit 0 | `ERROR nothing removed`, no marker, **exit 1** |
+| Some removed, some in use (normal race) | success | success (unchanged) |
+| Below `RECLAIM_PCT` | nothing to do | success (unchanged) — a dead cri-o is not a failure when nothing was owed |
+| `jq` or `crictl` missing on the node | exit 0 | exit 0 (deliberately unsupported node) |
+
+In loop mode a failed pass retries after `RETRY_S` (30 s — not `INTERVAL_S`,
+ten minutes is too long to leave a filling node alone). After
+`MAX_FAILED_PASSES` (3) in a row the container **exits 1**, so the restart count
+rises and `CrashLoopBackOff` becomes visible instead of a silent loop.
+`ONESHOT=1` exits 1 on a failed pass.
+
+The `last-pass` marker is what the DaemonSet's `startupProbe` waits for, so a
+permanently failing pass leaves the pod **not Ready** on purpose: `kubectl
+rollout status daemonset/node-image-gc` and the pod's Ready column now say the
+node was *not* reclaimed.
+
+## The 80–85% band: `shogo.ai/disk-high=true:NoSchedule`
+
+The kubelet only taints at 85% (`DiskPressure`), and the deploy gate refuses to
+roll out above 80% — but until SHO-592 nothing stopped the **scheduler** placing
+a pod on a node in between. On 2026-11-26 pods evicted from `10.0.10.5` were
+rescheduled onto `10.0.10.184` at 75% and pushed it to 84%.
+
+The DaemonSet's `disk-taint` sidecar
+([`scripts/node-disk-taint.sh`](../../scripts/node-disk-taint.sh)) reads the
+used% the GC pass wrote to `$STATE_DIR/disk-status` and reconciles one taint on
+its own node:
+
+- **at/above `TAINT_PCT` (80)** → `shogo.ai/disk-high=true:NoSchedule`
+- **below `UNTAINT_PCT` (75)** → taint removed
+- **75–80** → left exactly as it is (the hysteresis that stops flapping)
+
+A **taint, not a cordon**, on purpose: `check-node-disk-headroom.sh` and
+warm-pool-monitor both treat a cordoned node as "being drained on purpose" and
+stop looking at it, so a cordon would *hide* the node from the two checks whose
+job is to page about it. A taint blocks new placements and nothing else — the
+node keeps being sampled, warm-pool-monitor marks its lines
+`(disk-high taint — scheduling blocked)` and still pages at 78%, and the deploy
+gate still fails on it.
+
+DaemonSets keep running on a tainted node here: `image-prepuller`,
+`node-image-gc`, `inotify-tuner`, `oci-growfs` all use `operator: Exists`, and
+the SigNoz log agent does the same. A node rug-pulled out of the log stream at
+exactly the moment it is filling up would be the worst possible time.
+
+Check it by hand:
+
+```sh
+kubectl get node <node> -o jsonpath='{.spec.taints}'
+kubectl -n kube-system exec <pod> -c disk-taint -- \
+  cat /run/shogo-node-image-gc-state/disk-status
+```
+
+Removing the taint by hand is safe but temporary — the next reconcile (60 s)
+puts it back while the node is at/above 80%, which is the point.
+
+**A reading goes stale.** `disk-status` carries `epoch=` (and a human `ts=`) from
+the pass that wrote it. If the `gc` container stops publishing — cri-o
+unreachable, `CrashLoopBackOff`, a node rebooting — the sidecar acts on nothing
+once the reading is older than `MAX_READING_AGE_S` (1800 s, three passes of
+slack) and logs:
+
+```
+disk reading in /run/shogo-node-image-gc-state/disk-status is 4210s old (max 1800s) — the GC pass is not publishing; leaving the node as it is
+```
+
+Leaving it as it is, in **both** directions, is deliberate: a stale 40% must not
+untaint a node that has refilled, and a stale 91% must not keep a half-empty node
+unschedulable. A reading with no `epoch=` at all is treated the same way — an
+unknown age is not a measurement. The node is not left unguarded meanwhile: the
+kubelet's own `DiskPressure` taint still fires at 85%, and the deploy gate and
+warm-pool-monitor still sample it directly. If that line is not a one-off, the
+`gc` container is the thing to look at (`kubectl -n kube-system logs <pod> -c gc`).
+
 ## Env reference
 
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `RECLAIM_PCT` | `65` | Reclaim at/above this used% (deploy gate is 80) |
 | `KEEP_PER_REPO` | `2` | Newest digests kept per repo |
-| `INTERVAL_S` | `600` | Seconds between passes in the DaemonSet |
+| `INTERVAL_S` | `600` | Seconds between **successful** passes in the DaemonSet |
+| `RETRY_S` | `30` | Seconds before retrying a **failed** pass |
+| `MAX_FAILED_PASSES` | `3` | Consecutive failures before exiting 1 (visible restart / CrashLoopBackOff) |
 | `IMAGE_REPOS` | `shogo/(shogo-runtime\|agent-runtime\|shogo-api\|shogo-web\|shogo-docs)` | ERE of repos eligible for removal |
 | `IMAGE_DIR` | `/var/lib/containers` | Filesystem measured for used% |
 | `IMAGE_STORE_DIR` | `/var/lib/containers/storage/overlay-images` | cri-o image store |
 | `CRICTL` | `crictl` | crictl binary |
+| `CRI_SOCKET` | `/var/run/crio/crio.sock` | Named in the `ERROR cri unreachable` line the alert matches |
 | `CRICTL_TIMEOUT` | `10m` | crictl's own default is 2 s, which a busy cri-o blows through mid-removal |
 | `NODE_NAME` | hostname | Node this pass is about (downward API in the DaemonSet) |
-| `STATE_DIR` | `/run/shogo-node-image-gc-state` | Where the completed-pass marker goes |
+| `STATE_DIR` | `/run/shogo-node-image-gc-state` | Completed-pass marker + `disk-status` for the taint sidecar |
 | `DRY_RUN` | `0` | Log candidates, remove nothing |
 | `ONESHOT` | `0` | One pass then exit (tests + manual runs) |
+
+The `disk-taint` sidecar has its own four: `TAINT_PCT` (80), `UNTAINT_PCT`
+(75), `INTERVAL_S` (60, reconcile cadence) and `MAX_READING_AGE_S` (1800 — a
+`disk-status` older than this is not acted on; `0` disables the freshness check).
 
 ## Monitoring
 
@@ -178,11 +269,22 @@ does not have to fail a deploy before anyone hears about it:
   the GC will get it once the node crosses 65%).
 - **WARNING** — a node at/above 70%, the level the kubelet starts reclaiming at.
 
+`NodeImageGcFailing`
+([alert](../../terraform/modules/signoz/alerts/node-image-gc-failing.yaml))
+pages separately on the GC *itself* failing — `ERROR cri unreachable`,
+`ERROR nothing removed`, or the `failed passes in a row` line that precedes the
+container restart. Warm-pool-monitor says "this node is filling up"; this says
+"and nothing is reclaiming it".
+
 The monitor reads nodefs/imagefs from
 `/api/v1/nodes/<n>/proxy/stats/summary`, which needs `get` on `nodes/proxy` —
 `nodes` get/list alone returns 403 and the disk line is silently skipped. That
 gap was found while verifying SHO-233: the first staging run printed the digest
 line and no percentages at all.
+
+A **cordoned** node is reported but never paged (it is drained on purpose). A
+**tainted** node is reported *and* still paged — the taint means "nearly full",
+not "someone is handling it".
 
 ## Rollback
 
@@ -191,9 +293,22 @@ The GC is additive and stateless — removing it never makes a node *worse*:
 ```sh
 kubectl -n kube-system delete daemonset node-image-gc
 kubectl -n kube-system delete configmap node-image-gc
+kubectl -n kube-system delete clusterrolebinding shogo-node-image-gc
+kubectl -n kube-system delete clusterrole shogo-node-image-gc
+kubectl -n kube-system delete serviceaccount node-image-gc
 ```
 
 That only means nodes stop being reclaimed; no image that is in use, pinned, or
 within `KEEP_PER_REPO` was ever removed, so no workload is affected by stopping
-it. To stop it from coming back, remove the *"Apply node image GC"* step from
-the three deploy workflow blocks.
+it. **Taints are not cleaned up by deleting the DaemonSet** — remove any left
+behind before you delete it, or a node stays unschedulable with nothing left to
+release it:
+
+```sh
+kubectl get nodes -o json | jq -r '.items[]
+  | select((.spec.taints // [])[] | select(.key == "shogo.ai/disk-high"))
+  | .metadata.name' | xargs -r -n1 kubectl taint nodes shogo.ai/disk-high:NoSchedule-
+```
+
+To stop it from coming back, remove the *"Apply node image GC"* step from the
+three deploy workflow blocks.
