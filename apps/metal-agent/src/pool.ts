@@ -3505,7 +3505,13 @@ export class MetalWarmPool {
       if (res.status === 204) return null
       if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const body = await this.spoolExport(res, handle, 'source', `source ${handle.id}${dir ? ` ${dir}` : ''}`)
+      const body = await this.spoolExport(
+        res,
+        handle,
+        'source',
+        `source ${handle.id}${dir ? ` ${dir}` : ''}`,
+        this.cfg.exportSourceMaxBytes,
+      )
       bytes = body ? archiveBodySize(body) : 0
       return body
     } catch (err) {
@@ -3585,20 +3591,24 @@ export class MetalWarmPool {
    * Every export goes through here (SHO-593). The guest packs its archive into
    * a file and streams it, so writing it back out to a file costs one chunk of
    * memory at a time however large it is — the same shape the repo export has
-   * always used. `spoolResponse` enforces `exportMaxBytes` while it writes, and
-   * cancels the read the moment that ceiling is passed, so a runaway guest is
-   * cut off rather than buffered.
+   * always used. `spoolResponse` enforces a ceiling while it writes, and cancels
+   * the read the moment that ceiling is passed, so a runaway guest is cut off
+   * rather than buffered. The ceiling is per kind: `exportSourceMaxBytes` for a
+   * source archive (workspace storage, no store limit — the biggest real one is
+   * 4.33 GiB) and `exportMaxBytes` for writable state and home, which is the
+   * store's own 4 GiB.
    */
   private async spoolExport(
     res: Response,
     handle: FcVmHandle,
     kind: string,
     label: string,
+    capBytes: number = this.cfg.exportMaxBytes,
   ): Promise<BunFile | null> {
     const path = this.exportSpoolPath(handle.id, kind)
     let spooled: { size: number; sha256: string }
     try {
-      spooled = await spoolResponse(res, path, this.cfg.exportMaxBytes)
+      spooled = await spoolResponse(res, path, capBytes)
     } catch (err) {
       rmSync(path, { force: true })
       if (err instanceof ExportTooLargeError) {
@@ -5548,14 +5558,19 @@ export class MetalWarmPool {
       this.writeLive(a)
     }
 
-    if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
-
-    const outcome = await this.uploadDataGuarded(slot.storageId, body, {
-      quarantine: this.quarantineFor(a),
-      lineage,
-      preserveOnRefusal: opts.final === true,
-    })
-    this.disposeExport(body)
+    let outcome
+    try {
+      if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
+      outcome = await this.uploadDataGuarded(slot.storageId, body, {
+        quarantine: this.quarantineFor(a),
+        lineage,
+        preserveOnRefusal: opts.final === true,
+      })
+    } finally {
+      // In a finally, not after the upload: a throw from the restore point or the
+      // PUT used to strand a multi-GiB temp file until the agent restarted.
+      this.disposeExport(body)
+    }
     switch (outcome.status) {
       case 'created':
       case 'written': {
@@ -5992,12 +6007,17 @@ export class MetalWarmPool {
     }
     if (!exported) return false
 
-    const outcome = await this.uploadHomeGuarded(a.projectId, exported.body, {
-      quarantine: this.quarantineFor(a),
-      lineage,
-      preserveOnRefusal: opts.final === true,
-    })
-    this.disposeExport(exported.body)
+    let outcome
+    try {
+      outcome = await this.uploadHomeGuarded(a.projectId, exported.body, {
+        quarantine: this.quarantineFor(a),
+        lineage,
+        preserveOnRefusal: opts.final === true,
+      })
+    } finally {
+      // See saveDataInner: a failed upload must not leave the spool on disk.
+      this.disposeExport(exported.body)
+    }
     switch (outcome.status) {
       case 'created':
       case 'written':

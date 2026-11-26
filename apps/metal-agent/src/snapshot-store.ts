@@ -252,6 +252,13 @@ export async function pushFileObject(sink: ObjectSink, key: string, srcPath: str
 /**
  * Gzip `srcPath` into a temp file, upload that file, delete it.
  *
+ * Holes are compressed rather than skipped on purpose. A CoW diff is a 16 GiB
+ * sparse file holding ~10 MiB of real data, and `packSparseFile` (the
+ * sparse-aware packer the workspace drive uses) was measured on the host for
+ * exactly that shape: packing first took 39.7 s end to end against 21.5 s for
+ * plain gzip, because the packer still walks all 16 GiB, while peak RSS was 123
+ * MiB either way (SHO-593). Do not "optimise" this without re-measuring it.
+ *
  * The compressed body must never be assembled in memory. Handing S3 a Response
  * wrapped around `CompressionStream` buffered the entire input — measured on the
  * host's Bun 1.3.14: 2 GiB in → 2492 MiB RSS, and the same shape on a live

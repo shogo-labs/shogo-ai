@@ -529,13 +529,32 @@ export const config = {
    * Ceiling on ONE guest export body (SHO-593).
    *
    * Exports are spooled to disk rather than buffered, so this is not a memory
-   * bound — it is the runaway guard, set to the same 4 GiB the repo archive
-   * already refuses past (`REPO_MAX_BYTES`) so a source, writable-state or home
-   * export is never rejected for a size the store would have taken. A body past
-   * it is cut off mid-transfer and counted in `metal_export_too_large_total`;
-   * what was written is discarded and the durable backup is left as it was.
+   * bound — it is the runaway guard. The number is the writable-state store's
+   * own 4 GiB limit, so a writable-state or home export is never rejected for a
+   * size the store would have taken; source exports use `exportSourceMaxBytes`,
+   * because they go to workspace storage instead and are legitimately larger.
+   * A body past either ceiling is cut off mid-transfer and counted in
+   * `metal_export_too_large_total`; what was written is discarded and the
+   * durable backup is left as it was.
    */
   exportMaxBytes: parseInt(env('METAL_EXPORT_MAX_MIB', '4096'), 10) * 1024 * 1024,
+  /**
+   * Runaway ceiling for a workspace SOURCE export — a different number from
+   * `exportMaxBytes` on purpose.
+   *
+   * 4 GiB is the writable-state store's own limit, which is why `exportMaxBytes`
+   * is that: a larger writable-state archive would be refused by the store
+   * anyway. A source archive never goes there — it lands in workspace storage,
+   * which has no such limit — and the largest real workspace source export on
+   * staging measures 4.33 GiB. Sharing the 4 GiB number therefore refused the
+   * biggest workspace's backup on every single suspend, which is worse than the
+   * memory bug it replaced.
+   *
+   * Still a ceiling (16 GiB) because the spool writes to disk, and an unbounded
+   * stream from a broken guest would fill it. Past this the transfer is cut off
+   * and counted in `metal_export_too_large_total`.
+   */
+  exportSourceMaxBytes: parseInt(env('METAL_SOURCE_EXPORT_MAX_MIB', '16384'), 10) * 1024 * 1024,
 
   /**
    * The same trick applied to cold-boot hydrate, with the host fetching on the

@@ -279,10 +279,10 @@ export const M = {
   agentRssBytes: 'metal_agent_rss_bytes',
   agentExternalBytes: 'metal_agent_external_bytes',
   agentArrayBuffersBytes: 'metal_agent_array_buffers_bytes',
-  // Guest exports are read whole into memory, so they are bounded by a byte
-  // budget (SHO-593). `inflight` shows how much of it is spoken for, `waited`
-  // how often an export had to queue, and `tooLarge` counts bodies refused
-  // rather than buffered — the tail the budget exists to keep off the host.
+  // Guest exports are spooled to disk rather than buffered (SHO-593), so there
+  // is no in-memory budget any more: `inflight` is the bytes currently crossing
+  // the spool (disk, not memory) and `tooLarge` counts the bodies the runaway
+  // ceiling cut off mid-transfer, whose durable backup was left as it was.
   exportInflightBytes: 'metal_export_inflight_bytes',
   exportTooLarge: 'metal_export_too_large_total',
   ksmPagesSharing: 'metal_ksm_pages_sharing',
