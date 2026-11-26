@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createSnapshotStore, downloadRanged, pumpStream, type RangeFetcher } from './snapshot-store'
+import { createSnapshotStore, downloadRanged, type RangeFetcher } from './snapshot-store'
 import { mkdirSync, writeFileSync } from 'fs'
 
 let dir: string
@@ -168,96 +168,5 @@ describe('missReason', () => {
   test('absent (not rootfs) when the identity matches but the pull still missed', async () => {
     writeMeta('p1', { rootfsIdentity: 'sz1-mt2' })
     expect(await store().missReason!('p1', 'sz1-mt2')).toBe('absent')
-  })
-})
-
-/**
- * The snapshot push used to hand S3 a `Response` with a gzip stream body, which
- * Bun read whole before uploading (measured on staging: 4.1 GiB of
- * `arrayBuffers` for one 4 GiB VM, for over 100 s). `pumpStream` is the
- * replacement, so these tests pin the two properties that make it bounded:
- * writes are awaited (backpressure, so the sink cannot accumulate) and nothing
- * ever materialises the stream.
- */
-describe('pumpStream (bounded snapshot upload)', () => {
-  /** A ReadableStream of `chunks` × `chunkBytes`, generated lazily — never built up front. */
-  function synthetic(totalBytes: number, chunkBytes: number): ReadableStream<Uint8Array> {
-    let sent = 0
-    return new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (sent >= totalBytes) return controller.close()
-        const size = Math.min(chunkBytes, totalBytes - sent)
-        const chunk = new Uint8Array(size)
-        chunk.fill(sent & 0xff)
-        sent += size
-        controller.enqueue(chunk)
-      },
-    })
-  }
-
-  test('awaits each write, so a slow sink never has two chunks outstanding', async () => {
-    let outstanding = 0
-    let maxOutstanding = 0
-    const order: number[] = []
-    const sink = {
-      write(chunk: Uint8Array) {
-        outstanding++
-        maxOutstanding = Math.max(maxOutstanding, outstanding)
-        order.push(chunk[0])
-        // A sink that cannot take the bytes yet returns a promise; a caller that
-        // fired without awaiting would put `outstanding` at the chunk count.
-        return new Promise<number>((resolve) =>
-          setTimeout(() => {
-            outstanding--
-            resolve(chunk.byteLength)
-          }, 1),
-        )
-      },
-      end() {
-        return 0
-      },
-    }
-
-    const moved = await pumpStream(synthetic(64 * 1024, 1024), sink)
-
-    expect(moved).toBe(64 * 1024)
-    expect(maxOutstanding).toBe(1)
-    expect(order.length).toBe(64)
-  })
-
-  test('moves 512 MiB through without the agent holding it', async () => {
-    const MIB = 1024 * 1024
-    const total = 512 * MIB
-    let sinkBytes = 0
-    let peakChunk = 0
-    const sink = {
-      write(chunk: Uint8Array) {
-        sinkBytes += chunk.byteLength
-        peakChunk = Math.max(peakChunk, chunk.byteLength)
-        return chunk.byteLength // "already flushed": nothing retained
-      },
-      end() {
-        return 0
-      },
-    }
-
-    const before = process.memoryUsage().arrayBuffers
-    let peakArrayBuffers = before
-    const poll = setInterval(() => {
-      peakArrayBuffers = Math.max(peakArrayBuffers, process.memoryUsage().arrayBuffers)
-    }, 5)
-    let moved = 0
-    try {
-      moved = await pumpStream(synthetic(total, 1 * MIB), sink)
-    } finally {
-      clearInterval(poll)
-    }
-
-    expect(moved).toBe(total)
-    expect(sinkBytes).toBe(total)
-    expect(peakChunk).toBe(1 * MIB)
-    // The old shape would show ~512 MiB here. Anything at or under one chunk is
-    // the generator's own chunk; a part's worth (16 MiB) is the ceiling we allow.
-    expect(peakArrayBuffers - before).toBeLessThan(16 * MIB)
   })
 })

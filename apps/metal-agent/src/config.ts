@@ -526,20 +526,6 @@ export const config = {
   s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
 
   /**
-   * Multipart part size (and parallel parts) for the snapshot PUSH (SHO-593).
-   *
-   * The snapshot push used to hand S3 a `Response` whose body was a gzip stream
-   * of unknown length, and Bun buffered that body whole: a suspend of one 4 GiB
-   * VM put a 4.1 GiB `arrayBuffers` hold in the agent for minutes, and several
-   * concurrent suspends is what reached 40 GiB of control-plane RSS and got the
-   * process OOM-killed. Pumping the same stream through a multipart writer
-   * bounds the hold at `partSize * queueSize`, so the defaults here are the
-   * memory ceiling (16 MiB × 4 = 64 MiB), not a throughput guess.
-   */
-  snapshotPushPartBytes: parseInt(env('METAL_SNAPSHOT_PUSH_PART_MB', '16'), 10) * 1024 * 1024,
-  snapshotPushQueue: parseInt(env('METAL_SNAPSHOT_PUSH_QUEUE', '4'), 10),
-
-  /**
    * The same trick applied to cold-boot hydrate, with the host fetching on the
    * guest's behalf (see `hydrate-proxy`).
    *
