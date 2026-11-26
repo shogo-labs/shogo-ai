@@ -19,13 +19,16 @@ function getNativeAuthCookie(): string | null {
 }
 
 /**
- * How long a GET may wait for an answer on mobile.
+ * How long a GET may go without an answer on mobile.
  *
  * A phone on a dying connection can leave a request open indefinitely: the
  * socket is still up, the answer never comes, and the screen sits on a spinner
  * that looks like the app has frozen (SHO-580). 20 s is well past a slow 3G
  * round trip and short enough that a person sees an error and a retry instead of
- * waiting. Non-GET requests, streams and uploads keep no deadline.
+ * waiting. It measures silence, not slowness: the SDK clock only runs while the
+ * JS thread can watch the request, and it stops the moment the answer arrives,
+ * so a busy or cold-starting phone is never cut off (SHO-582). Non-GET requests,
+ * streams and uploads keep no deadline.
  */
 export const MOBILE_REQUEST_TIMEOUT_MS = 20_000
 
