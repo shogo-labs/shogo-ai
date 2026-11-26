@@ -665,10 +665,25 @@ export const TERMINAL_EVENT_RE =
 export const OPENAI_TERMINAL_EVENT_RE =
   /(?:^|\n)data:\s*\[DONE\]|(?:^|\n)data:\s*\{\s*"error"|(?:^|\n)data:[^\n]*"finish_reason"\s*:\s*"(?!null)[a-zA-Z_]+"/
 
+/**
+ * Terminal marker on Google's *native* `generateContent` SSE: the resolved
+ * `finishReason` on a candidate. That stream never sends `[DONE]` and has no
+ * `finish_reason` field, so the OpenAI markers match nothing — which made
+ * every completed native video turn look truncated and get retried.
+ */
+export const GOOGLE_NATIVE_TERMINAL_EVENT_RE =
+  /(?:^|\n)data:[^\n]*"finishReason"\s*:\s*"(?!FINISH_REASON_UNSPECIFIED)[A-Z_]+"/
+
+/** How an upstream SSE body announces the end of its stream. */
+export type SseTerminalDialect = 'anthropic' | 'openai' | 'google-native'
+
 export function scanForTerminalEvent(
   buffer: string,
-  dialect: 'anthropic' | 'openai' = 'anthropic',
+  dialect: SseTerminalDialect = 'anthropic',
 ): boolean {
+  if (dialect === 'google-native') {
+    return GOOGLE_NATIVE_TERMINAL_EVENT_RE.test(buffer) || TERMINAL_EVENT_RE.test(buffer)
+  }
   if (dialect === 'openai') return OPENAI_TERMINAL_EVENT_RE.test(buffer) || TERMINAL_EVENT_RE.test(buffer)
   return TERMINAL_EVENT_RE.test(buffer)
 }
@@ -860,6 +875,12 @@ export interface StreamWrapOptions {
    * throws on. Default `anthropic` (every pre-existing caller).
    */
   dialect?: 'anthropic' | 'openai'
+  /**
+   * How the *upstream* body marks its end, when that differs from the error
+   * frame shape. `google-native` = a Gemini `generateContent` SSE body, which
+   * ends on `finishReason` and never sends `[DONE]`. Defaults to `dialect`.
+   */
+  terminal?: SseTerminalDialect
 }
 
 /** One synthetic SSE error frame in the dialect the client's SDK parses. */
@@ -899,6 +920,7 @@ export function wrapSseForErrorVisibility(
   const maxIdleMs = options.maxIdleMs ?? MAX_IDLE_MS
   const watchdogIntervalMs = options.watchdogIntervalMs ?? 5_000
   const dialect = options.dialect ?? 'anthropic'
+  const terminal = options.terminal ?? dialect
   let tailBuffer = ''
   let sawTerminalEvent = false
   let chunkCount = 0
@@ -994,7 +1016,7 @@ export function wrapSseForErrorVisibility(
             lastChunkAt = Date.now()
             const text = decoder.decode(value, { stream: true })
             tailBuffer = (tailBuffer + text).slice(-8192)
-            if (!sawTerminalEvent && scanForTerminalEvent(tailBuffer, dialect)) {
+            if (!sawTerminalEvent && scanForTerminalEvent(tailBuffer, terminal)) {
               sawTerminalEvent = true
             }
             controller.enqueue(value)
@@ -1154,6 +1176,8 @@ interface DeferredSseOptions {
   providerLabel: string
   /** Wire shape of the frames this stream writes to the client. */
   dialect: 'anthropic' | 'openai'
+  /** How the upstream marks the end of its stream. Defaults to `dialect`. */
+  terminal?: SseTerminalDialect
   keepaliveMs: number
   startedAt: number
   /**
@@ -1283,6 +1307,7 @@ function openDeferredSse(
         const wrapped = wrapSseForErrorVisibility(upstream.body, options.providerLabel, {
           keepaliveMs: options.keepaliveMs,
           dialect: options.dialect,
+          terminal: options.terminal,
         })
         const body = options.transform ? options.transform(wrapped, upstream) : wrapped
         innerReader = body.getReader()
@@ -1339,6 +1364,8 @@ export interface EarlySseOptions {
    * (`proxyAnthropicStream`).
    */
   clientDialect?: 'anthropic' | 'openai'
+  /** How the upstream marks the end of its stream. Defaults to `dialect`. */
+  terminal?: SseTerminalDialect
   /** Response headers for the streamed 200. */
   headers?: Record<string, string>
   /**
@@ -1450,6 +1477,7 @@ export async function proxySseWithEarlyHeaders(
     const wrapped = wrapSseForErrorVisibility(upstream.body!, options.providerLabel, {
       keepaliveMs,
       dialect,
+      terminal: options.terminal,
     })
     const body = options.transform ? options.transform(wrapped, upstream) : wrapped
     return new Response(body, { status: upstream.status, headers })
@@ -1462,6 +1490,7 @@ export async function proxySseWithEarlyHeaders(
     openDeferredSse(pending, {
       providerLabel: options.providerLabel,
       dialect: clientDialect,
+      terminal: options.terminal,
       keepaliveMs,
       startedAt,
       maxWaitMs,
@@ -3760,6 +3789,7 @@ export async function proxyOpenAIStream(
     {
       providerLabel: modelConfig.provider,
       dialect: 'openai',
+      terminal: nativeVideo ? 'google-native' : undefined,
       signal,
       headers: openAIProxyHeaders(modelConfig),
       transform: (upstreamBody) => {

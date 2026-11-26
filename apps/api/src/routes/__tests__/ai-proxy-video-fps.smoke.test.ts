@@ -31,8 +31,20 @@ import { buildStampedClip } from './fixtures/stamped-clip'
 const WORK_DIR = '/tmp/test-ai-proxy-video-fps'
 const CLIP = join(WORK_DIR, 'stamped-10s-10fps.mp4')
 
-const googleKey = process.env.GOOGLE_API_KEY
-const openRouterKey = process.env.OPENROUTER_API_KEY
+/**
+ * A live key — not a placeholder another suite in the same process left behind.
+ * `ai-proxy-video-input.test.ts` sets `GOOGLE_API_KEY='AIza-test-…'` in its
+ * `beforeAll`, and a `bun test` over several files shares the process, so
+ * reading only the variable name turned these checks red with a fake key
+ * instead of skipping them.
+ */
+function liveKey(value: string | undefined): string | undefined {
+  if (!value || value.length < 20) return undefined
+  return /test|fake|placeholder|dummy|example|sample/i.test(value) ? undefined : value
+}
+
+const googleKey = liveKey(process.env.GOOGLE_API_KEY)
+const openRouterKey = liveKey(process.env.OPENROUTER_API_KEY)
 const ffmpeg = resolveFfmpeg().ffmpeg
 
 // The clip is drawn by `fixtures/stamped-clip.ts` rather than ffmpeg's

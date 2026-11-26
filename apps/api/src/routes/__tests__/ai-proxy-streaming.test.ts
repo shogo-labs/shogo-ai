@@ -156,6 +156,28 @@ describe('scanForTerminalEvent (split-frame safe)', () => {
       ),
     ).toBe(false)
   })
+  test('google-native: a resolved finishReason ends the stream', () => {
+    // Google's native SSE has no `[DONE]` and no `finish_reason`, so the OpenAI
+    // markers match nothing — every healthy native video turn was reported as
+    // truncated and retried (SHO-591).
+    const buffer = 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":9}}\n\n'
+    expect(scanForTerminalEvent(buffer, 'google-native')).toBe(true)
+    // …which is exactly why the OpenAI dialect is the wrong scan for it.
+    expect(scanForTerminalEvent(buffer, 'openai')).toBe(false)
+  })
+
+  test('google-native: an unresolved finishReason is not the end', () => {
+    expect(
+      scanForTerminalEvent('data: {"candidates":[{"finishReason":"FINISH_REASON_UNSPECIFIED"}]}\n\n', 'google-native'),
+    ).toBe(false)
+  })
+
+  test('google-native: a bare promptFeedback chunk is not the end', () => {
+    expect(
+      scanForTerminalEvent('data: {"candidates":[],"usageMetadata":{"promptTokenCount":9}}\n\n', 'google-native'),
+    ).toBe(false)
+  })
+
   test('catches message_stop even if split across chunks when buffered', () => {
     // Simulate buffering: previous chunk ended with partial data: line.
     const buffered =

@@ -330,13 +330,29 @@ describe('video rejection on a non-video model', () => {
   })
 })
 
-describe('video pass-through for a Google-direct model', () => {
-  // Step 0 of SHO-495 (2026-11-21): Gemini's OpenAI-compatible endpoint decodes
-  // video from pi-ai's `image_url` + `data:video/*` block on every probed
-  // model, and rejects both `video_url` and OpenRouter's `file` part. So the
-  // Google branch sends the block untouched — no bridge, no rewrite.
+/** Google's native endpoint, which is where a video turn now goes. */
+const googleNativeUrl = (apiModel: string) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${apiModel}:generateContent`
+
+/** A native `generateContent` answer, so the round-trip is real, not a stub. */
+const nativeAnswer = () =>
+  new Response(
+    JSON.stringify({
+      candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1, totalTokenCount: 13 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+
+describe('video turns for a Google-direct model go native', () => {
+  // SHO-591 §A. SHO-495 step 0 established that Google's *compat* endpoint does
+  // decode pi-ai's `image_url` + `data:video/*` block — that is why we sent it
+  // untouched — but it samples at 1 frame per second of duration and has no
+  // setting for the rate. `videoMetadata.fps` exists only on the native API, so
+  // a video turn is translated and sent there instead.
   for (const model of VIDEO_GOOGLE_MODELS) {
-    test(`${model} reaches Google with the image_url video block unchanged`, async () => {
+    test(`${model} sends its video turn to native generateContent`, async () => {
+      nextResponse = nativeAnswer()
       const res = await postChatCompletions({
         model,
         messages: [
@@ -351,22 +367,41 @@ describe('video pass-through for a Google-direct model', () => {
       })
 
       expect(res.status).toBe(200)
-      expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
-      expect(lastFetchBody.model).toBe(model)
-      const blocks = lastFetchBody.messages[0].content
-      expect(blocks[0]).toEqual({ type: 'text', text: 'Describe this clip.' })
-      expect(blocks[1]).toEqual({
-        type: 'image_url',
-        image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` },
-      })
-      expect(blocks.some((b: any) => b.type === 'video_url')).toBe(false)
+      expect(lastFetchUrl).toBe(googleNativeUrl(model))
+      const parts = lastFetchBody.contents[0].parts
+      expect(parts[0]).toEqual({ text: 'Describe this clip.' })
+      expect(parts[1].inlineData.mimeType).toBe('video/mp4')
+      expect(parts[1].inlineData.data).toBe(VIDEO_B64)
+      // No rate was asked for, so no `videoMetadata`: Google's own 1 fps default
+      // is what the caller gets, and the runtime reports that to the model.
+      expect(parts[1].videoMetadata).toBeUndefined()
     })
   }
+
+  test('carries the requested frame rate on the native video block', async () => {
+    nextResponse = nativeAnswer()
+    const res = await postChatCompletions({
+      model: 'gemini-4-hydrogen',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this clip.' },
+            { type: 'image_url', image_url: { url: `data:video/mp4;fps=10;start=5;base64,${VIDEO_B64}` } },
+          ],
+        },
+      ],
+    })
+
+    expect(res.status).toBe(200)
+    expect(lastFetchBody.contents[0].parts[1].videoMetadata).toEqual({ fps: 10, startOffset: '5s' })
+  })
 
   // The id the picker serves and the client saves on a seeded instance is the
   // row's UUID. This is the case that 400'd on staging before SHO-495 round 1.
   test('a seeded UUID id reaches Google for its apiModel, not as the UUID', async () => {
     await invalidateModelRegistry()
+    nextResponse = nativeAnswer()
     const res = await postChatCompletions({
       model: CARBON_UUID,
       messages: [
@@ -381,13 +416,9 @@ describe('video pass-through for a Google-direct model', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
     // The cloud/local proxy addresses the provider by the row's apiModel.
-    expect(lastFetchBody.model).toBe('gemini-4-carbon')
-    expect(lastFetchBody.messages[0].content[1]).toEqual({
-      type: 'image_url',
-      image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` },
-    })
+    expect(lastFetchUrl).toBe(googleNativeUrl('gemini-4-carbon'))
+    expect(lastFetchBody.contents[0].parts[1].inlineData.data).toBe(VIDEO_B64)
   })
 
   test('a text-only turn is unchanged: same endpoint, same messages, catalog cap', async () => {
