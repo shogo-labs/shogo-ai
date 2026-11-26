@@ -11,6 +11,7 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import { isBinaryBuffer } from '@shogo/shared-runtime'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
+import { readMp4Probe, type VideoProbe } from './mp4-probe'
 import { userMessage } from './pi-adapter'
 
 const TEXT_MEDIA_TYPES = new Set([
@@ -174,6 +175,33 @@ function truncationNote(totalBytes: number, savedPath?: string): string {
 }
 
 /**
+ * The frame-rate sentence on an `[Attached Video …]` line.
+ *
+ * An attachment is sent at the provider's default sampling — about 1 frame per
+ * second of duration — and there is no way to ask for more on an attachment.
+ * Saying so is the difference between an agent that knows a 33 s / 20 fps clip
+ * arrived as 33 frames and one that signs off a frozen tail (#2268).
+ *
+ * Returns '' when the container cannot be read: a shot at a rate we do not
+ * know is worse than saying nothing.
+ */
+export function describeVideoSampling(probe: VideoProbe | null, savedPath?: string): string {
+  if (!probe) return ''
+  const duration = probe.durationSeconds
+  const durationText = `${duration.toFixed(1)} s`
+  const fpsText = probe.sourceFps ? `, ${probe.sourceFps.toFixed(probe.sourceFps < 10 ? 1 : 0)} fps source` : ''
+  const seen = Math.max(1, Math.ceil(duration))
+  const frames =
+    probe.sourceFrames !== null && probe.sourceFrames > 0
+      ? `the model sees ~${seen} of ${probe.sourceFrames} frames (1 fps)`
+      : `the model sees ~${seen} frames (1 fps)`
+  const hint = savedPath
+    ? ` Use read_file on \`${savedPath}\` with fps to inspect motion.`
+    : ''
+  return ` — ${durationText}${fpsText}; ${frames}.${hint}`
+}
+
+/**
  * Parse file parts into images (for native vision) and text context
  * (for inline prompt injection). Images go directly to the model;
  * text files are decoded and wrapped in delimiters, capped per file and per
@@ -267,12 +295,14 @@ export function parseFileAttachments(
         )
         continue
       }
-      const base64 = source.kind === 'data'
-        ? source.base64
-        : source.read(MAX_VIDEO_ATTACHMENT_BYTES).toString('base64')
-      images.push({ type: 'image', data: base64, mimeType: mediaType })
+      const bytes = source.kind === 'data' ? source.bytes : source.read(MAX_VIDEO_ATTACHMENT_BYTES)
+      images.push({ type: 'image', data: bytes.toString('base64'), mimeType: mediaType })
+      // Attachments travel at the provider default (~1 frame per second of
+      // duration) on every route — there is no fps setting on an attachment —
+      // so the line says how many frames that actually is (#2268).
+      const frameSummary = describeVideoSampling(readMp4Probe(bytes), fp.savedPath)
       if (fp.savedPath) {
-        sections.push(`[Attached Video (${label})]:${savedSuffix}`)
+        sections.push(`[Attached Video (${label})${frameSummary}]:${savedSuffix}`)
       }
       continue
     }

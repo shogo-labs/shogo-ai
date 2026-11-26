@@ -61,6 +61,15 @@ import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
 import {
+  buildGeminiNativeBody,
+  convertGeminiNativeResponse,
+  createGeminiNativeSseRewriter,
+  geminiNativeEndpoint,
+  hasGeminiVideoTurn,
+  type NativeChatMessage,
+  type NativeTranslationRequest,
+} from '../lib/gemini-native'
+import {
   MODEL_CATALOG,
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
@@ -72,6 +81,7 @@ import {
   getMaxOutputTokens,
   modelSupportsAudioInput,
   modelSupportsVideoInput,
+  stripVideoMimeParams,
   isLiveModel,
   isOpenRouterModel,
   isAutoModel,
@@ -2985,6 +2995,48 @@ function stripCacheMarkersFromMessage(
 }
 
 /**
+ * Drop the frame-rate parameters from every video block.
+ *
+ * `read_file` carries a caller's `fps`/`start`/`end` on the block's MIME type
+ * (`data:video/mp4;fps=10;base64,…`) because that is the only field pi-ai
+ * passes through untouched. Only Google's *native* API understands them (as
+ * `videoMetadata`); every other endpoint sees `video/mp4;fps=10` as an unknown
+ * media type and rejects the request, so the parameters are stripped here —
+ * once, for all the routes that are not the native one.
+ *
+ * Returns the same array reference when nothing needed stripping, so
+ * prompt-cache hashes stay stable for every turn that carries no video.
+ */
+export function stripVideoMimeParamsFromMessages(
+  messages: ChatCompletionRequest['messages'],
+): ChatCompletionRequest['messages'] {
+  let mutated = false
+  const next = messages.map((message) => {
+    if (!Array.isArray(message.content)) return message
+    let contentMutated = false
+    const content = message.content.map((block) => {
+      const url = block?.type === 'image_url' ? block.image_url?.url : block?.type === 'video_url' ? block.video_url?.url : undefined
+      if (typeof url !== 'string' || !url.startsWith('data:video/')) return block
+      const comma = url.indexOf(',')
+      if (comma === -1) return block
+      const meta = url.slice('data:'.length, comma)
+      if (!meta.endsWith(';base64')) return block
+      const bare = `${stripVideoMimeParams(meta.slice(0, -';base64'.length))};base64`
+      if (bare === meta) return block
+      contentMutated = true
+      const stripped = `data:${bare},${url.slice(comma + 1)}`
+      return block.type === 'video_url'
+        ? { ...block, video_url: { url: stripped } }
+        : { ...block, image_url: { url: stripped } }
+    })
+    if (!contentMutated) return message
+    mutated = true
+    return { ...message, content }
+  })
+  return mutated ? next : messages
+}
+
+/**
  * Rewrite pi-ai's `image_url` carrying a `data:video/*` payload into
  * OpenRouter's `video_url` block.
  *
@@ -2995,12 +3047,16 @@ function stripCacheMarkersFromMessage(
  * Anything else (real images, text, tool calls) passes through untouched, and
  * the message/array references are preserved when nothing needed rewriting so
  * prompt-cache hashes stay stable.
+ *
+ * OpenRouter has no frame-rate setting, so any MIME parameters the runtime
+ * attached are stripped: it would read `video/mp4;fps=10` as an unknown
+ * media type.
  */
 export function bridgeVideoContentBlocks(
   messages: ChatCompletionRequest['messages'],
 ): ChatCompletionRequest['messages'] {
   let mutated = false
-  const next = messages.map((message) => {
+  const next = stripVideoMimeParamsFromMessages(messages).map((message) => {
     if (!Array.isArray(message.content)) return message
     let contentMutated = false
     const content = message.content.map((block) => {
@@ -3156,7 +3212,9 @@ export function buildOpenAICompatibleBody(
     }
 
     if (Array.isArray(body.messages)) {
-      body.messages = applyGoogleThoughtSignatures(body.messages as any[])
+      body.messages = applyGoogleThoughtSignatures(
+        stripVideoMimeParamsFromMessages(body.messages as ChatCompletionRequest['messages']) as any[],
+      )
     }
     return body
   }
@@ -3377,6 +3435,81 @@ function openAIProxyHeaders(modelConfig: ModelConfig): Record<string, string> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Gemini native video turns (§A of SHO-591)
+// ---------------------------------------------------------------------------
+
+const geminiNativeVideoCounter = aiProxyMeter.createCounter('ai_proxy.gemini_native_video_turns', {
+  description: 'Gemini chat turns routed through native generateContent so videoMetadata.fps is honoured',
+  unit: '{turn}',
+})
+
+/**
+ * Whether this request must take Google's native endpoint.
+ *
+ * Only a Google-served turn that actually carries video does: that is the one
+ * case the compat endpoint cannot serve correctly, because it samples every
+ * clip at 1 fps with no setting to change it (#2268). Every other Google turn
+ * keeps the compat path byte-for-byte.
+ */
+export function usesGeminiNativeVideo(request: ChatCompletionRequest, modelConfig: ModelConfig): boolean {
+  if (modelConfig.provider !== 'google') return false
+  return hasGeminiVideoTurn(request.messages as unknown as NativeChatMessage[])
+}
+
+/** The generation options both native routes share, resolved the way the compat block resolves them. */
+function geminiNativeTurnOptions(
+  request: ChatCompletionRequest,
+  modelConfig: ModelConfig,
+): { apiModel: string; thinkingLevel: string; maxOutputTokens: number } {
+  // Same precedence as `buildOpenAICompatibleBody`: the caller's explicit
+  // shogo namespace, then the field pi-ai sends, then the DB/catalog effort.
+  const providerOptions = (request as { providerOptions?: ProviderOptionsField }).providerOptions
+  const catalogEffort = modelConfig.reasoningEffort ?? getMergedModelEntrySync(modelConfig.apiModel)?.reasoningEffort
+  const requestedEffort =
+    providerOptions?.shogo?.reasoning_effort ??
+    (typeof request.reasoning_effort === 'string' ? request.reasoning_effort : undefined) ??
+    catalogEffort ??
+    'medium'
+  const requestedMax =
+    request.max_tokens ?? (request as { max_completion_tokens?: number }).max_completion_tokens
+  return {
+    apiModel: modelConfig.apiModel,
+    thinkingLevel: googleThinkingLevel(modelConfig.apiModel, requestedEffort),
+    maxOutputTokens: requestedMax ?? getMaxOutputTokens(request.model),
+  }
+}
+
+/**
+ * POST a native `generateContent` / `streamGenerateContent` call.
+ *
+ * Deliberately not retried on a fallback upstream: a fallback re-sends the
+ * clip down a path that samples it at 1 fps, which is the bug this route
+ * exists to avoid. A failure here is surfaced as-is.
+ */
+async function fetchGeminiNative(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig,
+  stream: boolean,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const options = geminiNativeTurnOptions(request, modelConfig)
+  const body = buildGeminiNativeBody(request as unknown as NativeTranslationRequest, options)
+  geminiNativeVideoCounter.add(1, { route: 'gemini_native_video', model: modelConfig.apiModel })
+  const response = await fetch(geminiNativeEndpoint(modelConfig.apiModel, stream), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
+  }
+  return response
+}
+
 /** Copy OpenRouter's `reasoning` / `reasoning_details` onto DeepSeek's `reasoning_content`. */
 function rewriteOpenRouterReasoningPayload(payload: any): boolean {
   const choices = payload?.choices
@@ -3495,6 +3628,8 @@ export async function proxyOpenAIStream(
   signal?: AbortSignal,
 ): Promise<Response> {
   let served: ModelConfig = modelConfig
+  /** Video turns take Google's native API; see `usesGeminiNativeVideo`. */
+  const nativeVideo = usesGeminiNativeVideo(request, modelConfig)
 
   const pickLineRewriter = (config: ModelConfig) =>
     // Gemini also needs a per-line rewrite: it returns the thought signature on
@@ -3609,6 +3744,9 @@ export async function proxyOpenAIStream(
   // on a huge context writing a whole file emits nothing for longer than that.
   return proxySseWithEarlyHeaders(
     async (upstreamSignal) => {
+      if (nativeVideo) {
+        return fetchGeminiNative(request, apiKey, modelConfig, true, upstreamSignal)
+      }
       const { response, served: upstreamServed } = await fetchOpenAICompatible(
         request,
         apiKey,
@@ -3625,7 +3763,11 @@ export async function proxyOpenAIStream(
       signal,
       headers: openAIProxyHeaders(modelConfig),
       transform: (upstreamBody) => {
-        const lineRewriter = pickLineRewriter(served)
+        // A native video turn already speaks our chunks: its rewriter replaces
+        // the compat one wholesale rather than running after it.
+        const lineRewriter = nativeVideo
+          ? createGeminiNativeSseRewriter({ model: modelConfig.apiModel })
+          : pickLineRewriter(served)
         if (!onComplete && !lineRewriter) return upstreamBody
         return upstreamBody.pipeThrough(buildTransformStream(lineRewriter))
       },
@@ -3646,6 +3788,11 @@ export async function proxyOpenAINonStream(
   modelConfig: ModelConfig,
   signal?: AbortSignal,
 ) {
+  if (usesGeminiNativeVideo(request, modelConfig)) {
+    const nativeResponse = await fetchGeminiNative(request, apiKey, modelConfig, false, signal)
+    return convertGeminiNativeResponse(await nativeResponse.json(), modelConfig.apiModel)
+  }
+
   const { response, served } = await fetchOpenAICompatible(
     request,
     apiKey,

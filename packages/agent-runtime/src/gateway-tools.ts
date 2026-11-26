@@ -10,7 +10,7 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
-import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput } from '@shogo/model-catalog'
+import { getModelTier, resolveModelId, calculateDollarCost, modelSupportsVideoInput, getProviderForModel, getVideoTokensPerFrame, buildVideoMimeType } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync, realpathSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
@@ -236,6 +236,14 @@ import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWar
 import { scanFileForLayoutWarnings, type LayoutWarning } from './lint-layout'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
+import {
+  probeVideoFile,
+  planVideoRead,
+  retimeVideo,
+  resolveFfmpeg,
+  RetimeError,
+  VIDEO_FRAME_TOKEN_BUDGET,
+} from './video-retime'
 import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
@@ -3384,11 +3392,234 @@ function detectBinaryContent(buf: Buffer, absolutePath: string): { label: string
 const MAX_FULL_READ_LINES = 2000
 const MAX_FULL_READ_CHARS = 60_000
 
+interface ReadVideoOptions {
+  filePath: string
+  /** Absolute path on disk. */
+  resolved: string
+  videoMime: string
+  /** The turn's model id, for provider and per-frame token cost. */
+  modelId: string
+  requestedFps?: number
+  requestedStart?: number
+  requestedEnd?: number
+  /** `offset`/`limit` were passed on a video read (they mean nothing there). */
+  ignoredOffsetLimit: boolean
+  workspaceDir: string
+}
+
+function roundSeconds(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+function roundRate(value: number): number {
+  return Math.round(value * 1000) / 1000
+}
+
+/**
+ * Build a video read result: the clip as multimodal content plus one JSON
+ * block that says exactly what the model is about to see.
+ *
+ * The disclosure is the point (#2268): the old result said nothing about
+ * sampling, so a caller could not tell that a 33 s / 20 fps clip had been
+ * reduced to 33 frames, and a QA agent signed off a clip with a 10.7 s frozen
+ * tail. `effectiveFps` / `framesSent` are on every video read now.
+ */
+function videoReadResult(
+  filePath: string,
+  base64: string,
+  mimeType: string,
+  details: Record<string, unknown>,
+): AgentToolResult<Record<string, unknown>> {
+  return {
+    content: [
+      { type: 'image' as const, data: base64, mimeType },
+      { type: 'text' as const, text: JSON.stringify({ path: filePath, ...details }) },
+    ],
+    details: { path: filePath, ...details },
+  }
+}
+
+/**
+ * Hand a video file to the model, honouring how densely it asked to sample it.
+ *
+ * Three routes, one contract — every result says how many frames the model
+ * actually saw:
+ *
+ *  - **Google** (`provider: 'google'`) reads video through the proxy's native
+ *    `generateContent` path, which honours `videoMetadata.fps`. The request is
+ *    carried on the block's MIME type and no re-encode happens.
+ *  - **Every other video model** samples at 1 frame per second of duration and
+ *    has no setting for it, so the frames are extracted at the requested rate
+ *    and re-encoded one frame per second (`video-retime.ts`).
+ *  - **No `fps` asked for** — send the clip as it is, and say what that means.
+ */
+async function readVideoFile(
+  options: ReadVideoOptions,
+): Promise<AgentToolResult<Record<string, unknown>>> {
+  const { filePath, resolved, videoMime, modelId, ignoredOffsetLimit, workspaceDir } = options
+  const provider = getProviderForModel(modelId)
+  const tokensPerFrame = getVideoTokensPerFrame(modelId)
+  const probe = await probeVideoFile(resolved)
+  const askedForFrames =
+    options.requestedFps !== undefined || options.requestedStart !== undefined || options.requestedEnd !== undefined
+
+  const disclosure: Record<string, unknown> = {
+    durationSeconds: probe ? roundSeconds(probe.durationSeconds) : null,
+    sourceFps: probe?.sourceFps !== null && probe?.sourceFps !== undefined ? roundRate(probe.sourceFps) : null,
+    sourceFrames: probe?.sourceFrames ?? null,
+  }
+  if (options.requestedStart !== undefined) disclosure.start = options.requestedStart
+  if (options.requestedEnd !== undefined) disclosure.end = options.requestedEnd
+  if (ignoredOffsetLimit) disclosure.offsetNote = 'offset/limit are ignored for video files.'
+
+  const withSampleNote = (details: Record<string, unknown>): Record<string, unknown> => {
+    const framesSent = typeof details.framesSent === 'number' ? details.framesSent : null
+    const sourceFrames = typeof details.sourceFrames === 'number' ? details.sourceFrames : null
+    if (framesSent === null || sourceFrames === null || framesSent >= sourceFrames) return details
+    // A caller-set note explains this read precisely (retimed, missing ffmpeg);
+    // the generic sampling warning is only for a read that says nothing else.
+    if (typeof details.note === 'string') return details
+    return {
+      ...details,
+      note:
+        `The model sees about ${framesSent} of ${sourceFrames} frames — a 1 frame per second sample, ` +
+        'so a brief event can fall between frames. Pass `fps` (up to 24), with `start`/`end`, to see more.',
+    }
+  }
+
+  // ── No frame settings: send the clip as-is and disclose the default rate ──
+  if (!askedForFrames) {
+    const buffer = readFileSync(resolved)
+    const framesSent = probe ? Math.ceil(probe.durationSeconds) : null
+    return videoReadResult(
+      filePath,
+      buffer.toString('base64'),
+      videoMime,
+      withSampleNote({ ...disclosure, bytes: buffer.length, mimeType: videoMime, effectiveFps: 1, framesSent }),
+    )
+  }
+
+  // ── Google: the rate rides on the MIME type; nothing is re-encoded ──
+  if (provider === 'google') {
+    const plan = probe
+      ? planVideoRead({
+          durationSeconds: probe.durationSeconds,
+          requestedFps: options.requestedFps,
+          start: options.requestedStart,
+          end: options.requestedEnd,
+          tokensPerFrame,
+          budgetTokens: VIDEO_FRAME_TOKEN_BUDGET,
+        })
+      : null
+    const fps = plan?.fps ?? options.requestedFps
+    // `end` is only sent when the caller asked for one: the probe's duration is
+    // our reading of the container, and pinning it as `endOffset` would drop the
+    // tail of a clip whose last frame we measured a hair short — the exact
+    // silent truncation this card exists to stop.
+    const start = plan?.start ?? options.requestedStart
+    const end = options.requestedEnd
+    const span = plan ? plan.end - plan.start : start !== undefined && end !== undefined ? end - start : null
+    const framesSent = span !== null && fps !== undefined ? Math.max(1, Math.round(span * fps)) : null
+    const buffer = readFileSync(resolved)
+    return videoReadResult(
+      filePath,
+      buffer.toString('base64'),
+      buildVideoMimeType(videoMime, { fps, start, end }),
+      withSampleNote({
+        ...disclosure,
+        bytes: buffer.length,
+        mimeType: videoMime,
+        effectiveFps: fps ?? 1,
+        framesSent,
+        ...(plan?.fpsClamped ? { fpsClamped: true, requestedFps: plan.requestedFps } : {}),
+        ...(probe ? {} : { note: 'Could not read this clip\'s duration, so fps was sent unclamped and start/end went through as given.' }),
+      }),
+    )
+  }
+
+  // ── Non-Google: retime, because the provider samples at 1 fps ──
+  const { ffmpeg } = resolveFfmpeg()
+  if (!ffmpeg || !probe) {
+    const buffer = readFileSync(resolved)
+    const framesSent = probe ? Math.ceil(probe.durationSeconds) : null
+    return videoReadResult(
+      filePath,
+      buffer.toString('base64'),
+      videoMime,
+      withSampleNote({
+        ...disclosure,
+        bytes: buffer.length,
+        mimeType: videoMime,
+        effectiveFps: 1,
+        framesSent,
+        note: ffmpeg
+          ? 'Could not read this clip\'s duration or frame rate, so fps could not be applied; the model saw about 1 frame per second.'
+          : 'fps needs ffmpeg on this machine (not found); the model saw ~1 frame per second.',
+      }),
+    )
+  }
+
+  const plan = planVideoRead({
+    durationSeconds: probe.durationSeconds,
+    requestedFps: options.requestedFps,
+    start: options.requestedStart,
+    end: options.requestedEnd,
+    tokensPerFrame,
+    budgetTokens: VIDEO_FRAME_TOKEN_BUDGET,
+  })
+  const workRoot = resolve(workspaceDir, '.tmp')
+  mkdirSync(workRoot, { recursive: true })
+  try {
+    const retimed = await retimeVideo({
+      inputPath: resolved,
+      workDir: workRoot,
+      fps: plan.fps,
+      start: plan.start,
+      end: plan.end,
+      maxBytes: MAX_VIDEO_READ_BYTES,
+    })
+    return videoReadResult(
+      filePath,
+      retimed.buffer.toString('base64'),
+      'video/mp4',
+      withSampleNote({
+        ...disclosure,
+        bytes: retimed.buffer.length,
+        mimeType: 'video/mp4',
+        effectiveFps: retimed.fps,
+        framesSent: retimed.frames,
+        retimed: {
+          secondsPerFrame: 1,
+          sourceStart: plan.start,
+          frameInterval: roundRate(1 / retimed.fps),
+          scale: retimed.scale,
+        },
+        ...(plan.fpsClamped || retimed.fps !== plan.fps
+          ? { fpsClamped: true, requestedFps: options.requestedFps ?? plan.fps }
+          : {}),
+        note:
+          `The clip was re-encoded at ${retimed.fps} frame(s) per second, one second per frame, so the model sees all ${retimed.frames} frames. ` +
+          `"Frame n" means ${roundRate(plan.start)} s + n/${retimed.fps} s in the source.`,
+      }),
+    )
+  } catch (err: unknown) {
+    if (err instanceof RetimeError) {
+      return textResult({
+        error:
+          `Could not retime "${filePath}" for this model: ${err.message}. ` +
+          'The clip was not sent, because a silently shortened video is worse than none. ' +
+          'Try a shorter range with `start`/`end`, a lower `fps`, or a Gemini model, which honours `fps` natively.',
+      })
+    }
+    throw err
+  }
+}
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
     description:
-      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than ${mb(MAX_IMAGE_READ_BYTES)} are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. Carbon, Argon or GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than ${mb(MAX_VIDEO_READ_BYTES)} are rejected.`,
+      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than ${mb(MAX_IMAGE_READ_BYTES)} are rejected. When called on a video file (.mp4, .m4v, .webm, .mov) and the current model can watch video (e.g. Carbon, Argon or GLM 5.3 Flash), the clip is returned as video content so you can describe what happens in it; other models get a text error instead, and videos larger than ${mb(MAX_VIDEO_READ_BYTES)} are rejected. Video is sampled at about 1 frame per second of duration by default, so a brief event can fall between frames — pass \`fps\` (0 < fps <= 24) with \`start\`/\`end\` seconds to inspect motion, and every video result reports durationSeconds, sourceFps, effectiveFps and framesSent so you can see exactly what the model saw. A per-turn frame budget caps the total (fps is lowered, and the result says fpsClamped), and a very long clip at a high fps can be refused rather than silently shortened.`,
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -3430,12 +3661,35 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           }),
         ]),
       ),
+      fps: Type.Optional(
+        Type.Union([
+          Type.Number({
+            description: 'Video only: frames per second to sample (0 < fps <= 24). Example: fps: 10',
+          }),
+          Type.String({ description: 'Stringified fps (coerced to a number), e.g. "10"' }),
+        ]),
+      ),
+      start: Type.Optional(
+        Type.Union([
+          Type.Number({ description: 'Video only: first second of the clip to send. Example: start: 20' }),
+          Type.String({ description: 'Stringified start second (coerced to a number), e.g. "20"' }),
+        ]),
+      ),
+      end: Type.Optional(
+        Type.Union([
+          Type.Number({ description: 'Video only: last second of the clip to send. Example: end: 33' }),
+          Type.String({ description: 'Stringified end second (coerced to a number), e.g. "33"' }),
+        ]),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const raw = params as {
         path: string
         offset?: number | number[] | string | Record<string, unknown>
         limit?: number | string
+        fps?: number | string
+        start?: number | string
+        end?: number | string
       }
       const filePath = raw.path
       // Normalize tolerant offset/limit shapes into numbers. Anything that
@@ -3590,21 +3844,17 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
                 'Trim or downscale it first, e.g. `ffmpeg -i <input> -t 20 -vf scale=-2:480 -an <output>.mp4`.',
             })
           }
-          const buf = readFileSync(resolved)
-          const base64 = buf.toString('base64')
-          const details = {
-            path: filePath,
-            bytes: buf.length,
-            mimeType: videoMime,
-            ...(offset !== undefined || limit !== undefined ? { note: 'offset/limit are ignored for video files.' } : {}),
-          }
-          return {
-            content: [
-              { type: 'image' as const, data: base64, mimeType: videoMime },
-              { type: 'text' as const, text: JSON.stringify(details) },
-            ],
-            details,
-          }
+          return await readVideoFile({
+            filePath,
+            resolved,
+            videoMime,
+            modelId: ctx.effectiveModel ?? '',
+            requestedFps: coerceNum(raw.fps),
+            requestedStart: coerceNum(raw.start),
+            requestedEnd: coerceNum(raw.end),
+            ignoredOffsetLimit: offset !== undefined || limit !== undefined,
+            workspaceDir: ctx.workspaceDir,
+          })
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           return textResult({
