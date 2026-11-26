@@ -300,6 +300,7 @@ jobs:
           set -euo pipefail
           kubectl create configmap node-image-gc --namespace=kube-system \
             --from-file=node-image-gc.sh=scripts/node-image-gc.sh \
+            --from-file=node-disk-taint.sh=scripts/node-disk-taint.sh \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -f k8s/base/node-image-gc.yaml
           # A changed ConfigMap updates the mounted file, but a running `sh`
@@ -309,7 +310,7 @@ jobs:
           # metadata: only a template change triggers a rollout. An unchanged
           # checksum is a no-op, so a redeploy with the same script does not
           # churn every node.
-          SCRIPT_SUM=$(sha256sum scripts/node-image-gc.sh | cut -d' ' -f1)
+          SCRIPT_SUM=$(sha256sum scripts/node-image-gc.sh scripts/node-disk-taint.sh | sha256sum | cut -d' ' -f1)
           cat > /tmp/node-image-gc-patch.json <<JSON
           {"spec":{"template":{"metadata":{"annotations":{"checksum/script":"${SCRIPT_SUM}"}}}}}
           JSON

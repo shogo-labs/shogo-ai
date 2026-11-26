@@ -19,7 +19,7 @@
  */
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -172,18 +172,35 @@ function run(opts: RunOpts = {}): RunResult {
 beforeEach(() => {
   rmSync(BIN, { recursive: true, force: true })
   rmSync(STORE, { recursive: true, force: true })
+  // Per-test CRI failure switches: a test that simulates a dead socket must
+  // not leak that into every later test in the file.
+  rmSync(join(WORK, 'cri-down'), { force: true })
+  rmSync(join(WORK, 'cri-images-down'), { force: true })
   mkdirSync(BIN, { recursive: true })
   writeFileSync(RMI_LOG, '')
   writeFileSync(FAIL_IDS, '')
 
   // Stub crictl: serves the fixtures, records every rmi, and fails the ids
   // listed in fail-ids the way cri-o fails an image a container still uses.
+  // `FIX/cri-down` simulates CRI-O's socket being gone: both `info` and
+  // `images` fail, which is the 2026-11-26 04:19:58 prod shape.
   writeFileSync(
     join(BIN, 'crictl'),
     `#!/bin/sh
 if [ "\${1#--timeout=}" != "$1" ]; then shift; fi
 case "$1" in
-  images) cat "$FIX/images.json" ;;
+  info)
+    if [ -f "$FIX/cri-down" ]; then
+      echo "FATA[0000] validate service connection: validate CRI v1 runtime API for endpoint \\"unix:///var/run/crio/crio.sock\\": rpc error: code = Unavailable desc = connection error: dial unix /var/run/crio/crio.sock: connect: no such file or directory" >&2
+      exit 1
+    fi
+    echo '{"config":{},"status":{}}' ;;
+  images)
+    if [ -f "$FIX/cri-down" ] || [ -f "$FIX/cri-images-down" ]; then
+      echo "FATA[0000] rpc error: code = Unavailable desc = connection error" >&2
+      exit 1
+    fi
+    cat "$FIX/images.json" ;;
   ps) cat "$FIX/ps.json" ;;
   rmi)
     echo "$2" >> "$FIX/rmi.log"
@@ -298,6 +315,101 @@ describe('node-image-gc — retention on a node shaped like staging 10.0.24.140'
     writeFixtures(stagingShape())
     run({ used: 1000, available: 9000 })
     expect(readFileSync(join(WORK, 'state', 'last-pass'), 'utf8')).toBe('')
+  })
+})
+
+describe('node-image-gc — a pass that cannot do its job FAILS (SHO-592)', () => {
+  // 2026-11-26: node 10.0.10.184 at 84% ran a pass whose CRI-O socket was
+  // gone. It logged "skipped", removed 0 of 11 candidates, wrote the marker
+  // and returned 0 — so every supervisor above it reported a healthy node
+  // while 36 pods were evicted. Each of these fails without the fix.
+  const marker = () => join(WORK, 'state', 'last-pass')
+
+  beforeEach(() => {
+    rmSync(marker(), { force: true })
+  })
+
+  it('crictl cannot reach the socket → non-zero, ERROR names the socket, no marker', () => {
+    writeFixtures(stagingShape())
+    writeFileSync(join(WORK, 'cri-down'), '')
+    const { status, stdout } = run()
+
+    expect(status).not.toBe(0)
+    expect(stdout).toContain('ERROR cri unreachable')
+    expect(stdout).toContain('/var/run/crio/crio.sock')
+    // A failed pass must never satisfy the startupProbe: that marker is what
+    // told the deploy "this node was looked at".
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  it('crictl images fails while info still answers → non-zero, no marker', () => {
+    writeFixtures(stagingShape())
+    // The endpoint answers but the listing RPC fails (cri-o compacting its
+    // store, or the socket dying between the two calls).
+    writeFileSync(join(WORK, 'cri-images-down'), '')
+    const { status, stdout } = run()
+    expect(status).not.toBe(0)
+    expect(stdout).toContain('ERROR cri unreachable')
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  it('every selected rmi fails → non-zero (a partial failure is still 0)', () => {
+    writeFixtures(stagingShape())
+    // Learn the exact candidate set from a healthy pass, then make cri-o
+    // refuse all of them, which is what a dying socket looks like mid-pass.
+    const first = run()
+    expect(first.status).toBe(0)
+    expect(first.removed.length).toBeGreaterThan(0)
+    writeFileSync(FAIL_IDS, first.removed.join(' '))
+    // The healthy pass wrote the marker; only a failure from a cold pod is
+    // what must not write it, so clear it before the failing pass.
+    rmSync(marker(), { force: true })
+
+    const { status, stdout } = run()
+    expect(status).not.toBe(0)
+    expect(stdout).toContain('ERROR nothing removed')
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  it('loop mode exits 1 after MAX_FAILED_PASSES failures instead of retrying forever', () => {
+    writeFixtures(stagingShape())
+    writeFileSync(join(WORK, 'cri-down'), '')
+    const { status, stdout } = run({
+      env: { ONESHOT: '0', RETRY_S: '0', INTERVAL_S: '0', MAX_FAILED_PASSES: '3' },
+    })
+
+    expect(status).toBe(1)
+    // Retried on RETRY_S, and only gave up after the configured count.
+    expect(stdout.match(/ERROR cri unreachable/g) ?? []).toHaveLength(3)
+    expect(stdout).toContain('ERROR 3 failed passes in a row')
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  it('a dry run never fails on "nothing removed" — it removes nothing on purpose', () => {
+    writeFixtures(stagingShape())
+    const { status, stdout } = run({ env: { DRY_RUN: '1' } })
+    expect(status).toBe(0)
+    expect(stdout).toContain('dry_run=1')
+    expect(stdout).not.toContain('ERROR nothing removed')
+  })
+
+  it('below RECLAIM_PCT a dead cri-o is not a failure — nothing was owed', () => {
+    writeFixtures(stagingShape())
+    writeFileSync(join(WORK, 'cri-down'), '')
+    const { status, stdout } = run({ used: 3000, available: 7000 })
+    expect(status).toBe(0)
+    expect(stdout).toContain('nothing to reclaim')
+    expect(stdout).not.toContain('ERROR')
+  })
+
+  it('publishes the measured used% for the taint sidecar', () => {
+    writeFixtures(stagingShape())
+    run({ used: 8100, available: 1900 })
+    expect(readFileSync(join(WORK, 'state', 'disk-status'), 'utf8')).toContain('pct=81')
+    // Below EARLY-return still updates it, or a recovered node could never be
+    // untainted (the sidecar runs at 75%, under RECLAIM_PCT).
+    run({ used: 5000, available: 5000 })
+    expect(readFileSync(join(WORK, 'state', 'disk-status'), 'utf8')).toContain('pct=50')
   })
 })
 

@@ -46,12 +46,25 @@ kubectl create configmap shogo-runtime-version \
   --from-literal=image_tag="$RUNTIME_TAG" \
   --from-literal=image="$RUNTIME_IMAGE" \
   --dry-run=client -o yaml | kubectl apply -f -
-sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|${RUNTIME_IMAGE}|g" \
-    -e "s|namespace: shogo-staging-system|namespace: ${NS_SYSTEM}|g" \
-    "$REPO_ROOT/k8s/base/image-prepuller.yaml" | kubectl apply -f -
+# Bounded extra prepulls (SHO-592 §2): the deploy's own tag plus up to
+# PREPULL_MAX_EXTRA more, chosen from the runtime tags that always-on published
+# apps actually run. Rendering lives in render-image-prepuller.sh so the choice
+# is testable; the count comes back so the gate below can budget for it.
+PREPULL_COUNT_FILE="$(mktemp)"
+PREPULL_COUNT_OUT="$PREPULL_COUNT_FILE" \
+  NS_SYSTEM="$NS_SYSTEM" \
+  NS_WORKSPACES="${NS_WORKSPACES:-}" \
+  RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+  "$SCRIPTS/render-image-prepuller.sh" | kubectl apply -f -
+PREPULL_EXTRA="$(cat "$PREPULL_COUNT_FILE" 2>/dev/null || true)"
+PREPULL_EXTRA="${PREPULL_EXTRA:-0}"
+rm -f "$PREPULL_COUNT_FILE"
 echo "::endgroup::"
 
-"$SCRIPTS/wait-runtime-prepulled.sh" "$NS_SYSTEM"
+# ~6 min per extra tag on a cold node, on top of the 1800s that already covers
+# one cold-node join mid-deploy. Without this the gate would fail a deploy it
+# had itself made slower.
+"$SCRIPTS/wait-runtime-prepulled.sh" "$NS_SYSTEM" "$((1800 + 360 * PREPULL_EXTRA))"
 
 patch_ksvc() {
   local name=$1 image=$2 version=${3:-} env_name=${4:-SHOGO_APP_VERSION}

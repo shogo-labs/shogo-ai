@@ -1,0 +1,127 @@
+# SigNoz alert: node-image-gc could not reclaim a full node
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
+#
+# Why: on 2026-11-26 the 04:19:58 `node-image-gc` pass on prod-us node
+# 10.0.10.184 found CRI-O's socket gone, logged "crictl images failed — skipping
+# this pass", removed 0 of 11 candidates, wrote its `last-pass` marker and
+# returned 0. Every supervisor above it therefore saw a healthy node while the
+# disk climbed from 84% to the kubelet's 85% eviction line, which evicted 36
+# pods across 21 published apps (KIF CRM down ~19 minutes).
+#
+# Two things changed in `scripts/node-image-gc.sh` (SHO-592 §3):
+#   * that pass is now a FAILURE — one `ERROR cri unreachable` line naming the
+#     socket, no marker, non-zero exit;
+#   * loop mode retries after `RETRY_S` (30s) and exits 1 after
+#     `MAX_FAILED_PASSES` (3), so the container restarts and CrashLoopBackOff /
+#     the restart count becomes visible instead of a silent loop.
+#
+# This rule fires on the log line those failures print, which is also how a
+# restart shows up (the "exiting 1 so the container restarts" line precedes the
+# restart). It alerts on the PRESENCE of a failure marker, not the absence of a
+# green run: a cluster whose GC never runs emits nothing at all, and an
+# absence-based rule cannot express "this node stopped being reclaimed".
+#
+# The pod-name filter matters: k8s/base/warm-pool-monitor.yaml and the
+# replication-monitor print similar words, and a match on the body alone would
+# fire on unrelated CronJobs.
+#
+# Trade-off, stated rather than hidden: a DaemonSet that is deleted, or a node
+# whose pod cannot start at all (ImagePullBackOff on the busybox/alpine image),
+# emits no failure marker either. That case is covered by the deploy's own
+# `kubectl rollout status daemonset/node-image-gc` and by warm-pool-monitor's
+# disk pages (DISK_CRIT_PCT 78, MAX_RUNTIME_DIGESTS), which keep announcing the
+# consequence — a node filling up — while this rule announces the cause.
+
+alert: NodeImageGcFailing
+alertType: LOGS_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "k8s.pod.name LIKE 'node-image-gc%' AND (body LIKE '%ERROR cri unreachable%' OR body LIKE '%ERROR nothing removed%' OR body LIKE '%failed passes in a row%')"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} gc_failures"
+          # One bucket per pass; the loop retries at RETRY_S (30s) so two or
+          # three markers per node inside a bucket is normal during an outage.
+          stepInterval: 300s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: in_total
+        target: 0
+        channels: [platform-oncall]
+  # OFF: a healthy cluster prints no failure marker, so "absent" would page on
+  # every green region. See the trade-off note in the header.
+  alertOnAbsent: false
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: node_disk_exhaustion
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "node-image-gc cannot reclaim a node that needs it (cri-o unreachable, or every rmi failed)"
+  description: |
+    A `node-image-gc` pass on at least one node could not do its job while the
+    node's disk was at or above RECLAIM_PCT (65%): cri-o's endpoint was
+    unreachable, or every selected digest failed to remove. Because the pass
+    failed, the node is not being reclaimed — it will keep climbing toward the
+    kubelet's 85% eviction line, and at 85% the kubelet evicts pods from
+    whatever is running there (2026-11-26: 36 pods, 21 published apps, KIF CRM
+    down ~19 min).
+
+    Triage:
+    1. Find the failing node(s) and the exact line:
+       kubectl -n kube-system get pods -l app.kubernetes.io/name=node-image-gc -o wide
+       kubectl logs -n kube-system -l app.kubernetes.io/name=node-image-gc --tail=50
+       - `ERROR cri unreachable — … /var/run/crio/crio.sock` => cri-o or the
+         node's kubelet/runtime is down on that node. `systemctl status crio`
+         on the node, and check whether the node is also NotReady. Eviction is
+         imminent: consider draining it.
+       - `ERROR nothing removed — all N selected digest(s) failed to remove`
+         => cri-o refuses every rmi (storage pinned / read-only image store).
+         Check `crictl images` by hand and the node's `storage.conf`.
+       - `N failed passes in a row — exiting 1` => the container has restarted;
+         check `kubectl -n kube-system get pod <pod> -o
+         jsonpath='{.status.containerStatuses[*].restartCount}'`.
+    2. Meanwhile, reclaim by hand on that node (the script is in the pod, not
+       on the host):
+       POD=$(kubectl -n kube-system get pod -l app.kubernetes.io/name=node-image-gc \
+               --field-selector spec.nodeName=<node> -o name)
+       kubectl -n kube-system exec -it "$POD" -c gc -- \
+         chroot /host /usr/bin/env RECLAIM_PCT=0 ONESHOT=1 \
+         /bin/sh /run/shogo-node-image-gc/node-image-gc.sh
+    3. If the node is tainted `shogo.ai/disk-high=true:NoSchedule`, the sidecar
+       already stopped new pods landing there. It removes the taint by itself
+       once the node is back under UNTAINT_PCT (75%).
+
+    Runbook: docs/runbooks/node-image-gc.md
+    Card: SHO-592

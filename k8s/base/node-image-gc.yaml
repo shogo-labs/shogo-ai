@@ -41,7 +41,67 @@
 # this pod. On the host itself (a `kubectl debug node/...` shell) the same
 # directory exists and is empty, so a hand-run has to exec into this pod; see
 # the Usage block in scripts/node-image-gc.sh.
+#
+# The ConfigMap carries BOTH scripts from this repo, one copy each, and the
+# deploy workflows build it from those files:
+#
+#   kubectl create configmap node-image-gc --namespace=kube-system \
+#     --from-file=node-image-gc.sh=scripts/node-image-gc.sh \
+#     --from-file=node-disk-taint.sh=scripts/node-disk-taint.sh \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# The pod has two containers:
+#   * gc          — the privileged reclaim pass (root, chroot /host).
+#   * disk-taint  — a kubectl sidecar that reads the used% the gc pass wrote
+#                   and holds `shogo.ai/disk-high=true:NoSchedule` on its own
+#                   node in the 80-85% band the kubelet does not cover yet.
 # =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-image-gc
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: node-image-gc
+    app.kubernetes.io/part-of: shogo
+---
+# The smallest grant that can hold the 80-85% band closed: read one node and
+# patch its taints. No pods, no nodes/list, nothing cluster-wide beyond the
+# object this pod is allowed to touch (and it only ever touches its own node).
+#
+# A TAINT, not a cordon: `check-node-disk-headroom.sh` and warm-pool-monitor
+# treat a cordoned node as "being drained on purpose" and skip it, so a cordon
+# would make a nearly-full node invisible to both — the exact opposite of what
+# this is for. A taint keeps both checks looking at the node and only stops the
+# scheduler from placing new pods on it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-node-image-gc
+  labels:
+    app.kubernetes.io/name: node-image-gc
+    app.kubernetes.io/part-of: shogo
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-node-image-gc
+  labels:
+    app.kubernetes.io/name: node-image-gc
+    app.kubernetes.io/part-of: shogo
+subjects:
+  - kind: ServiceAccount
+    name: node-image-gc
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-node-image-gc
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -68,6 +128,7 @@ spec:
     spec:
       hostPID: true
       priorityClassName: system-node-critical
+      serviceAccountName: node-image-gc
       terminationGracePeriodSeconds: 30
       tolerations:
         - operator: Exists
@@ -100,6 +161,17 @@ spec:
               value: "2"
             - name: INTERVAL_S
               value: "600"
+            # A failed pass (cri-o unreachable, nothing removed) retries in 30s
+            # and, after 3 in a row, the container exits 1 — so the restart
+            # count and CrashLoopBackOff are what a supervisor sees, instead of
+            # a pass that skipped 11 candidates and returned 0 (SHO-592).
+            - name: RETRY_S
+              value: "30"
+            - name: MAX_FAILED_PASSES
+              value: "3"
+            # Named in the failure log line the SigNoz alert matches on.
+            - name: CRI_SOCKET
+              value: "/var/run/crio/crio.sock"
           securityContext:
             # chroot into the node root and drive cri-o: needs root + the host
             # filesystem, exactly like the inotify tuner's init container.
@@ -130,6 +202,55 @@ spec:
               mountPath: /host/run/shogo-node-image-gc
             - name: state
               mountPath: /host/run/shogo-node-image-gc-state
+        # ---- 80-85% scheduling guard (SHO-592 §4) -------------------------
+        # The kubelet only taints at DiskPressure (85%). Between 80% and 85%
+        # the deploy gate refuses to roll out but the SCHEDULER still places
+        # pods there: on 2026-11-26 pods evicted from .5 landed on .184 at 75%
+        # and pushed it to 84%, four points from the eviction line.
+        #
+        # So the GC container publishes the used% it measured to a status
+        # file, and this sidecar reconciles ONE taint from it:
+        #   * at/above TAINT_PCT (80)  → shogo.ai/disk-high=true:NoSchedule
+        #   * below UNTAINT_PCT (75)   → remove it
+        #   * in between               → leave it exactly as it is
+        # The 5-point gap is deliberate: without it a node hovering on one
+        # threshold would taint/untaunt on every pass and thrash the scheduler.
+        #
+        # It is a separate container because the GC container chroots into the
+        # node root with busybox and has no kubectl; this one is the same
+        # pinned image warm-pool-monitor uses, and needs nothing from the host.
+        - name: disk-taint
+          image: docker.io/alpine/k8s:1.31.5
+          command:
+            - /bin/sh
+            - /run/shogo-node-image-gc/node-disk-taint.sh
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: STATE_DIR
+              value: /run/shogo-node-image-gc-state
+            # Must match scripts/node-image-gc.sh's RECLAIM_PCT story: taint at
+            # the deploy gate's own 80%, release at 75.
+            - name: TAINT_PCT
+              value: "80"
+            - name: UNTAINT_PCT
+              value: "75"
+            - name: INTERVAL_S
+              value: "60"
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: script
+              mountPath: /run/shogo-node-image-gc
+            - name: state
+              mountPath: /run/shogo-node-image-gc-state
       volumes:
         - name: host
           hostPath:
