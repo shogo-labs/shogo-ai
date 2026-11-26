@@ -1,2 +1,2 @@
-n,fraction,window_ms,turns_started,cpu_p95_ms,install_p95_ms,build_p95_ms,cpu_psi_some_avg60,mem_available_pct,oom_kills,resume_p95_ms,pass
-80,0.16,60000,13,3047.8,246.8,1156.3,0.46,41.6,0,0,FAIL
+n,fraction,window_ms,turns_started,cpu_p95_ms,install_p95_ms,build_p95_ms,cpu_psi_some_avg60,mem_available_pct,oom_kills,swap_in_pages_per_s,mem_psi_full_avg60,resume_p95_ms,pass,reasons
+80,0.16,60000,13,3047.8,246.8,1156.3,0.46,41.6,0,,,,FAIL,"RAM gate: memory PSI full avg60 1.02% at the window's last sample -- the only one harness 61403ca40 recorded; the window's worst sample in samples.csv is 2.53% decaying from 6.59% during the N=80 hold; a burst window has no resume sample"

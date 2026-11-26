@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeKnees, type StepMetrics, type TurnStep } from '../knee'
-import { perVmRssMiB, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type ReportInput, type StepRow } from '../report'
+import { burstCsv, perVmRssMiB, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type BurstRow, type ReportInput, type StepRow } from '../report'
 import type { HostSample } from '../host-sampler'
 
 const baseline: Record<TurnStep, number> = { cpu: 3000, install: 2000, build: 3000 }
@@ -33,6 +33,9 @@ function step(n: number, over: Partial<StepMetrics> = {}): StepRow {
     turnP50: { cpu: 2900, install: 1900, build: 2900 },
     runDelayP95MsPerSec: 1.5,
     apiP95Ms: 12,
+    appP50Ms: 3.5,
+    appP95Ms: 11.2,
+    appSamples: 540,
     verdict,
   }
 }
@@ -46,6 +49,8 @@ function input(rows: StepRow[]): ReportInput {
       kernel: '6.1.102',
       firecrackerVersion: 'Firecracker v1.7.0',
       gitSha: 'abc1234',
+      harnessRevision: '1984620bd',
+      harnessSha256: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
       region: 'us',
       controlPlaneUrl: 'https://api-staging.shogo.ai',
       vcpus: 2,
@@ -161,8 +166,11 @@ describe('renderReportMarkdown', () => {
         cpuPsiSomeAvg60: 30,
         memAvailablePct: 40,
         oomKills: 0,
+        swapInPagesPerSec: 2.1,
+        memPsiFullAvg60: 1.09,
         resumeP95Ms: 900,
         pass: false,
+        reasons: ['memory PSI full avg60 1.09% (limit 1%)'],
       },
     ]
     const md = renderReportMarkdown(i)
@@ -211,6 +219,98 @@ describe('renderReportMarkdown', () => {
     ]
     expect(perVmRssMiB(rows)).toBe(2000)
     expect(perVmRssMiB([rows[0]])).toBe(0)
+  })
+})
+
+describe('baseline is the measured N=1 p95, not a step row', () => {
+  // QA found the 2026-11-26 artifact's "Baseline (N=1)" table printing the N=80
+  // step's p50s (3045.1 / 424.9 / 2005.5) while the failure reasons divided by
+  // the real p95 baseline (3042.0 / 353.3 / 1899.2) recorded in turns.csv.
+  test('renders input.baseline even when a step row disagrees', () => {
+    const rows = [step(80)]
+    const i = input(rows)
+    i.baseline = { cpu: 3042.0, install: 353.3, build: 1899.2 }
+    rows[0].turnP50 = { cpu: 3045.1, install: 424.9, build: 2005.5 }
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| install | 353.3 |')
+    expect(md).toContain('| build | 1899.2 |')
+    expect(md).not.toContain('| install | 424.9 |')
+    expect(md).not.toContain('| build | 2005.5 |')
+  })
+})
+
+describe('what the report says a burst failed on', () => {
+  const burstRow = (over: Partial<BurstRow> = {}): BurstRow => ({
+    n: 80,
+    fraction: 0.16,
+    windowMs: 60_000,
+    turnsStarted: 13,
+    turnP95: { cpu: 3047.8, install: 246.8, build: 1156.3 },
+    cpuPsiSomeAvg60: 0.46,
+    memAvailablePct: 41.6,
+    oomKills: 0,
+    swapInPagesPerSec: 2.1,
+    memPsiFullAvg60: 1.09,
+    resumeP95Ms: null,
+    pass: false,
+    reasons: ['memory PSI full avg60 1.09% (limit 1%)'],
+    ...over,
+  })
+
+  test('shows the memory pressure and the reason, so the prose cannot be the only source', () => {
+    const i = input([step(80)])
+    i.burst = [burstRow()]
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| 1.1% |')
+    expect(md).toContain('Why each burst failed')
+    expect(md).toContain('memory PSI full avg60 1.09% (limit 1%)')
+  })
+
+  test('prints "not sampled" for a resume bound a burst never measured', () => {
+    const i = input([step(80)])
+    i.burst = [burstRow()]
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| not sampled |')
+    expect(md).not.toMatch(/\| 0 ms \| (pass|FAIL) \|/)
+  })
+
+  test('carries the same fields into burst.csv', () => {
+    const csv = burstCsv([burstRow()])
+    const [head, row] = csv.trim().split('\n')
+    expect(head).toContain('mem_psi_full_avg60')
+    expect(head).toContain('swap_in_pages_per_s')
+    expect(head).toContain('reasons')
+    expect(row).toContain('memory PSI full avg60 1.09% (limit 1%)')
+  })
+})
+
+describe('app role is visible in the report', () => {
+  test('renders the app p95 column and "—" when nothing was measured', () => {
+    const measured = renderReportMarkdown(input([step(80)]))
+    expect(measured).toContain('app p95')
+    expect(measured).toContain('| 11.2 ms |')
+    const unmeasured = renderReportMarkdown(input([{ ...step(80), appP50Ms: null, appP95Ms: null, appSamples: 0 }]))
+    expect(unmeasured).toContain('| — |')
+  })
+
+  test('steps.csv carries the app columns', () => {
+    const [head, row] = stepsCsv([step(80)]).trim().split('\n')
+    expect(head).toContain('app_p95_ms')
+    expect(head).toContain('app_samples')
+    expect(row).toContain('11.2')
+  })
+})
+
+describe('provenance', () => {
+  test('the report names the harness, since the soak host has no git', () => {
+    const md = renderReportMarkdown(input([step(80)]))
+    expect(md).toContain('| harness | `1984620bd` · sha256 `deadbeefdeadbeef…` |')
+  })
+
+  test('says so plainly when the revision was never recorded', () => {
+    const i = input([step(80)])
+    i.env.harnessRevision = 'unknown'
+    expect(renderReportMarkdown(i)).toContain('revision not recorded')
   })
 })
 

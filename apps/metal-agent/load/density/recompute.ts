@@ -33,6 +33,13 @@ export function parseCsv(text: string): Row[] {
 }
 
 const n = (v: string | undefined) => (v === undefined || v === '' ? 0 : Number(v))
+/** An absent cell is "not measured", which is not the same as a zero. */
+const numOrNull = (v: string | undefined): number | null => (v === undefined || v.trim() === '' ? null : Number(v))
+
+/** Rows recorded before the provenance columns existed get an explicit unknown. */
+function withProvenance(env: RunEnv): RunEnv {
+  return { ...env, harnessRevision: env.harnessRevision ?? 'unknown', harnessSha256: env.harnessSha256 ?? 'unknown' }
+}
 
 export function stepsFromCsv(text: string, bounds: Bounds = DEFAULT_BOUNDS): StepRow[] {
   const base = { cpu: 0, install: 0, build: 0 } as Record<TurnStep, number>
@@ -47,7 +54,7 @@ export function stepsFromCsv(text: string, bounds: Bounds = DEFAULT_BOUNDS): Ste
       n: n(r.n),
       turnP95,
       cpuPsiSomeAvg60: n(r.cpu_psi_some_avg60),
-      resumeP95Ms: n(r.resume_p95_ms),
+      resumeP95Ms: numOrNull(r.resume_p95_ms),
       oomKills: n(r.oom_kills),
       swapInPagesPerSec: n(r.swap_in_pages_per_s),
       memPsiFullAvg60: n(r.mem_psi_full_avg60),
@@ -64,6 +71,9 @@ export function stepsFromCsv(text: string, bounds: Bounds = DEFAULT_BOUNDS): Ste
       turnP50,
       runDelayP95MsPerSec: n(r.run_delay_p95_ms_per_s),
       apiP95Ms: n(r.api_p95_ms),
+      appP50Ms: numOrNull(r.app_p50_ms),
+      appP95Ms: numOrNull(r.app_p95_ms),
+      appSamples: n(r.app_samples),
       verdict: evaluateStep(metrics, base, bounds),
     }
   })
@@ -82,6 +92,7 @@ export function burstFromCsv(text: string): BurstRow[] {
   return parseCsv(text).map((r) => {
     const turnP95 = {} as Record<TurnStep, number>
     for (const s of TURN_STEPS) turnP95[s] = n(r[`${s}_p95_ms`])
+    const reasons = r.reasons ? r.reasons.replace(/^"|"$/g, '').split('; ').filter(Boolean) : []
     return {
       n: n(r.n),
       fraction: n(r.fraction),
@@ -91,8 +102,11 @@ export function burstFromCsv(text: string): BurstRow[] {
       cpuPsiSomeAvg60: n(r.cpu_psi_some_avg60),
       memAvailablePct: n(r.mem_available_pct),
       oomKills: n(r.oom_kills),
-      resumeP95Ms: n(r.resume_p95_ms),
+      swapInPagesPerSec: numOrNull(r.swap_in_pages_per_s),
+      memPsiFullAvg60: numOrNull(r.mem_psi_full_avg60),
+      resumeP95Ms: numOrNull(r.resume_p95_ms),
       pass: r.pass === 'pass',
+      reasons,
     }
   })
 }
@@ -102,7 +116,7 @@ export function burstFromCsv(text: string): BurstRow[] {
  * Returns the knees it derived, so a caller can print them.
  */
 export function recomputeReport(dir: string, bounds: Bounds = DEFAULT_BOUNDS): { report: ReportInput; path: string } {
-  const env = JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')) as RunEnv
+  const env = withProvenance(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')) as RunEnv)
   const steps = stepsFromCsv(readFileSync(join(dir, 'steps.csv'), 'utf8'), bounds)
   const baseline = baselineFromCsv(readFileSync(join(dir, 'turns.csv'), 'utf8'))
   if (!baseline) {

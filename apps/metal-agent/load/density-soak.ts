@@ -32,7 +32,8 @@
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { HostSampler, oomKillsSince, percentile, type HostSample } from './density/host-sampler'
+import { HostSampler, oomKillsSince, percentile, windowWorst, type HostSample } from './density/host-sampler'
+import { harnessDigest } from './density/harness-revision'
 import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
 import { primeWarmCache, runAgentTurn, seedTemplate, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
@@ -68,6 +69,10 @@ export interface SoakOptions {
   allowControlPlanes: string[]
   bounds: Bounds
   dryRun: boolean
+  /** Commit of the harness, when the launcher knows it (`--revision`). */
+  revision?: string
+  /** Directory holding `density-soak.ts` and `density/`, for the harness digest. */
+  harnessDir?: string
   /** Re-derive the report of an already-recorded run instead of soaking. */
   fromResults?: string
 }
@@ -129,6 +134,8 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
       .filter(Boolean),
     bounds: DEFAULT_BOUNDS,
     dryRun: has('dry-run'),
+    revision: get('revision') ?? env.DENSITY_SOAK_REVISION,
+    harnessDir: get('harness-dir') ?? env.DENSITY_SOAK_HARNESS_DIR,
     fromResults: get('from-results'),
   }
 }
@@ -344,7 +351,11 @@ export class DensitySoak {
   constructor(private readonly opts: SoakOptions) {
     const token = this.readToken()
     this.agent = new AgentClient(opts.base, token)
+    this.harnessDir = opts.harnessDir ?? import.meta.dir
   }
+
+  /** Where the running harness lives, for the digest recorded in `env.json`. */
+  private readonly harnessDir: string
 
   private readToken(): string {
     try {
@@ -592,6 +603,24 @@ export class DensitySoak {
     }
   }
 
+  /**
+   * How many app responses have been recorded so far.
+   *
+   * `AppLoadHandle.latencies` is cumulative for the whole run, so a step's
+   * response times are the slice after this mark. Without it the report has no
+   * app column at all and the app role's fix is unobservable.
+   */
+  private appLatencyMark(): number {
+    return this.appLoads.reduce((sum, h) => sum + h.latencies.length, 0)
+  }
+
+  private appLatencyIn(mark: number): { appP50Ms: number | null; appP95Ms: number | null; appSamples: number } {
+    const all = this.appLoads.flatMap((h) => h.latencies)
+    const win = all.slice(mark)
+    if (win.length === 0) return { appP50Ms: null, appP95Ms: null, appSamples: 0 }
+    return { appP50Ms: +percentile(win, 50).toFixed(1), appP95Ms: +percentile(win, 95).toFixed(1), appSamples: win.length }
+  }
+
   private stopAppRoles(): void {
     for (const a of this.appLoads) a.stop()
     this.appLoads = []
@@ -642,16 +671,12 @@ export class DensitySoak {
 
   private stepMetrics(n: number, fromMs: number, toMs: number, resume: number[], api: number[]): StepMetrics {
     const win = this.windowSamples(fromMs, toMs)
-    const last = win[win.length - 1]
     return {
       n,
       turnP95: this.turnP95(n),
-      cpuPsiSomeAvg60: last?.cpuPressure?.some60 ?? 0,
-      resumeP95Ms: +percentile(resume, 95).toFixed(1),
+      ...windowWorst(win),
+      resumeP95Ms: resume.length > 0 ? +percentile(resume, 95).toFixed(1) : null,
       oomKills: oomKillsSince(this.startedMs),
-      swapInPagesPerSec: +this.avg(win.map((s) => s.swapInPagesPerSec ?? 0)).toFixed(1),
-      memPsiFullAvg60: last?.memPressure?.full60 ?? 0,
-      memAvailablePct: last?.memAvailablePct ?? 0,
     }
   }
 
@@ -660,7 +685,8 @@ export class DensitySoak {
   async run(): Promise<ReportInput> {
     await this.preflight()
     if (this.opts.dryRun) {
-      return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] })
+      const zero = { cpu: 0, install: 0, build: 0 } as Record<TurnStep, number>
+      return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] }, zero)
     }
 
     this.rssBeforeMiB = this.sampler.sample().fcRssMiB
@@ -720,6 +746,7 @@ export class DensitySoak {
       await this.startAppRoles()
 
       const from = Date.now()
+      const appMark = this.appLatencyMark()
       const deadline = from + this.opts.holdMs
       log('hold', `N=${n} for ${Math.round(this.opts.holdMs / 1000)}s`)
       const turnLoop = this.runTurnsFor('agent', n, deadline)
@@ -757,6 +784,7 @@ export class DensitySoak {
         turnP50: this.turnP50(n),
         runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
         apiP95Ms: +percentile(api, 95).toFixed(1),
+        ...this.appLatencyIn(appMark),
         verdict,
       })
       log(
@@ -806,16 +834,22 @@ export class DensitySoak {
           cpuPsiSomeAvg60: metrics.cpuPsiSomeAvg60,
           memAvailablePct: metrics.memAvailablePct,
           oomKills: metrics.oomKills,
+          swapInPagesPerSec: metrics.swapInPagesPerSec,
+          memPsiFullAvg60: metrics.memPsiFullAvg60,
+          // No probe suspend/resume happens in a burst window, so there is no
+          // resume sample to score — record null rather than let `percentile([])`
+          // print a 0 ms that looks like a passed SLO.
           resumeP95Ms: metrics.resumeP95Ms,
           pass: verdict.cpuPass && verdict.ramPass,
+          reasons: [...verdict.cpuReasons, ...verdict.ramReasons],
         })
       }
     }
 
-    return this.buildReport(rows, burstRows, computeKnees(rows, baseline, this.opts.bounds))
+    return this.buildReport(rows, burstRows, computeKnees(rows, baseline, this.opts.bounds), baseline)
   }
 
-  private buildReport(rows: StepRow[], burst: BurstRow[], knees: ReturnType<typeof computeKnees>): ReportInput {
+  private buildReport(rows: StepRow[], burst: BurstRow[], knees: ReturnType<typeof computeKnees>, baseline: Record<TurnStep, number>): ReportInput {
     const vcpus = this.opts.vcpus ?? Number(this.originalEnv?.METAL_VCPUS ?? 2)
     const memMiB = this.opts.memMiB ?? Number(this.originalEnv?.METAL_MEM_MIB ?? 1024)
     const last = this.samples[this.samples.length - 1]
@@ -826,6 +860,8 @@ export class DensitySoak {
       kernel: this.hostInfo.kernel,
       firecrackerVersion: this.hostInfo.fcVersion,
       gitSha: this.hostInfo.gitSha,
+      harnessRevision: this.opts.revision ?? 'unknown',
+      harnessSha256: harnessDigest(this.harnessDir),
       region: this.originalEnv?.METAL_REGION ?? '',
       controlPlaneUrl: this.originalEnv?.METAL_CONTROL_PLANE_URL ?? '',
       vcpus,
@@ -838,8 +874,6 @@ export class DensitySoak {
       finishedAt: new Date().toISOString(),
       abortReason: this.abortReason,
     }
-    const baseline = {} as Record<TurnStep, number>
-    for (const s of TURN_STEPS) baseline[s] = rows.length > 0 ? rows[0].turnP50[s] : 0
     return {
       env,
       baseline,

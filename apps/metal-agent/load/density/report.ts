@@ -34,6 +34,10 @@ export interface StepRow extends StepMetrics {
   turnP50: Record<TurnStep, number>
   runDelayP95MsPerSec: number
   apiP95Ms: number
+  /** App-role HTTP response times measured in this window. */
+  appP50Ms: number | null
+  appP95Ms: number | null
+  appSamples: number
   verdict: StepVerdict
 }
 
@@ -60,8 +64,15 @@ export interface BurstRow {
   cpuPsiSomeAvg60: number
   memAvailablePct: number
   oomKills: number
-  resumeP95Ms: number
+  /** `null` when the run's harness predates the column — not a measured zero. */
+  swapInPagesPerSec: number | null
+  /** `null` when the run's harness predates the column — not a measured zero. */
+  memPsiFullAvg60: number | null
+  /** `null` when the window had no resume sample — a burst never suspends. */
+  resumeP95Ms: number | null
   pass: boolean
+  /** Why it failed, so the row explains itself instead of needing prose. */
+  reasons: string[]
 }
 
 export interface RunEnv {
@@ -70,6 +81,13 @@ export interface RunEnv {
   kernel: string
   firecrackerVersion: string
   gitSha: string
+  /**
+   * The harness that measured this run: the commit when the launcher passed
+   * `--revision`, plus a digest of the files that actually ran. The soak host has
+   * no `.git`, so the digest is what makes a committed report traceable.
+   */
+  harnessRevision: string
+  harnessSha256: string
   region: string
   controlPlaneUrl: string
   vcpus: number
@@ -118,6 +136,9 @@ export function stepsCsv(rows: StepRow[]): string {
     'mem_psi_full_avg60',
     'resume_p95_ms',
     'api_p95_ms',
+    'app_p50_ms',
+    'app_p95_ms',
+    'app_samples',
     'cpu_pass',
     'ram_pass',
   ]
@@ -135,8 +156,11 @@ export function stepsCsv(rows: StepRow[]): string {
       f(r.swapInPagesPerSec, 1),
       r.oomKills,
       f(r.memPsiFullAvg60, 2),
-      f(r.resumeP95Ms, 0),
+      r.resumeP95Ms == null ? '' : f(r.resumeP95Ms, 0),
       f(r.apiP95Ms, 0),
+      r.appP50Ms == null ? '' : f(r.appP50Ms, 1),
+      r.appP95Ms == null ? '' : f(r.appP95Ms, 1),
+      r.appSamples,
       r.verdict.cpuPass,
       r.verdict.ramPass,
     ].join(','),
@@ -219,6 +243,7 @@ export function renderReportMarkdown(input: ReportInput): string {
   out.push(`| VM sizing | ${env.vcpus} vCPU / ${env.memMiB} MiB |`)
   out.push(`| env at start | METAL_MAX_VMS_PER_HOST=${env.maxVmsPerHost}, METAL_IDLE_SUSPEND_MS=${env.idleSuspendMs} |`)
   out.push(`| git sha | \`${env.gitSha}\` |`)
+  out.push(`| harness | ${env.harnessRevision === 'unknown' ? 'revision not recorded' : `\`${env.harnessRevision}\``} · sha256 \`${env.harnessSha256.slice(0, 16)}…\` |`)
   out.push(`| mix | agent ${(mix.agent * 100).toFixed(0)}% / app ${(mix.app * 100).toFixed(0)}% / idle ${(mix.idle * 100).toFixed(0)}% |`)
   out.push('')
 
@@ -228,6 +253,10 @@ export function renderReportMarkdown(input: ReportInput): string {
   out.push('|---|---|')
   for (const s of TURN_STEPS) out.push(`| ${s} | ${f(baseline[s])} |`)
   out.push('')
+  out.push(
+    'These are the measured p95s of the lone baseline VM, and they are the denominators of every `× baseline` ratio in this report — including the ones a failing step is reported against. They are not a step row: a step\'s own p50 is a different statistic and cannot stand in for them.',
+  )
+  out.push('')
 
   out.push('## Steps')
   out.push('')
@@ -236,14 +265,14 @@ export function renderReportMarkdown(input: ReportInput): string {
     '| N | vCPU over | RAM committed | RAM physical ' +
       (anyHostWide ? '(host FC, not soak) | ' : '(soak) | ') +
       TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
-      ' | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
+      ' | app p95 | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
   )
-  out.push('|' + '---|'.repeat(12 + TURN_STEPS.length))
+  out.push('|' + '---|'.repeat(13 + TURN_STEPS.length))
   for (const r of steps) {
     out.push(
       `| ${r.n} | ${f(r.cpuOversubRatio, 2)}:1 | ${r.ramCommittedMiB} MiB | ${r.ramPhysicalMiB} MiB | ` +
         TURN_STEPS.map((s) => `${f(r.turnP95[s])} ms`).join(' | ') +
-        ` | ${f(r.runDelayP95MsPerSec, 2)} | ${f(r.cpuPsiSomeAvg60)}% | ${f(r.memAvailablePct)}% | ${f(r.swapInPagesPerSec)} | ${r.oomKills} | ${f(r.memPsiFullAvg60)}% | ${f(r.resumeP95Ms, 0)} ms | ${f(r.apiP95Ms, 0)} ms | ${r.verdict.cpuPass ? 'pass' : 'FAIL'} | ${r.verdict.ramPass ? 'pass' : 'FAIL'} |`,
+        ` | ${r.appP95Ms == null ? '—' : `${f(r.appP95Ms)} ms`} | ${f(r.runDelayP95MsPerSec, 2)} | ${f(r.cpuPsiSomeAvg60)}% | ${f(r.memAvailablePct)}% | ${f(r.swapInPagesPerSec)} | ${r.oomKills} | ${f(r.memPsiFullAvg60)}% | ${r.resumeP95Ms == null ? '—' : `${f(r.resumeP95Ms, 0)} ms`} | ${f(r.apiP95Ms, 0)} ms | ${r.verdict.cpuPass ? 'pass' : 'FAIL'} | ${r.verdict.ramPass ? 'pass' : 'FAIL'} |`,
     )
   }
   out.push('')
@@ -268,15 +297,30 @@ export function renderReportMarkdown(input: ReportInput): string {
   if (burst.length > 0) {
     out.push('## Burst')
     out.push('')
-    out.push('| N | fraction | window | turns started | ' + TURN_STEPS.map((s) => `${s} p95`).join(' | ') + ' | cpu PSI | MemAvail | OOM | resume p95 | pass |')
-    out.push('|' + '---|'.repeat(7 + TURN_STEPS.length))
+    out.push(
+      '| N | fraction | window | turns started | ' +
+        TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
+        ' | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | pass |',
+    )
+    out.push('|' + '---|'.repeat(10 + TURN_STEPS.length))
     for (const b of burst) {
       out.push(
         `| ${b.n} | ${(b.fraction * 100).toFixed(0)}% | ${Math.round(b.windowMs / 1000)}s | ${b.turnsStarted} | ` +
           TURN_STEPS.map((s) => `${f(b.turnP95[s])} ms`).join(' | ') +
-          ` | ${f(b.cpuPsiSomeAvg60)}% | ${f(b.memAvailablePct)}% | ${b.oomKills} | ${f(b.resumeP95Ms, 0)} ms | ${b.pass ? 'pass' : 'FAIL'} |`,
+          ` | ${f(b.cpuPsiSomeAvg60)}% | ${f(b.memAvailablePct)}% | ${b.swapInPagesPerSec == null ? '—' : f(b.swapInPagesPerSec)} | ${b.oomKills} | ${b.memPsiFullAvg60 == null ? '—' : `${f(b.memPsiFullAvg60)}%`} | ${b.resumeP95Ms == null ? 'not sampled' : `${f(b.resumeP95Ms, 0)} ms`} | ${b.pass ? 'pass' : 'FAIL'} |`,
       )
     }
+    out.push('')
+    const failed = burst.filter((b) => !b.pass)
+    if (failed.length > 0) {
+      out.push('### Why each burst failed')
+      out.push('')
+      for (const b of failed) out.push(`- **N=${b.n}**: ${b.reasons.length > 0 ? b.reasons.join('; ') : 'no reason recorded'}`)
+      out.push('')
+    }
+    out.push(
+      'A burst row is scored on the turn latencies, CPU and memory pressure measured in its own window. It is not scored on resume latency: a burst starts turns on guests that are already running, so it never suspends and re-assigns one, and `not sampled` means there was nothing to score — not a 0 ms pass. The PSI columns are the worst sample in the window, and `mem PSI full avg60` is a 60-second rolling average, so in a 60 s burst window it also carries the tail of the hold that preceded it.',
+    )
     out.push('')
   }
 
@@ -346,8 +390,11 @@ export function burstCsv(rows: BurstRow[]): string {
     'cpu_psi_some_avg60',
     'mem_available_pct',
     'oom_kills',
+    'swap_in_pages_per_s',
+    'mem_psi_full_avg60',
     'resume_p95_ms',
     'pass',
+    'reasons',
   ]
   const lines = rows.map((b) =>
     [
@@ -359,8 +406,11 @@ export function burstCsv(rows: BurstRow[]): string {
       b.cpuPsiSomeAvg60,
       b.memAvailablePct,
       b.oomKills,
-      b.resumeP95Ms,
+      b.swapInPagesPerSec ?? '',
+      b.memPsiFullAvg60 ?? '',
+      b.resumeP95Ms == null ? '' : b.resumeP95Ms,
       b.pass ? 'pass' : 'FAIL',
+      `"${b.reasons.join('; ')}"`,
     ].join(','),
   )
   return [head.join(','), ...lines].join('\n') + '\n'

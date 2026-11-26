@@ -135,6 +135,7 @@ Flags (all optional):
 | `--burst-window` | `60s` | window to start the burst turns in |
 | `--burst-fraction` | `0.25` | share of N started at once |
 | `--mem-mib` / `--vcpus` | host's `METAL_MEM_MIB` / `METAL_VCPUS` | VM sizing |
+| `--revision` | `$DENSITY_SOAK_REVISION` | commit being run, recorded in `env.json`; the harness digest is computed either way |
 | `--assume-cordoned` | off | you cordoned by hand |
 | `--no-restart-agent` | off | do not restart the agent for the env swap |
 | `--no-probe-resume` | off | skip the resume-latency probes |
@@ -234,10 +235,15 @@ the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
 9. **The app role was never seeded either.** Only `role === 'agent'` guests got
    the template, so `startAppRoles` started `app-server.ts` in a directory that
    did not exist (`exit 7`, `cd: /app/workspace/density/tpl: No such file or
-   directory`) and the app-response column of every report was empty — in all
-   three runs, not just the burst. `planSeeding` now decides per guest: agent
-   guests get the full prime (template + warm cache + git), app guests get the
-   template files alone, idle guests stay cold.
+   directory`). `planSeeding` now decides per guest: agent guests get the full
+   prime (template + warm cache + git), app guests get the template files alone,
+   idle guests stay cold. Note what this did and did not fix: `report.ts` had **no
+   app column at all**, so "the app response times were missing from the report"
+   was true for a second, independent reason — nothing could display them even if
+   they had been measured. The report now carries `app p50`/`app p95` per step
+   (`—` when the window recorded nothing), which is what makes the seeding fix
+   observable; the app guest in the 2026-11-26 run was measured under the old
+   harness, so that artifact's app column is empty and says so.
 
 Two operational notes from that attempt:
 
@@ -336,22 +342,37 @@ window, and all 13 completed**:
 | burst @ N=80 | p95 | vs baseline |
 |---|---|---|
 | cpu | 3047.8 ms | 1.00× |
-| install | 246.8 ms | **0.58×** |
-| build | 1156.3 ms | **0.58×** |
+| install | 246.8 ms | **0.70×** |
+| build | 1156.3 ms | **0.61×** |
 | CPU PSI `some avg60` | 0.46% | limit 25% |
 | MemAvailable | 41.6% | floor 10% |
 | OOM kills | 0 | — |
 
-Two things to read carefully. A 25%-of-N burst (20 concurrent) is **not
-expressible at the prod mix** at N=80: 16% of 80 is 13 agent guests, so 13 is the
-most turns the mix can start at once, and the run says so (`turns_started: 13` in
-`burst.csv`). And the row still prints `pass = FAIL` even though every turn
-latency bound passed: `pass` is `cpuPass && ramPass`, and the **RAM** gate carried
-the step window's memory PSI (1.09% against a 1% limit) into the burst row's
-window. The burst failed on 0.09 points of memory PSI, not on turn latency — which
-is the opposite of what the withdrawn claim said. A burst that starts more turns
-than there are agent guests needs a higher agent share in `--mix`; that is worth a
-follow-up if the 25% case matters.
+The ratios divide by the **measured N=1 p95 baseline** (3042.0 / 353.3 / 1899.2 ms,
+from the run's own `turns.csv`), which is the same denominator the failing N=80 step
+is reported against. The artifact's baseline table printed a step's p50
+(3045.1 / 424.9 / 2005.5) before this branch fixed it, which put a different number
+in the ratio column than the failure reasons used.
+
+Two things to read carefully. **A 25%-of-N burst (20 concurrent) is not expressible
+at the prod mix**: 16% of 80 is 13 agent guests, so 13 is the most turns the mix can
+start at once, and the run says so (`turns_started: 13` in `burst.csv`).
+
+**The row still prints `pass = FAIL`, and it is a RAM gate, not latency.** `pass` is
+`cpuPass && ramPass`, and every turn-latency bound passed. What failed is
+`mem PSI full avg60`, and where that number comes from is the part to be precise
+about: harness `61403ca40` — the tree that ran — scored the burst window on its
+**last sample** and did not record the value in the row at all, so the artifact has
+to say what it read. The window's last sample was **1.02%**, just over the 1% limit;
+the window's **worst** sample, from the committed `samples.csv`, is **2.53%**, and
+both are the decaying tail of the hold that ran immediately before it (6.59% during
+the N=80 hold). A 60 s `full avg60` cannot separate burst pressure from the hold
+that preceded it. That is why this branch makes the window record its worst sample,
+carries `mem PSI full` and swap-in in the burst row, and prints `not sampled` — not
+`0 ms` — for the resume bound a burst never exercises.
+
+A burst that starts more turns than there are agent guests needs a higher agent share
+in `--mix`; that is worth a follow-up if the 25% case matters.
 
 The single-step ladder this run used also prints **CPU knee 0 · RAM knee 0 ·
 recommend none**, and that is a property of the print, not a new capacity result:
@@ -393,12 +414,27 @@ committed `.steps.csv` is the part the numbers above come from.
 
 The burst re-run is committed the same way, at
 [`runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md`](./runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md)
-(criteria 5's burst), with `.burst.csv`, `.steps.csv` and `.env.json` beside it.
-That run took 00:54–01:15Z on a host carrying **36 metered VMs (449 GiB of 503
-free)**: the serialized ramp (`--ramp-concurrency 1`, because the host still runs
-the pre-SHO-545 boot path) reached N=80 with **0 failed assigns**, held 5 min, and
-tore down 83 soak VMs to 0 with the env restored. Its `turns.csv` has 46 rows —
-33 steady agent turns and 13 burst turns — and **all 46 succeeded**.
+(criteria 5's burst), with `.burst.csv`, `.steps.csv`, `.env.json`, `.samples.csv`
+and `.turns.csv` beside it. That run took 00:54–01:15Z on a host carrying **36
+metered VMs (449 GiB of 503 free)**: the serialized ramp (`--ramp-concurrency 1`,
+because the host still runs the pre-SHO-545 boot path) reached N=80 with **0 failed
+assigns**, held 5 min, and tore down 83 soak VMs to 0 with the env restored. Its
+`turns.csv` has 46 rows — 33 steady agent turns and 13 burst turns — and **all 46
+succeeded**.
+
+**Which harness measured it.** `env.json` recorded `gitSha: "unknown"`, because the
+soak host runs `/root/metal-agent`, a deployed copy with no `.git`. The tree that ran
+is **`61403ca40`**: all four files it executes (`density-soak.ts`,
+`density/guest-workload.ts`, `density/report.ts`, `density/knee.ts`) are byte-identical
+to that commit's versions, and the whole harness hashes to
+`fac63fdc366bacc4bc3ca63d1a8099147a1a2fd4dd7703c00d303c86c4f9e1d3`. Those two facts are
+now recorded in `env.json` (`harnessRevision`, `harnessSha256`) and printed in the
+report, so a future run cannot be published without saying what produced it. Note the
+run therefore predates every fix in this branch that touches the harness: the
+`planSeeding` app fix, the window-worst sampling, the app columns and the burst row's
+PSI columns are **not** in this artifact — it was re-derived from its own CSVs with
+the current rules, which is why its app column is `—` and its burst row says the
+PSI number was not recorded.
 
 **The 2026-11-23T13:15Z burst blocker — resolved (SHO-549, and the burst is
 measured above).** Staging release `718a651`

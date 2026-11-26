@@ -48,7 +48,12 @@ export interface StepMetrics {
   /** p95 wall-clock ms per turn step at this N. */
   turnP95: Record<TurnStep, number>
   cpuPsiSomeAvg60: number
-  resumeP95Ms: number
+  /**
+   * Resume p95, or `null` when the window has no resume sample at all — a burst
+   * row never suspends and re-assigns, so it must not be scored against the 2 s
+   * SLO as if a 0 ms measurement had passed it.
+   */
+  resumeP95Ms: number | null
   oomKills: number
   swapInPagesPerSec: number
   memPsiFullAvg60: number
@@ -80,7 +85,7 @@ export function evaluateStep(step: StepMetrics, baseline: Record<TurnStep, numbe
   if (step.cpuPsiSomeAvg60 >= bounds.cpuPsiSomeAvg60) {
     cpuReasons.push(`cpu PSI some avg60 ${round(step.cpuPsiSomeAvg60)}% (limit ${bounds.cpuPsiSomeAvg60}%)`)
   }
-  if (step.resumeP95Ms >= bounds.resumeP95Ms) {
+  if (step.resumeP95Ms != null && step.resumeP95Ms >= bounds.resumeP95Ms) {
     cpuReasons.push(`resume p95 ${round(step.resumeP95Ms, 0)}ms (limit ${bounds.resumeP95Ms}ms)`)
   }
 
