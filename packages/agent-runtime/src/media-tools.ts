@@ -16,6 +16,7 @@ import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { assertWithinWorkspace } from './permission-engine'
 import { createThreeDTools } from './three-d-tools'
+import { readMp4DurationSeconds } from './mp4-probe'
 
 export { IMAGE_TOOL_NAMES, VIDEO_TOOL_NAMES, THREE_D_TOOL_NAMES, MEDIA_TOOL_NAMES } from './media-tool-names'
 
@@ -101,41 +102,10 @@ export const MAX_SOURCE_VIDEO_BYTES = 200 * 1024 * 1024
 export const MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
 
 /**
- * Duration of an MP4, read from its `mvhd` box — the only reliable way to know
- * how many source seconds a Genjutsu edit will be billed for without shelling
- * out to ffprobe. Returns null when the box can't be read (fragmented or
- * non-standard files), and the caller then refuses the edit.
+ * Duration of an MP4, read from its `mvhd` box — see `mp4-probe.ts`, which
+ * owns the box walk so `read_file` and chat attachments share it.
  */
-export function readMp4DurationSeconds(buffer: Buffer): number | null {
-  const findBox = (type: string, from: number, to: number): { payload: number; end: number } | null => {
-    let offset = from
-    while (offset + 8 <= to) {
-      const size = buffer.readUInt32BE(offset)
-      if (size < 8) return null
-      const kind = buffer.toString('ascii', offset + 4, offset + 8)
-      const end = Math.min(offset + size, to)
-      if (kind === type) return { payload: offset + 8, end }
-      offset = end
-    }
-    return null
-  }
-
-  const moov = findBox('moov', 0, buffer.length)
-  if (!moov) return null
-  const mvhd = findBox('mvhd', moov.payload, moov.end)
-  if (!mvhd) return null
-
-  const version = buffer[mvhd.payload]
-  const timescale = version === 1
-    ? buffer.readUInt32BE(mvhd.payload + 20)
-    : buffer.readUInt32BE(mvhd.payload + 12)
-  const duration = version === 1
-    ? Number(buffer.readBigUInt64BE(mvhd.payload + 24))
-    : buffer.readUInt32BE(mvhd.payload + 16)
-  if (!timescale || !duration) return null
-  const seconds = duration / timescale
-  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
-}
+export { readMp4DurationSeconds }
 
 /**
  * Read a workspace clip for a Genjutsu edit. Only MP4 is accepted (the provider

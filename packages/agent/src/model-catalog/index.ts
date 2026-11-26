@@ -76,6 +76,9 @@ export {
   getContextWindowTokens,
   modelSupportsAudioInput,
   modelSupportsVideoInput,
+  getVideoTokensPerFrame,
+  DEFAULT_VIDEO_TOKENS_PER_FRAME,
+  getProviderForModel,
   getModelKind,
   isLiveModel,
   calculateLiveSessionCost,
@@ -106,6 +109,17 @@ export {
   lastFrameField,
   supportsLastFrame,
 } from './media-options'
+
+export {
+  MAX_VIDEO_FPS,
+  parseVideoMimeType,
+  stripVideoMimeParams,
+  clampVideoFps,
+  buildVideoMimeType,
+  toGeminiVideoMetadata,
+  type VideoFrameSettings,
+  type ParsedVideoMime,
+} from './video-input'
 
 export {
   registerDynamicModels,
