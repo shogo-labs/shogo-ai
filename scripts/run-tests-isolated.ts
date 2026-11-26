@@ -38,7 +38,7 @@ function slugify(rel: string): string {
   return rel.replace(/[/\\]/g, '__').replace(/\.(test|spec)\.[^.]+$/, '')
 }
 
-function findTestFiles(dir: string): string[] {
+export function findTestFiles(dir: string): string[] {
   const out: string[] = []
   const stack = [dir]
   while (stack.length) {
@@ -384,7 +384,7 @@ function parseParallel(argv: string[]): { parallel: number; rest: string[] } {
   return { parallel, rest }
 }
 
-interface Shard {
+export interface Shard {
   index: number
   total: number
 }
@@ -419,7 +419,7 @@ function parseShard(argv: string[]): { shard: Shard | null; rest: string[] } {
  * stable proxy for test cost and gives substantially better buckets than
  * round-robin when one suite contains a few large integration files.
  */
-function selectShard(files: string[], shard: Shard | null): string[] {
+export function selectShard(files: string[], shard: Shard | null): string[] {
   if (!shard) return files
 
   const buckets = Array.from({ length: shard.total }, () => ({
@@ -661,7 +661,10 @@ async function main() {
   process.exit(coverageExit)
 }
 
-main().catch((err) => {
-  console.error('run-tests-isolated.ts failed:', err)
-  process.exit(1)
-})
+// Guarded so the shard selector can be imported by its unit test (SHO-579).
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('run-tests-isolated.ts failed:', err)
+    process.exit(1)
+  })
+}

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 
 const {
   SidebarScrollProvider,
@@ -92,5 +93,47 @@ describe("useSidebarScrollEnd", () => {
 
     signal.notify();
     expect(onScrollEnd).not.toHaveBeenCalled();
+  });
+
+  /**
+   * SHO-579: the listener the signal fires must be the one from the render on
+   * screen, from the moment that render commits. A native scroll event lands
+   * between the commit and React's passive-effect flush, so a listener wired in
+   * a `useEffect` is one render behind when it matters — for the chat list that
+   * is the empty list it mounted with, so the grow is capped at zero.
+   */
+  test("a scroll-end dispatched during a commit runs that render's listener, not the previous one", () => {
+    const signal = createSidebarScrollSignal();
+    // Each render's listener closes over the row count that render drew, the
+    // way WorkspaceChatsPanel's closes over `visibleCount`.
+    const ran: number[] = [];
+
+    function List({ drawn }: { drawn: number }) {
+      useSidebarScrollEnd(() => ran.push(drawn));
+      return null;
+    }
+
+    // Notifies from a layout effect: after List's own layout effects in the
+    // same commit, and before any passive effect can run.
+    function ScrollEndInCommit({ tick }: { tick: number }) {
+      useLayoutEffect(() => {
+        if (tick > 0) signal.notify();
+      }, [tick]);
+      return null;
+    }
+
+    const tree = (drawn: number, tick: number) => (
+      <SidebarScrollProvider signal={signal}>
+        <List drawn={drawn} />
+        <ScrollEndInCommit tick={tick} />
+      </SidebarScrollProvider>
+    );
+
+    const view = render(tree(30, 0));
+    ran.length = 0;
+
+    view.rerender(tree(60, 1));
+
+    expect(ran).toEqual([60]);
   });
 });
