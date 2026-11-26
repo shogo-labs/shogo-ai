@@ -56,7 +56,6 @@ export class FcApi {
 
   private async req(method: string, path: string, body?: unknown): Promise<void> {
     const res = await fetch(`http://localhost${path}`, {
-      // @ts-expect-error - Bun-specific: route this fetch over a Unix socket.
       unix: this.socketPath,
       method,
       headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
@@ -76,7 +75,6 @@ export class FcApi {
 
   private async get<T>(path: string): Promise<T> {
     const res = await fetch(`http://localhost${path}`, {
-      // @ts-expect-error - Bun-specific: route this fetch over a Unix socket.
       unix: this.socketPath,
       method: 'GET',
       headers: { Accept: 'application/json' },

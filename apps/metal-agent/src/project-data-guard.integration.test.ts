@@ -222,7 +222,7 @@ describe('writable-state guard against a precondition-enforcing store', () => {
     // A spooled body reports its size without being read, so only `size` is
     // touched before the check short-circuits — no gigabyte is allocated. The
     // size check must run on it exactly as it does on a file the guest sent.
-    const huge = { size: DATA_MAX_BYTES + 1 } as unknown as BunFile
+    const huge = { size: DATA_MAX_BYTES + 1 } as unknown as ReturnType<typeof Bun.file>
 
     const out = await uploadProjectDataGuarded(
       'p1',

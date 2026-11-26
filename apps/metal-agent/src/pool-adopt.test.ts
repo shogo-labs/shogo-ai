@@ -136,7 +136,7 @@ describe('MetalWarmPool.adopt', () => {
     expect(pool.getAssigned('dead-proj')).toBeUndefined()
 
     // The reap set keeps exactly the adopted handle id (so the reaper spares it).
-    expect(reapKeep && [...reapKeep]).toEqual(['fcvm-live-proj'])
+    expect([...((reapKeep as Set<string> | null) ?? [])]).toEqual(['fcvm-live-proj'])
 
     // The dead entry is pruned from the durable registry.
     expect(reg.get('dead-proj')).toBeNull()
@@ -174,7 +174,7 @@ describe('MetalWarmPool.adopt', () => {
 
     await pool.adopt()
 
-    expect(reapKeep && [...reapKeep].sort()).toEqual(['fcvm-adopted-proj', 'fcvm-booting', 'fcvm-warm'])
+    expect([...((reapKeep as Set<string> | null) ?? [])].sort()).toEqual(['fcvm-adopted-proj', 'fcvm-booting', 'fcvm-warm'])
   })
 
   test('re-adopts a reclaimed VM’s balloon target when idle reclaim is on (SHO-534)', async () => {
@@ -260,7 +260,7 @@ describe('MetalWarmPool.adopt', () => {
     // The live-but-unhealthy VM is adopted (kept), NOT dropped/reaped.
     expect(res.adopted).toEqual(['wedged-proj'])
     expect(adoptedHandles).toEqual(['fcvm-wedged-proj'])
-    expect(reapKeep && [...reapKeep]).toEqual(['fcvm-wedged-proj'])
+    expect([...((reapKeep as Set<string> | null) ?? [])]).toEqual(['fcvm-wedged-proj'])
     // Its registry entry survives so a subsequent restart re-adopts it too.
     expect(reg.get('wedged-proj')?.pid).toBe(liveChild.pid)
   })

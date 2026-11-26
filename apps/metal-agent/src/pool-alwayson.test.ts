@@ -23,9 +23,9 @@ import type { SnapshotStore } from './snapshot-store'
 
 /** Pool subclass that stubs suspend() so reapIdle can be asserted offline. */
 class TestPool extends MetalWarmPool {
-  suspended: string[] = []
+  suspendedIds: string[] = []
   override async suspend(projectId: string): Promise<any> {
-    this.suspended.push(projectId)
+    this.suspendedIds.push(projectId)
     ;(this as any).assigned.delete(projectId)
     return { projectId }
   }
@@ -82,7 +82,7 @@ describe('pool idle-suspend always-on exemption', () => {
     const suspended = await pool.reapIdle(1000)
 
     expect(suspended).toEqual(['regular'])
-    expect(pool.suspended).toEqual(['regular'])
+    expect(pool.suspendedIds).toEqual(['regular'])
     // always-on VM remains assigned + untouched
     expect(pool.peek('paid')).toBeDefined()
     expect(pool.peek('regular')).toBeUndefined()
@@ -93,7 +93,7 @@ describe('pool idle-suspend always-on exemption', () => {
     pool.seed('paid', Date.now(), true)
     const suspended = await pool.reapIdle(1000)
     expect(suspended).toEqual([])
-    expect(pool.suspended).toEqual([])
+    expect(pool.suspendedIds).toEqual([])
   })
 
   test('reapIdle skips an idle VM that has an active agent message (activeStreams>0)', async () => {

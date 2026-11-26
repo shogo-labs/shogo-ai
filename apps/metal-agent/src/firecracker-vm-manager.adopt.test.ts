@@ -44,6 +44,7 @@ function handleFor(pid: number, id = 'adopted-vm'): FcVmHandle {
     guestIp: '172.16.0.2',
     pid,
     platform: 'linux',
+    vmClass: 'standard',
     net: { tap: 'fctap0', guestIp: '172.16.0.2' } as any,
     rootfs: join('/tmp', `${id}.rootfs.ext4`),
     socketPath: join('/tmp', `${id}.sock`),

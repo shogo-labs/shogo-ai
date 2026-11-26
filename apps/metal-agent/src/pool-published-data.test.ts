@@ -34,8 +34,8 @@ class TestPool extends MetalWarmPool {
     this.uploads.push({ subdomain, bytes })
     return Promise.resolve(this.uploadResult)
   }
-  fetchExport(token?: string) {
-    return (this as any).fetchPublishedExport(HANDLE, token) as Promise<Uint8Array | null>
+  async fetchExport(_handle: unknown, token?: string): Promise<any> {
+    return (this as any).fetchPublishedExport(HANDLE, token)
   }
   addAssigned(a: Partial<AssignedVm> & { projectId: string }) {
     ;(this as any).assigned.set(a.projectId, {
@@ -82,7 +82,7 @@ describe('pool published-data durability (host-side export)', () => {
       return new Response(JSON.stringify({ archive: b64([1, 2, 3]) }), { status: 200 })
     }) as any
 
-    const bytes = await pool.fetchExport('secret-token')
+    const bytes = await pool.fetchExport(HANDLE, 'secret-token')
     expect(calls[0].url).toBe('http://10.0.0.9:8080/agent/published-data-archive')
     expect(calls[0].init.method).toBe('GET')
     expect(calls[0].init.headers['x-runtime-token']).toBe('secret-token')
@@ -92,7 +92,7 @@ describe('pool published-data durability (host-side export)', () => {
   test('fetchPublishedExport returns null on 404 (no writable state yet)', async () => {
     const pool = makePool(dir)
     globalThis.fetch = mock(async () => new Response(null, { status: 404 })) as any
-    expect(await pool.fetchExport('tok')).toBeNull()
+    expect(await pool.fetchExport(HANDLE, 'tok')).toBeNull()
   })
 
   test('exportPublishedData uploads the packed writable state under the subdomain', async () => {

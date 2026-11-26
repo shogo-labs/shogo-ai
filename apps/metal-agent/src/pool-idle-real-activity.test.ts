@@ -38,7 +38,7 @@ import type { SnapshotStore } from './snapshot-store'
 const IDLE_MS = 1000
 
 class TestPool extends MetalWarmPool {
-  suspended: string[] = []
+  suspendedIds: string[] = []
   /** When set, every idle suspend comes back `refused` (a non-durable HEAD). */
   refuseSuspend = false
   override async suspendOrRetire(projectId: string, opts: any = {}): Promise<any> {
@@ -46,7 +46,7 @@ class TestPool extends MetalWarmPool {
     return super.suspendOrRetire(projectId, opts)
   }
   override async suspend(projectId: string): Promise<any> {
-    this.suspended.push(projectId)
+    this.suspendedIds.push(projectId)
     ;(this as any).assigned.delete(projectId)
     return { projectId }
   }

@@ -64,7 +64,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'even.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 4 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(4)
   })
 
@@ -73,7 +73,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'odd.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 3 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(5)
     // Full, gapless, non-overlapping coverage with end-exclusive spans.
     const sorted = [...calls].sort((a, b) => a[0] - b[0])
@@ -87,7 +87,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'small.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 8 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls).toEqual([[0, 10]])
   })
 
@@ -105,7 +105,7 @@ describe('downloadRanged', () => {
     const track = { inFlight: 0, max: 0 }
     const dest = join(dir, 'cap.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls, track), { partBytes: 16, concurrency: 5 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(20)
     expect(track.max).toBeLessThanOrEqual(5)
     expect(track.max).toBe(5) // lanes should actually saturate
@@ -117,7 +117,7 @@ describe('downloadRanged', () => {
     const track = { inFlight: 0, max: 0 }
     const dest = join(dir, 'fewparts.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls, track), { partBytes: 16, concurrency: 8 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(track.max).toBeLessThanOrEqual(2)
   })
 
@@ -135,7 +135,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'floor.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 0, concurrency: 2 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(3) // one part per byte
   })
 })
