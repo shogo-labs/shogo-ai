@@ -1198,6 +1198,19 @@ export interface ConsumeUsageParams {
    * keeps the real `workspaceId` so per-child usage attribution is preserved.
    */
   billingWorkspaceId?: string
+  /**
+   * The workspace whose billing relationship decides the wallet, when the event
+   * is recorded against a different one (SHO-590). A paired desktop's forwarded
+   * call is recorded against the hosted workspace the turn ran in but paid for
+   * by the workspace that owns the device key — so the wallet is resolved with
+   * `resolveBillingWorkspaceId()` from here, and that workspace's own parent or
+   * host hop still applies, exactly as it did when the event was recorded
+   * against it. Defaults to `workspaceId`, which is every other caller.
+   *
+   * Unlike `billingWorkspaceId` this is a *basis*, not a resolved id: leave it
+   * unset rather than passing the workspace you think pays.
+   */
+  payerWorkspaceId?: string
   projectId: string | null
   memberId: string
   /**
@@ -1378,7 +1391,8 @@ export async function consumeUsage(
   const mode = getUsageWalletHomeWriterMode()
   if (mode !== 'off' && RAW_REGION_ID) {
     const billingWorkspaceId =
-      params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(params.workspaceId))
+      params.billingWorkspaceId ??
+      (await resolveBillingWorkspaceId(params.payerWorkspaceId ?? params.workspaceId))
     const homeRegion = await resolveWorkspaceHomeRegion(billingWorkspaceId)
 
     if (homeRegion !== RAW_REGION_ID) {
@@ -1442,9 +1456,12 @@ export async function consumeUsageLocal(
 
   // Resolve the workspace whose wallet is actually debited (parent for a
   // child workspace). Overage charging and usage alerts operate on that
-  // pooled wallet, not the child.
+  // pooled wallet, not the child. `payerWorkspaceId` keeps that resolution
+  // anchored on the paying workspace when the event is recorded against
+  // another one (SHO-590).
   const billingWorkspaceId =
-    params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(workspaceId))
+    params.billingWorkspaceId ??
+    (await resolveBillingWorkspaceId(params.payerWorkspaceId ?? workspaceId))
 
   for (let attempt = 0; ; attempt++) {
     try {

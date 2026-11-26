@@ -3837,21 +3837,34 @@ export function resolveUsageAttributionMemberId(tokenPayload: ProxyTokenPayload)
  * otherwise every desktop turn lands on the paying workspace as "no project" and
  * the hosted workspace's Analytics reads nothing.
  *
- * The wallet does not move: `consumeUsage` resolves it from this workspace
- * through `resolveBillingWorkspaceId`, which lends a hosted workspace its host
- * instance's workspace — the same payer as today.
+ * The wallet does not move: whenever the attribution differs from the
+ * credential's scope, the resolver also names the credential's own workspace as
+ * `payerWorkspaceId`, and `consumeUsage` resolves the wallet from *that* through
+ * `resolveBillingWorkspaceId` — the same payer, and the same parent/host hop, as
+ * before the hint existed. The hint is proved by membership, which is weaker
+ * than SEC-29's owner-or-billing-admin check on the paying workspace, so relying
+ * on the hop from the attributed workspace would move the debit onto the hosted
+ * workspace's own unpaid wallet exactly when SEC-29 refuses it (a plain member,
+ * an owner demoted after pairing).
  */
 export function resolveUsageAttribution(tokenPayload: ProxyTokenPayload): {
   /** Workspace the usage is recorded against. */
   workspaceId: string
   /** Real project row, or null (workspace agent / no proof). */
   projectId: string | null
+  /**
+   * Workspace whose billing relationship decides the wallet. Set only when the
+   * attribution moved, so `consumeUsage` never re-derives the payer from the
+   * hosted workspace.
+   */
+  payerWorkspaceId?: string
 } {
   if (tokenPayload.usageWorkspaceId) {
     const attributedProject = tokenPayload.usageProjectId
     return {
       workspaceId: tokenPayload.usageWorkspaceId,
       projectId: attributedProject && !isNonProjectSentinel(attributedProject) ? attributedProject : null,
+      payerWorkspaceId: tokenPayload.workspaceId,
     }
   }
   // No proof: the credential's own scope, exactly as before SHO-590.
@@ -4243,6 +4256,7 @@ export async function recordUsage(
     const result = await billingService.consumeUsage({
       workspaceId: attribution.workspaceId,
       projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
       memberId: billedMemberId,
       ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: 'ai_proxy_completion',
@@ -4697,6 +4711,7 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     const result = await billingService.consumeUsage({
       workspaceId: attribution.workspaceId,
       projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
       memberId: billedMemberId,
       ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: charge.actionType,
@@ -5329,6 +5344,7 @@ export async function recordTranscriptionUsage(
     const result = await billingService.consumeUsage({
       workspaceId: attribution.workspaceId,
       projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
       memberId: billedMemberId,
       ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: 'ai_audio_transcription',

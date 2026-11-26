@@ -480,13 +480,17 @@ describe('SHO-590: without proof the ledger row is the credential\'s own scope',
   })
 
   test('proven attribution wins, and a sentinel attributed project is still not one', () => {
+    // `payerWorkspaceId` is the credential's own workspace — the payer today —
+    // so the wallet never follows the attribution (AC2).
     expect(resolveUsageAttribution({ ...base, projectId: 'api-key', usageWorkspaceId: HOSTED_WORKSPACE, usageProjectId: HOSTED_PROJECT })).toEqual({
       workspaceId: HOSTED_WORKSPACE,
       projectId: HOSTED_PROJECT,
+      payerWorkspaceId: KEY_WORKSPACE,
     })
     expect(resolveUsageAttribution({ ...base, projectId: 'api-key', usageWorkspaceId: HOSTED_WORKSPACE, usageProjectId: 'workspace' })).toEqual({
       workspaceId: HOSTED_WORKSPACE,
       projectId: null,
+      payerWorkspaceId: KEY_WORKSPACE,
     })
   })
 })
