@@ -21,6 +21,15 @@ const CHILD = join(import.meta.dir, 'test-fixtures/spool-memory-child.ts')
 
 type Mode = 'spool' | 'gzip'
 
+/**
+ * A child that ran one of these paths imports `pool.ts` / `snapshot-store.ts`,
+ * so its peak RSS is tens of MiB. Below this the reading is not a reading: the
+ * Linux `/proc/self` reader once reported the spawned shell's ~2 MiB and the
+ * macOS `maxRSS` branch divided kB by 1 MiB and reported 0, and in both cases
+ * the upper bound below passed for a fully buffered implementation.
+ */
+const PLAUSIBLE_FLOOR_MIB = 8
+
 /** Run one path over `mib` mebibytes and report the child's peak RSS. */
 function run(mode: Mode, mib: number): { srcBytes: number; outBytes: number; peakMib: number } {
   const proc = Bun.spawnSync([process.execPath, CHILD, mode, String(mib)], {
@@ -47,6 +56,11 @@ describe('export paths keep memory flat as the body grows', () => {
     // whole (33.6 GiB for a 4.3 GiB export), so a buffered regression lands at
     // ~512 MiB here and trips the bound.
     expect(peakMib).toBeLessThan(192)
+    // …and the number is a real reading, not a broken one: the child imports
+    // `pool.ts`, so it cannot be under a few MiB. Without this floor a
+    // measurement that silently reports the wrong process (as the Linux reader
+    // did — a spawned `sh` answered for itself) makes the bound unfalsifiable.
+    expect(peakMib).toBeGreaterThan(PLAUSIBLE_FLOOR_MIB)
   }, 120_000)
 
   test('a snapshot push gzips to a file and uploads a file body', () => {
@@ -60,5 +74,6 @@ describe('export paths keep memory flat as the body grows', () => {
     // The 94 GiB burst came from this path; a CompressionStream body would sit
     // at ~256 MiB+ here, the pigz + file-body shape stays in the tens.
     expect(peakMib).toBeLessThan(192)
+    expect(peakMib).toBeGreaterThan(PLAUSIBLE_FLOOR_MIB)
   }, 120_000)
 })

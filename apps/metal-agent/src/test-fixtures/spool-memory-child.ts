@@ -13,7 +13,7 @@
  *
  * Prints one JSON line: { mode, src_bytes, out_bytes, peak_rss_mib }.
  */
-import { mkdirSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 
 const [mode = 'spool', mibArg = '128'] = process.argv.slice(2)
 const mib = Number(mibArg)
@@ -27,19 +27,28 @@ const handle = Bun.file(src).writer()
 for (let i = 0; i < mib; i++) await handle.write(chunk)
 await handle.end()
 
-/** Peak RSS of this process, in MiB. */
-const peakMib = (): number => {
+/**
+ * Current RSS of this process, in MiB.
+ *
+ * Linux reads THIS process's `/proc/self/status` VmHWM (an exact high-water
+ * mark, in kB). It must not go through a spawned `sh`: `/proc/self` inside that
+ * child resolves to the child, so the reading came back as the shell's own
+ * ~2 MiB mark and the bound in `spool-memory.test.ts` could never fail.
+ *
+ * Everywhere else samples `process.memoryUsage().rss()`, which is bytes by API
+ * contract. `process.resourceUsage().maxRSS` is NOT bytes — it is kilobytes on
+ * POSIX — so dividing it by 1 MiB reported 0 MiB on macOS, which also made the
+ * bound unfalsifiable (SHO-593 QA). The test asserts a floor as well, so a
+ * measurement that quietly stops working fails loudly instead of passing.
+ */
+const rssMib = (): number => {
   if (process.platform === 'linux') {
-    const status = Bun.file('/proc/self/status')
-    // Read synchronously through a spawn: cheap enough at this call frequency
-    // and it avoids depending on readFileSync of a virtual file.
-    const out = Bun.spawnSync(['sh', '-c', `awk '/^VmHWM/{print $2}' /proc/self/status`])
-    return Math.round(Number(out.stdout.toString().trim() || '0') / 1024)
+    const m = readFileSync('/proc/self/status', 'utf8').match(/^VmHWM:\s+(\d+) kB$/m)
+    if (m) return Math.round(Number(m[1]) / 1024)
   }
-  // macOS reports maxRSS in bytes.
-  const { maxRSS } = process.resourceUsage()
-  return Math.round(maxRSS / (1024 * 1024))
+  return Math.round(process.memoryUsage().rss / (1024 * 1024))
 }
+const peakMib = rssMib
 
 let outBytes = 0
 let peak = 0
