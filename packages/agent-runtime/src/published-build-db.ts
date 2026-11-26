@@ -24,7 +24,7 @@
  * the workspace's own `src/lib/db.tsx` and `prisma/schema.prisma` are untouched.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateDbModule } from '@shogo-ai/sdk/generators'
 import { buildPublishSchema } from '@shogo/shared-runtime/published-schema'
@@ -179,4 +179,31 @@ export function applyPostgresBuildContext(contextDir: string): ApplyPostgresBuil
   }
 
   return result()
+}
+
+/**
+ * Remove the builder's SQLite database from a Postgres build context.
+ *
+ * A Postgres image talks to `projects-pg` and never opens these files, and the
+ * rows a first deploy needs are seeded by the API from the live archive (or
+ * skipped entirely for `data: 'empty'`). What is left is a multi-megabyte file
+ * that the artifact carries into a scratch directory it has to fit in — Nada's
+ * `dev.db` alone is over 64 MB, the size that already tripped `seed_too_large`.
+ *
+ * Returns the paths it removed so the caller can log them.
+ */
+export function dropSqliteDatabaseFiles(contextDir: string): string[] {
+  const removed: string[] = []
+  for (const rel of ['prisma/dev.db', 'prisma/dev.db-wal', 'prisma/dev.db-shm', 'dev.db', 'dev.db-wal', 'dev.db-shm']) {
+    const file = join(contextDir, rel)
+    if (!existsSync(file)) continue
+    try {
+      rmSync(file, { force: true })
+      removed.push(rel)
+    } catch {
+      // A file we cannot remove stays in the artifact: the size cost is not worth
+      // failing a publish over, and the environment does not read it.
+    }
+  }
+  return removed
 }

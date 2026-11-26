@@ -7,10 +7,10 @@
 // the SQLite driver cannot talk to projects-pg.
 
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { applyPostgresBuildContext } from '../published-build-db'
+import { applyPostgresBuildContext, dropSqliteDatabaseFiles } from '../published-build-db'
 
 function makeContext(
   opts: { dbTs?: string; dbTsx?: string; packageJson?: object; schema?: string } = {},
@@ -181,5 +181,29 @@ describe('applyPostgresBuildContext', () => {
     const result = applyPostgresBuildContext(dir)
     expect(result.dbModule).toBe('src/lib/db.ts')
     expect(readFileSync(join(dir, 'src', 'lib', 'db.ts'), 'utf-8')).toContain('@prisma/adapter-pg')
+  })
+})
+
+describe('dropSqliteDatabaseFiles', () => {
+  it('removes the builder database and its WAL, and reports what went', () => {
+    const dir = makeContext({ dbTs: SQLITE_DB_TSX, schema: SQLITE_SCHEMA })
+    dirs.push(dir)
+    writeFileSync(join(dir, 'prisma', 'dev.db'), 'x'.repeat(64))
+    writeFileSync(join(dir, 'prisma', 'dev.db-wal'), 'w')
+    writeFileSync(join(dir, 'prisma', 'dev.db-shm'), 's')
+
+    const removed = dropSqliteDatabaseFiles(dir)
+
+    expect(removed.sort()).toEqual(['prisma/dev.db', 'prisma/dev.db-shm', 'prisma/dev.db-wal'])
+    expect(existsSync(join(dir, 'prisma', 'dev.db'))).toBe(false)
+    expect(existsSync(join(dir, 'prisma', 'dev.db-wal'))).toBe(false)
+    // The schema and the source must survive: the image is built from them.
+    expect(existsSync(join(dir, 'prisma', 'schema.prisma'))).toBe(true)
+  })
+
+  it('is a no-op when the context has no SQLite database', () => {
+    const dir = makeContext({ dbTs: SQLITE_DB_TSX, schema: SQLITE_SCHEMA })
+    dirs.push(dir)
+    expect(dropSqliteDatabaseFiles(dir)).toEqual([])
   })
 })
