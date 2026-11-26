@@ -3479,11 +3479,20 @@ async function readVideoFile(
     // A caller-set note explains this read precisely (retimed, missing ffmpeg);
     // the generic sampling warning is only for a read that says nothing else.
     if (typeof details.note === 'string') return details
+    // Describe the rate this read actually used. A `fps: 5` read on a Google
+    // model is a 5 fps sample, and telling that caller the model saw "1 frame
+    // per second" — then to pass `fps` — is the disclosure lying about the very
+    // thing it exists to make visible.
+    const rate = typeof details.effectiveFps === 'number' && details.effectiveFps > 0 ? details.effectiveFps : 1
+    const sample = rate === 1 ? 'a 1 frame per second sample' : `a ${roundRate(rate)} frame per second sample`
+    const advice = options.requestedFps !== undefined
+      ? 'Raise `fps` (up to 24) or narrow `start`/`end` to see more.'
+      : 'Pass `fps` (up to 24), with `start`/`end`, to see more.'
     return {
       ...details,
       note:
-        `The model sees about ${framesSent} of ${sourceFrames} frames — a 1 frame per second sample, ` +
-        'so a brief event can fall between frames. Pass `fps` (up to 24), with `start`/`end`, to see more.',
+        `The model sees about ${framesSent} of ${sourceFrames} frames — ${sample}, ` +
+        `so a brief event can fall between frames. ${advice}`,
     }
   }
 
