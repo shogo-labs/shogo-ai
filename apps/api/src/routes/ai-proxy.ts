@@ -666,13 +666,21 @@ export const OPENAI_TERMINAL_EVENT_RE =
   /(?:^|\n)data:\s*\[DONE\]|(?:^|\n)data:\s*\{\s*"error"|(?:^|\n)data:[^\n]*"finish_reason"\s*:\s*"(?!null)[a-zA-Z_]+"/
 
 /**
- * Terminal marker on Google's *native* `generateContent` SSE: the resolved
- * `finishReason` on a candidate. That stream never sends `[DONE]` and has no
- * `finish_reason` field, so the OpenAI markers match nothing — which made
- * every completed native video turn look truncated and get retried.
+ * The ways Google's *native* `generateContent` SSE ends a body on its own
+ * terms. There are three, and the OpenAI markers match none of them — which
+ * made a completed native video turn look truncated and get retried:
+ *
+ *  - a candidate's resolved `finishReason` (the normal end);
+ *  - a mid-stream `{"error": …}` event, e.g. a 503 the provider raised after it
+ *    had already started answering (`FINISH_REASON_UNSPECIFIED` on its own is
+ *    not an end);
+ *  - a prompt-level block, `promptFeedback.blockReason`, which carries no
+ *    candidate at all, so there is no `finishReason` to find.
+ *
+ * A body with none of these is still reported as truncated.
  */
 export const GOOGLE_NATIVE_TERMINAL_EVENT_RE =
-  /(?:^|\n)data:[^\n]*"finishReason"\s*:\s*"(?!FINISH_REASON_UNSPECIFIED)[A-Z_]+"/
+  /(?:^|\n)data:\s*\{\s*"error"|(?:^|\n)data:[^\n]*"finishReason"\s*:\s*"(?!FINISH_REASON_UNSPECIFIED)[A-Z_]+"|(?:^|\n)data:[^\n]*"blockReason"\s*:\s*"[A-Z_]+"/
 
 /** How an upstream SSE body announces the end of its stream. */
 export type SseTerminalDialect = 'anthropic' | 'openai' | 'google-native'
