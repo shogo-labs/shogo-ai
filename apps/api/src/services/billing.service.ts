@@ -1589,7 +1589,10 @@ export async function recordUnbilledUsageEvent(
           attemptedBilledUsd: params.billedUsd,
           ...extra,
         },
-        rawUsd: params.rawUsd ?? null,
+        // The provider cost is the whole point of the row, so fall back to the
+        // price we would have charged when a caller passed no separate cost:
+        // `rawUsd` null would still let the spend disappear from cost analytics.
+        rawUsd: params.rawUsd ?? params.billedUsd,
         billedUsd: 0,
         source: 'refused',
         balanceBefore: 0,
