@@ -56,7 +56,13 @@ import {
   isModelProviderConfigured,
 } from '../services/visible-models.service'
 import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
-import { cloudPassthroughHeaders, forwardToShogoCloud } from '../lib/cloud-request-forward'
+import {
+  USAGE_MEMBER_HEADER,
+  USAGE_PROJECT_HEADER,
+  USAGE_WORKSPACE_HEADER,
+  resolveHostedUsageAttribution,
+} from '../lib/hosted-usage-attribution'
+import { cloudPassthroughHeaders, forwardToShogoCloud, type CloudUsageAttribution } from '../lib/cloud-request-forward'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -3993,6 +3999,67 @@ export function resolveUsageMemberId(tokenPayload: {
 }
 
 /**
+ * The person a `UsageEvent` records for this call (SHO-590).
+ *
+ * Separate from {@link resolveUsageMemberId} on purpose: that one decides the
+ * *seat* — balance preflight, model access and per-member limits must keep
+ * reading the credential's own acting user, never a hint the request carried.
+ * This one only labels the ledger row, and only ever sees a member the proxy
+ * auth validator already proved is in the hosted workspace.
+ */
+export function resolveUsageAttributionMemberId(tokenPayload: ProxyTokenPayload): string | undefined {
+  return tokenPayload.usageMemberId || resolveUsageMemberId(tokenPayload)
+}
+
+/**
+ * Where a proxied call's `UsageEvent` / wallet debit is booked (SHO-590).
+ *
+ * `workspaceId` / `projectId` on the token are the *credential's* scope: gates,
+ * balance preflight and per-member limits read those, and for a device key they
+ * name the paying workspace, not the workspace the turn ran in. A paired desktop
+ * additionally proves which hosted workspace (and project) the call belongs to;
+ * that is attribution, and it is what the usage writers must record, because
+ * otherwise every desktop turn lands on the paying workspace as "no project" and
+ * the hosted workspace's Analytics reads nothing.
+ *
+ * The wallet does not move: whenever the attribution differs from the
+ * credential's scope, the resolver also names the credential's own workspace as
+ * `payerWorkspaceId`, and `consumeUsage` resolves the wallet from *that* through
+ * `resolveBillingWorkspaceId` — the same payer, and the same parent/host hop, as
+ * before the hint existed. The hint is proved by membership, which is weaker
+ * than SEC-29's owner-or-billing-admin check on the paying workspace, so relying
+ * on the hop from the attributed workspace would move the debit onto the hosted
+ * workspace's own unpaid wallet exactly when SEC-29 refuses it (a plain member,
+ * an owner demoted after pairing).
+ */
+export function resolveUsageAttribution(tokenPayload: ProxyTokenPayload): {
+  /** Workspace the usage is recorded against. */
+  workspaceId: string
+  /** Real project row, or null (workspace agent / no proof). */
+  projectId: string | null
+  /**
+   * Workspace whose billing relationship decides the wallet. Set only when the
+   * attribution moved, so `consumeUsage` never re-derives the payer from the
+   * hosted workspace.
+   */
+  payerWorkspaceId?: string
+} {
+  if (tokenPayload.usageWorkspaceId) {
+    const attributedProject = tokenPayload.usageProjectId
+    return {
+      workspaceId: tokenPayload.usageWorkspaceId,
+      projectId: attributedProject && !isNonProjectSentinel(attributedProject) ? attributedProject : null,
+      payerWorkspaceId: tokenPayload.workspaceId,
+    }
+  }
+  // No proof: the credential's own scope, exactly as before SHO-590.
+  return {
+    workspaceId: tokenPayload.workspaceId,
+    projectId: isNonProjectSentinel(tokenPayload.projectId) ? null : (tokenPayload.projectId || null),
+  }
+}
+
+/**
  * Resolve the person a proxied request acts for and stamp it on the payload.
  *
  * A valid requester ticket wins — the runtime sends it on LLM calls too, so a
@@ -4011,6 +4078,53 @@ async function stampActingUser(c: any, payload: ProxyTokenPayload): Promise<void
   } catch {
     payload.actingUserId = payload.userId || undefined
   }
+}
+
+/**
+ * The three attribution hints a paired desktop sends on a forwarded call
+ * (SHO-590). `null` when it sends none — every other caller — so the proxy can
+ * skip the lookup entirely.
+ */
+function readHostedUsageHints(
+  c: any,
+): { workspaceId: string; projectId: string | null; memberId: string | null } | null {
+  const workspaceId = c.req.header(USAGE_WORKSPACE_HEADER)
+  if (!workspaceId) return null
+  return {
+    workspaceId,
+    projectId: c.req.header(USAGE_PROJECT_HEADER) || null,
+    memberId: c.req.header(USAGE_MEMBER_HEADER) || null,
+  }
+}
+
+/**
+ * Stamp the hosted workspace a device key's call belongs to on the payload.
+ *
+ * Attribution only — nothing here changes which workspace is charged or which
+ * seat the gates meter; `payload.workspaceId` and `payload.actingUserId` stay
+ * exactly as the credential resolved them. A hint `resolveHostedUsageAttribution`
+ * cannot prove is ignored, so the call records as it did before SHO-590.
+ */
+async function stampHostedUsageAttribution(
+  c: any,
+  payload: ProxyTokenPayload,
+  resolved: { workspaceId: string; userId: string; kind: string; deviceId?: string | null },
+): Promise<void> {
+  const hints = readHostedUsageHints(c)
+  if (!hints) return
+  const attribution = await resolveHostedUsageAttribution(
+    {
+      workspaceId: resolved.workspaceId,
+      userId: resolved.userId,
+      kind: resolved.kind,
+      deviceId: resolved.deviceId,
+    },
+    hints,
+  )
+  if (!attribution.ok) return
+  payload.usageWorkspaceId = attribution.attribution.workspaceId
+  payload.usageProjectId = attribution.attribution.projectId
+  payload.usageMemberId = attribution.attribution.memberId
 }
 
 /**
@@ -4236,6 +4350,11 @@ export async function recordUsage(
   const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
     ? null
     : (tokenPayload.projectId || null)
+  // What the ledger records. For every caller but a paired desktop's forwarded
+  // call these are the credential's own scope; for that call they are the
+  // hosted workspace and project the turn ran in (SHO-590).
+  const attribution = resolveUsageAttribution(tokenPayload)
+  const attributedMemberId = resolveUsageAttributionMemberId(tokenPayload)
 
   // Internal, non-billable completion (e.g. server-initiated title generation):
   // record the real cost for ADMIN cost-tracking only — never debit a wallet,
@@ -4250,7 +4369,7 @@ export async function recordUsage(
       // The server's internal token attributes usage to the `system` sentinel
       // workspace, which must exist as a real row for this UsageEvent to satisfy
       // its workspaceId FK. Ensure it (idempotent, memoized) before recording.
-      if (tokenPayload.workspaceId === billingService.SYSTEM_WORKSPACE_ID) {
+      if (attribution.workspaceId === billingService.SYSTEM_WORKSPACE_ID) {
         await billingService.ensureSystemWorkspace()
       }
       const billingModel = proxyModelToBillingModel(model)
@@ -4258,11 +4377,11 @@ export async function recordUsage(
       // Record the model the cost was actually priced as (the real id for a
       // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
       const recordedModel = pricedAs ?? billingModel
-      const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
+      const billingUserId = attributedMemberId || 'system'
       await prisma.usageEvent.create({
         data: {
-          workspaceId: tokenPayload.workspaceId,
-          projectId: billingProjectId,
+          workspaceId: attribution.workspaceId,
+          projectId: attribution.projectId,
           memberId: billingUserId,
           actionType: internalUsage.actionType,
           rawUsd,
@@ -4270,18 +4389,22 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(pricingUnknown ? { pricingUnknown } : {}) },
+          actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${recordedModel}) — not billed`)
-      invalidateAnalyticsCache({ workspaceId: tokenPayload.workspaceId, projectId: billingProjectId ?? undefined })
+      invalidateAnalyticsCache({ workspaceId: attribution.workspaceId, projectId: attribution.projectId ?? undefined })
     } catch (err) {
       console.error('[AI Proxy] Failed to record internal usage:', err)
     }
     return
   }
 
-  // If a billing session is open, accumulate — the session closer will charge
+  // If a billing session is open, accumulate — the session closer will charge.
+  // Keyed on the credential's own project: a desktop-forwarded call has no
+  // cloud billing session of its own, and per-call debiting must not start
+  // folding into one just because its attribution names a real project
+  // (SHO-590).
   if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId, reasoningTokens)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     // Per-request cache breakdown — same gate as the agent-runtime cache-debug
@@ -4307,19 +4430,24 @@ export async function recordUsage(
     // Record the model the cost was actually priced as (the real id for a
     // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
     const recordedModel = pricedAs ?? billingModel
-    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
-    if (billingUserId === 'system') {
+    const billedMemberId = attributedMemberId || 'system'
+    // The seat is the credential's own acting user, always: attribution names
+    // the person on the ledger row, but the device key holder is who pays.
+    const seatMemberId = resolveUsageMemberId(tokenPayload) || 'system'
+    if (billedMemberId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
     }
 
     const result = await billingService.consumeUsage({
-      workspaceId: tokenPayload.workspaceId,
-      projectId: billingProjectId,
-      memberId: billingUserId,
+      workspaceId: attribution.workspaceId,
+      projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
+      memberId: billedMemberId,
+      ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
+      actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
     if (result.success) {
@@ -4743,11 +4871,14 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
       ? null
       : (tokenPayload.projectId || null)
-    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
+    const attribution = resolveUsageAttribution(tokenPayload)
+    const billedMemberId = resolveUsageAttributionMemberId(tokenPayload) || 'system'
+    const seatMemberId = resolveUsageMemberId(tokenPayload) || 'system'
 
     // If a billing session is open for this project, fold the USD into the
     // session so the chat turn produces a single `chat_message` wallet debit
-    // instead of an extra per-media row.
+    // instead of an extra per-media row. The credential's own project decides
+    // that, never the attribution (SHO-590).
     if (billingProjectId) {
       const accumulated = kind === 'video'
         ? await accumulateVideoUsage(billingProjectId, model, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
@@ -4763,13 +4894,15 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     }
 
     const result = await billingService.consumeUsage({
-      workspaceId: tokenPayload.workspaceId,
-      projectId: billingProjectId,
-      memberId: billingUserId,
+      workspaceId: attribution.workspaceId,
+      projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
+      memberId: billedMemberId,
+      ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: charge.actionType,
       rawUsd,
       billedUsd,
-      actionMetadata: { model, ...charge.metadata, rawUsd },
+      actionMetadata: { model, ...charge.metadata, rawUsd, ...(chatSessionId ? { chatSessionId } : {}) },
     })
 
     if (result.success) {
@@ -5389,15 +5522,16 @@ export async function recordTranscriptionUsage(
     const { rawUsd, billedUsd } = calculateTranscriptionUsageCost(durationSeconds)
     if (billedUsd === 0) return
 
-    const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
-      ? null
-      : (tokenPayload.projectId || null)
-    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
+    const attribution = resolveUsageAttribution(tokenPayload)
+    const billedMemberId = resolveUsageAttributionMemberId(tokenPayload) || 'system'
+    const seatMemberId = resolveUsageMemberId(tokenPayload) || 'system'
 
     const result = await billingService.consumeUsage({
-      workspaceId: tokenPayload.workspaceId,
-      projectId: billingProjectId,
-      memberId: billingUserId,
+      workspaceId: attribution.workspaceId,
+      projectId: attribution.projectId,
+      ...(attribution.payerWorkspaceId ? { payerWorkspaceId: attribution.payerWorkspaceId } : {}),
+      memberId: billedMemberId,
+      ...(seatMemberId !== billedMemberId ? { seatMemberId } : {}),
       actionType: 'ai_audio_transcription',
       rawUsd,
       billedUsd,
@@ -5736,7 +5870,7 @@ export function aiProxyRoutes() {
       // credential, and the client needs the code to show a verify CTA.
       const hold = await getSignupTrustHold(resolved.userId)
       if (hold) throw new SignupTrustHoldError(hold)
-      return {
+      const payload: ProxyTokenPayload = {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
@@ -5745,6 +5879,8 @@ export function aiProxyRoutes() {
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
+      await stampHostedUsageAttribution(c, payload, resolved)
+      return payload
     }
 
     if (token.startsWith('rt_v1_')) {
@@ -5799,16 +5935,39 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * What a forwarded call tells the cloud about where it belongs (SHO-590).
+   *
+   * The local token payload already names the workspace and project this call
+   * was made for — the sentinels (`'api-key'` / `'workspace'` / `'system'`) are
+   * not real projects, so they are dropped — and `actingUserId` is the person
+   * the turn was for (a locally verified requester ticket wins). The cloud only
+   * trusts this from a device key that provably hosts the workspace, so a bug
+   * here cannot mis-bill anything.
+   */
+  function cloudUsageAttribution(tokenPayload: ProxyTokenPayload): CloudUsageAttribution {
+    return {
+      workspaceId: tokenPayload.workspaceId,
+      projectId: isNonProjectSentinel(tokenPayload.projectId) ? null : tokenPayload.projectId,
+      memberId: tokenPayload.actingUserId || tokenPayload.userId || null,
+    }
+  }
+
+  /**
    * Forward an OpenAI-compatible chat completions request to the Shogo Cloud proxy.
    */
-  async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest, signal?: AbortSignal): Promise<Response> {
+  async function forwardChatCompletionsToCloud(
+    c: any,
+    request: ChatCompletionRequest,
+    signal?: AbortSignal,
+    tokenPayload?: ProxyTokenPayload,
+  ): Promise<Response> {
     const cloudUrl = getShogoCloudUrl()
     const shogoKey = process.env.SHOGO_API_KEY!
 
     const response = await fetch(`${cloudUrl}/api/ai/v1/chat/completions`, {
       method: 'POST',
       headers: {
-        ...cloudPassthroughHeaders(c),
+        ...cloudPassthroughHeaders(c, tokenPayload && cloudUsageAttribution(tokenPayload)),
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
         'x-shogo-client': 'desktop',
@@ -5854,14 +6013,19 @@ export function aiProxyRoutes() {
    * id. Without this the Responses path 503s (or bypasses the cloud), and GPT
    * reasoning never reaches the client.
    */
-  async function forwardResponsesToCloud(c: any, request: any, signal?: AbortSignal): Promise<Response> {
+  async function forwardResponsesToCloud(
+    c: any,
+    request: any,
+    signal?: AbortSignal,
+    tokenPayload?: ProxyTokenPayload,
+  ): Promise<Response> {
     const cloudUrl = getShogoCloudUrl()
     const shogoKey = process.env.SHOGO_API_KEY!
 
     const response = await fetch(`${cloudUrl}/api/ai/v1/responses`, {
       method: 'POST',
       headers: {
-        ...cloudPassthroughHeaders(c),
+        ...cloudPassthroughHeaders(c, tokenPayload && cloudUsageAttribution(tokenPayload)),
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
         'x-shogo-client': 'desktop',
@@ -5899,7 +6063,13 @@ export function aiProxyRoutes() {
   /**
    * Forward an Anthropic-native request to the Shogo Cloud proxy.
    */
-  async function forwardAnthropicToCloud(c: any, body: string, headers: Record<string, string>, signal?: AbortSignal): Promise<Response> {
+  async function forwardAnthropicToCloud(
+    c: any,
+    body: string,
+    headers: Record<string, string>,
+    signal?: AbortSignal,
+    tokenPayload?: ProxyTokenPayload,
+  ): Promise<Response> {
     const cloudUrl = getShogoCloudUrl()
     const shogoKey = process.env.SHOGO_API_KEY!
     const parsed = JSON.parse(body)
@@ -5908,7 +6078,7 @@ export function aiProxyRoutes() {
     splitSystemBlocksForCaching(parsed)
 
     const forwardHeaders: Record<string, string> = {
-      ...cloudPassthroughHeaders(c),
+      ...cloudPassthroughHeaders(c, tokenPayload && cloudUsageAttribution(tokenPayload)),
       'Content-Type': 'application/json',
       'x-api-key': shogoKey,
       'x-shogo-client': 'desktop',
@@ -5986,11 +6156,12 @@ export function aiProxyRoutes() {
    * thing this wrapper adds is where the request lands: everything after the
    * `/api` mount, plus the query string.
    */
-  async function forwardMediaToCloud(c: any): Promise<Response> {
+  async function forwardMediaToCloud(c: any, tokenPayload: ProxyTokenPayload): Promise<Response> {
     const originalUrl = new URL(c.req.url)
     return forwardToShogoCloud(c, {
       pathname: aiRelativePath(originalUrl.pathname),
       search: originalUrl.search,
+      attribution: cloudUsageAttribution(tokenPayload),
     })
   }
 
@@ -6023,7 +6194,7 @@ export function aiProxyRoutes() {
       )
     }
 
-    return forwardMediaToCloud(c)
+    return forwardMediaToCloud(c, tokenPayload)
   })
 
   // =========================================================================
@@ -6059,7 +6230,7 @@ export function aiProxyRoutes() {
         const denied = await enforceModelAccess(c, tokenPayload, request.model)
         if (denied) return denied
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
-        return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
+        return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal, tokenPayload)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error:', error.message)
         return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
@@ -6399,7 +6570,7 @@ export function aiProxyRoutes() {
         const denied = await enforceModelAccess(c, tokenPayload, body?.model)
         if (denied) return denied
         console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${body?.model} (stream: ${!!body?.stream})`)
-        return await forwardResponsesToCloud(c, body, c.req.raw.signal)
+        return await forwardResponsesToCloud(c, body, c.req.raw.signal, tokenPayload)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error (responses):', error.message)
         return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
@@ -6792,7 +6963,7 @@ export function aiProxyRoutes() {
       // Same trust gate as the OpenAI-compatible path (SHO-416).
       const hold = await getSignupTrustHold(resolved.userId)
       if (hold) throw new SignupTrustHoldError(hold)
-      return {
+      const payload: ProxyTokenPayload = {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,
         userId: resolved.userId,
@@ -6801,6 +6972,8 @@ export function aiProxyRoutes() {
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       }
+      await stampHostedUsageAttribution(c, payload, resolved)
+      return payload
     }
 
     if (apiKey.startsWith('rt_v1_')) {
@@ -6854,7 +7027,7 @@ export function aiProxyRoutes() {
           body = JSON.stringify(parsed)
         }
         console.log(`[AI Proxy] Forwarding Anthropic to Shogo Cloud: ${parsed.model || 'unknown'} (stream: ${!!parsed.stream})`)
-        return await forwardAnthropicToCloud(c, body, headers, c.req.raw.signal)
+        return await forwardAnthropicToCloud(c, body, headers, c.req.raw.signal, tokenPayload)
       } catch (error: any) {
         console.error('[AI Proxy] Cloud forwarding error:', error.message)
         return c.json({ type: 'error', error: { type: 'api_error', message: `Cloud proxy error: ${error.message}` } }, 502)

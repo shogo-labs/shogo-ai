@@ -139,7 +139,7 @@ describe('pool write-side backup (save on stop)', () => {
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
 
     await pool.save('p1', 'tok', { workspaceOrigin: 'backup', backupParentEtag: '"parent"' })
-    expect(pool.uploads[0].opts).toEqual({ parentEtag: '"parent"', adoptWhenUnknown: false, untrusted: false })
+    expect(pool.uploads[0].opts).toMatchObject({ parentEtag: '"parent"', adoptWhenUnknown: false, untrusted: false })
   })
 
   test('allows a legacy snapshot origin (no stamped etag) to adopt on write', async () => {
@@ -147,7 +147,8 @@ describe('pool write-side backup (save on stop)', () => {
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
 
     await pool.save('p1', 'tok', { workspaceOrigin: 'snapshot' })
-    expect(pool.uploads[0].opts).toEqual({ parentEtag: undefined, adoptWhenUnknown: true, untrusted: false })
+    expect(pool.uploads[0].opts).toMatchObject({ adoptWhenUnknown: true, untrusted: false })
+    expect(pool.uploads[0].opts.parentEtag).toBeUndefined()
   })
 
   test('a template origin never adopts (adoptWhenUnknown:false)', async () => {

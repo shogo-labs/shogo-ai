@@ -154,7 +154,23 @@ function stoppedResponse(projectId: string, outcome: SuspendOutcome) {
 
 /** How long a restart waits for in-flight control calls before exiting anyway. */
 const DRAIN_TIMEOUT_MS = 10_000
+/**
+ * How much longer a restart waits for a cold OPEN already hydrating (SHO-584).
+ *
+ * An `/assign` on a cold host pulls the member, `.git`, data and home and takes
+ * about a minute — far past the 10 s above. Cutting one off used to leave a
+ * half-hydrated VM the next agent adopted as a normal assigned one, which could
+ * never back up (no lineage) and therefore never stop: 10,391 quarantine copies
+ * of 525 MB in six days. It is bounded on purpose (the control plane retries a
+ * failed open), but generous enough for the archives prod actually has.
+ */
+const DRAIN_OPEN_TIMEOUT_MS = 180_000
 const drain = new RequestDrain()
+
+/** Routes whose normal duration is minutes, not milliseconds (an open). */
+function isLongControlCall(path: string, method: string): boolean {
+  return method === 'POST' && (path === '/assign' || path === '/resume')
+}
 
 const server = Bun.serve({
   hostname: config.listenHost,
@@ -165,7 +181,8 @@ const server = Bun.serve({
     // an /assign still in flight is waiting on it.
     const exempt =
       req.method === 'GET' || path === '/status' || path === '/touch' || path.startsWith(HYDRATE_STREAM_PREFIX)
-    return drain.run(() => handle(req, srv), { exempt })
+    const long = isLongControlCall(path, req.method)
+    return drain.run(() => handle(req, srv), { exempt, long })
   },
 })
 
@@ -807,11 +824,11 @@ process.on('SIGTERM', async () => {
   imageGc?.stop()
   await announceRestarting(pool).catch(() => {})
   const inFlight = drain.active
-  const drained = await drain.drain(DRAIN_TIMEOUT_MS)
+  const drained = await drain.drain(DRAIN_TIMEOUT_MS, { openTimeoutMs: DRAIN_OPEN_TIMEOUT_MS })
   if (inFlight) {
     console.log(
       `[metal-agent] ${drained ? 'drained' : 'timed out draining'} ${inFlight} in-flight request(s)` +
-        (drained ? '' : ` (${drain.active} still running)`),
+        (drained ? '' : ` (${drain.active} still running, ${drain.activeLong} open(s))`),
     )
   }
   server.stop(false)

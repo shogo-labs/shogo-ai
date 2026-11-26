@@ -118,10 +118,81 @@ export function writeCachedProjects<TProject, TFolder>(
   )
 }
 
+// ─── One project, as the open screen needs it ────────────────────────────────
+// Opening a project used to re-ask for a row the app had just listed: the
+// screen waited on `GET /api/projects/:id` behind a full-screen spinner
+// (SHO-581). The row is kept here, keyed by project rather than by workspace,
+// because the open screen knows the id it was routed to and nothing else.
+
+/**
+ * `${userId}:${origin}:project:${projectId}`, or null when the row cannot be
+ * scoped (signed out, or a route with no id).
+ */
+export function cachedProjectKey(
+  userId: string | null | undefined,
+  origin: string | null | undefined,
+  projectId: string | null | undefined,
+): string | null {
+  if (!userId || !projectId) return null
+  return `${userId}:${origin ?? 'local'}:project:${projectId}`
+}
+
+const rowMirror = new Map<string, unknown>()
+
+export function peekCachedProject<TProject>(key: string | null): TProject | null {
+  if (!key) return null
+  return (rowMirror.get(key) as TProject | undefined) ?? null
+}
+
+/** The row this device last saw for the project, from an earlier run of the app. */
+export async function readCachedProject<TProject>(key: string | null): Promise<TProject | null> {
+  if (!key) return null
+  const mirrored = rowMirror.get(key)
+  if (mirrored) return mirrored as TProject
+  const stored = await readJson<TProject>(storageKey(key))
+  if (!stored) return null
+  rowMirror.set(key, stored)
+  return stored
+}
+
+/**
+ * Keep the row for the next open. A null/absent row is ignored, so a failed or
+ * empty load never erases what the person was just looking at.
+ */
+export function writeCachedProject<TProject>(
+  key: string | null,
+  project: TProject | null | undefined,
+): void {
+  if (!key || !project) return
+  rowMirror.set(key, project)
+  const existing = pendingWrites.get(key)
+  if (existing) clearTimeout(existing)
+  pendingWrites.set(
+    key,
+    setTimeout(() => {
+      pendingWrites.delete(key)
+      setStorageJson(storageKey(key), project).catch(() => {})
+    }, WRITE_DELAY_MS),
+  )
+}
+
+/**
+ * What the open screen draws before the network answers: the row it already
+ * holds, and never that row once a load has answered. `loaded` is the network
+ * answer — a cached row only ever fills the gap until it arrives.
+ */
+export function firstPaintProject<TProject>(
+  cached: TProject | null | undefined,
+  loaded: TProject | null | undefined,
+): TProject | null {
+  return loaded ?? cached ?? null
+}
+
 export async function clearProjectsCache(): Promise<void> {
   pendingWrites.forEach((timer) => clearTimeout(timer))
   pendingWrites.clear()
   mirror.clear()
+  rowMirror.clear()
   try {
     const keys = await AsyncStorage.getAllKeys()
     await AsyncStorage.multiRemove(keys.filter((k) => k.startsWith(PREFIX)))
@@ -135,4 +206,5 @@ export function resetProjectsCacheState(): void {
   pendingWrites.forEach((timer) => clearTimeout(timer))
   pendingWrites.clear()
   mirror.clear()
+  rowMirror.clear()
 }

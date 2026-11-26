@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
-import { HttpClient } from '../client'
+import { HttpClient, createDeadline } from '../client'
 import { ShogoError } from '../../errors.js'
 
 type FetchCall = { url: string; init: RequestInit }
@@ -698,5 +698,49 @@ describe('HttpClient — GET deadline', () => {
     expect(response.data).toEqual({ ok: true })
     // The deadline must not fire into a later request's signal.
     await new Promise((resolve) => setTimeout(resolve, 60))
+  })
+
+  /**
+   * The deadline exists for a stalled *network*, and a wall clock cannot tell
+   * that apart from a client that never got a turn. A busy device is not a
+   * stalled request (SHO-582).
+   */
+  test('time the client could not observe is not charged', async () => {
+    const deadline = createDeadline(200)
+    const start = Date.now()
+    // The thread is gone: nothing — not the deadline, not the fetch — can run.
+    while (Date.now() - start < 500) {
+      /* burn the CPU the way a cold start or a throttled renderer does */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(deadline.signal.aborted).toBe(false)
+    deadline.clear()
+  })
+
+  test('…and a deadline that really is unanswered still fires', async () => {
+    const deadline = createDeadline(60)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(deadline.signal.aborted).toBe(true)
+    expect(deadline.timedOut()).toBe(true)
+    deadline.clear()
+  })
+
+  /**
+   * Once the answer is in, the request is alive: decoding and parsing the body
+   * is the client's own work, and a starved device does it slowly.
+   */
+  test('a GET whose body is slower than the deadline is not aborted', async () => {
+    fetchImpl = async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: () =>
+          new Promise((resolve) => setTimeout(() => resolve('{"ok":true}'), 120)),
+      }) as unknown as Response
+    const client = new HttpClient({ baseUrl: 'https://api.test', requestTimeoutMs: 25 })
+
+    const response = await client.get<{ ok: boolean }>('/api/chat-sessions')
+    expect(response.data).toEqual({ ok: true })
   })
 })

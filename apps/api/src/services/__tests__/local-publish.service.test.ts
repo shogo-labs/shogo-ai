@@ -280,6 +280,35 @@ describe('localPublishProject', () => {
     expect(projects.p1.publishStatus).toBe('failed')
   })
 
+  it('keeps the runtime\'s build_oom code and reason, and exposes both on the local row', async () => {
+    buildOk = false
+    buildBody = {
+      ok: false,
+      code: 'build_oom',
+      error: 'expo export failed (exit 7) — out of memory on the editing runtime',
+    }
+
+    const result = await localPublishProject('p1', { subdomain: 'my-app' }, deps)
+
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('build_oom')
+    expect(result.message).toContain('out of memory')
+    expect(calls.some((c) => c.url.includes('/api/published-sites'))).toBe(false)
+    expect(projects.p1.publishStatus).toBe('failed')
+    expect(projects.p1.publishError).toBe(
+      'build_oom: expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+
+    // The panel polls this: the code is what it switches on, the detail is what
+    // a person reads — the same pair a cloud publish reports.
+    const state = await localPublishState('p1')
+    expect(state.ok).toBe(true)
+    expect((state as any).publishError).toBe('build_oom')
+    expect((state as any).publishErrorMessage).toBe(
+      'expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+  })
+
   it('surfaces the cloud subdomain_taken code and leaves the local row unpublished', async () => {
     cloudResponse = { status: 409, body: { error: { code: 'subdomain_taken', message: 'Subdomain is already in use' } } }
     const result = await localPublishProject('p1', { subdomain: 'taken' }, deps)

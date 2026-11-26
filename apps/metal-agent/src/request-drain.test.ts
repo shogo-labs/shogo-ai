@@ -71,6 +71,44 @@ describe('RequestDrain', () => {
     expect(drain.active).toBe(1)
   })
 
+  test('a cold OPEN gets its own deadline instead of the short one (SHO-584)', async () => {
+    // An /assign hydrating an 812 MB member takes about a minute. The old 10 s
+    // drain cut it off, and the next agent adopted the half-hydrated VM as a
+    // normal assigned one — it could never back up, so it never stopped.
+    const drain = new RequestDrain()
+    const gate = deferred()
+    const url = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const path = new URL(req.url).pathname
+        return drain.run(
+          async () => {
+            if (path === '/assign') await gate.promise
+            return Response.json({ ok: true })
+          },
+          { exempt: req.method === 'GET', long: path === '/assign' },
+        )
+      },
+    })
+    servers.push(url)
+
+    const inFlight = fetch(`http://127.0.0.1:${url.port}/assign`, { method: 'POST' })
+    while (drain.active === 0) await Bun.sleep(1)
+    expect(drain.activeLong).toBe(1)
+
+    const started = Date.now()
+    const drained = drain.drain(50, { openTimeoutMs: 5_000 })
+    // The short window expired, the open did NOT — so the drain keeps waiting
+    // and finishes as soon as the hydrate does.
+    await Bun.sleep(150)
+    expect(drain.active).toBe(1)
+    gate.resolve()
+    expect(await drained).toBe(true)
+    expect((await inFlight).status).toBe(200)
+    // It waited past the short timeout rather than cutting the open off.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50)
+  })
+
   test('a client that retries the 503 lands on the restarted agent', async () => {
     const old = new RequestDrain()
     const oldUrl = agent(old, async () => Response.json({ from: 'old' }))

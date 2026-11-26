@@ -13,11 +13,16 @@
  *   5. A `projectId` in the URL/query → that project's workspace.
  *   6. A workspace-owned generated resource (`/api/<resource>/:id`) → look up
  *      the owning workspace from the row.
+ *   7. A body-only create (`POST /api/<collection>` with no `:id`) whose body
+ *      names its workspace/session/project — the collections in
+ *      `BODY_CREATE_LOOKUPS`.
  *
- * Deliberately does NOT read the request body. The router buffers the body when
- * it proxies, and re-reading a consumed body stream is fragile; body-only
- * `workspaceId` (rare — mostly creates, which replicate safely by unique id)
- * falls through to "handle locally".
+ * Step 7 reads the JSON body, because a create with no id in the path has
+ * nothing else to resolve by — and such rows do NOT "replicate safely by unique
+ * id" (SHO-585): a queued chat message written in the wrong region is drained
+ * and deleted by the home region, which never sees the row. Hono caches the
+ * parsed bytes, so the same body is handed back to the router through
+ * `FORWARD_BODY_KEY` and forwarded verbatim.
  *
  * Returns the workspace id, or null when the request isn't workspace-scoped
  * (identity/global writes like users, notifications, auth) — those stay local.
@@ -159,6 +164,96 @@ for (const m of ['chatSession', 'chatMessage', 'chatQueuedMessage', 'toolCallLog
 /** @see workspaceResolvedModels */
 export const WORKSPACE_RESOLVED_MODELS: ReadonlySet<string> = workspaceResolvedModels
 
+/**
+ * Context key holding the request body this resolver consumed, so the router can
+ * forward exactly those bytes (`proxyToPeer(c, region, { body })`). A consumed
+ * body cannot be re-streamed from `c.req.raw`.
+ */
+export const FORWARD_BODY_KEY = 'homeRegionForwardBody'
+
+type JsonBody = Record<string, unknown>
+
+/**
+ * Body-only creates: `POST /api/<collection>` → which body key names the
+ * workspace. Only collections whose create body carries one of these keys are
+ * listed; a create that names nothing stays "handle locally" (identity rule).
+ *
+ * A row created here is *owned* by the workspace (drained, deleted, replied to
+ * from its home region), so it has to be written there — see SHO-585.
+ */
+const BODY_CREATE_LOOKUPS: Record<string, (body: JsonBody) => Promise<string | null>> = {
+  'chat-queued-messages': (body) => sessionWorkspace(firstString(body, ['sessionId', 'chatSessionId'])),
+  'chat-messages': (body) => sessionWorkspace(firstString(body, ['sessionId', 'chatSessionId'])),
+  'tool-call-logs': (body) => sessionWorkspace(firstString(body, ['chatSessionId', 'sessionId'])),
+  'chat-session-projects': async (body) => {
+    const projectId = firstString(body, ['projectId'])
+    if (projectId) {
+      const fromProject = await projectWorkspace(projectId)
+      if (fromProject) return fromProject
+    }
+    return sessionWorkspace(firstString(body, ['sessionId', 'chatSessionId']))
+  },
+  'project-folders': (body) => {
+    const projectId = firstString(body, ['projectId'])
+    return projectId ? projectWorkspace(projectId) : Promise.resolve(null)
+  },
+  'starred-projects': (body) => {
+    const workspaceId = firstString(body, ['workspaceId'])
+    if (workspaceId) return Promise.resolve(workspaceId)
+    const projectId = firstString(body, ['projectId'])
+    return projectId ? projectWorkspace(projectId) : Promise.resolve(null)
+  },
+  folders: (body) => Promise.resolve(firstString(body, ['workspaceId'])),
+}
+
+/** The `/api/<collection>` segments whose create body names its workspace. */
+export const BODY_CREATE_SEGMENTS: readonly string[] = Object.keys(BODY_CREATE_LOOKUPS)
+
+/** The first of `keys` whose value is a non-empty string. */
+function firstString(body: JsonBody, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = body[key]
+    if (typeof value === 'string' && value) return value
+  }
+  return null
+}
+
+function sessionWorkspace(sessionId: string | null): Promise<string | null> {
+  return sessionId ? chatSessionWorkspace(sessionId) : Promise.resolve(null)
+}
+
+/**
+ * Read a create's JSON body and resolve its workspace. Also stashes the raw
+ * bytes on the context: once the body has been parsed the router cannot stream
+ * it again, and a forwarded create with an empty body is a different bug.
+ */
+async function resolveFromJsonBody(
+  c: Context,
+  lookup: (body: JsonBody) => Promise<string | null>,
+): Promise<string | null> {
+  const contentType = (c.req.header('content-type') ?? '').toLowerCase()
+  if (!contentType.includes('application/json')) return null
+
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return null // not JSON we can read — let the handler answer (usually a 400).
+  }
+
+  // Hono caches the raw bytes behind every body accessor, so this re-read costs
+  // nothing and gives the router the exact payload the handler would have seen.
+  try {
+    c.set(FORWARD_BODY_KEY, await c.req.text())
+  } catch {
+    // No cacheable body (already streamed elsewhere) — the router falls back to
+    // streaming `c.req.raw.body`, which is the pre-SHO-585 behaviour.
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  return lookup(body as JsonBody)
+}
+
 /** Path segments that look like an id but are reserved keywords, not row ids. */
 const RESERVED_RESOURCE_IDS = new Set(['import', 'validate', 'heartbeat'])
 
@@ -203,6 +298,13 @@ export async function resolveWorkspaceIdForRequest(c: Context): Promise<string |
       const ws = await lookup(seg[1])
       if (ws) return cache(c, ws)
     }
+  }
+
+  // 7. Body-only create: `POST /api/<collection>` with no id in the path.
+  const bodyLookup = seg.length === 1 ? BODY_CREATE_LOOKUPS[seg[0]] : undefined
+  if (bodyLookup && c.req.method.toUpperCase() === 'POST') {
+    const ws = await resolveFromJsonBody(c, bodyLookup)
+    if (ws) return cache(c, ws)
   }
 
   return null

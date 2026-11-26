@@ -50,6 +50,7 @@
 
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
+import { memoryBody, quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject, copyObject, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
@@ -303,12 +304,21 @@ async function quarantine(
   projectId: string,
   bytes: Uint8Array,
   cfg: MetalConfig,
+  bookkeeping?: QuarantineBookkeeping,
 ): Promise<string | null> {
   const s3 = workspaceS3(cfg)
   if (!s3) return null
   const key = dataQuarantineKey(projectId)
-  await s3.client.write(key, bytes, { type: 'application/gzip' })
-  return key
+  return quarantinedCopy({
+    projectId,
+    kind: 'data',
+    body: memoryBody(bytes),
+    key,
+    write: (k) => s3.client.write(k, bytes, { type: 'application/gzip' }).then(() => {}),
+    state: bookkeeping?.state,
+    onChange: bookkeeping?.onChange,
+    dailyCap: quarantineDailyCap(cfg),
+  })
 }
 
 /**
@@ -323,7 +333,7 @@ async function quarantine(
 export async function uploadProjectDataGuarded(
   projectId: string,
   bytes: Uint8Array,
-  opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
+  opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   cfg: MetalConfig,
 ): Promise<DataWriteOutcome> {
   if (bytes.byteLength > DATA_MAX_BYTES) {
@@ -332,7 +342,7 @@ export async function uploadProjectDataGuarded(
 
   const plan = planDataWrite(opts.lineage)
   if (plan.action === 'refuse') {
-    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
     return { status: 'refused', reason: plan.reason, quarantineKey: qkey }
   }
 
@@ -347,7 +357,7 @@ export async function uploadProjectDataGuarded(
   if (plan.action === 'create-only') {
     const s3 = workspaceS3(cfg)
     if (s3 && (await s3.client.file(dataArchiveKey(projectId)).exists())) {
-      const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+      const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
       return { status: 'conflict', quarantineKey: qkey, reason: 'raced-create' }
     }
   }
@@ -370,7 +380,7 @@ export async function uploadProjectDataGuarded(
   // The server rejected the precondition, so the archive is not the one this
   // writer descends from and was left alone. A create-only writer losing here
   // simply means the archive now exists — normal during rollout.
-  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
   return {
     status: 'conflict',
     quarantineKey: qkey,

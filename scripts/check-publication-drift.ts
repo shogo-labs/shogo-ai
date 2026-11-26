@@ -77,7 +77,11 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * `storage_usage`, and for exactly the same reason it cannot be published while
  * `storage_usage` is region-local: each region measures and bills only the
  * workspaces it homes, so a peer's stale copy would overwrite the day's peak,
- * and its `(workspaceId, day)` unique is poison-pill-shaped.
+ * and its `(workspaceId, day)` unique is poison-pill-shaped. It sat in this list
+ * and in `region_local` from SHO-423 but was missing from the monitor's
+ * `EXCLUDED_TABLES`, which paged every 5 minutes for two days (SHO-592). The
+ * "keep in sync" comment below did not stop that;
+ * `scripts/__tests__/replication-publication-lists.test.ts` now does.
  *
  * IMPORTANT DRIFT NOTE: a `FOR TABLES IN SCHEMA public` publication cannot
  * exclude individual tables (`ALTER PUBLICATION ... DROP TABLE` is unsupported
@@ -87,17 +91,19 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * `shogo_all_pub` as FOR-ALL-TABLES and re-add them, reintroducing the poison
  * pills. `replication-monitor.yaml` has an inverse guard (READDED) that pages
  * if that happens. Keep this list in sync with the monitor's EXCLUDED_TABLES
- * and `region_local` in exclude-region-local-tables.sql — SHO-592 added
- * `storage_usage_daily` here and in the SQL when SHO-423 landed but missed the
- * monitor's list, which paged every 5 minutes for two days. The
- * `keep in sync` comment did not stop it;
- * `scripts/__tests__/replication-publication-lists.test.ts` now does.
+ * and exclude-region-local-tables.sql.
  */
 export const INTENTIONALLY_UNPUBLISHED = [
   'storage_usage',
   'storage_usage_daily',
   'usage_wallets',
   'proxy_turns',
+  // SHO-585: the conflict watchdog's run-to-run state (last applied LSN + stall
+  // clock, blind re-enable streak, last skip). It describes one region's apply
+  // worker, and its `subname` primary key would collide on every run. The
+  // watchdog creates it with `CREATE TABLE IF NOT EXISTS`, so it does not need
+  // a migration — only the exclusion above.
+  'logical_replication_watchdog_state',
 ] as const
 
 interface Violation {

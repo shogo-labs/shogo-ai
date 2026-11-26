@@ -21,6 +21,7 @@
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
 import { dataS3Target, planDataWrite, type DataLineage, type DataWriteOutcome } from './project-data-archive'
+import { memoryBody, quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
@@ -54,12 +55,25 @@ export async function describeHomeStateArchive(
   return describeObject(s3.client, homeStateKey(projectId), expiresInSec)
 }
 
-async function quarantine(projectId: string, bytes: Uint8Array, cfg: MetalConfig): Promise<string | null> {
+async function quarantine(
+  projectId: string,
+  bytes: Uint8Array,
+  cfg: MetalConfig,
+  bookkeeping?: QuarantineBookkeeping,
+): Promise<string | null> {
   const s3 = workspaceS3(cfg)
   if (!s3) return null
   const key = homeStateQuarantineKey(projectId)
-  await s3.client.write(key, bytes, { type: CONTENT_TYPE })
-  return key
+  return quarantinedCopy({
+    projectId,
+    kind: 'home',
+    body: memoryBody(bytes),
+    key,
+    write: (k) => s3.client.write(k, bytes, { type: CONTENT_TYPE }).then(() => {}),
+    state: bookkeeping?.state,
+    onChange: bookkeeping?.onChange,
+    dailyCap: quarantineDailyCap(cfg),
+  })
 }
 
 /**
@@ -69,7 +83,7 @@ async function quarantine(projectId: string, bytes: Uint8Array, cfg: MetalConfig
 export async function uploadHomeStateGuarded(
   projectId: string,
   bytes: Uint8Array,
-  opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
+  opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   cfg: MetalConfig,
 ): Promise<DataWriteOutcome> {
   if (bytes.byteLength > HOME_STATE_MAX_BYTES) {
@@ -78,7 +92,7 @@ export async function uploadHomeStateGuarded(
 
   const plan = planDataWrite(opts.lineage)
   if (plan.action === 'refuse') {
-    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
     return { status: 'refused', reason: plan.reason, quarantineKey: qkey }
   }
 
@@ -99,7 +113,7 @@ export async function uploadHomeStateGuarded(
       : { status: 'written', etag: result.etag }
   }
 
-  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
   return {
     status: 'conflict',
     quarantineKey: qkey,

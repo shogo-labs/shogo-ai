@@ -1292,6 +1292,46 @@ describe('the ingest', () => {
     ])
   })
 
+  test('a desktop per-turn cost metric for a hosted workspace reaches the cloud (SHO-590 §B)', async () => {
+    // Analytics, not money: the Cost Optimizer and the Heartbeats cost column
+    // read these rows, and nothing bills from them. AgentCostMetric used to be
+    // `never` (never sync), so a hosted workspace's cost panels were empty on
+    // both surfaces while its chats and projects were right there.
+    const { db, tables } = fakeCloudDb()
+    tables.set('workspace', new Map([['w1', { id: 'w1', name: 'Personal', hostInstanceId: 'inst-1' }]]))
+
+    const result = await applyBatch(ingestCtx(db), {
+      epoch: 'epoch-1',
+      mode: 'changes',
+      cursor: 1,
+      models: [
+        {
+          model: 'AgentCostMetric',
+          rows: [
+            {
+              id: 'acm1',
+              workspaceId: 'w1',
+              projectId: null,
+              agentRunId: 'a-dev-1a2b3c',
+              agentType: 'developer',
+              model: 'claude-haiku-4-5',
+              inputTokens: 1000,
+              outputTokens: 100,
+              creditCost: 0.5,
+            },
+          ],
+        },
+      ],
+    })
+
+    expect('ok' in result && result.ok).toBe(true)
+    expect(tables.get('agentCostMetric')?.get('acm1')).toMatchObject({
+      workspaceId: 'w1',
+      agentRunId: 'a-dev-1a2b3c',
+      creditCost: 0.5,
+    })
+  })
+
   test('a workspace hosted by another machine rejects the whole batch', async () => {
     const { db, tables } = fakeCloudDb()
     tables.set('workspace', new Map([['w1', { id: 'w1', name: 'Theirs', hostInstanceId: 'inst-OTHER' }]]))

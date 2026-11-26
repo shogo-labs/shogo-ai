@@ -57,6 +57,32 @@ const passthroughHost = (tag: string) =>
     )
   })
 
+/**
+ * A pressable host for the DOM: `onPress` has no DOM equivalent, so the shim
+ * wires it to `click` — otherwise `fireEvent.click` on a row does nothing and a
+ * test cannot reach the handler it means to exercise.
+ */
+const pressableHost = (tag: string) =>
+  forwardRef(function PressableShim(props: Record<string, unknown>, ref: React.Ref<HTMLDivElement>) {
+    const { children, style, onPress, onLongPress: _onLongPress, ...rest } = props as {
+      children?: React.ReactNode
+      style?: unknown
+      onPress?: () => void
+      onLongPress?: () => void
+    }
+    return createElement(
+      tag,
+      {
+        ...rest,
+        ref,
+        style: flattenStyle(style),
+        onClick: onPress,
+        'data-rn-shim': props['testID'] ?? undefined,
+      },
+      children,
+    )
+  })
+
 export const reactNativeMockBase = {
   Platform: {
     OS: 'web',
@@ -135,9 +161,9 @@ export const reactNativeMockBase = {
   // Pull-to-refresh renders nothing on its own; a screen that uses it only
   // needs the export to exist so the module graph links.
   RefreshControl: () => null,
-  Pressable: passthroughHost('button'),
-  TouchableOpacity: passthroughHost('button'),
-  TouchableHighlight: passthroughHost('button'),
+  Pressable: pressableHost('button'),
+  TouchableOpacity: pressableHost('button'),
+  TouchableHighlight: pressableHost('button'),
   TouchableWithoutFeedback: passthroughHost('div'),
   FlatList: passthroughHost('div'),
   SafeAreaView: passthroughHost('div'),

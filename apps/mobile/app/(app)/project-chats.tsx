@@ -51,6 +51,8 @@ export default observer(function ProjectChatsPage() {
   const header = usePhoneScreenHeaderInset()
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loading, setLoading] = useState(true)
+  // A failed fetch is not an empty project: never show "No chats yet" for it.
+  const [loadError, setLoadError] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -75,9 +77,11 @@ export default observer(function ProjectChatsPage() {
         const result = await fetchProjectChatSessions(http, projectId, limit)
         setSessions(result.sessions)
         setHasMore(result.hasMore)
+        setLoadError(false)
       } catch (e) {
         console.error('[ProjectChats] Failed to load chats:', e)
         setSessions([])
+        setLoadError(!paging)
       } finally {
         setLoading(false)
         setLoadingMore(false)
@@ -186,6 +190,24 @@ export default observer(function ProjectChatsPage() {
         <View className="flex-1 items-center justify-center">
           <Spinner />
         </View>
+      ) : loadError && activeSessions.length === 0 ? (
+        <PhoneListEmpty
+          icon={<MessageSquare size={44} className="text-muted-foreground" />}
+          title="Couldn't load chats"
+          message="The chats request failed. Your chats are still there — try again."
+          action={
+            <Pressable
+              onPress={() => {
+                setLoadError(false)
+                void load()
+              }}
+              accessibilityRole="button"
+              className="rounded-xl bg-orange-500 px-5 py-2.5 active:bg-orange-600"
+            >
+              <Text className="text-base font-medium text-white">Retry</Text>
+            </Pressable>
+          }
+        />
       ) : activeSessions.length === 0 ? (
         <PhoneListEmpty
           icon={

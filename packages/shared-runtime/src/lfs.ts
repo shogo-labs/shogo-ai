@@ -1026,7 +1026,14 @@ export async function lfsPushAll(cfg: LfsRemoteConfig): Promise<boolean> {
 //      must never be held back for a lost blob.
 
 /** Why an LFS push failed. Carried in the export's 503 body and in the logs. */
-export type LfsFailureReason = 'auth' | 'timeout' | 'missing-objects' | 'network' | 'presign' | 'other'
+export type LfsFailureReason =
+  | 'auth'
+  | 'timeout'
+  | 'missing-objects'
+  | 'network'
+  | 'presign'
+  | 'repo-corrupt'
+  | 'other'
 
 /** A pointer the repo references whose bytes are on neither side. */
 export interface LfsMissingObject {
@@ -1052,6 +1059,19 @@ export class LfsPushError extends Error {
  */
 export function classifyLfsFailure(stderr: string, status?: number): LfsFailureReason {
   const s = stderr || ''
+  // A `.git` that cannot be walked at all. Checked FIRST because the same
+  // message also contains phrases below ("object", "does not exist"), and
+  // because it is the one reason that is permanent: retrying re-exports and
+  // re-quarantines the whole archive every time (SHO-584 — 525 MB every ten
+  // minutes for six days on one VM). `bad object` here is NOT the SHO-540 case
+  // of a stale range-base tip: lfsRangeBase drops unknown tips before rev-list.
+  if (
+    /\bbad object\b|\bmissing blob\b|\bmissing tree\b|object file .* (?:is empty|is corrupt)|packfile .* (?:is )?corrupt|unable to read tree|broken link from/i.test(
+      s,
+    )
+  ) {
+    return 'repo-corrupt'
+  }
   if (/Unable to (find source for object|stat local media path)|missing object|object does not exist|No such file or directory/i.test(s)) {
     return 'missing-objects'
   }
@@ -1063,6 +1083,9 @@ export function classifyLfsFailure(stderr: string, status?: number): LfsFailureR
   if (/Could not resolve|Connection refused|connection reset|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|socket hang up|TLS|network|502|503|504/i.test(s)) {
     return 'network'
   }
+  // A bare 5xx with no text of its own: the server failed, not the repo. The
+  // host retries these; calling it 'other' would leave the caller guessing.
+  if (status !== undefined && status >= 500) return 'network'
   return 'other'
 }
 

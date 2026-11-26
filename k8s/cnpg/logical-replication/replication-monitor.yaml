@@ -77,21 +77,24 @@ spec:
                   # the single-writer work lands and they rejoin the mesh — see
                   # docs/runbooks/usage-wallet-single-writer-plan.md. proxy_turns
                   # summarizes LLM traffic served by this region and stays next
-                  # to that region's capture bucket. storage_usage_daily (SHO-423)
-                  # is the same byte counter at day granularity: it cannot be
-                  # published while storage_usage is region-local, because a
-                  # peer's copy would overwrite the day's peak. It went in the
-                  # SQL list when SHO-423 landed and was NOT added here — so from
-                  # 25 Nov 07:50Z this check paged every 5 minutes on a table
-                  # that was excluded on purpose (SHO-592). device_version_events
-                  # rejoined the mesh (SHO-142): random ids + a
-                  # (region, deviceId, version) key, so it is published on
-                  # purpose and must not be listed here.
+                  # to that region's capture bucket. device_version_events rejoined
+                  # the mesh (SHO-142): random ids + a (region, deviceId, version)
+                  # key, so it is published on purpose and must not be listed here.
+                  # logical_replication_watchdog_state (SHO-585) is the conflict
+                  # watchdog's run-to-run state.
+                  #
+                  # storage_usage_daily (SHO-423) is the same byte counter at day
+                  # granularity: it cannot be published while storage_usage is
+                  # region-local, because a peer's copy would overwrite the day's
+                  # peak. It went into the SQL list and INTENTIONALLY_UNPUBLISHED
+                  # when SHO-423 landed but was NOT added here — so from 25 Nov
+                  # 07:50Z this check paged every 5 minutes about a table that was
+                  # excluded on purpose (SHO-592).
                   #
                   # scripts/__tests__/replication-publication-lists.test.ts parses
                   # all three lists and fails when they disagree — the "keep in
                   # sync" comment alone did not.
-                  EXCLUDED_TABLES="'storage_usage','storage_usage_daily','usage_wallets','proxy_turns'"
+                  EXCLUDED_TABLES="'storage_usage','storage_usage_daily','usage_wallets','proxy_turns','logical_replication_watchdog_state'"
 
                   # Deploy window. `prisma migrate deploy` creates tables a few
                   # minutes before deploy.yml publishes them
@@ -306,7 +309,8 @@ spec:
                     echo "storage_usage / storage_usage_daily / usage_wallets must stay"
                     echo "region-local until the single-writer work lands, and proxy_turns is"
                     echo "region-local by design. Re-exclude them and check whether the"
-                    echo "re-reconciled. See docs/runbooks/usage-wallet-single-writer-plan.md."
+                    echo "Publication CR re-reconciled. See"
+                    echo "docs/runbooks/usage-wallet-single-writer-plan.md."
                     EXIT_RC=1
                   fi
 

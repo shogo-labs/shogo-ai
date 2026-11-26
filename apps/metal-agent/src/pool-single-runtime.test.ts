@@ -208,7 +208,10 @@ describe('unknown member lineage is adopted only for the own project of a legacy
     const pool = makePool()
     const a = pool.add('ws:proj:A', { workspaceOrigin: 'snapshot', workspaceMemberIds: ['A'] })
     await quiet(() => pool.saveMembers(a))
-    expect(pool.uploads).toEqual([{ projectId: 'A', opts: { parentEtag: undefined, adoptWhenUnknown: true, untrusted: false } }])
+    expect(pool.uploads).toHaveLength(1)
+    expect(pool.uploads[0].projectId).toBe('A')
+    expect(pool.uploads[0].opts).toMatchObject({ adoptWhenUnknown: true, untrusted: false })
+    expect(pool.uploads[0].opts.parentEtag).toBeUndefined()
   })
 
   test('own member this VM hydrated (create-only), or of a cold-booted VM: never adopt', async () => {
@@ -232,7 +235,10 @@ describe('unknown member lineage is adopted only for the own project of a legacy
     pool.add('ws:proj:A', { workspaceOrigin: 'snapshot', workspaceMemberIds: ['A'] })
     pool.mounted['ws:proj:A'] = ['A', 'B']
     await quiet(() => pool.drainForeignMembers())
-    expect(pool.uploads).toEqual([{ projectId: 'B', opts: { parentEtag: undefined, adoptWhenUnknown: false, untrusted: false } }])
+    expect(pool.uploads).toHaveLength(1)
+    expect(pool.uploads[0].projectId).toBe('B')
+    expect(pool.uploads[0].opts).toMatchObject({ adoptWhenUnknown: false, untrusted: false })
+    expect(pool.uploads[0].opts.parentEtag).toBeUndefined()
   })
 })
 

@@ -235,6 +235,15 @@ export const config = {
    */
   reapMaxPerPass: parseInt(env('METAL_REAP_MAX_PER_PASS', '20'), 10),
   /**
+   * Most quarantine writes (`conflict/`) one project may make per UTC day, all
+   * kinds together. Over the cap nothing is written and the caller is told the
+   * bytes are not saved, so a VM cannot be destroyed on the strength of a copy
+   * that does not exist. One VM retrying a recycle that could never succeed
+   * wrote 10,391 identical 525 MB copies in six days (SHO-584); 24 is a few
+   * hours of genuine incidents, not a loop. 0 disables quarantine entirely.
+   */
+  quarantineDailyCap: parseInt(env('METAL_QUARANTINE_DAILY_CAP', '24'), 10),
+  /**
    * Rootfs rollout. A VM still on a superseded image is rotated onto the new
    * one once it has been idle this long, whatever the idle-suspend window
    * (always-on VMs included). 0 disables rotation.
