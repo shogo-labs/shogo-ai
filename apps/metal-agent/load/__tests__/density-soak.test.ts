@@ -281,6 +281,14 @@ describe('parseArgs', () => {
     expect(o.allowHosts).toEqual(['latitude-dal-1'])
     expect(o.allowControlPlanes).toContain('api-staging.shogo.ai')
   })
+
+  // Suspends are what exercise the snapshot push, and the soak turns them off
+  // by default — a run that means to measure the push path has to say so.
+  test('--idle-suspend-ms is opt-in and defaults to suspends off', () => {
+    expect(parseArgs([], {}).idleSuspendMs).toBeUndefined()
+    expect(parseArgs(['--idle-suspend-ms', '15s'], {}).idleSuspendMs).toBe(15_000)
+    expect(parseArgs(['--idle-suspend-ms', '90000'], {}).idleSuspendMs).toBe(90_000)
+  })
 })
 
 describe('planSeeding', () => {

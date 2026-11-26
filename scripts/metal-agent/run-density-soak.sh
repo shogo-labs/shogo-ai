@@ -22,6 +22,8 @@
 #   BURST                   set to 1 to run the burst phase
 #   ADMIN_TOKEN             super-admin session for the cordon API
 #                           (or cordon by hand and pass ASSUME_CORDONED=1)
+#   IDLE_SUSPEND            idle-suspend window (e.g. 15s). Absent = suspends
+#                           off (capacity soak). Set it to exercise snapshot push
 #   ASSUME_CORDONED         set to 1 if you cordoned the host yourself
 #   OUT_DIR                 local results dir (default apps/metal-agent/load/results)
 #   DRY_RUN                 set to 1 to stop after preflight
@@ -69,6 +71,9 @@ echo "== Install bun if missing =="
 ssh_ 'test -x ~/.bun/bin/bun || curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1; ~/.bun/bin/bun --version'
 
 ARGS=(--host "$HOST_ID" --steps "$STEPS" --hold "$HOLD" --mix "$MIX")
+# Suspends off by default (capacity soak). Set IDLE_SUSPEND (e.g. 15s) to soak
+# the snapshot push instead: every VM goes idle, suspends and pushes.
+[[ -n "${IDLE_SUSPEND:-}" ]] && ARGS+=(--idle-suspend-ms "$IDLE_SUSPEND")
 [[ "$BURST" == "1" ]] && ARGS+=(--burst)
 [[ "$ASSUME_CORDONED" == "1" ]] && ARGS+=(--assume-cordoned)
 [[ "$DRY_RUN" == "1" ]] && ARGS+=(--dry-run)
