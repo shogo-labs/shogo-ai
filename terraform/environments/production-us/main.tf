@@ -128,7 +128,7 @@ resource "cloudflare_record" "kourier_eu" {
   type    = "A"
   proxied = true
   ttl     = 1
-  comment = "Proxied resolveOverride target for EU-homed server-backed published /api/* proxying (prod-eu Kourier LB)"
+  comment = "Proxied resolveOverride target for EU-homed server-backed /api/* proxying (prod-eu Kourier LB)"
 }
 
 resource "cloudflare_worker_route" "kourier_eu_bypass" {
