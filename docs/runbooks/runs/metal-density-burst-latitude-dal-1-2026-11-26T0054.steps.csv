@@ -1,0 +1,2 @@
+n,cpu_oversub_ratio,ram_committed_mib,ram_physical_mib,ram_physical_basis,cpu_p50_ms,cpu_p95_ms,install_p50_ms,install_p95_ms,build_p50_ms,build_p95_ms,run_delay_p95_ms_per_s,cpu_psi_some_avg60,mem_available_pct,swap_in_pages_per_s,oom_kills,mem_psi_full_avg60,resume_p95_ms,api_p95_ms,cpu_pass,ram_pass
+80,6.67,327680,263804,soak-delta,3045.1,3098.7,424.9,953.3,2005.5,3013.7,0.01,0.50,41.6,1.0,0,1.09,625,12,false,false

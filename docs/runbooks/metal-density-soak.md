@@ -231,6 +231,13 @@ the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
    template, so its turn died at the first step (`cd: /app/workspace/... no such
    file`) and recorded nothing. 15 of 20 burst turns on 2026-11-23 were empty;
    the burst now targets primed agent VMs only.
+9. **The app role was never seeded either.** Only `role === 'agent'` guests got
+   the template, so `startAppRoles` started `app-server.ts` in a directory that
+   did not exist (`exit 7`, `cd: /app/workspace/density/tpl: No such file or
+   directory`) and the app-response column of every report was empty — in all
+   three runs, not just the burst. `planSeeding` now decides per guest: agent
+   guests get the full prime (template + warm cache + git), app guests get the
+   template files alone, idle guests stay cold.
 
 Two operational notes from that attempt:
 
@@ -317,15 +324,40 @@ planner to decide:
 25% limit and API p95 stays at 6–10 ms through 120. What fails is memory
 pressure, and then restore latency.
 
-**The burst at 80 is not yet measured on the fixed harness.** Run 1106's burst
-turns were driven at idle guests that had never run a turn, so 15 of its 20 burst
-turns failed to start at all; the two figures this section used to carry
-(`install` 2360 ms, `build` 3613 ms) were the max of the 5 that did run, which is
-not a burst result and is no longer reported as one. The follow-up run that primes
-the guests first aborted at its baseline because staging could not boot a VM at
-all (below), so the honest statement today is: 80 is the steady-state knee, and
-its burst headroom is **unmeasured**. A second follow-up run is the only thing
-that closes it.
+**The burst at 80 is measured: 13 simultaneous turns, and turn latency does not
+degrade.** Run 1106's burst turns were driven at idle guests that had never run a
+turn, so 15 of its 20 failed to start at all; the two figures this section used to
+carry (`install` 2360 ms, `build` 3613 ms) were the max of the 5 that did run, and
+are no longer reported as a burst result. The re-run on the fixed harness
+(`density-2026-11-26T0054`, `--steps 80 --burst`) primed the guests first and
+fired **13 turns — every agent guest at the prod mix — at once inside a 60 s
+window, and all 13 completed**:
+
+| burst @ N=80 | p95 | vs baseline |
+|---|---|---|
+| cpu | 3047.8 ms | 1.00× |
+| install | 246.8 ms | **0.58×** |
+| build | 1156.3 ms | **0.58×** |
+| CPU PSI `some avg60` | 0.46% | limit 25% |
+| MemAvailable | 41.6% | floor 10% |
+| OOM kills | 0 | — |
+
+Two things to read carefully. A 25%-of-N burst (20 concurrent) is **not
+expressible at the prod mix** at N=80: 16% of 80 is 13 agent guests, so 13 is the
+most turns the mix can start at once, and the run says so (`turns_started: 13` in
+`burst.csv`). And the row still prints `pass = FAIL` even though every turn
+latency bound passed: `pass` is `cpuPass && ramPass`, and the **RAM** gate carried
+the step window's memory PSI (1.09% against a 1% limit) into the burst row's
+window. The burst failed on 0.09 points of memory PSI, not on turn latency — which
+is the opposite of what the withdrawn claim said. A burst that starts more turns
+than there are agent guests needs a higher agent share in `--mix`; that is worth a
+follow-up if the 25% case matters.
+
+The single-step ladder this run used also prints **CPU knee 0 · RAM knee 0 ·
+recommend none**, and that is a property of the print, not a new capacity result:
+one step that misses any bound leaves no passing step, so `computeKnees` has
+nothing to recommend. The steady-state number in this section still comes from the
+full 40→160 ladder.
 
 **`METAL_MEM_MIB` should not change** on this host: the RAM knee arrives as
 pressure at 4 GiB guests (memory PSI crossing 1% between 80 and 100), with
@@ -359,7 +391,17 @@ its runtime image at 12:58Z and the staging harness staging step re-creates
 in the project's `.tmp-results/` on the machine that ran the soak, and the
 committed `.steps.csv` is the part the numbers above come from.
 
-**Blocker for the burst run (2026-11-23T13:15Z).** Staging release `718a651`
+The burst re-run is committed the same way, at
+[`runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md`](./runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md)
+(criteria 5's burst), with `.burst.csv`, `.steps.csv` and `.env.json` beside it.
+That run took 00:54–01:15Z on a host carrying **36 metered VMs (449 GiB of 503
+free)**: the serialized ramp (`--ramp-concurrency 1`, because the host still runs
+the pre-SHO-545 boot path) reached N=80 with **0 failed assigns**, held 5 min, and
+tore down 83 soak VMs to 0 with the env restored. Its `turns.csv` has 46 rows —
+33 steady agent turns and 13 burst turns — and **all 46 succeeded**.
+
+**The 2026-11-23T13:15Z burst blocker — resolved (SHO-549, and the burst is
+measured above).** Staging release `718a651`
 rebuilt the golden rootfs from
 `shogo-runtime:staging-multiarch-718a651fc7b4352876b4b13510138c63377746b9` and
 activated it at 12:58Z. That image has no `/usr/local/bin/fc-init`, which is what

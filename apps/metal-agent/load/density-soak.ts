@@ -35,7 +35,7 @@ import { join } from 'path'
 import { HostSampler, oomKillsSince, percentile, type HostSample } from './density/host-sampler'
 import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
-import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
+import { primeWarmCache, runAgentTurn, seedTemplate, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
 import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
 import { perVmRssMiB as perVmRssMiBFrom, writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
 import { recomputeReport } from './density/recompute'
@@ -277,6 +277,33 @@ interface SoakVm {
   role: Role
   url?: string
   assigned: boolean
+  /** The guest already has the template seeded (`seed`) or fully primed (`prime`). */
+  seeded?: 'seed' | 'prime'
+}
+
+/**
+ * Which guests still need the template written to them.
+ *
+ * Both working roles need it: an agent turn `cd`s into the template for every
+ * step, and `startAppRoles` `cd`s into the same directory to run `app-server.ts`.
+ * Only the agent role also needs the warm package cache and git repo that the
+ * `install` and `git` steps measure, so the app role gets the files alone.
+ *
+ * Idle guests are never seeded: they must stay cold, and a turn on one is not
+ * part of the workload.
+ */
+export function planSeeding(vms: SoakVm[]): { seed: SoakVm[]; prime: SoakVm[] } {
+  const seed: SoakVm[] = []
+  const prime: SoakVm[] = []
+  for (const vm of vms) {
+    if (!vm.assigned || !vm.url) continue
+    if (vm.role === 'agent') {
+      if (vm.seeded !== 'prime') prime.push(vm)
+    } else if (vm.role === 'app') {
+      if (!vm.seeded) seed.push(vm)
+    }
+  }
+  return { seed, prime }
 }
 
 export class DensitySoak {
@@ -671,16 +698,23 @@ export class DensitySoak {
       this.checkAbort()
       log('step', `growing to N=${n}`)
       await this.growTo(n)
-      // Prime the cache on every new agent VM before the hold, so `install`
-      // measures CPU and disk rather than the registry.
-      for (const vm of this.vms) {
-        if (vm.role === 'agent' && vm.assigned && vm.url && !(vm as any).primed) {
-          try {
-            await primeWarmCache(vm.url)
-            ;(vm as any).primed = true
-          } catch (err: any) {
-            log('prime', `${vm.projectId}: ${err?.message ?? err}`)
-          }
+      // Seed every working guest before the hold, so `install` measures CPU and
+      // disk rather than the registry and the app role has a template to serve.
+      const seeding = planSeeding(this.vms)
+      for (const vm of seeding.seed) {
+        try {
+          await seedTemplate(vm.url!)
+          vm.seeded = 'seed'
+        } catch (err: any) {
+          log('prime', `${vm.projectId}: ${err?.message ?? err}`)
+        }
+      }
+      for (const vm of seeding.prime) {
+        try {
+          await primeWarmCache(vm.url!)
+          vm.seeded = 'prime'
+        } catch (err: any) {
+          log('prime', `${vm.projectId}: ${err?.message ?? err}`)
         }
       }
       await this.startAppRoles()
