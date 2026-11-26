@@ -1405,6 +1405,13 @@ export interface EarlySseOptions {
    * and an `upstream_timeout` abort both reach the provider fetch.
    */
   signal?: AbortSignal
+  /**
+   * Called exactly once when the body this returns is finished with: a clean
+   * end, the client cancelling (Stop, tunnel cut), an idle-watchdog teardown or
+   * an upstream error. Lets a streamed call record the tokens it already saw,
+   * which is the only trace of a call the provider billed (SHO-599).
+   */
+  onStreamEnd?: (outcome: StreamUsageOutcome) => void
 }
 
 /**
@@ -1494,25 +1501,28 @@ export async function proxySseWithEarlyHeaders(
       terminal: options.terminal,
     })
     const body = options.transform ? options.transform(wrapped, upstream) : wrapped
-    return new Response(body, { status: upstream.status, headers })
+    return new Response(withStreamEnd(body, options.onStreamEnd), { status: upstream.status, headers })
   }
 
   console.warn(
     `[AI Proxy] ${options.providerLabel} sent no response headers within ${graceMs}ms — answering 200 SSE now, streaming when the provider answers`,
   )
   return new Response(
-    openDeferredSse(pending, {
-      providerLabel: options.providerLabel,
-      dialect: clientDialect,
-      terminal: options.terminal,
-      keepaliveMs,
-      startedAt,
-      maxWaitMs,
-      abortUpstream: () => {
-        capController.abort(new Error('upstream_timeout'))
-      },
-      transform: options.transform,
-    }),
+    withStreamEnd(
+      openDeferredSse(pending, {
+        providerLabel: options.providerLabel,
+        dialect: clientDialect,
+        terminal: options.terminal,
+        keepaliveMs,
+        startedAt,
+        maxWaitMs,
+        abortUpstream: () => {
+          capController.abort(new Error('upstream_timeout'))
+        },
+        transform: options.transform,
+      }),
+      options.onStreamEnd,
+    ),
     { status: 200, headers: sseHeaders },
   )
 }
@@ -2035,7 +2045,20 @@ function convertOpenAIResponseToAnthropic(openaiResp: any, model: string): any {
   }
 }
 
-export function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
+/**
+ * Rewrite an OpenAI chat-completions SSE stream into Anthropic message events.
+ *
+ * `onUsage` receives the token counts an `include_usage` chunk carries, and
+ * `onOutputChars` the size of each streamed delta, so a cancelled conversion
+ * can still be priced (SHO-599). Both are optional: the local LLM route uses
+ * this converter without metering because it is not a paid provider.
+ */
+export function convertOpenAIStreamToAnthropicStream(
+  body: ReadableStream<Uint8Array>,
+  model: string,
+  onUsage?: (usage: Partial<StreamUsageTotals>) => void,
+  onOutputChars?: (chars: number) => void,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let sseBuffer = ''
@@ -2099,6 +2122,19 @@ export function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8A
             try {
               const chunk = JSON.parse(data)
               const delta = chunk.choices?.[0]?.delta
+              if (chunk.usage) {
+                const prompt = splitOpenAIPromptUsage(chunk.usage)
+                const completion = splitOpenAICompletionUsage(chunk.usage)
+                onUsage?.({
+                  inputTokens: prompt.inputTokens,
+                  cachedInputTokens: prompt.cachedInputTokens,
+                  cacheWriteTokens: prompt.cacheWriteTokens,
+                  outputTokens: completion.outputTokens,
+                  reasoningTokens: completion.reasoningTokens,
+                })
+              }
+              const chars = streamedCharsFromOpenAIChunk(chunk)
+              if (chars) onOutputChars?.(chars)
               if (delta?.content && openBlock === 0) {
                 contentIndex += delta.content.length
                 controller.enqueue(event('content_block_delta', {
@@ -2154,7 +2190,13 @@ export async function proxyAnthropicStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number, cacheWriteTokens: number) => void,
+  onComplete?: (
+    inputTokens: number,
+    outputTokens: number,
+    cachedInputTokens: number,
+    cacheWriteTokens: number,
+    options?: StreamRecordOptions,
+  ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
   const body = convertToAnthropicFormat({
@@ -2175,6 +2217,16 @@ export async function proxyAnthropicStream(
   let cacheWriteTokens = 0
   let outputTokens = 0
 
+  const meter = createStreamUsageMeter((usage, outcome, usageEstimated) => {
+    onComplete?.(
+      usage.inputTokens,
+      usage.outputTokens,
+      usage.cachedInputTokens,
+      usage.cacheWriteTokens,
+      streamRecordOptions(outcome, usageEstimated),
+    )
+  }, { estimatedInputTokens: estimateTokensFromChars(JSON.stringify(body).length) })
+
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       const text = decoder.decode(chunk, { stream: true })
@@ -2192,14 +2244,19 @@ export async function proxyAnthropicStream(
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAIChunk)}\n\n`))
           }
 
+          const outputChars = streamedCharsFromAnthropicEvent(event)
+          if (outputChars) meter.noteOutputChars(outputChars)
+
           if (event.type === 'message_start' && event.message?.usage) {
             const usage = event.message.usage
             inputTokens = usage.input_tokens || 0
             cacheWriteTokens = usage.cache_creation_input_tokens || 0
             cachedInputTokens = usage.cache_read_input_tokens || 0
+            meter.note({ inputTokens, cachedInputTokens, cacheWriteTokens })
           }
           if (event.type === 'message_delta' && event.usage) {
             outputTokens = event.usage.output_tokens || 0
+            meter.note({ outputTokens })
           }
         } catch {
           // Skip unparseable lines
@@ -2227,7 +2284,7 @@ export async function proxyAnthropicStream(
         ),
       )
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-      onComplete?.(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)
+      meter.settle('complete')
     },
   })
 
@@ -2266,6 +2323,7 @@ export async function proxyAnthropicStream(
         'X-Proxy-Model': modelConfig.apiModel,
       },
       transform: (upstreamBody) => upstreamBody.pipeThrough(transformStream),
+      onStreamEnd: (outcome) => meter.settle(outcome),
       onUpstreamError: async (response) => {
         const errorText = await response.text()
         throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
@@ -3675,6 +3733,7 @@ export async function proxyOpenAIStream(
     cachedInputTokens: number,
     reasoningTokens: number,
     cacheWriteTokens: number,
+    options?: StreamRecordOptions,
   ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
@@ -3704,11 +3763,24 @@ export async function proxyOpenAIStream(
   let loggedOpenRouterCost = false
   let sseBuffer = ''
 
+  const meter = createStreamUsageMeter((usage, outcome, usageEstimated) => {
+    onComplete?.(
+      usage.inputTokens,
+      usage.outputTokens,
+      usage.cachedInputTokens,
+      usage.reasoningTokens,
+      usage.cacheWriteTokens,
+      streamRecordOptions(outcome, usageEstimated),
+    )
+  }, { estimatedInputTokens: estimateTokensFromChars(JSON.stringify(request).length) })
+
   const noteUsage = (parsed: any) => {
+    meter.noteOutputChars(streamedCharsFromOpenAIChunk(parsed))
     if (!parsed?.usage) return
     const usage = parsed.usage
     ;({ inputTokens, cachedInputTokens, cacheWriteTokens } = splitOpenAIPromptUsage(usage))
     ;({ outputTokens, reasoningTokens } = splitOpenAICompletionUsage(usage))
+    meter.note({ inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens, reasoningTokens })
     if (
       shouldRewriteOpenRouterReasoning(served) &&
       typeof usage.cost === 'number' &&
@@ -3796,7 +3868,7 @@ export async function proxyOpenAIStream(
         const rewrite = lineRewriter
         if (rewrite && sseBuffer) emit(controller, rewrite(sseBuffer))
         if (rewrite?.flush) emit(controller, rewrite.flush())
-        onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
+        meter.settle('complete')
       },
     })
 
@@ -3833,6 +3905,7 @@ export async function proxyOpenAIStream(
         if (!onComplete && !lineRewriter) return upstreamBody
         return upstreamBody.pipeThrough(buildTransformStream(lineRewriter))
       },
+      onStreamEnd: (outcome) => meter.settle(outcome),
       onUpstreamError: async (response) => {
         const errorText = await response.text()
         throw new Error(`${served.provider} API error (${response.status}): ${errorText}`)
@@ -4350,6 +4423,196 @@ async function isTurnInFlight(c: any, tokenPayload: ProxyTokenPayload): Promise<
   return hasActiveSession(billingProjectId, c.req.header('x-chat-session-id') || null)
 }
 
+// =============================================================================
+// Streamed usage metering (SHO-599)
+// =============================================================================
+
+export interface StreamUsageTotals {
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+}
+
+export type StreamUsageOutcome = 'complete' | 'cancelled'
+
+/** Flags that ride along into `recordUsage`'s `actionMetadata`. */
+export interface StreamRecordOptions {
+  streamOutcome?: 'cancelled'
+  usageEstimated?: boolean
+}
+
+export interface StreamUsageMeter {
+  /** Provider-reported usage for one frame; only the keys present are set. */
+  note(usage: Partial<StreamUsageTotals>): void
+  /** Streamed output characters seen so far, for the cancel estimate. */
+  noteOutputChars(chars: number): void
+  /** Records once, from every exit: `flush`, client cancel, watchdog, error. */
+  settle(outcome: StreamUsageOutcome): void
+}
+
+/** Rough token count for text a provider has not priced yet (~4 chars/token). */
+export function estimateTokensFromChars(chars: number): number {
+  return chars > 0 ? Math.ceil(chars / 4) : 0
+}
+
+/** Options for `recordUsage`, or `undefined` when the call completed cleanly. */
+export function streamRecordOptions(
+  outcome: StreamUsageOutcome,
+  usageEstimated: boolean,
+): StreamRecordOptions | undefined {
+  if (outcome !== 'cancelled' && !usageEstimated) return undefined
+  return {
+    ...(outcome === 'cancelled' ? { streamOutcome: 'cancelled' as const } : {}),
+    ...(usageEstimated ? { usageEstimated: true } : {}),
+  }
+}
+
+/**
+ * Characters an Anthropic frame adds to the answer. A stream cut before
+ * `message_delta` never reports output tokens, so the text the client already
+ * saw is the only way to price it.
+ */
+export function streamedCharsFromAnthropicEvent(event: any): number {
+  const delta = event?.delta
+  if (!delta) return 0
+  if (typeof delta.text === 'string') return delta.text.length
+  if (typeof delta.thinking === 'string') return delta.thinking.length
+  if (typeof delta.partial_json === 'string') return delta.partial_json.length
+  return 0
+}
+
+/** Characters an OpenAI-compatible chunk adds to the answer (content, reasoning, tool arguments). */
+export function streamedCharsFromOpenAIChunk(chunk: any): number {
+  let chars = 0
+  for (const choice of chunk?.choices ?? []) {
+    const delta = choice?.delta
+    if (!delta) continue
+    if (typeof delta.content === 'string') chars += delta.content.length
+    if (typeof delta.reasoning === 'string') chars += delta.reasoning.length
+    if (typeof delta.reasoning_content === 'string') chars += delta.reasoning_content.length
+    for (const call of delta.tool_calls ?? []) {
+      const args = call?.function?.arguments
+      if (typeof args === 'string') chars += args.length
+    }
+  }
+  return chars
+}
+
+/**
+ * In-flight usage for one streamed provider call.
+ *
+ * Usage arrives in pieces (`message_start` carries the input and cache tokens,
+ * `message_delta` the cumulative output), and a stream can end without either:
+ * a client Stop, an idle-watchdog teardown, a tunnel cut or an upstream error
+ * cancels it before any `flush()` runs. Before this existed only `flush()`
+ * recorded, so a cancelled stream dropped the input and cache tokens Anthropic
+ * had already billed (SHO-599). `settle()` records what was seen — estimating
+ * and flagging whatever the provider never reported — exactly once, on every
+ * exit.
+ */
+export function createStreamUsageMeter(
+  record: (usage: StreamUsageTotals, outcome: StreamUsageOutcome, usageEstimated: boolean) => void,
+  opts: { estimatedInputTokens?: number } = {},
+): StreamUsageMeter {
+  const totals: StreamUsageTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+  }
+  let sawProviderUsage = false
+  let outputChars = 0
+  let settled = false
+
+  return {
+    note(usage: Partial<StreamUsageTotals>) {
+      let sawValue = false
+      for (const key of Object.keys(usage) as Array<keyof StreamUsageTotals>) {
+        const value = usage[key]
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue
+        totals[key] = value
+        if (value > 0) sawValue = true
+      }
+      if (sawValue) sawProviderUsage = true
+    },
+    noteOutputChars(chars: number) {
+      if (chars > 0) outputChars += chars
+    },
+    settle(outcome: StreamUsageOutcome) {
+      if (settled) return
+      settled = true
+      let usageEstimated = false
+      if (!sawProviderUsage) {
+        totals.inputTokens = opts.estimatedInputTokens ?? 0
+        totals.outputTokens = estimateTokensFromChars(outputChars)
+        usageEstimated = true
+      } else if (totals.outputTokens === 0 && outputChars > 0) {
+        totals.outputTokens = estimateTokensFromChars(outputChars)
+        usageEstimated = true
+      }
+      const total = totals.inputTokens + totals.outputTokens
+        + totals.cachedInputTokens + totals.cacheWriteTokens + totals.reasoningTokens
+      if (total === 0) return
+      try {
+        record({ ...totals }, outcome, usageEstimated)
+      } catch (err) {
+        console.error('[AI Proxy] stream usage meter failed to record:', err)
+      }
+    },
+  }
+}
+
+/**
+ * Call `onEnd` exactly once when a response body is finished with, however it
+ * ends: a clean EOF, the client cancelling (Stop, tunnel cut) or an error.
+ * Deliberately a pass-through reader rather than a `TransformStream`, whose
+ * `cancel` is not a reliable terminal signal.
+ */
+function withStreamEnd(
+  body: ReadableStream<Uint8Array>,
+  onEnd?: (outcome: StreamUsageOutcome) => void,
+): ReadableStream<Uint8Array> {
+  if (!onEnd) return body
+  const reader = body.getReader()
+  let settled = false
+  const settle = (outcome: StreamUsageOutcome) => {
+    if (settled) return
+    settled = true
+    try {
+      onEnd(outcome)
+    } catch {
+      // Metering must never break the stream it is watching.
+    }
+  }
+  return new ReadableStream<Uint8Array>({
+    // Demand-driven: the pass-through keeps the caller's backpressure instead of
+    // draining the whole upstream body into memory as fast as it arrives.
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          settle('complete')
+          try { controller.close() } catch { /* downstream gone */ }
+          try { reader.releaseLock() } catch { /* noop */ }
+          return
+        }
+        if (value && value.byteLength > 0) controller.enqueue(value)
+      } catch (err) {
+        settle('cancelled')
+        try { controller.error(err) } catch { /* downstream gone */ }
+        try { reader.releaseLock() } catch { /* noop */ }
+      }
+    },
+    cancel(reason) {
+      settle('cancelled')
+      try { reader.cancel(reason) } catch { /* noop */ }
+    },
+  })
+}
+
 export async function recordUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
@@ -4360,6 +4623,7 @@ export async function recordUsage(
   chatSessionId?: string | null,
   internalUsage?: { actionType: string } | null,
   reasoningTokens: number = 0,
+  options?: StreamRecordOptions,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), the API
   // server's own internal proxy token uses 'system', and a project-less
@@ -4407,7 +4671,7 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
+          actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false, ...(options ?? {}), ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${recordedModel}) — not billed`)
@@ -4465,7 +4729,7 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
+      actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(options ?? {}), ...(chatSessionId ? { chatSessionId } : {}), ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
     if (result.success) {
@@ -6488,13 +6752,13 @@ export function aiProxyRoutes() {
       // Route to provider
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
-          const upstream = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
+          const upstream = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok, options) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, 0, options)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         } else {
-          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok)
+          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok, options) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok, options)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         }
@@ -6749,6 +7013,21 @@ export function aiProxyRoutes() {
       let cachedInputTokens = 0
       let sseBuffer = ''
 
+      const meter = createStreamUsageMeter((usage, outcome, usageEstimated) => {
+        recordUsage(
+          tokenPayload,
+          requestedModel,
+          usage.inputTokens,
+          usage.outputTokens,
+          usage.cachedInputTokens,
+          usage.cacheWriteTokens,
+          chatSessionId,
+          internalUsage,
+          usage.reasoningTokens,
+          streamRecordOptions(outcome, usageEstimated),
+        )
+      }, { estimatedInputTokens: estimateTokensFromChars(JSON.stringify(forwardBody).length) })
+
       const transformStream = new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           controller.enqueue(chunk)
@@ -6761,6 +7040,9 @@ export function aiProxyRoutes() {
             if (data === '[DONE]') continue
             try {
               const parsed = JSON.parse(data)
+              if (typeof parsed.type === 'string' && parsed.type.endsWith('.delta') && typeof parsed.delta === 'string') {
+                meter.noteOutputChars(parsed.delta.length)
+              }
               if (parsed.type === 'response.completed' && parsed.response?.usage) {
                 const usage = parsed.response.usage
                 const totalInput = usage.input_tokens || 0
@@ -6772,14 +7054,13 @@ export function aiProxyRoutes() {
                   usage.prompt_cache_miss_tokens ??
                   Math.max(0, totalInput - cachedInputTokens)
                 outputTokens = usage.output_tokens || 0
+                meter.note({ inputTokens, outputTokens, cachedInputTokens })
               }
             } catch {}
           }
         },
         flush() {
-          if (inputTokens || outputTokens || cachedInputTokens) {
-            recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
-          }
+          meter.settle('complete')
         },
       })
 
@@ -6802,6 +7083,7 @@ export function aiProxyRoutes() {
             'X-Proxy-Model': modelConfig.apiModel,
           },
           transform: (upstreamBody) => upstreamBody.pipeThrough(transformStream),
+          onStreamEnd: (outcome) => meter.settle(outcome),
           onUpstreamError: async (response) => {
             const errorText = await response.text()
             console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
@@ -7209,6 +7491,11 @@ export function aiProxyRoutes() {
           messages: openaiMessages,
           stream: isStream,
         }
+        if (isStream) {
+          // Without this OpenAI never reports usage, so the whole call went
+          // unrecorded even when it completed (SHO-599).
+          openaiBody.stream_options = { include_usage: true }
+        }
         if (parsed.max_tokens) openaiBody.max_completion_tokens = parsed.max_tokens
         if (parsed.temperature !== undefined) openaiBody.temperature = parsed.temperature
         if (parsed.tools) {
@@ -7238,7 +7525,29 @@ export function aiProxyRoutes() {
         }
 
         if (isStream) {
-          const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
+          const meter = createStreamUsageMeter((usage, outcome, usageEstimated) => {
+            recordUsage(
+              tokenPayload,
+              resolvedModel,
+              usage.inputTokens,
+              usage.outputTokens,
+              usage.cachedInputTokens,
+              usage.cacheWriteTokens,
+              chatSessionId,
+              internalUsage,
+              usage.reasoningTokens,
+              streamRecordOptions(outcome, usageEstimated),
+            )
+          }, { estimatedInputTokens: estimateTokensFromChars(JSON.stringify(openaiBody).length) })
+          const anthropicStream = withStreamEnd(
+            convertOpenAIStreamToAnthropicStream(
+              response.body!,
+              resolvedModel,
+              (usage) => meter.note(usage),
+              (chars) => meter.noteOutputChars(chars),
+            ),
+            (outcome) => meter.settle(outcome),
+          )
           const streamedResponse = new Response(anthropicStream, {
             headers: {
               'Content-Type': 'text/event-stream',
@@ -7373,6 +7682,21 @@ export function aiProxyRoutes() {
       const sseDecoder = new TextDecoder()
       let sseBuffer = ''
 
+      const meter = createStreamUsageMeter((usage, outcome, usageEstimated) => {
+        recordUsage(
+          tokenPayload,
+          resolvedModel,
+          usage.inputTokens,
+          usage.outputTokens,
+          usage.cachedInputTokens,
+          usage.cacheWriteTokens,
+          chatSessionId,
+          internalUsage,
+          usage.reasoningTokens,
+          streamRecordOptions(outcome, usageEstimated),
+        )
+      }, { estimatedInputTokens: estimateTokensFromChars(forwardBody.length) })
+
       const tokenTrackingTransform = new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           controller.enqueue(chunk)
@@ -7385,20 +7709,28 @@ export function aiProxyRoutes() {
             if (data === '[DONE]') continue
             try {
               const event = JSON.parse(data)
+              const outputChars = streamedCharsFromAnthropicEvent(event)
+              if (outputChars) meter.noteOutputChars(outputChars)
               if (event.type === 'message_start' && event.message?.usage) {
                 const usage = event.message.usage
                 streamInputTokens = usage.input_tokens || 0
                 streamCacheWriteTokens = usage.cache_creation_input_tokens || 0
                 streamCachedInputTokens = usage.cache_read_input_tokens || 0
+                meter.note({
+                  inputTokens: streamInputTokens,
+                  cachedInputTokens: streamCachedInputTokens,
+                  cacheWriteTokens: streamCacheWriteTokens,
+                })
               }
               if (event.type === 'message_delta' && event.usage) {
                 streamOutputTokens = event.usage.output_tokens || 0
+                meter.note({ outputTokens: streamOutputTokens })
               }
             } catch {}
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId, internalUsage)
+          meter.settle('complete')
         },
       })
 
@@ -7422,6 +7754,7 @@ export function aiProxyRoutes() {
           signal: c.req.raw.signal,
           headers: responseHeaders,
           transform: (upstreamBody) => upstreamBody.pipeThrough(tokenTrackingTransform),
+          onStreamEnd: (outcome) => meter.settle(outcome),
           onUpstreamError: async (response) => {
             const errorBody = await response.text()
             logUpstreamError('Anthropic', response.status, parsed.model, errorBody)

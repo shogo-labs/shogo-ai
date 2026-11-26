@@ -18,7 +18,7 @@
  * event). It is invoiced at period end by Stripe.
  */
 
-import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma';
+import { prisma, Prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma';
 import { notifyOverageCharged, evaluateUsageAlerts } from './billing-alerts.service';
 import {
   FREE_DAILY_INCLUDED_USD,
@@ -68,8 +68,19 @@ function localModeNow(): boolean {
  * `window` = charged against a rolling usage window (the time-gated
  * "unlimited" path); `overage` = beyond the window, metered to Stripe.
  * `daily`/`monthly` are retained for legacy events and local mode.
+ * `refused` = the provider already charged us but the debit was refused, so
+ * the row carries the real cost with `billedUsd: 0` (SHO-599).
  */
-export type UsageSource = 'daily' | 'monthly' | 'overage' | 'window' | 'promo'
+export type UsageSource = 'daily' | 'monthly' | 'overage' | 'window' | 'promo' | 'refused'
+
+/**
+ * The spend the usage gate admits on: any window room at or above this much.
+ * `checkUsageBalance` and the debit's "a window is exhausted" branch must agree
+ * on it, or a call the gate admits is refused — and a refused debit never moves
+ * the window counters, so the next call is admitted and refused again forever
+ * (SHO-599).
+ */
+const USAGE_GATE_MINIMUM_USD = 0.001
 
 /** Identifies which rolling window gated a request. */
 export type UsageWindowKind = 'five_hour' | 'weekly'
@@ -1014,6 +1025,14 @@ function healStaleOverageFlag(billingWorkspaceId: string): void {
  * when the plan is uncapped, or when metered overage is enabled and within
  * its hard cap *and* the paid entitlement behind it is still live.
  *
+ * One rule, shared with the debit: a call this gate admits is debited, even
+ * when the call is bigger than the room left. `_consumeUsageTransaction`'s
+ * last-window-absorbs rule charges the whole call to the binding window and
+ * lets it go past the limit, so the next gate call sees no room and refuses.
+ * Without that agreement the gate admitted on a fraction of the call, the
+ * debit refused it, and — because a refused debit never moves the counters —
+ * every following call was admitted and refused again forever (SHO-599).
+ *
  * `memberId` (a userId) selects the caller's own seat: on a paid plan the
  * allowance is per member, so the preflight must gate against that member's
  * windows rather than the workspace wallet. Omit it when there is no seat
@@ -1022,7 +1041,7 @@ function healStaleOverageFlag(billingWorkspaceId: string): void {
  */
 export async function checkUsageBalance(
   workspaceId: string,
-  minimumRequiredUsd = 0.001,
+  minimumRequiredUsd = USAGE_GATE_MINIMUM_USD,
   memberId?: string,
 ): Promise<BalanceCheck> {
   if (isLocalMode) return { ok: true }
@@ -1535,6 +1554,57 @@ export async function consumeCredits(
   }
 }
 
+/**
+ * Record provider spend we deliberately do not charge: a debit the wallet
+ * refused, or a partial turn that was discarded.
+ *
+ * The proxy and the session closer debit only after the upstream request has
+ * finished, so a refusal there used to leave no trace of real spend: Anthropic
+ * billed $17,266 for a month in which `usage_events` held $12,140 (SHO-599).
+ * The row charges nothing — `billedUsd: 0`, balances and window counters
+ * untouched — and carries the real cost in `rawUsd`, so admin cost analytics
+ * still count it.
+ *
+ * Written on the outer client, never the debit transaction: a refusal must
+ * stay a clean refusal even if this insert fails (a synthetic workspace has no
+ * row to satisfy the FK), and a failed statement inside an interactive
+ * transaction would poison the whole debit.
+ */
+export async function recordUnbilledUsageEvent(
+  params: ConsumeUsageParams,
+  reason: UsageBlockReason | 'discarded_partial',
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await prisma.usageEvent.create({
+      data: {
+        workspaceId: params.workspaceId,
+        projectId: params.projectId,
+        memberId: params.memberId,
+        actionType: params.actionType,
+        actionMetadata: {
+          ...(params.actionMetadata ?? {}),
+          refused: true,
+          refusalReason: reason,
+          attemptedBilledUsd: params.billedUsd,
+          ...extra,
+        },
+        rawUsd: params.rawUsd ?? null,
+        billedUsd: 0,
+        source: 'refused',
+        balanceBefore: 0,
+        balanceAfter: 0,
+      },
+    })
+    invalidateAnalyticsCache({ workspaceId: params.workspaceId, projectId: params.projectId })
+  } catch (err) {
+    console.error(
+      '[billing] failed to record refused usage event:',
+      (err as any)?.message ?? err,
+    )
+  }
+}
+
 async function _consumeUsageTransaction(
   params: ConsumeUsageParams,
 ): Promise<ConsumeUsageResult> {
@@ -1570,7 +1640,10 @@ async function _consumeUsageTransaction(
         // allocation failed, fall through
       }
       if (!wallet) {
-        return { success: false, error: 'No usage wallet found for workspace' };
+        await recordUnbilledUsageEvent(params, 'usage_limit_reached', {
+          refusalDetail: 'no_usage_wallet',
+        })
+        return { success: false, error: 'No usage wallet found for workspace' }
       }
     }
 
@@ -1599,6 +1672,7 @@ async function _consumeUsageTransaction(
         seatId: seat?.id ?? null,
         reason: trustHold,
       })
+      await recordUnbilledUsageEvent(params, trustHold)
       return {
         success: false,
         error: SIGNUP_TRUST_MESSAGES[trustHold],
@@ -1708,6 +1782,7 @@ async function _consumeUsageTransaction(
               usedUsd: window === 'five_hour' ? five.used : week.used,
               limitUsd: window === 'five_hour' ? limits.fiveHourUsd : limits.weeklyUsd,
             })
+            await recordUnbilledUsageEvent(params, 'overage_payment_pending')
             return {
               success: false,
               error: 'Overage payment pending',
@@ -1730,6 +1805,7 @@ async function _consumeUsageTransaction(
               usedUsd: window === 'five_hour' ? five.used : week.used,
               limitUsd: window === 'five_hour' ? limits.fiveHourUsd : limits.weeklyUsd,
             })
+            await recordUnbilledUsageEvent(params, 'overage_cap_reached')
             return {
               success: false,
               error: 'Usage hard limit reached',
@@ -1750,50 +1826,65 @@ async function _consumeUsageTransaction(
           balanceAfter = overageAccumulatedUsd;
           overageCharged = overageDue;
         } else {
-          // `wallet.overageEnabled` alone doesn't mean overage actually
-          // applies — see `resolveEffectivePlan`'s `paidTier` doc comment.
-          // Capture the reason *before* self-healing below: the update
-          // mutates this same in-memory `wallet` record (the mock and
-          // Prisma's own row cache both do), so reading `overageEnabled`
-          // after the write would always see the just-cleared `false`.
-          const isStaleOverageFlag = wallet.overageEnabled && !paidTier;
-          // Overage is on and the plan is paid, but the card has never been
-          // charged (a trial). Refuse without clearing the flag: the user's
-          // setting stays and switches on by itself after the first payment.
-          const requiresPayment = wallet.overageEnabled && paidTier && !overageTrusted;
-          if (isStaleOverageFlag) {
-            // When the flag is stale (entitlement lapsed) clear it in the
-            // same transaction so the wallet snapshot returned to clients
-            // stops lying about on-demand usage being on.
-            await tx.usageWallet.update({
-              where: { workspaceId: billingWorkspaceId },
-              data: { overageEnabled: false },
-            });
+          // The gate admitted this call on any positive window room, so the
+          // last of that room absorbs the whole call — even past the limit —
+          // instead of refusing a call the provider has already charged for.
+          // See `checkUsageBalance`'s doc: the two must agree, or a refused
+          // call leaves the counters untouched and every following call is
+          // admitted and refused again (SHO-599).
+          const windowRoom = Math.min(fiveRoom, weekRoom)
+          if (windowRoom >= USAGE_GATE_MINIMUM_USD) {
+            source = 'window';
+            balanceBefore = windowRoom;
+            balanceAfter = windowRoom - billedUsd;
+            chargedToWindows = true;
+          } else {
+            // `wallet.overageEnabled` alone doesn't mean overage actually
+            // applies — see `resolveEffectivePlan`'s `paidTier` doc comment.
+            // Capture the reason *before* self-healing below: the update
+            // mutates this same in-memory `wallet` record (the mock and
+            // Prisma's own row cache both do), so reading `overageEnabled`
+            // after the write would always see the just-cleared `false`.
+            const isStaleOverageFlag = wallet.overageEnabled && !paidTier;
+            // Overage is on and the plan is paid, but the card has never been
+            // charged (a trial). Refuse without clearing the flag: the user's
+            // setting stays and switches on by itself after the first payment.
+            const requiresPayment = wallet.overageEnabled && paidTier && !overageTrusted;
+            if (isStaleOverageFlag) {
+              // When the flag is stale (entitlement lapsed) clear it in the
+              // same transaction so the wallet snapshot returned to clients
+              // stops lying about on-demand usage being on.
+              await tx.usageWallet.update({
+                where: { workspaceId: billingWorkspaceId },
+                data: { overageEnabled: false },
+              });
+            }
+            const reason: UsageBlockReason = isStaleOverageFlag
+              ? 'entitlement_expired'
+              : requiresPayment
+                ? 'overage_requires_payment'
+                : 'usage_limit_reached'
+            logUsageRefused({
+              workspaceId,
+              billingWorkspaceId,
+              memberId,
+              scope,
+              seatId: seat?.id ?? null,
+              reason,
+              window,
+              usedUsd: window === 'five_hour' ? five.used : week.used,
+              limitUsd: window === 'five_hour' ? limits.fiveHourUsd : limits.weeklyUsd,
+            })
+            await recordUnbilledUsageEvent(params, reason)
+            return {
+              success: false,
+              error: 'Usage limit reached',
+              reason,
+              remainingIncludedUsd: 0,
+              window,
+              resetsAt,
+            };
           }
-          const reason: UsageBlockReason = isStaleOverageFlag
-            ? 'entitlement_expired'
-            : requiresPayment
-              ? 'overage_requires_payment'
-              : 'usage_limit_reached'
-          logUsageRefused({
-            workspaceId,
-            billingWorkspaceId,
-            memberId,
-            scope,
-            seatId: seat?.id ?? null,
-            reason,
-            window,
-            usedUsd: window === 'five_hour' ? five.used : week.used,
-            limitUsd: window === 'five_hour' ? limits.fiveHourUsd : limits.weeklyUsd,
-          })
-          return {
-            success: false,
-            error: 'Usage limit reached',
-            reason,
-            remainingIncludedUsd: 0,
-            window,
-            resetsAt,
-          };
         }
       }
     }
@@ -1850,7 +1941,7 @@ async function _consumeUsageTransaction(
         projectId,
         memberId,
         actionType,
-        actionMetadata: actionMetadata ?? null,
+        actionMetadata: (actionMetadata ?? null) as Prisma.InputJsonValue,
         rawUsd,
         billedUsd,
         source,

@@ -1792,6 +1792,10 @@ enum UsageSource {
   overage
   window
   promo
+  /// The provider charged us but the debit did not happen (refused, or a
+  /// discarded partial turn); `billedUsd` is 0 and `rawUsd` keeps the real
+  /// cost (SHO-599).
+  refused
 }
 
 /// Signup risk assessment, one row per new account. Written from the Better

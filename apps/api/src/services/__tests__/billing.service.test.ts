@@ -386,6 +386,19 @@ class FakeStripe {
 
 mock.module('stripe', () => ({ default: FakeStripe }))
 
+// Signup trust holds are a separate module that reads its own prisma calls;
+// pin the answer per test so the refusal branches (incl. the trust hold) are
+// reachable without modelling `signup_risk_assessments` here.
+let trustHold: 'email_verification_required' | 'account_review_required' | 'account_banned' | null = null
+mock.module('../../lib/signup-trust', () => ({
+  SIGNUP_TRUST_MESSAGES: {
+    email_verification_required: 'verify your email',
+    account_review_required: 'account under review',
+    account_banned: 'account suspended',
+  },
+  getBillingWorkspaceTrustHold: async () => trustHold,
+}))
+
 const billing = await import('../billing.service')
 
 // ============================================================================
@@ -423,6 +436,7 @@ beforeEach(() => {
     usageEvents.push(ev)
     return ev
   }
+  trustHold = null
   console.log = (...a) => logs.push(a)
   console.warn = (...a) => logs.push(a)
   console.error = (...a) => logs.push(a)
@@ -2215,5 +2229,198 @@ describe('personal workspace draws the owner\'s signup credit', () => {
   it('blocks when the credit has expired', async () => {
     setupPersonalWithCredit({ promoCreditExpiresAt: new Date(Date.now() - 1000) })
     expect((await billing.checkUsageBalance('personal')).ok).toBe(false)
+  })
+})
+
+// ============================================================================
+// Every paid call leaves a usage row (SHO-599)
+//
+// The proxy and the session closer debit only after the provider has already
+// charged us. A refused debit used to write nothing at all, which is how
+// $5,126 of a $17,266 Anthropic bill vanished from `usage_events`.
+// ============================================================================
+describe('a refused debit still records the provider spend (SHO-599)', () => {
+  const debit = (over: Record<string, unknown> = {}) => ({
+    workspaceId: 'w1',
+    projectId: null,
+    memberId: 'u1',
+    actionType: 'ai_proxy_completion' as const,
+    rawUsd: 3,
+    billedUsd: 3,
+    ...over,
+  })
+
+  const exhaustedFree = {
+    overageEnabled: false,
+    fiveHourWindowStart: now0(), fiveHourUsedUsd: 0.5, // free 5h cap 0.2
+    weeklyWindowStart: now0(), weeklyUsedUsd: 2,        // free weekly cap 0.5
+  }
+  // Pro limits are $1.60 / 5h and $4 / week; both windows have to be full for
+  // the "a window is exhausted" branch to be reached on that plan.
+  const exhaustedPro = {
+    overageEnabled: false,
+    fiveHourWindowStart: now0(), fiveHourUsedUsd: 2,
+    weeklyWindowStart: now0(), weeklyUsedUsd: 5,
+  }
+
+  function expectOneRefusedRow(reason: string) {
+    expect(usageEvents).toHaveLength(1)
+    const row = usageEvents[0]!
+    expect(row.billedUsd).toBe(0)
+    expect(row.rawUsd).toBe(3)
+    expect(row.source).toBe('refused')
+    expect(row.balanceBefore).toBe(0)
+    expect(row.balanceAfter).toBe(0)
+    expect(row.actionMetadata.refused).toBe(true)
+    expect(row.actionMetadata.refusalReason).toBe(reason)
+    expect(row.actionMetadata.attemptedBilledUsd).toBe(3)
+  }
+
+  it('usage_limit_reached leaves one $0 row with the real cost', async () => {
+    wallets.set('w1', freshWallet(exhaustedFree))
+    const before = wallets.get('w1')!
+    const r = await billing.consumeUsage(debit({ actionMetadata: { model: 'sonnet' } }))
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('usage_limit_reached')
+    expectOneRefusedRow('usage_limit_reached')
+    // The caller's own metadata rides along, so the row is attributable.
+    expect(usageEvents[0]!.actionMetadata.model).toBe('sonnet')
+    // Nothing charged and nothing moved, so the refusal is not a debit.
+    expect(before.fiveHourUsedUsd).toBe(0.5)
+    expect(before.weeklyUsedUsd).toBe(2)
+    expect(before.overageAccumulatedUsd).toBe(0)
+  })
+
+  it('overage_requires_payment leaves a row', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet({ ...exhaustedPro, overageEnabled: true }))
+    const r = await billing.consumeUsage(debit())
+    expect(r.reason).toBe('overage_requires_payment')
+    expectOneRefusedRow('overage_requires_payment')
+    expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(0)
+    // A trial's toggle stays on: it switches on by itself after payment.
+    expect(wallets.get('w1')!.overageEnabled).toBe(true)
+  })
+
+  it('overage_cap_reached leaves a row', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet({
+      ...exhaustedPro,
+      overageEnabled: true,
+      overageHardLimitUsd: 25,
+      overageAccumulatedUsd: 25,
+    }))
+    const r = await billing.consumeUsage(debit())
+    expect(r.reason).toBe('overage_cap_reached')
+    expectOneRefusedRow('overage_cap_reached')
+    expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(25)
+  })
+
+  it('overage_payment_pending leaves a row', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet({
+      ...exhaustedPro,
+      overageEnabled: true,
+      overageOutstandingInvoiceId: 'in_open',
+    }))
+    const r = await billing.consumeUsage(debit())
+    expect(r.reason).toBe('overage_payment_pending')
+    expectOneRefusedRow('overage_payment_pending')
+  })
+
+  it('entitlement_expired leaves a row and still heals the stale overage flag', async () => {
+    // Overage on, but no paid entitlement behind it (free workspace).
+    wallets.set('w1', freshWallet({ ...exhaustedFree, overageEnabled: true }))
+    const r = await billing.consumeUsage(debit())
+    expect(r.reason).toBe('entitlement_expired')
+    expectOneRefusedRow('entitlement_expired')
+    expect(wallets.get('w1')!.overageEnabled).toBe(false)
+  })
+
+  it('a signup trust hold leaves a row', async () => {
+    trustHold = 'account_review_required'
+    wallets.set('w1', freshWallet(exhaustedFree))
+    const r = await billing.consumeUsage(debit())
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('account_review_required')
+    expectOneRefusedRow('account_review_required')
+  })
+
+  it('a workspace with no wallet leaves a row', async () => {
+    const origCreate = prismaApi.usageWallet.create
+    prismaApi.usageWallet.create = async () => {
+      const err: any = new Error('Foreign key constraint violated')
+      err.code = 'P2003'
+      throw err
+    }
+    try {
+      const r = await billing.consumeUsage(debit())
+      expect(r.success).toBe(false)
+      expect(r.error).toContain('No usage wallet')
+      expectOneRefusedRow('usage_limit_reached')
+      expect(usageEvents[0]!.actionMetadata.refusalDetail).toBe('no_usage_wallet')
+    } finally {
+      prismaApi.usageWallet.create = origCreate
+    }
+  })
+})
+
+describe('the gate and the debit agree: an admitted call is debited (SHO-599)', () => {
+  const call = (billedUsd = 3) => ({
+    workspaceId: 'w1',
+    projectId: null,
+    memberId: 'u1',
+    actionType: 'ai_proxy_completion' as const,
+    rawUsd: billedUsd,
+    billedUsd,
+  })
+
+  // Pro limits are $1.60 / 5h and $4 / week, so this leaves $0.40 of room in
+  // both windows — the state that used to admit a $3 call and then refuse it.
+  const almostFull = {
+    overageEnabled: true,
+    fiveHourWindowStart: now0(), fiveHourUsedUsd: 1.2,
+    weeklyWindowStart: now0(), weeklyUsedUsd: 3.6,
+  }
+
+  it('the last window room absorbs the whole call, then the gate refuses', async () => {
+    setTrialPlan('pro') // paid tier whose card has never been charged
+    wallets.set('w1', freshWallet(almostFull))
+    expect((await billing.checkUsageBalance('w1')).ok).toBe(true)
+
+    const first = await billing.consumeUsage(call(3))
+    expect(first.success).toBe(true)
+    expect(first.source).toBe('window')
+    const w = wallets.get('w1')!
+    expect(w.fiveHourUsedUsd).toBeCloseTo(4.2, 10)
+    expect(w.weeklyUsedUsd).toBeCloseTo(6.6, 10)
+    expect(usageEvents).toHaveLength(1)
+    expect(usageEvents[0]!.source).toBe('window')
+    expect(usageEvents[0]!.billedUsd).toBe(3)
+
+    // The loop is closed: the next gate call sees no room and says why.
+    expect(await billing.checkUsageBalance('w1')).toEqual({
+      ok: false,
+      reason: 'overage_requires_payment',
+    })
+
+    // A third call has no room to absorb, so it is refused — and recorded.
+    const third = await billing.consumeUsage(call(3))
+    expect(third.success).toBe(false)
+    expect(third.reason).toBe('overage_requires_payment')
+    expect(usageEvents).toHaveLength(2)
+    expect(usageEvents[1]!.source).toBe('refused')
+    expect(usageEvents[1]!.rawUsd).toBe(3)
+    // Still no further movement.
+    expect(wallets.get('w1')!.fiveHourUsedUsd).toBeCloseTo(4.2, 10)
+  })
+
+  it('a call that fits keeps the plain window path', async () => {
+    setPlan('pro')
+    wallets.set('w1', freshWallet())
+    const r = await billing.consumeUsage(call(0.5))
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('window')
+    expect(wallets.get('w1')!.fiveHourUsedUsd).toBeCloseTo(0.5, 10)
   })
 })

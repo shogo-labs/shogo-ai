@@ -141,7 +141,7 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
     expect(sawBilledLine).toBe(true)
   })
 
-  test('empty stream (no frames at all) — no charge, no crash, reader released', async () => {
+  test('empty stream (no frames at all) — the accumulated turn is still charged, reader released', async () => {
     const projectId = 'proj-empty'
     await openSession(projectId, 'ws-e', 'user-e')
     await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
@@ -152,8 +152,8 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 
     await trackChatStreamForBilling(stream, projectId)
 
-    // EOF without data-turn-complete -> discardPartial, no charge.
-    expect(consumeUsageCalls).toHaveLength(0)
+    // EOF without data-turn-complete no longer discards a real turn (SHO-599).
+    expect(consumeUsageCalls).toHaveLength(1)
     expect(await hasSession(projectId)).toBe(false)
   })
 

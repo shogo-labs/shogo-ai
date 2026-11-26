@@ -45,22 +45,24 @@ beforeEach(() => {
 })
 
 describe('trackChatStreamForBilling', () => {
-  it('closes the session with discardPartial=true on EOF without data-turn-complete', async () => {
+  it('charges the accumulated turn on EOF without data-turn-complete (SHO-599)', async () => {
     const stream = makeStream(['data: {"type":"text-delta","text":"hi"}\n\n'])
     await trackChatStreamForBilling(stream, 'p1')
     expect(closeCalls).toHaveLength(1)
-    expect(closeCalls[0].opts.discardPartial).toBe(true)
+    // The tokens really were billed to us; a discarded partial used to drop
+    // them and made provider spend invisible.
+    expect(closeCalls[0].opts.discardPartial).toBeUndefined()
     expect(closeCalls[0].projectId).toBe('p1')
   })
 
-  it('closes with discardPartial=false when data-turn-complete is observed', async () => {
+  it('closes without discardPartial when data-turn-complete is observed', async () => {
     const stream = makeStream([
       'data: {"type":"text-delta","text":"hi"}\n',
       '\n',
       'data: {"type":"data-turn-complete"}\n\n',
     ])
     await trackChatStreamForBilling(stream, 'p2')
-    expect(closeCalls[0].opts.discardPartial).toBe(false)
+    expect(closeCalls[0].opts.discardPartial).toBeUndefined()
   })
 
   it('passes through chatSessionId to closeSession + setQualitySignals', async () => {
@@ -115,7 +117,7 @@ describe('trackChatStreamForBilling', () => {
   it('ignores plain non-data lines', async () => {
     const stream = makeStream(['just text\n\n', 'data: {"type":"data-turn-complete"}\n\n'])
     await trackChatStreamForBilling(stream, 'p9')
-    expect(closeCalls[0].opts.discardPartial).toBe(false)
+    expect(closeCalls[0].opts.discardPartial).toBeUndefined()
   })
 
   it('treats data: payloads that are not objects as no-op', async () => {
@@ -124,7 +126,7 @@ describe('trackChatStreamForBilling', () => {
     expect(closeCalls).toHaveLength(1)
   })
 
-  it('marks streamInterrupted when reader throws (so discardPartial is false)', async () => {
+  it('marks streamInterrupted when reader throws (and still charges)', async () => {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: '))
@@ -133,7 +135,7 @@ describe('trackChatStreamForBilling', () => {
     })
     await trackChatStreamForBilling(stream, 'p11')
     expect(closeCalls).toHaveLength(1)
-    expect(closeCalls[0].opts.discardPartial).toBe(false)
+    expect(closeCalls[0].opts.discardPartial).toBeUndefined()
   })
 
   it('logs and continues when closeSession itself throws', async () => {
@@ -216,7 +218,7 @@ describe('SSE parsing edge cases', () => {
     ])
     await trackChatStreamForBilling(stream, 'p-no-space')
     expect(closeCalls).toHaveLength(1)
-    expect(closeCalls[0].opts.discardPartial).toBe(false)
+    expect(closeCalls[0].opts.discardPartial).toBeUndefined()
   })
 })
 
@@ -433,7 +435,7 @@ describe('trackChatStreamForBilling — idle-timeout reject arrow', () => {
       // closeSession is still called once with discardPartial=true (interrupted
       // streams are treated as upstream cuts).
       expect(closeCalls).toHaveLength(1)
-      expect(closeCalls[0].opts.discardPartial).toBe(false)
+      expect(closeCalls[0].opts.discardPartial).toBeUndefined()
     } finally {
       console.warn = origWarn
     }

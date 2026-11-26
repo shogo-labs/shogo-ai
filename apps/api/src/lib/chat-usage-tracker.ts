@@ -14,10 +14,11 @@
  *
  * Behavior matches `trackUsageFromStream` in `project-chat.ts`:
  *   - SSE EOF without `data-turn-complete` is treated as an upstream cut
- *     (Knative activator / pod restart). The session is dropped via
- *     `closeSession({ discardPartial: true })` so the user is not billed
- *     for a half-finished turn the auto-resuming-fetch client will
- *     reconnect and finish.
+ *     (Knative activator / pod restart). The accumulated tokens are still
+ *     charged — they are real provider spend — the same way `project-chat.ts`
+ *     does it: a resumed leg accumulates into a NEW session, so nothing is
+ *     counted twice (SHO-599; this used to pass `discardPartial: true` and
+ *     dropped the whole turn's tokens).
  *   - Quality signals from the runtime's `data-usage`/`finish` events are
  *     forwarded to `setQualitySignals` BEFORE `closeSession` so the
  *     analytics emission inside `closeSession` sees them.
@@ -163,12 +164,17 @@ export async function trackChatStreamForBilling(
   await setQualitySignals(projectId, qualitySignals, chatSessionId)
   try {
     const { billedUsd } = await closeSession(projectId, {
-      discardPartial: eofWithoutTurnComplete,
       chatSessionId,
       fallbackUsage,
     })
     if (billedUsd > 0) {
       console.log(`[ChatUsageTracker] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${projectId}`)
+    }
+    if (eofWithoutTurnComplete) {
+      console.warn(
+        `[ChatUsageTracker] Stream EOF'd without data-turn-complete for project ${projectId}; ` +
+        `the accumulated tokens are real provider spend and stay charged (SHO-599).`,
+      )
     }
   } catch (err) {
     console.error(`[ChatUsageTracker] Failed to close billing session for ${projectId}:`, err)

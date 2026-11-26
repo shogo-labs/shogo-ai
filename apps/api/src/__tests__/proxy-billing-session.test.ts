@@ -14,6 +14,8 @@ import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
 // Track calls to consumeUsage (new single-object-arg API)
 let consumeUsageCalls: any[] = []
+// Unbilled rows written for a discarded partial turn (SHO-599).
+let unbilledUsageCalls: any[] = []
 // When set, consumeUsage rejects with this — used to cover the deleted-project
 // (foreign-key violation) arm of closeSession's catch.
 let consumeUsageError: any = null
@@ -23,6 +25,9 @@ mock.module('../services/billing.service', () => ({
     consumeUsageCalls.push(args)
     if (consumeUsageError) throw consumeUsageError
     return { success: true, remainingIncludedUsd: 99 }
+  },
+  recordUnbilledUsageEvent: async (params: any, reason: string) => {
+    unbilledUsageCalls.push({ params, reason })
   },
 }))
 
@@ -44,6 +49,7 @@ import {
 describe('Proxy Billing Session', () => {
   beforeEach(() => {
     consumeUsageCalls = []
+    unbilledUsageCalls = []
     consumeUsageError = null
   })
 
@@ -194,8 +200,13 @@ describe('Proxy Billing Session', () => {
       expect(result.billedUsd).toBe(0)
       expect(result.rawUsd).toBe(0)
 
-      // Critical: nothing was sent to the billing service.
+      // Critical: nothing was charged.
       expect(consumeUsageCalls.length).toBe(0)
+      // But the provider spend is not invisible: one $0 row with the real cost.
+      expect(unbilledUsageCalls).toHaveLength(1)
+      expect(unbilledUsageCalls[0].reason).toBe('discarded_partial')
+      expect(unbilledUsageCalls[0].params.billedUsd).toBe(0)
+      expect(unbilledUsageCalls[0].params.rawUsd).toBeGreaterThan(0)
 
       // Session is removed so the next openSession on the same project is fresh.
       expect(await hasSession('proj-discard')).toBe(false)

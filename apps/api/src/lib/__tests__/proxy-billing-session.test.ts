@@ -30,10 +30,14 @@ mock.module('../../lib/usage-cost', () => ({
 
 const consumeUsageCalls: any[] = []
 let consumeUsageImpl: (args: any) => Promise<any> = async () => ({ success: true, remainingIncludedUsd: 5 })
+const unbilledUsageCalls: any[] = []
 mock.module('../../services/billing.service', () => ({
   consumeUsage: async (args: any) => {
     consumeUsageCalls.push(args)
     return consumeUsageImpl(args)
+  },
+  recordUnbilledUsageEvent: async (params: any, reason: string) => {
+    unbilledUsageCalls.push({ params, reason })
   },
 }))
 
@@ -64,6 +68,7 @@ const logs: { log: any[][]; warn: any[][]; error: any[][] } = { log: [], warn: [
 beforeEach(() => {
   calcCalls.length = 0
   consumeUsageCalls.length = 0
+  unbilledUsageCalls.length = 0
   consumeUsageImpl = async () => ({ success: true, remainingIncludedUsd: 5 })
   costMetricCalls.length = 0
   costMetricImpl = async () => {}
@@ -287,7 +292,7 @@ describe('closeSession', () => {
     expect(costMetricCalls[0].agentType).toBe('main-chat')
   })
 
-  it('discardPartial:true skips charging but still drains the session', async () => {
+  it('discardPartial:true skips charging, drains the session, and records the spend', async () => {
     await openSession('p1', 'w1', 'u1')
     await accumulateUsage('p1', 'sonnet', 100, 200)
     const r = await closeSession('p1', { discardPartial: true })
@@ -296,6 +301,11 @@ describe('closeSession', () => {
     expect(consumeUsageCalls).toHaveLength(0)
     expect(await hasSession('p1')).toBe(false)
     expect(String(logs.log[0])).toContain('Discarded partial session')
+    // Provider spend stays visible: one $0 row with the real cost.
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].reason).toBe('discarded_partial')
+    expect(unbilledUsageCalls[0].params.billedUsd).toBe(0)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeGreaterThan(0)
   })
 
   it('discardPartial on a zero-token session does not record a metric', async () => {
