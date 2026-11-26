@@ -300,6 +300,33 @@ describe('SHO-598: the scope shape cannot regress', () => {
     expect(resolved.length).toBeGreaterThan(0)
   })
 
+  test('the tool-call count asks for session ids, never a relation OR', async () => {
+    // `toolCallWhereFor` is Prisma-rendered, so its shape never reaches the raw
+    // statements the test above captures — and it is the query that took 53–119 s
+    // in prod (`COUNT(*) … LEFT JOIN chat_sessions LEFT JOIN projects … OR`). Pin
+    // the `where` every caller hands Prisma, or the OR can come back unobserved.
+    const where: any[] = []
+    const original = db.toolCallLog.count.bind(db.toolCallLog)
+    db.toolCallLog.count = async (args: any) => {
+      where.push(args?.where)
+      return original(args)
+    }
+    try {
+      await analytics.getUsageDashboard({ workspaceId }, { period: '30d' })
+      await analytics.getUsageSummary({ workspaceId }, '30d')
+    } finally {
+      db.toolCallLog.count = original
+    }
+    expect(where.length).toBe(2)
+    for (const clause of where) {
+      expect(clause.chatSession).toBeUndefined()
+      expect(Array.isArray(clause.chatSessionId.in)).toBe(true)
+      expect(clause.chatSessionId.in.length).toBe(3)
+      expect(clause.status).toBe('complete')
+      expect(JSON.stringify(clause)).not.toContain('"OR"')
+    }
+  })
+
   test('engagement sends session ids, never a relation OR', async () => {
     const engagement = await import('../services/engagement-analytics.service')
     const calls: any[] = []
