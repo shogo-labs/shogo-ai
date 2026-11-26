@@ -56,6 +56,7 @@ const {
   hasActiveSession,
   accumulateUsage,
   accumulateImageUsage,
+  accumulateVideoUsage,
   setQualitySignals,
   closeSession,
 } = await import('../proxy-billing-session')
@@ -314,6 +315,38 @@ describe('closeSession', () => {
     expect(r.totalTokens).toBe(0)
     expect(consumeUsageCalls).toHaveLength(0)
     expect(costMetricCalls).toHaveLength(0)
+  })
+
+  // A finished video is charged in its own `ai_video_generation` row below,
+  // because a retry of the turn does not regenerate it. If the refused row
+  // also carried its cost, one render would be counted twice (SHO-599 QA r1).
+  it('discardPartial records a billed video once, not in both rows', async () => {
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 100, 200)
+    await accumulateVideoUsage('p1', 'veo-3', 8, 2.0, 2.0)
+    await closeSession('p1', { discardPartial: true })
+
+    const videoRow = consumeUsageCalls.find((c) => c.actionType === 'ai_video_generation')
+    expect(videoRow).toBeDefined()
+    expect(videoRow.rawUsd).toBe(2)
+
+    // Tokens only: (100 + 200) * 0.001, with the video's $2 left out.
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeCloseTo(0.3, 6)
+    expect(unbilledUsageCalls[0].params.actionMetadata.discardedBilledUsd).toBeCloseTo(0.6, 6)
+  })
+
+  // An unbilled video (its own debit was refused) has no video row to carry
+  // its cost, so the refused row must keep it.
+  it('discardPartial keeps an unbilled video in the refused row', async () => {
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 100, 200)
+    await accumulateVideoUsage('p1', 'veo-3', 8, 2.0, 0)
+    await closeSession('p1', { discardPartial: true })
+
+    expect(consumeUsageCalls.find((c) => c.actionType === 'ai_video_generation')).toBeUndefined()
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeCloseTo(2.3, 6)
   })
 
   // Overwriting a stale map entry is bookkeeping, not a turn ending. Emitting

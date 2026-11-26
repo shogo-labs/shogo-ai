@@ -1257,9 +1257,16 @@ export async function closeSession(
       session.inputTokens, session.outputTokens, session.model,
       session.cachedInputTokens, session.cacheWriteTokens,
     )
-    const discardedRawUsd = discardedTokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd
+    // A video that was actually billed is charged in its own
+    // `ai_video_generation` row just below, so counting it here too would put
+    // the same provider cost on two rows for one render. Only the video the
+    // separate charge skips stays in this row (SHO-599 QA round 1).
+    const videoChargedSeparately = session.videoBilledUsd > 0
+    const discardedRawUsd = discardedTokenCost.rawUsd + session.imageRawUsd
+      + (videoChargedSeparately ? 0 : session.videoRawUsd)
       + session.threeDRawUsd + session.musicRawUsd
-    const discardedBilledUsd = discardedTokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd
+    const discardedBilledUsd = discardedTokenCost.billedUsd + session.imageBilledUsd
+      + (videoChargedSeparately ? 0 : session.videoBilledUsd)
       + session.threeDBilledUsd + session.musicBilledUsd
     if (discardedRawUsd > 0) {
       await billingService.recordUnbilledUsageEvent({
