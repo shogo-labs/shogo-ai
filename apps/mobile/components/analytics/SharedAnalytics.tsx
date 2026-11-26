@@ -1902,7 +1902,7 @@ export function UsageTimeseriesChart({
         <View className="flex-row flex-wrap gap-2">
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
             <Text className="text-[10px] text-muted-foreground mb-0.5">Total spend</Text>
-            <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalSpendUsd)}</Text>
+            <Text className="text-base font-bold text-foreground">{chartUsd(splitTotalUsd(data.totals))}</Text>
           </View>
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
             <Text className="text-[10px] text-muted-foreground mb-0.5">Included</Text>

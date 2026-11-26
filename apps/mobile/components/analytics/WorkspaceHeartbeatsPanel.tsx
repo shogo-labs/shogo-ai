@@ -47,7 +47,7 @@ import { compactNumber } from '../../lib/engagement-utils'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import { Text } from '../settings/account-sheet-chrome'
 import { LoadErrorNotice } from './LoadErrorNotice'
-import { StatCard, formatDollarCost, getModelDisplayName } from './SharedAnalytics'
+import { StatCard, formatDollarCost, getModelDisplayName, splitTotalUsd } from './SharedAnalytics'
 import { Spinner } from '@/components/ui/spinner'
 
 export type HeartbeatPeriod = '24h' | '7d' | '30d'
@@ -160,6 +160,18 @@ export function formatShareOfSpend(heartbeatUsd: number, workspaceUsd: number): 
   if (pct > 0 && pct < 1) return '<1%'
   return `${Math.round(pct)}%`
 }
+
+/**
+ * The one spend figure a heartbeat row, the totals row and the card show.
+ * Desktop usage is recorded billed 0 with the cost in `rawUsd`, so `billedUsd`
+ * alone would read $0.00 on a local workspace.
+ */
+const spendTotal = (entry: {
+  billedUsd?: number
+  modelCostUsd?: number
+  shogoFeeUsd?: number
+  unitemizedUsd?: number
+}): number => splitTotalUsd(entry)
 
 const ownerLabel = (owner: HeartbeatAgentRow['owner']): string =>
   owner ? (owner.name || owner.email || 'Former member') : 'Workspace'
@@ -423,12 +435,12 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
         />
         <StatCard
           label="Heartbeat spend"
-          value={totals ? formatDollarCost(totals.billedUsd) : undefined}
+          value={totals ? formatDollarCost(spendTotal(totals)) : undefined}
           icon={Coins}
         />
         <StatCard
           label="Share of spend"
-          value={totals ? formatShareOfSpend(totals.billedUsd, totals.workspaceBilledUsd) : undefined}
+          value={totals ? formatShareOfSpend(spendTotal(totals), totals.workspaceBilledUsd) : undefined}
           icon={Gauge}
           subtitle={totals ? `${formatDollarCost(totals.workspaceBilledUsd)} total` : undefined}
         />
@@ -565,7 +577,7 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
                       <Text className="text-xs text-foreground">{compactNumber(row.ticks)}</Text>
                     </Cell>
                     <Cell width={84} align="right">
-                      <Text className="text-xs font-medium text-foreground">{formatDollarCost(row.billedUsd)}</Text>
+                      <Text className="text-xs font-medium text-foreground">{formatDollarCost(spendTotal(row))}</Text>
                     </Cell>
                     <Cell width={86} align="right">
                       <Text className="text-xs text-foreground">
@@ -607,11 +619,11 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
                     <Text className="text-xs font-semibold text-foreground">{compactNumber(totals.ticks)}</Text>
                   </Cell>
                   <Cell width={84} align="right">
-                    <Text className="text-xs font-semibold text-foreground">{formatDollarCost(totals.billedUsd)}</Text>
+                    <Text className="text-xs font-semibold text-foreground">{formatDollarCost(spendTotal(totals))}</Text>
                   </Cell>
                   <Cell width={86} align="right">
                     <Text className="text-xs text-muted-foreground">
-                      {formatShareOfSpend(totals.billedUsd, totals.workspaceBilledUsd)} of spend
+                      {formatShareOfSpend(spendTotal(totals), totals.workspaceBilledUsd)} of spend
                     </Text>
                   </Cell>
                   <Cell width={88}><Text className="text-xs text-muted-foreground"> </Text></Cell>

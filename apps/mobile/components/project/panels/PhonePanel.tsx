@@ -34,6 +34,7 @@ import {
 } from 'lucide-react-native'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { API_URL } from '../../../lib/api'
+import { splitTotalUsd } from '../../analytics/SharedAnalytics'
 import { Spinner } from '@/components/ui/spinner'
 
 interface VoiceConfigResponse {
@@ -52,7 +53,12 @@ interface VoiceUsageSummary {
     billedUsdInbound: number
     billedUsdOutbound: number
     billedUsdNumbers: number
+    /** Sum of the rows' `billedUsd`; 0 for local usage, so the split carries it. */
     billedUsd: number
+    modelCostUsd?: number
+    shogoFeeUsd?: number
+    unitemizedUsd?: number
+    shogoFeePercent?: number
     calls: number
     inboundCalls: number
     outboundCalls: number
@@ -461,7 +467,7 @@ export function PhonePanel({ projectId, visible, embedded = false }: PhonePanelP
           />
           <Row
             label="Usage billed"
-            value={`$${(usage.totals.billedUsd ?? 0).toFixed(4)}`}
+            value={`$${splitTotalUsd(usage.totals).toFixed(4)}`}
           />
         </View>
       )}

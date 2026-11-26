@@ -23,7 +23,11 @@ const http = { id: 'http', patch: mock(async (..._args: any[]): Promise<any> => 
 mock.module('../../../contexts/domain', () => ({ useDomainHttp: () => http }))
 
 const getWorkspaceAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
-mock.module('../../../lib/api', () => ({ api: { getWorkspaceAnalytics } }))
+const realApiModule = await import('../../../lib/api')
+mock.module('../../../lib/api', () => ({
+  ...realApiModule,
+  api: { ...realApiModule.api, getWorkspaceAnalytics },
+}))
 
 mock.module('../../../hooks/useActiveWorkspace', () => ({
   useActiveWorkspace: () => ({ id: 'ws_1', name: 'Acme' }),
@@ -31,13 +35,21 @@ mock.module('../../../hooks/useActiveWorkspace', () => ({
 mock.module('../../../lib/native-active-shadow', () => ({
   nativeActivePill: () => ({ className: '', style: undefined }),
 }))
+const realAccountSheetChrome = await import('../../settings/account-sheet-chrome')
 mock.module('../../settings/account-sheet-chrome', () => ({
+  ...realAccountSheetChrome,
   Text: ({ children, ...props }: any) => createElement('span', props, children),
   accountSheetIcon: (icon: any) => icon,
 }))
-// The real module pulls the model catalog and the density context; the panel
-// only needs these three.
+mock.module('../../lib/visible-models', () => ({
+  resolveShortName: (id: string) => id,
+  resolveFamily: () => 'other',
+}))
+// Keep the real helpers (the spend figures read `splitTotalUsd`) and stub only
+// the card and the model label the assertions read.
+const realSharedAnalytics = await import('../SharedAnalytics')
 mock.module('../SharedAnalytics', () => ({
+  ...realSharedAnalytics,
   StatCard: ({ label, value, subtitle }: any) =>
     createElement('div', { 'data-testid': `stat-${label}` }, [
       createElement('span', { key: 'v', 'data-testid': `value-${label}` }, String(value)),
@@ -328,6 +340,36 @@ describe('WorkspaceHeartbeatsPanel', () => {
     // The card and the totals row show the one billed figure.
     expect(screen.getByTestId('value-Heartbeat spend').textContent).toBe('$1.20')
     expect(screen.getAllByText('$1.20').length).toBeGreaterThanOrEqual(2)
+  })
+
+  // SHO-597: a local workspace records usage billed 0 with the cost in the
+  // split, so the card, the row and the totals row must still show that money.
+  test('a locally-billed row shows the cost the split carries, not $0.00', async () => {
+    getWorkspaceAnalytics.mockImplementation(async () =>
+      report({
+        totals: {
+          agentsEnabled: 1,
+          agentsWithSpend: 1,
+          ticks: 40,
+          billedUsd: 0,
+          rawUsd: 1,
+          modelCostUsd: 1,
+          shogoFeeUsd: 0,
+          unitemizedUsd: 0,
+          shogoFeePercent: 20,
+          totalTokens: 120_000,
+          workspaceBilledUsd: 1,
+        },
+        agents: [agent({ billedUsd: 0, rawUsd: 1, modelCostUsd: 1, shogoFeeUsd: 0, unitemizedUsd: 0 })],
+      }),
+    )
+    render(<WorkspaceHeartbeatsPanel />)
+    await screen.findByText('Support triage')
+
+    expect(screen.getByTestId('value-Heartbeat spend').textContent).toBe('$1.00')
+    // The row and the totals row show the same figure as the card.
+    expect(screen.getAllByText('$1.00').length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText('$0.00')).toBeNull()
   })
 
   test('tapping a row opens that project', async () => {

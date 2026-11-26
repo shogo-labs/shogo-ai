@@ -47,7 +47,7 @@ import {
   type RecentWorkItem,
 } from '../../lib/engagement-utils'
 import { Text } from '../settings/account-sheet-chrome'
-import { StatCard, formatDollarCost } from './SharedAnalytics'
+import { StatCard, formatDollarCost, splitTotalUsd } from './SharedAnalytics'
 import { STACKED_PALETTE, StackedAreaChart } from './StackedAreaChart'
 import { ActivityHeatmap, HourOfWeekGrid } from './ActivityHeatmap'
 import { ModelShareDonut } from './ModelShareDonut'
@@ -318,7 +318,9 @@ export function UsageDashboard({
         />
         <StatCard
           label="Spend"
-          value={formatDollarCost(t.spendUsd)}
+          // `spendUsd` is the billed total; older payloads (and local usage,
+          // billed 0 with the cost in rawUsd) need the split fields to show it.
+          value={formatDollarCost(splitTotalUsd({ ...t, totalBilledUsd: t.spendUsd }))}
           icon={Coins}
           subtitle={`${compactNumber(t.agentRequests)} agent requests`}
           comfortable={comfortable}

@@ -21,24 +21,40 @@ mock.module('../../../contexts/domain', () => ({ useDomainHttp: () => http }))
 
 const getMyAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
 const getWorkspaceAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
-mock.module('../../../lib/api', () => ({ api: { getMyAnalytics, getWorkspaceAnalytics } }))
+const realApiModule = await import('../../../lib/api')
+mock.module('../../../lib/api', () => ({
+  ...realApiModule,
+  api: { ...realApiModule.api, getMyAnalytics, getWorkspaceAnalytics },
+}))
 
-mock.module('../../../lib/native-phone-layout', () => ({ useIsNativePhoneLayout: () => false }))
+const realNativePhoneLayout = await import('../../../lib/native-phone-layout')
+mock.module('../../../lib/native-phone-layout', () => ({
+  ...realNativePhoneLayout,
+  useIsNativePhoneLayout: () => false,
+}))
 mock.module('../../../lib/native-active-shadow', () => ({
   nativeActivePill: () => ({ className: '', style: undefined }),
 }))
+const realAccountSheetChrome = await import('../../settings/account-sheet-chrome')
 mock.module('../../settings/account-sheet-chrome', () => ({
+  ...realAccountSheetChrome,
   Text: ({ children, ...props }: any) => createElement('span', props, children),
 }))
-// The real module drags in the model catalog; the dashboard only needs these two exports.
+mock.module('../../lib/visible-models', () => ({
+  resolveShortName: (id: string) => id,
+  resolveFamily: () => 'other',
+}))
+// Keep the real helpers (the Spend card reads `splitTotalUsd`) and stub only
+// the card itself, which is what the assertions read.
+const realSharedAnalytics = await import('../SharedAnalytics')
 mock.module('../SharedAnalytics', () => ({
+  ...realSharedAnalytics,
   StatCard: ({ label, value, subtitle }: any) =>
     createElement('div', { 'data-testid': `stat-${label}` }, [
       createElement('span', { key: 'l' }, label),
       createElement('span', { key: 'v', 'data-testid': `value-${label}` }, String(value)),
       subtitle ? createElement('span', { key: 's' }, subtitle) : null,
     ]),
-  formatDollarCost: (n: number) => `$${n.toFixed(2)}`,
 }))
 mock.module('../StackedAreaChart', () => ({
   STACKED_PALETTE: ['#1', '#2', '#3', '#4', '#5', '#6', '#7', '#8', '#slate'],
@@ -161,6 +177,19 @@ describe('UsageDashboard', () => {
     expect(screen.queryByTestId('cost-split')).toBeNull()
     expect(screen.queryByText(/Shogo fee/i)).toBeNull()
     expect(screen.queryByText(/Model \$/)).toBeNull()
+  })
+
+  // SHO-597: local usage is recorded billed 0 (spendUsd 0) with the cost in
+  // the split; the Spend card must show that cost, not $0.00.
+  test('the Spend card shows the cost a locally-billed payload carries', async () => {
+    getMyAnalytics.mockImplementation(async () => ({
+      ...stats(),
+      totals: totals({ spendUsd: 0, modelCostUsd: 1, shogoFeeUsd: 0, unitemizedUsd: 0 }),
+    }))
+    render(<UsageDashboard source={{ kind: 'me' }} />)
+
+    expect(await screen.findByText('Work activity')).toBeTruthy()
+    expect(screen.getByTestId('value-Spend').textContent).toBe('$1.00')
   })
 
   test('a workspace source requests that workspace, and one member when given', async () => {

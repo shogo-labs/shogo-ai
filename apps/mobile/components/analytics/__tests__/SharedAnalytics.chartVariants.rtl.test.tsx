@@ -148,6 +148,27 @@ describe('chart variants', () => {
     expect(charts[charts.length - 1].getAttribute('data-format')).toBe('80%')
   })
 
+  // SHO-597: the totals strip shows the one cost figure, computed from the
+  // split, so a locally-billed payload (total billed 0) still shows its spend.
+  test('the chart totals strip shows the split total, not a zero billed figure', () => {
+    render(
+      <UsageTimeseriesChart
+        data={{
+          ...spendData,
+          totals: { totalSpendUsd: 0, totalIncludedUsd: 0, totalOnDemandUsd: 0, modelCostUsd: 1, shogoFeeUsd: 0, unitemizedUsd: 0 },
+        }}
+        groupBy="model"
+        metric="spend"
+        onGroupByChange={() => {}}
+        onMetricChange={() => {}}
+        showTotals
+      />,
+    )
+    expect(screen.getByText('Total spend')).toBeTruthy()
+    // `splitTotalUsd`, not the 0 billed figure the payload reports.
+    expect(screen.getByText('$1.00')).toBeTruthy()
+  })
+
   test('a single-metric trend honours kind: counts are bars, rates are lines', () => {
     render(
       <MetricTrendChart
