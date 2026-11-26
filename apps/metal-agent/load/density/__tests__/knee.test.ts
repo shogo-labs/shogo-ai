@@ -29,6 +29,23 @@ function healthy(n: number, over: Partial<StepMetrics> = {}): StepMetrics {
   }
 }
 
+describe('a bound with no sample is not a pass', () => {
+  // A burst window never probes suspend/resume, so `percentile([], 95)` used to
+  // hand the verdict a 0 ms — a bound it "passed" without measuring anything, and
+  // the report printed "resume p95 0 ms".
+  test('skips the resume bound when the window has no resume sample', () => {
+    const v = evaluateStep(healthy(80, { resumeP95Ms: null }), baseline)
+    expect(v.cpuPass).toBe(true)
+    expect(v.cpuReasons.join(' ')).not.toContain('resume')
+  })
+
+  test('still fails a step whose measured resume misses the SLO', () => {
+    const v = evaluateStep(healthy(80, { resumeP95Ms: 2400 }), baseline)
+    expect(v.cpuPass).toBe(false)
+    expect(v.cpuReasons.join(' ')).toContain('resume p95 2400ms')
+  })
+})
+
 describe('evaluateStep', () => {
   test('a healthy step passes both knees', () => {
     const v = evaluateStep(healthy(40), baseline)
@@ -119,11 +136,26 @@ describe('computeKnees', () => {
     expect(k.recommended).toBe(60)
   })
 
-  test('the knee is the last unbroken pass, not the highest pass', () => {
-    // 80 fails, 100 "recovers" — that is noise, not headroom.
-    const steps = [healthy(40), healthy(60), healthy(80, { cpuPsiSomeAvg60: 30 }), healthy(100)]
-    const k = computeKnees(steps, baseline)
-    expect(k.cpuKnee).toBe(60)
+  test('a failing step does not cap a knee that a higher step reaches', () => {
+    // The real shape, against the baseline this run actually measured: the first
+    // step's guests are cold and miss a turn bound, then the same bounds pass at
+    // 60 and 80 VMs and break at 100.
+    const measured: Record<TurnStep, number> = { cpu: 3034, install: 209, build: 1052 }
+    const steps = [
+      healthy(40, { turnP95: { cpu: 3025, install: 506, build: 1912 } }),
+      healthy(60, { turnP95: { cpu: 3044, install: 251, build: 1190 } }),
+      healthy(80, { turnP95: { cpu: 3041, install: 281, build: 1445 } }),
+      healthy(100, { turnP95: { cpu: 3341, install: 1649, build: 4745 }, resumeP95Ms: 2211 }),
+    ]
+    const k = computeKnees(steps, measured)
+    expect(k.verdicts.find((v) => v.n === 40)!.cpuPass).toBe(false)
+    expect(k.cpuKnee).toBe(80)
+  })
+
+  test('a step that fails and has nothing passing above it is still the knee boundary', () => {
+    // 80 is the highest pass; 100 and 120 break, so 80 is the answer.
+    const steps = [healthy(80), healthy(100, { cpuPsiSomeAvg60: 30 }), healthy(120, { cpuPsiSomeAvg60: 40 })]
+    expect(computeKnees(steps, baseline).cpuKnee).toBe(80)
   })
 
   test('sorts steps by N before walking', () => {
@@ -131,7 +163,7 @@ describe('computeKnees', () => {
     expect(computeKnees(steps, baseline).cpuKnee).toBe(80)
   })
 
-  test('a first step that fails gives a knee of 0', () => {
+  test('a series where nothing passes gives 0', () => {
     const k = computeKnees([healthy(40, { oomKills: 1 })], baseline)
     expect(k.ramKnee).toBe(0)
     expect(k.recommended).toBe(0)
@@ -173,5 +205,18 @@ describe('ramCeilingForSize', () => {
   test('bySize covers 2 GiB and 4 GiB', () => {
     const rows = ramCeilingsBySize({ hostMemMiB: 262144, perVmRssMiB: 2048, reservePct: 10 })
     expect(rows.map((r) => r.sizeMiB)).toEqual([2048, 4096])
+  })
+
+  test('bySize budgets the configured size, not the observed RSS', () => {
+    // Soak #5 printed 218 for both rows because the measured RSS (2124 MiB)
+    // replaced the size in the calculation, making a 4096 MiB guest look as
+    // cheap as a 2048. A guest may touch all of its configured size.
+    const input = { hostMemMiB: 515643, perVmRssMiB: 2124, reservePct: 10 }
+    const rows = ramCeilingsBySize(input)
+    const by2048 = rows.find((r) => r.sizeMiB === 2048)!.maxVms
+    const by4096 = rows.find((r) => r.sizeMiB === 4096)!.maxVms
+    expect(by2048).toBe(ramCeilingForSize(input))
+    expect(by4096).toBe(ramCeilingForSize({ ...input, perVmRssMiB: 4096 }))
+    expect(by4096).toBeLessThan(by2048)
   })
 })

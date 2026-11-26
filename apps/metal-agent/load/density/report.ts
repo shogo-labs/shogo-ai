@@ -14,16 +14,45 @@ import { join } from 'path'
 import type { HostSample } from './host-sampler'
 import { TURN_STEPS, type Knees, type StepMetrics, type StepVerdict, type TurnStep } from './knee'
 
+/**
+ * What `ramPhysicalMiB` counts. `soak-delta` is the host's Firecracker RSS
+ * minus the RSS recorded before the soak added a guest, so it is the soak's own
+ * share. `host-wide` is every Firecracker process on the host, tenants
+ * included — it is not attributable to the soak and must not be divided by N.
+ * Steps.csv rows written before the column existed are `host-wide`, because
+ * that is what the old code recorded.
+ */
+export type RamPhysicalBasis = 'soak-delta' | 'host-wide'
+
 export interface StepRow extends StepMetrics {
   /** vCPUs committed / physical threads. */
   cpuOversubRatio: number
   /** Guest RAM committed (N × configured MiB) and host RAM physically used. */
   ramCommittedMiB: number
   ramPhysicalMiB: number
+  ramPhysicalBasis: RamPhysicalBasis
   turnP50: Record<TurnStep, number>
   runDelayP95MsPerSec: number
   apiP95Ms: number
+  /** App-role HTTP response times measured in this window. */
+  appP50Ms: number | null
+  appP95Ms: number | null
+  appSamples: number
   verdict: StepVerdict
+}
+
+/**
+ * Host RSS per resident soak VM, taken from the densest step whose RAM was
+ * attributed to the soak. 0 when no step carries an attributable number — the
+ * card's per-size table is only meaningful when this is measured, never
+ * inferred from host-wide RSS.
+ */
+export function perVmRssMiB(steps: StepRow[]): number {
+  const attributed = steps
+    .filter((s) => s.ramPhysicalBasis === 'soak-delta' && s.n > 0 && s.ramPhysicalMiB > 0)
+    .sort((a, b) => b.n - a.n)
+  const top = attributed[0]
+  return top ? Math.round(top.ramPhysicalMiB / top.n) : 0
 }
 
 export interface BurstRow {
@@ -35,8 +64,15 @@ export interface BurstRow {
   cpuPsiSomeAvg60: number
   memAvailablePct: number
   oomKills: number
-  resumeP95Ms: number
+  /** `null` when the run's harness predates the column — not a measured zero. */
+  swapInPagesPerSec: number | null
+  /** `null` when the run's harness predates the column — not a measured zero. */
+  memPsiFullAvg60: number | null
+  /** `null` when the window had no resume sample — a burst never suspends. */
+  resumeP95Ms: number | null
   pass: boolean
+  /** Why it failed, so the row explains itself instead of needing prose. */
+  reasons: string[]
 }
 
 export interface RunEnv {
@@ -45,6 +81,13 @@ export interface RunEnv {
   kernel: string
   firecrackerVersion: string
   gitSha: string
+  /**
+   * The harness that measured this run: the commit when the launcher passed
+   * `--revision`, plus a digest of the files that actually ran. The soak host has
+   * no `.git`, so the digest is what makes a committed report traceable.
+   */
+  harnessRevision: string
+  harnessSha256: string
   region: string
   controlPlaneUrl: string
   vcpus: number
@@ -83,6 +126,7 @@ export function stepsCsv(rows: StepRow[]): string {
     'cpu_oversub_ratio',
     'ram_committed_mib',
     'ram_physical_mib',
+    'ram_physical_basis',
     ...TURN_STEPS.flatMap((s) => [`${s}_p50_ms`, `${s}_p95_ms`]),
     'run_delay_p95_ms_per_s',
     'cpu_psi_some_avg60',
@@ -92,6 +136,9 @@ export function stepsCsv(rows: StepRow[]): string {
     'mem_psi_full_avg60',
     'resume_p95_ms',
     'api_p95_ms',
+    'app_p50_ms',
+    'app_p95_ms',
+    'app_samples',
     'cpu_pass',
     'ram_pass',
   ]
@@ -101,6 +148,7 @@ export function stepsCsv(rows: StepRow[]): string {
       f(r.cpuOversubRatio, 2),
       r.ramCommittedMiB,
       r.ramPhysicalMiB,
+      r.ramPhysicalBasis,
       ...TURN_STEPS.flatMap((s) => [f(r.turnP50[s]), f(r.turnP95[s])]),
       f(r.runDelayP95MsPerSec, 2),
       f(r.cpuPsiSomeAvg60, 2),
@@ -108,8 +156,11 @@ export function stepsCsv(rows: StepRow[]): string {
       f(r.swapInPagesPerSec, 1),
       r.oomKills,
       f(r.memPsiFullAvg60, 2),
-      f(r.resumeP95Ms, 0),
+      r.resumeP95Ms == null ? '' : f(r.resumeP95Ms, 0),
       f(r.apiP95Ms, 0),
+      r.appP50Ms == null ? '' : f(r.appP50Ms, 1),
+      r.appP95Ms == null ? '' : f(r.appP95Ms, 1),
+      r.appSamples,
       r.verdict.cpuPass,
       r.verdict.ramPass,
     ].join(','),
@@ -167,7 +218,11 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push(`# Metal density soak — ${env.hostId} — ${env.startedAt}`)
   out.push('')
-  out.push(`**Recommendation: \`METAL_MAX_VMS_PER_HOST=${recommendation.maxVmsPerHost}\`** at ${env.memMiB} MiB / ${env.vcpus} vCPU VMs.`)
+  out.push(
+    recommendation.maxVmsPerHost > 0
+      ? `**Recommendation: \`METAL_MAX_VMS_PER_HOST=${recommendation.maxVmsPerHost}\`** at ${env.memMiB} MiB / ${env.vcpus} vCPU VMs.`
+      : '**No recommendation:** no measured density met the bounds. That is a failed measurement, not a host that cannot run VMs — inspect the failing steps before setting a cap.',
+  )
   out.push('')
   out.push(`CPU knee **${recommendation.cpuKnee}**, RAM knee **${recommendation.ramKnee}** — the recommendation is the lower of the two.`)
   out.push('')
@@ -188,32 +243,45 @@ export function renderReportMarkdown(input: ReportInput): string {
   out.push(`| VM sizing | ${env.vcpus} vCPU / ${env.memMiB} MiB |`)
   out.push(`| env at start | METAL_MAX_VMS_PER_HOST=${env.maxVmsPerHost}, METAL_IDLE_SUSPEND_MS=${env.idleSuspendMs} |`)
   out.push(`| git sha | \`${env.gitSha}\` |`)
+  out.push(`| harness | ${env.harnessRevision === 'unknown' ? 'revision not recorded' : `\`${env.harnessRevision}\``} · sha256 \`${env.harnessSha256.slice(0, 16)}…\` |`)
   out.push(`| mix | agent ${(mix.agent * 100).toFixed(0)}% / app ${(mix.app * 100).toFixed(0)}% / idle ${(mix.idle * 100).toFixed(0)}% |`)
   out.push('')
 
   out.push('## Baseline (N=1)')
   out.push('')
-  out.push(`| step | p50 ms |`)
+  out.push('| step | p95 ms |')
   out.push('|---|---|')
   for (const s of TURN_STEPS) out.push(`| ${s} | ${f(baseline[s])} |`)
+  out.push('')
+  out.push(
+    'These are the measured p95s of the lone baseline VM, and they are the denominators of every `× baseline` ratio in this report — including the ones a failing step is reported against. They are not a step row: a step\'s own p50 is a different statistic and cannot stand in for them.',
+  )
   out.push('')
 
   out.push('## Steps')
   out.push('')
+  const anyHostWide = steps.some((r) => r.ramPhysicalBasis === 'host-wide')
   out.push(
-    '| N | vCPU over | RAM committed | RAM physical | ' +
+    '| N | vCPU over | RAM committed | RAM physical ' +
+      (anyHostWide ? '(host FC, not soak) | ' : '(soak) | ') +
       TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
-      ' | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
+      ' | app p95 | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
   )
-  out.push('|' + '---|'.repeat(12 + TURN_STEPS.length))
+  out.push('|' + '---|'.repeat(13 + TURN_STEPS.length))
   for (const r of steps) {
     out.push(
       `| ${r.n} | ${f(r.cpuOversubRatio, 2)}:1 | ${r.ramCommittedMiB} MiB | ${r.ramPhysicalMiB} MiB | ` +
         TURN_STEPS.map((s) => `${f(r.turnP95[s])} ms`).join(' | ') +
-        ` | ${f(r.runDelayP95MsPerSec, 2)} | ${f(r.cpuPsiSomeAvg60)}% | ${f(r.memAvailablePct)}% | ${f(r.swapInPagesPerSec)} | ${r.oomKills} | ${f(r.memPsiFullAvg60)}% | ${f(r.resumeP95Ms, 0)} ms | ${f(r.apiP95Ms, 0)} ms | ${r.verdict.cpuPass ? 'pass' : 'FAIL'} | ${r.verdict.ramPass ? 'pass' : 'FAIL'} |`,
+        ` | ${r.appP95Ms == null ? '—' : `${f(r.appP95Ms)} ms`} | ${f(r.runDelayP95MsPerSec, 2)} | ${f(r.cpuPsiSomeAvg60)}% | ${f(r.memAvailablePct)}% | ${f(r.swapInPagesPerSec)} | ${r.oomKills} | ${f(r.memPsiFullAvg60)}% | ${r.resumeP95Ms == null ? '—' : `${f(r.resumeP95Ms, 0)} ms`} | ${f(r.apiP95Ms, 0)} ms | ${r.verdict.cpuPass ? 'pass' : 'FAIL'} | ${r.verdict.ramPass ? 'pass' : 'FAIL'} |`,
     )
   }
   out.push('')
+  if (anyHostWide) {
+    out.push(
+      '> The RAM physical column in this run is the host\'s whole Firecracker RSS, tenants included — it was recorded before the harness attributed RSS to the soak, so it cannot be read per VM. Use the committed run that carries `ram_physical_basis=soak-delta` for host RSS per VM.',
+    )
+    out.push('')
+  }
 
   const failures = steps.filter((r) => !r.verdict.cpuPass || !r.verdict.ramPass)
   if (failures.length > 0) {
@@ -229,32 +297,71 @@ export function renderReportMarkdown(input: ReportInput): string {
   if (burst.length > 0) {
     out.push('## Burst')
     out.push('')
-    out.push('| N | fraction | window | turns started | ' + TURN_STEPS.map((s) => `${s} p95`).join(' | ') + ' | cpu PSI | MemAvail | OOM | resume p95 | pass |')
-    out.push('|' + '---|'.repeat(7 + TURN_STEPS.length))
+    out.push(
+      '| N | fraction | window | turns started | ' +
+        TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
+        ' | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | pass |',
+    )
+    out.push('|' + '---|'.repeat(10 + TURN_STEPS.length))
     for (const b of burst) {
       out.push(
         `| ${b.n} | ${(b.fraction * 100).toFixed(0)}% | ${Math.round(b.windowMs / 1000)}s | ${b.turnsStarted} | ` +
           TURN_STEPS.map((s) => `${f(b.turnP95[s])} ms`).join(' | ') +
-          ` | ${f(b.cpuPsiSomeAvg60)}% | ${f(b.memAvailablePct)}% | ${b.oomKills} | ${f(b.resumeP95Ms, 0)} ms | ${b.pass ? 'pass' : 'FAIL'} |`,
+          ` | ${f(b.cpuPsiSomeAvg60)}% | ${f(b.memAvailablePct)}% | ${b.swapInPagesPerSec == null ? '—' : f(b.swapInPagesPerSec)} | ${b.oomKills} | ${b.memPsiFullAvg60 == null ? '—' : `${f(b.memPsiFullAvg60)}%`} | ${b.resumeP95Ms == null ? 'not sampled' : `${f(b.resumeP95Ms, 0)} ms`} | ${b.pass ? 'pass' : 'FAIL'} |`,
       )
     }
+    out.push('')
+    const failed = burst.filter((b) => !b.pass)
+    if (failed.length > 0) {
+      out.push('### Why each burst failed')
+      out.push('')
+      for (const b of failed) out.push(`- **N=${b.n}**: ${b.reasons.length > 0 ? b.reasons.join('; ') : 'no reason recorded'}`)
+      out.push('')
+    }
+    out.push(
+      'A burst row is scored on the turn latencies, CPU and memory pressure measured in its own window. It is not scored on resume latency: a burst starts turns on guests that are already running, so it never suspends and re-assigns one, and `not sampled` means there was nothing to score — not a 0 ms pass. The PSI columns are the worst sample in the window, and `mem PSI full avg60` is a 60-second rolling average, so in a 60 s burst window it also carries the tail of the hold that preceded it.',
+    )
     out.push('')
   }
 
   out.push('## Knees')
   out.push('')
-  out.push(`- **CPU knee: ${knees.cpuKnee}** — highest N where turn-step p95 stayed within the bounds, CPU PSI \`some avg60\` stayed under the limit, and resume p95 held the 2 s SLO.`)
-  out.push(`- **RAM knee: ${knees.ramKnee}** — highest N with zero OOM kills, no sustained swap-in, memory PSI \`full avg60\` under the limit, and MemAvailable above the floor.`)
-  out.push(`- **Recommended \`METAL_MAX_VMS_PER_HOST\`: ${recommendation.maxVmsPerHost}** = min(${recommendation.cpuKnee}, ${recommendation.ramKnee}).`)
+  out.push(
+    `- **CPU knee: ${knees.cpuKnee}** — the highest N whose turn-step p95 stayed within 1.5× the baseline, CPU PSI \`some avg60\` stayed under the limit, and resume p95 held the 2 s SLO.`,
+  )
+  out.push(
+    `- **RAM knee: ${knees.ramKnee}** — the highest N with zero OOM kills, no sustained swap-in, memory PSI \`full avg60\` under the limit, and MemAvailable above the floor.`,
+  )
+  const top = steps.length > 0 ? Math.max(...steps.map((r) => r.n)) : 0
+  const belowKnee = steps.filter((r) => r.n < recommendation.maxVmsPerHost && (!r.verdict.cpuPass || !r.verdict.ramPass))
+  if (belowKnee.length > 0) {
+    out.push(
+      `- **Below the knee:** ${belowKnee.map((r) => `N=${r.n}`).join(', ')} missed a bound while a higher N passed the same bounds. A step that fails below a passing step is not a capacity limit — the queue, the page cache or one slow turn at that N explains it — so the passing step above it is the measurement.`,
+    )
+  }
+  if (top > 0 && recommendation.maxVmsPerHost > 0 && recommendation.maxVmsPerHost === top) {
+    out.push(`- **No knee found:** every step up to N=${top} passed. The ladder stopped there, not the host.`)
+  }
+  out.push(
+    recommendation.maxVmsPerHost > 0
+      ? `- **Recommended \`METAL_MAX_VMS_PER_HOST\`: ${recommendation.maxVmsPerHost}** = min(${recommendation.cpuKnee}, ${recommendation.ramKnee}).`
+      : '- **Recommended `METAL_MAX_VMS_PER_HOST`: none** — a knee of 0 means no measured step passed the bounds; it is not a capacity of zero.',
+  )
   out.push('')
 
   out.push('## RAM at each prod VM size')
   out.push('')
-  out.push(`Measured host RSS per resident VM: **${recommendation.perVmRssMiB} MiB**.`)
-  out.push('')
-  out.push('| configured VM size | max VMs in host RAM |')
-  out.push('|---|---|')
-  for (const s of recommendation.bySize) out.push(`| ${s.sizeMiB} MiB | ${s.maxVms} |`)
+  if (recommendation.perVmRssMiB > 0) {
+    out.push(`Measured host RSS per resident VM: **${recommendation.perVmRssMiB} MiB**.`)
+    out.push('')
+    out.push('| configured VM size | max VMs in host RAM |')
+    out.push('|---|---|')
+    for (const s of recommendation.bySize) out.push(`| ${s.sizeMiB} MiB | ${s.maxVms} |`)
+  } else {
+    out.push(
+      'Not measured in this run: no step carries host RSS attributed to the soak, and host-wide Firecracker RSS cannot be divided by N while tenants are resident. The per-size table comes from a run that records `ram_physical_basis=soak-delta`.',
+    )
+  }
   out.push('')
 
   if (input.notes && input.notes.length > 0) {
@@ -272,11 +379,49 @@ export interface WrittenReport {
   files: string[]
 }
 
+/** One row per burst, so a recompute does not lose the burst result. */
+export function burstCsv(rows: BurstRow[]): string {
+  const head = [
+    'n',
+    'fraction',
+    'window_ms',
+    'turns_started',
+    ...TURN_STEPS.map((s) => `${s}_p95_ms`),
+    'cpu_psi_some_avg60',
+    'mem_available_pct',
+    'oom_kills',
+    'swap_in_pages_per_s',
+    'mem_psi_full_avg60',
+    'resume_p95_ms',
+    'pass',
+    'reasons',
+  ]
+  const lines = rows.map((b) =>
+    [
+      b.n,
+      b.fraction,
+      b.windowMs,
+      b.turnsStarted,
+      ...TURN_STEPS.map((s) => b.turnP95[s]),
+      b.cpuPsiSomeAvg60,
+      b.memAvailablePct,
+      b.oomKills,
+      b.swapInPagesPerSec ?? '',
+      b.memPsiFullAvg60 ?? '',
+      b.resumeP95Ms == null ? '' : b.resumeP95Ms,
+      b.pass ? 'pass' : 'FAIL',
+      `"${b.reasons.join('; ')}"`,
+    ].join(','),
+  )
+  return [head.join(','), ...lines].join('\n') + '\n'
+}
+
 /** Write the whole run directory. */
 export function writeReport(dir: string, input: ReportInput, samples: HostSample[], turns: Parameters<typeof turnsCsv>[0]): WrittenReport {
   mkdirSync(dir, { recursive: true })
   const files: Record<string, string> = {
     'steps.csv': stepsCsv(input.steps),
+    'burst.csv': burstCsv(input.burst),
     'samples.csv': samplesCsv(samples),
     'turns.csv': turnsCsv(turns),
     'report.md': renderReportMarkdown(input),

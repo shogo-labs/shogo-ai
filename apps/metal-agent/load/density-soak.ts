@@ -32,12 +32,14 @@
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { HostSampler, oomKillsSince, percentile, type HostSample } from './density/host-sampler'
+import { HostSampler, oomKillsSince, percentile, windowWorst, type HostSample } from './density/host-sampler'
+import { harnessDigest } from './density/harness-revision'
 import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
-import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
+import { primeWarmCache, runAgentTurn, seedTemplate, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
 import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
-import { writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+import { perVmRssMiB as perVmRssMiBFrom, writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+import { recomputeReport } from './density/recompute'
 
 // ---------------------------------------------------------------------------
 // Flags
@@ -67,6 +69,12 @@ export interface SoakOptions {
   allowControlPlanes: string[]
   bounds: Bounds
   dryRun: boolean
+  /** Commit of the harness, when the launcher knows it (`--revision`). */
+  revision?: string
+  /** Directory holding `density-soak.ts` and `density/`, for the harness digest. */
+  harnessDir?: string
+  /** Re-derive the report of an already-recorded run instead of soaking. */
+  fromResults?: string
 }
 
 const num = (v: string | undefined, d: number) => {
@@ -126,6 +134,9 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
       .filter(Boolean),
     bounds: DEFAULT_BOUNDS,
     dryRun: has('dry-run'),
+    revision: get('revision') ?? env.DENSITY_SOAK_REVISION,
+    harnessDir: get('harness-dir') ?? env.DENSITY_SOAK_HARNESS_DIR,
+    fromResults: get('from-results'),
   }
 }
 
@@ -215,6 +226,30 @@ class AgentClient {
 const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
 
 /**
+ * Turns measured on the lone baseline VM. `percentile` is nearest-rank, so p95
+ * of 9 samples is just the max; 20 puts it on the second-highest instead.
+ */
+const BASELINE_TURNS = 20
+
+/** Simultaneous destroys in teardown; the node-agent handles this fine. */
+const TEARDOWN_CONCURRENCY = 8
+
+/**
+ * The N=1 baseline, as the statistic the bounds are actually applied to.
+ *
+ * `evaluateStep` compares each step's turn p95 against this number, so it has to
+ * be a p95 as well: against a p50 baseline a host with no contention at all
+ * fails on its own tail (soak #5: N=40 at 0.3% CPU PSI failed `install p95 2.68x`
+ * because the baseline was the median of the same distribution).
+ */
+export function baselineFromTurns(turns: TurnTimings[]): Record<TurnStep, number> {
+  const ok = turns.filter((t) => t.ok)
+  const out = {} as Record<TurnStep, number>
+  for (const s of TURN_STEPS) out[s] = +percentile(ok.map((t) => Number((t as any)[`${s}Ms`]) || 0), 95).toFixed(1)
+  return out
+}
+
+/**
  * Rewrite an assign URL into one this host can actually reach.
  *
  * `/assign` returns the guest's *published* address (`METAL_PUBLIC_HOST:<dnat>`),
@@ -249,6 +284,33 @@ interface SoakVm {
   role: Role
   url?: string
   assigned: boolean
+  /** The guest already has the template seeded (`seed`) or fully primed (`prime`). */
+  seeded?: 'seed' | 'prime'
+}
+
+/**
+ * Which guests still need the template written to them.
+ *
+ * Both working roles need it: an agent turn `cd`s into the template for every
+ * step, and `startAppRoles` `cd`s into the same directory to run `app-server.ts`.
+ * Only the agent role also needs the warm package cache and git repo that the
+ * `install` and `git` steps measure, so the app role gets the files alone.
+ *
+ * Idle guests are never seeded: they must stay cold, and a turn on one is not
+ * part of the workload.
+ */
+export function planSeeding(vms: SoakVm[]): { seed: SoakVm[]; prime: SoakVm[] } {
+  const seed: SoakVm[] = []
+  const prime: SoakVm[] = []
+  for (const vm of vms) {
+    if (!vm.assigned || !vm.url) continue
+    if (vm.role === 'agent') {
+      if (vm.seeded !== 'prime') prime.push(vm)
+    } else if (vm.role === 'app') {
+      if (!vm.seeded) seed.push(vm)
+    }
+  }
+  return { seed, prime }
 }
 
 export class DensitySoak {
@@ -262,6 +324,12 @@ export class DensitySoak {
   private readonly startedAt = new Date().toISOString()
   private readonly startedMs = Date.now()
   private originalEnv: Record<string, string> | null = null
+  /**
+   * Host-wide Firecracker RSS before the soak added a single VM. `fcRssMiB` sums
+   * every guest on the host, including the projects that were already resident,
+   * so the soak's share of it is the delta from here.
+   */
+  private rssBeforeMiB = 0
   /** The env file exactly as it was, so teardown restores it byte-for-byte. */
   private originalEnvText: string | null = null
   private cordoned = false
@@ -283,7 +351,11 @@ export class DensitySoak {
   constructor(private readonly opts: SoakOptions) {
     const token = this.readToken()
     this.agent = new AgentClient(opts.base, token)
+    this.harnessDir = opts.harnessDir ?? import.meta.dir
   }
+
+  /** Where the running harness lives, for the digest recorded in `env.json`. */
+  private readonly harnessDir: string
 
   private readToken(): string {
     try {
@@ -342,6 +414,17 @@ export class DensitySoak {
     }
     this.originalEnvText = readFileSync(this.opts.envFile, 'utf8')
     this.originalEnv = parseEnvFile(this.originalEnvText)
+    if (this.originalEnv.METAL_IDLE_SUSPEND_MS === '0') {
+      throw new Error(
+        `refusing to soak: ${this.opts.envFile} already has METAL_IDLE_SUSPEND_MS=0, so an earlier run was interrupted and left the host soaked. ` +
+          'Restore it first (drop METAL_MAX_VMS_PER_HOST, set METAL_IDLE_SUSPEND_MS=1800000), restart metal-agent, then run.',
+      )
+    }
+    // A run-scoped copy. A single shared `.pre-soak.bak` gets overwritten by the
+    // *next* run's capture, which is how a host ends up with its "original" env
+    // recorded as MAX=200 / IDLE=0.
+    writeFileSync(`${this.opts.envFile}.pre-soak-${this.runId}.bak`, this.originalEnvText)
+    log('preflight', `pre-run env saved to ${this.opts.envFile}.pre-soak-${this.runId}.bak`)
     const controlPlaneUrl = this.originalEnv.METAL_CONTROL_PLANE_URL ?? ''
     const region = this.originalEnv.METAL_REGION ?? ''
 
@@ -520,6 +603,24 @@ export class DensitySoak {
     }
   }
 
+  /**
+   * How many app responses have been recorded so far.
+   *
+   * `AppLoadHandle.latencies` is cumulative for the whole run, so a step's
+   * response times are the slice after this mark. Without it the report has no
+   * app column at all and the app role's fix is unobservable.
+   */
+  private appLatencyMark(): number {
+    return this.appLoads.reduce((sum, h) => sum + h.latencies.length, 0)
+  }
+
+  private appLatencyIn(mark: number): { appP50Ms: number | null; appP95Ms: number | null; appSamples: number } {
+    const all = this.appLoads.flatMap((h) => h.latencies)
+    const win = all.slice(mark)
+    if (win.length === 0) return { appP50Ms: null, appP95Ms: null, appSamples: 0 }
+    return { appP50Ms: +percentile(win, 50).toFixed(1), appP95Ms: +percentile(win, 95).toFixed(1), appSamples: win.length }
+  }
+
   private stopAppRoles(): void {
     for (const a of this.appLoads) a.stop()
     this.appLoads = []
@@ -570,16 +671,12 @@ export class DensitySoak {
 
   private stepMetrics(n: number, fromMs: number, toMs: number, resume: number[], api: number[]): StepMetrics {
     const win = this.windowSamples(fromMs, toMs)
-    const last = win[win.length - 1]
     return {
       n,
       turnP95: this.turnP95(n),
-      cpuPsiSomeAvg60: last?.cpuPressure?.some60 ?? 0,
-      resumeP95Ms: +percentile(resume, 95).toFixed(1),
+      ...windowWorst(win),
+      resumeP95Ms: resume.length > 0 ? +percentile(resume, 95).toFixed(1) : null,
       oomKills: oomKillsSince(this.startedMs),
-      swapInPagesPerSec: +this.avg(win.map((s) => s.swapInPagesPerSec ?? 0)).toFixed(1),
-      memPsiFullAvg60: last?.memPressure?.full60 ?? 0,
-      memAvailablePct: last?.memAvailablePct ?? 0,
     }
   }
 
@@ -588,9 +685,12 @@ export class DensitySoak {
   async run(): Promise<ReportInput> {
     await this.preflight()
     if (this.opts.dryRun) {
-      return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] })
+      const zero = { cpu: 0, install: 0, build: 0 } as Record<TurnStep, number>
+      return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] }, zero)
     }
 
+    this.rssBeforeMiB = this.sampler.sample().fcRssMiB
+    log('preflight', `FC RSS before the soak: ${this.rssBeforeMiB} MiB`)
     this.startSampling()
     this.startKeepAlive()
 
@@ -599,17 +699,21 @@ export class DensitySoak {
     for (let i = 0; i < 3; i++) this.probeIds.push(`soak-${this.runId}-probe-${i}`)
     for (const pid of this.probeIds) await this.agent.assign(pid, ASSIGN_ENV)
 
-    // Baseline: one VM, alone, 5 turns with no llm wait.
-    log('baseline', 'N=1, 5 turns')
+    // Baseline: one VM, alone, turns with no llm wait.
+    log('baseline', `N=1, ${BASELINE_TURNS} turns`)
     await this.growTo(1)
     const baseVm = this.vms[0]
     if (!baseVm?.url) throw new Error('baseline VM did not come up')
     await primeWarmCache(baseVm.url)
     const baselineTurns: TurnTimings[] = []
-    for (let i = 0; i < 5; i++) baselineTurns.push(await runAgentTurn(baseVm.url, { skipLlmWait: true }))
-    const baseline = {} as Record<TurnStep, number>
-    for (const s of TURN_STEPS) baseline[s] = +percentile(baselineTurns.map((t) => Number((t as any)[`${s}Ms`]) || 0), 50).toFixed(1)
-    log('baseline', TURN_STEPS.map((s) => `${s} ${baseline[s]}ms`).join(' '))
+    for (let i = 0; i < BASELINE_TURNS; i++) {
+      const t = await runAgentTurn(baseVm.url, { skipLlmWait: true })
+      baselineTurns.push(t)
+      this.turns.push({ n: 1, role: 'agent', projectId: baseVm.projectId, t: { ...t } })
+    }
+    if (baselineTurns.filter((t) => t.ok).length === 0) throw new Error('all baseline turns failed; cannot derive the N=1 baseline')
+    const baseline = baselineFromTurns(baselineTurns)
+    log('baseline', TURN_STEPS.map((s) => `${s} ${baseline[s]}ms p95`).join(' '))
 
     const rows: StepRow[] = []
     const burstRows: BurstRow[] = []
@@ -620,21 +724,29 @@ export class DensitySoak {
       this.checkAbort()
       log('step', `growing to N=${n}`)
       await this.growTo(n)
-      // Prime the cache on every new agent VM before the hold, so `install`
-      // measures CPU and disk rather than the registry.
-      for (const vm of this.vms) {
-        if (vm.role === 'agent' && vm.assigned && vm.url && !(vm as any).primed) {
-          try {
-            await primeWarmCache(vm.url)
-            ;(vm as any).primed = true
-          } catch (err: any) {
-            log('prime', `${vm.projectId}: ${err?.message ?? err}`)
-          }
+      // Seed every working guest before the hold, so `install` measures CPU and
+      // disk rather than the registry and the app role has a template to serve.
+      const seeding = planSeeding(this.vms)
+      for (const vm of seeding.seed) {
+        try {
+          await seedTemplate(vm.url!)
+          vm.seeded = 'seed'
+        } catch (err: any) {
+          log('prime', `${vm.projectId}: ${err?.message ?? err}`)
+        }
+      }
+      for (const vm of seeding.prime) {
+        try {
+          await primeWarmCache(vm.url!)
+          vm.seeded = 'prime'
+        } catch (err: any) {
+          log('prime', `${vm.projectId}: ${err?.message ?? err}`)
         }
       }
       await this.startAppRoles()
 
       const from = Date.now()
+      const appMark = this.appLatencyMark()
       const deadline = from + this.opts.holdMs
       log('hold', `N=${n} for ${Math.round(this.opts.holdMs / 1000)}s`)
       const turnLoop = this.runTurnsFor('agent', n, deadline)
@@ -650,21 +762,35 @@ export class DensitySoak {
       this.stopAppRoles()
       const to = Date.now()
 
-      const metrics = this.stepMetrics(n, from, to, resume, api)
+      // Density is the number of VMs that actually came up, not the target. A
+      // ramp that loses boots to `FC API socket never appeared` leaves the step
+      // holding fewer guests than its N claims.
+      const assigned = this.vms.filter((v) => v.assigned).length
+      if (assigned === 0) {
+        log('step', `target N=${n} skipped: no VM was assigned`)
+        continue
+      }
+
+      const metrics = { ...this.stepMetrics(n, from, to, resume, api), n: assigned }
       const verdict = computeKnees([metrics], baseline, this.opts.bounds).verdicts[0]
       const win = this.windowSamples(from, to)
       const last = win[win.length - 1]
       rows.push({
         ...metrics,
-        cpuOversubRatio: this.hostInfo.threads > 0 ? +((n * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
-        ramCommittedMiB: n * memMiB,
-        ramPhysicalMiB: last?.fcRssMiB ?? 0,
+        cpuOversubRatio: this.hostInfo.threads > 0 ? +((assigned * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
+        ramCommittedMiB: assigned * memMiB,
+        ramPhysicalMiB: Math.max(0, (last?.fcRssMiB ?? 0) - this.rssBeforeMiB),
+        ramPhysicalBasis: 'soak-delta',
         turnP50: this.turnP50(n),
         runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
         apiP95Ms: +percentile(api, 95).toFixed(1),
+        ...this.appLatencyIn(appMark),
         verdict,
       })
-      log('step', `N=${n} cpu=${verdict.cpuPass ? 'pass' : 'FAIL'} ram=${verdict.ramPass ? 'pass' : 'FAIL'} memAvail=${metrics.memAvailablePct}%`)
+      log(
+        'step',
+        `target N=${n} measured N=${assigned} cpu=${verdict.cpuPass ? 'pass' : 'FAIL'} ram=${verdict.ramPass ? 'pass' : 'FAIL'} memAvail=${metrics.memAvailablePct}%`,
+      )
     }
 
     // Burst: at the highest passing N and at N=80 for comparison.
@@ -678,7 +804,14 @@ export class DensitySoak {
         const deadline = from + this.opts.burstWindowMs
         const started = Math.max(1, Math.round(n * this.opts.burstFraction))
         log('burst', `N=${n}: ${started} turns in ${Math.round(this.opts.burstWindowMs / 1000)}s`)
-        const targets2 = this.vms.filter((v) => v.assigned && v.url).slice(0, started)
+        // Agent VMs only. The burst is "many turns start at once", and the idle
+        // and app guests are never primed with the template — a turn on one fails
+        // at its first step (`cd: /app/workspace/... no such file`) and records
+        // nothing. 15 of 20 burst turns were empty on the 2026-11-23 run.
+        const targets2 = this.vms.filter((v) => v.role === 'agent' && v.assigned && v.url).slice(0, started)
+        if (targets2.length < started) {
+          log('burst', `N=${n}: only ${targets2.length} primed agent VM(s) available for ${started} burst turn(s)`)
+        }
         await Promise.all(
           targets2.map(async (vm) => {
             try {
@@ -701,26 +834,34 @@ export class DensitySoak {
           cpuPsiSomeAvg60: metrics.cpuPsiSomeAvg60,
           memAvailablePct: metrics.memAvailablePct,
           oomKills: metrics.oomKills,
+          swapInPagesPerSec: metrics.swapInPagesPerSec,
+          memPsiFullAvg60: metrics.memPsiFullAvg60,
+          // No probe suspend/resume happens in a burst window, so there is no
+          // resume sample to score — record null rather than let `percentile([])`
+          // print a 0 ms that looks like a passed SLO.
           resumeP95Ms: metrics.resumeP95Ms,
           pass: verdict.cpuPass && verdict.ramPass,
+          reasons: [...verdict.cpuReasons, ...verdict.ramReasons],
         })
       }
     }
 
-    return this.buildReport(rows, burstRows, computeKnees(rows, baseline, this.opts.bounds))
+    return this.buildReport(rows, burstRows, computeKnees(rows, baseline, this.opts.bounds), baseline)
   }
 
-  private buildReport(rows: StepRow[], burst: BurstRow[], knees: ReturnType<typeof computeKnees>): ReportInput {
+  private buildReport(rows: StepRow[], burst: BurstRow[], knees: ReturnType<typeof computeKnees>, baseline: Record<TurnStep, number>): ReportInput {
     const vcpus = this.opts.vcpus ?? Number(this.originalEnv?.METAL_VCPUS ?? 2)
     const memMiB = this.opts.memMiB ?? Number(this.originalEnv?.METAL_MEM_MIB ?? 1024)
     const last = this.samples[this.samples.length - 1]
-    const perVmRssMiB = rows.length > 0 && rows[rows.length - 1].n > 0 ? Math.round(rows[rows.length - 1].ramPhysicalMiB / rows[rows.length - 1].n) : 0
+    const rssPerVmMiB = perVmRssMiBFrom(rows)
     const env: RunEnv = {
       hostId: this.opts.host,
       hostModel: this.hostInfo.model,
       kernel: this.hostInfo.kernel,
       firecrackerVersion: this.hostInfo.fcVersion,
       gitSha: this.hostInfo.gitSha,
+      harnessRevision: this.opts.revision ?? 'unknown',
+      harnessSha256: harnessDigest(this.harnessDir),
       region: this.originalEnv?.METAL_REGION ?? '',
       controlPlaneUrl: this.originalEnv?.METAL_CONTROL_PLANE_URL ?? '',
       vcpus,
@@ -733,8 +874,6 @@ export class DensitySoak {
       finishedAt: new Date().toISOString(),
       abortReason: this.abortReason,
     }
-    const baseline = {} as Record<TurnStep, number>
-    for (const s of TURN_STEPS) baseline[s] = rows.length > 0 ? rows[0].turnP50[s] : 0
     return {
       env,
       baseline,
@@ -745,8 +884,8 @@ export class DensitySoak {
         maxVmsPerHost: knees.recommended,
         cpuKnee: knees.cpuKnee,
         ramKnee: knees.ramKnee,
-        bySize: ramCeilingsBySize({ hostMemMiB: this.hostInfo.memMiB, perVmRssMiB, reservePct: this.opts.bounds.memAvailablePct }),
-        perVmRssMiB,
+        bySize: rssPerVmMiB > 0 ? ramCeilingsBySize({ hostMemMiB: this.hostInfo.memMiB, perVmRssMiB: rssPerVmMiB, reservePct: this.opts.bounds.memAvailablePct }) : [],
+        perVmRssMiB: rssPerVmMiB,
       },
       mix: this.opts.mix,
       notes: [
@@ -767,10 +906,17 @@ export class DensitySoak {
 
     const ids = [...this.vms.map((v) => v.projectId), ...this.probeIds]
     log('teardown', `destroying ${ids.length} soak VM(s)`)
-    for (const pid of ids) {
-      await this.agent.suspend(pid).catch(() => {})
-      await this.agent.destroy(pid).catch(() => {})
+    // Destroy only, in parallel. Suspending first uploads a snapshot per guest
+    // (~90 s each, 160 guests = hours) and buys nothing: the VM is thrown away
+    // either way.
+    let next = 0
+    const worker = async () => {
+      while (next < ids.length) {
+        const pid = ids[next++]
+        await this.agent.destroy(pid).catch(() => {})
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(TEARDOWN_CONCURRENCY, ids.length) }, worker))
 
     // Verify nothing of ours is left.
     const vms = await this.agent.vms()
@@ -801,6 +947,13 @@ export class DensitySoak {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
+  if (opts.fromResults) {
+    const { report, path } = recomputeReport(opts.fromResults, opts.bounds)
+    console.log(`\n===== DENSITY SOAK (recomputed) =====`)
+    console.log(`CPU knee ${report.knees.cpuKnee} · RAM knee ${report.knees.ramKnee} · recommend METAL_MAX_VMS_PER_HOST=${report.recommendation.maxVmsPerHost}`)
+    console.log(`report: ${path}`)
+    return
+  }
   const soak = new DensitySoak(opts)
   let report: ReportInput | null = null
   let failed: unknown = null

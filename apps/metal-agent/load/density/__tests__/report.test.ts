@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeKnees, type StepMetrics, type TurnStep } from '../knee'
-import { renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type ReportInput, type StepRow } from '../report'
+import { burstCsv, perVmRssMiB, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type BurstRow, type ReportInput, type StepRow } from '../report'
 import type { HostSample } from '../host-sampler'
 
 const baseline: Record<TurnStep, number> = { cpu: 3000, install: 2000, build: 3000 }
@@ -29,9 +29,13 @@ function step(n: number, over: Partial<StepMetrics> = {}): StepRow {
     cpuOversubRatio: (n * 2) / 48,
     ramCommittedMiB: n * 2048,
     ramPhysicalMiB: n * 1024,
+    ramPhysicalBasis: 'soak-delta',
     turnP50: { cpu: 2900, install: 1900, build: 2900 },
     runDelayP95MsPerSec: 1.5,
     apiP95Ms: 12,
+    appP50Ms: 3.5,
+    appP95Ms: 11.2,
+    appSamples: 540,
     verdict,
   }
 }
@@ -45,6 +49,8 @@ function input(rows: StepRow[]): ReportInput {
       kernel: '6.1.102',
       firecrackerVersion: 'Firecracker v1.7.0',
       gitSha: 'abc1234',
+      harnessRevision: '1984620bd',
+      harnessSha256: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
       region: 'us',
       controlPlaneUrl: 'https://api-staging.shogo.ai',
       vcpus: 2,
@@ -160,8 +166,11 @@ describe('renderReportMarkdown', () => {
         cpuPsiSomeAvg60: 30,
         memAvailablePct: 40,
         oomKills: 0,
+        swapInPagesPerSec: 2.1,
+        memPsiFullAvg60: 1.09,
         resumeP95Ms: 900,
         pass: false,
+        reasons: ['memory PSI full avg60 1.09% (limit 1%)'],
       },
     ]
     const md = renderReportMarkdown(i)
@@ -174,13 +183,142 @@ describe('renderReportMarkdown', () => {
     expect(md).toContain('| 2048 MiB | 115 |')
     expect(md).toContain('| 4096 MiB | 57 |')
   })
+
+  test('a zero knee is a failed measurement, not a capacity of zero', () => {
+    // Soak #5 recommended `METAL_MAX_VMS_PER_HOST=0` for a host that carried
+    // 160 VMs; a knee of 0 means nothing measured passed, never "run nothing".
+    const i = input([step(40)])
+    i.recommendation = { ...i.recommendation, maxVmsPerHost: 0, cpuKnee: 0, ramKnee: 0 }
+    const md = renderReportMarkdown(i)
+    expect(md).not.toContain('METAL_MAX_VMS_PER_HOST=0')
+    expect(md).toContain('No recommendation')
+    expect(md).toContain('not a capacity of zero')
+  })
+
+  test('labels the baseline table with the statistic the bounds compare', () => {
+    expect(renderReportMarkdown(input([step(40)]))).toContain('| step | p95 ms |')
+  })
+
+  test('a host-wide RSS column is never presented as the soak\'s RAM', () => {
+    // Run #2 recorded every Firecracker process on the host, so 6473 MiB per
+    // soak VM appeared against 4096 MiB guests. The table must say what it is.
+    const rows = [{ ...step(40), ramPhysicalBasis: 'host-wide' as const, ramPhysicalMiB: 258941 }]
+    const i = input(rows)
+    i.recommendation = { ...i.recommendation, perVmRssMiB: 0, bySize: [] }
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('RAM physical (host FC, not soak)')
+    expect(md).not.toContain('RAM physical (soak)')
+    expect(md).toContain('Not measured in this run')
+  })
+
+  test('per-VM RSS comes from attributed steps only, at the densest one', () => {
+    const rows = [
+      { ...step(40), ramPhysicalBasis: 'host-wide' as const, ramPhysicalMiB: 258941 },
+      { ...step(80), ramPhysicalBasis: 'soak-delta' as const, ramPhysicalMiB: 80 * 2100 },
+      { ...step(100), ramPhysicalBasis: 'soak-delta' as const, ramPhysicalMiB: 100 * 2000 },
+    ]
+    expect(perVmRssMiB(rows)).toBe(2000)
+    expect(perVmRssMiB([rows[0]])).toBe(0)
+  })
+})
+
+describe('baseline is the measured N=1 p95, not a step row', () => {
+  // QA found the 2026-11-26 artifact's "Baseline (N=1)" table printing the N=80
+  // step's p50s (3045.1 / 424.9 / 2005.5) while the failure reasons divided by
+  // the real p95 baseline (3042.0 / 353.3 / 1899.2) recorded in turns.csv.
+  test('renders input.baseline even when a step row disagrees', () => {
+    const rows = [step(80)]
+    const i = input(rows)
+    i.baseline = { cpu: 3042.0, install: 353.3, build: 1899.2 }
+    rows[0].turnP50 = { cpu: 3045.1, install: 424.9, build: 2005.5 }
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| install | 353.3 |')
+    expect(md).toContain('| build | 1899.2 |')
+    expect(md).not.toContain('| install | 424.9 |')
+    expect(md).not.toContain('| build | 2005.5 |')
+  })
+})
+
+describe('what the report says a burst failed on', () => {
+  const burstRow = (over: Partial<BurstRow> = {}): BurstRow => ({
+    n: 80,
+    fraction: 0.16,
+    windowMs: 60_000,
+    turnsStarted: 13,
+    turnP95: { cpu: 3047.8, install: 246.8, build: 1156.3 },
+    cpuPsiSomeAvg60: 0.46,
+    memAvailablePct: 41.6,
+    oomKills: 0,
+    swapInPagesPerSec: 2.1,
+    memPsiFullAvg60: 1.09,
+    resumeP95Ms: null,
+    pass: false,
+    reasons: ['memory PSI full avg60 1.09% (limit 1%)'],
+    ...over,
+  })
+
+  test('shows the memory pressure and the reason, so the prose cannot be the only source', () => {
+    const i = input([step(80)])
+    i.burst = [burstRow()]
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| 1.1% |')
+    expect(md).toContain('Why each burst failed')
+    expect(md).toContain('memory PSI full avg60 1.09% (limit 1%)')
+  })
+
+  test('prints "not sampled" for a resume bound a burst never measured', () => {
+    const i = input([step(80)])
+    i.burst = [burstRow()]
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('| not sampled |')
+    expect(md).not.toMatch(/\| 0 ms \| (pass|FAIL) \|/)
+  })
+
+  test('carries the same fields into burst.csv', () => {
+    const csv = burstCsv([burstRow()])
+    const [head, row] = csv.trim().split('\n')
+    expect(head).toContain('mem_psi_full_avg60')
+    expect(head).toContain('swap_in_pages_per_s')
+    expect(head).toContain('reasons')
+    expect(row).toContain('memory PSI full avg60 1.09% (limit 1%)')
+  })
+})
+
+describe('app role is visible in the report', () => {
+  test('renders the app p95 column and "—" when nothing was measured', () => {
+    const measured = renderReportMarkdown(input([step(80)]))
+    expect(measured).toContain('app p95')
+    expect(measured).toContain('| 11.2 ms |')
+    const unmeasured = renderReportMarkdown(input([{ ...step(80), appP50Ms: null, appP95Ms: null, appSamples: 0 }]))
+    expect(unmeasured).toContain('| — |')
+  })
+
+  test('steps.csv carries the app columns', () => {
+    const [head, row] = stepsCsv([step(80)]).trim().split('\n')
+    expect(head).toContain('app_p95_ms')
+    expect(head).toContain('app_samples')
+    expect(row).toContain('11.2')
+  })
+})
+
+describe('provenance', () => {
+  test('the report names the harness, since the soak host has no git', () => {
+    const md = renderReportMarkdown(input([step(80)]))
+    expect(md).toContain('| harness | `1984620bd` · sha256 `deadbeefdeadbeef…` |')
+  })
+
+  test('says so plainly when the revision was never recorded', () => {
+    const i = input([step(80)])
+    i.env.harnessRevision = 'unknown'
+    expect(renderReportMarkdown(i)).toContain('revision not recorded')
+  })
 })
 
 describe('writeReport', () => {
   test('writes every file', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'density-report-')), 'density-test')
     const written = writeReport(dir, input([step(40)]), [], [])
-    expect(written.files.sort()).toEqual(['env.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
+    expect(written.files.sort()).toEqual(['burst.csv', 'env.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
     expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('Metal density soak')
     expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')).hostId).toBe('latitude-dal-1')
   })

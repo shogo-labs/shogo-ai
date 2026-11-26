@@ -48,7 +48,12 @@ export interface StepMetrics {
   /** p95 wall-clock ms per turn step at this N. */
   turnP95: Record<TurnStep, number>
   cpuPsiSomeAvg60: number
-  resumeP95Ms: number
+  /**
+   * Resume p95, or `null` when the window has no resume sample at all — a burst
+   * row never suspends and re-assigns, so it must not be scored against the 2 s
+   * SLO as if a 0 ms measurement had passed it.
+   */
+  resumeP95Ms: number | null
   oomKills: number
   swapInPagesPerSec: number
   memPsiFullAvg60: number
@@ -80,7 +85,7 @@ export function evaluateStep(step: StepMetrics, baseline: Record<TurnStep, numbe
   if (step.cpuPsiSomeAvg60 >= bounds.cpuPsiSomeAvg60) {
     cpuReasons.push(`cpu PSI some avg60 ${round(step.cpuPsiSomeAvg60)}% (limit ${bounds.cpuPsiSomeAvg60}%)`)
   }
-  if (step.resumeP95Ms >= bounds.resumeP95Ms) {
+  if (step.resumeP95Ms != null && step.resumeP95Ms >= bounds.resumeP95Ms) {
     cpuReasons.push(`resume p95 ${round(step.resumeP95Ms, 0)}ms (limit ${bounds.resumeP95Ms}ms)`)
   }
 
@@ -109,24 +114,27 @@ export interface Knees {
 }
 
 /**
- * The knee is the highest N reached by an unbroken run of passing steps from
- * the smallest N. A step that fails and then "recovers" at a higher N is noise
- * (a GC pause, a neighbour's burst), not headroom — the host already degraded
- * at the lower N, so the knee stays there.
+ * The knee is the highest N observed to meet the bounds.
+ *
+ * Deliberately *not* "the last unbroken pass from the smallest N". On the real
+ * host the first step missed a turn-latency bound that the same bounds then
+ * passed at 60 and 80 VMs — the first step's guests are cold (fresh image, cold
+ * page cache) and its turn p95 mixes them with warm ones, so a low step can miss
+ * a bound for a reason that has nothing to do with density. Under the prefix
+ * rule that one sample became a knee of 0, twice, and the report recommended
+ * running zero VMs on a host that was carrying 160.
+ *
+ * Each step is a held multi-minute measurement, so a higher step that passes is
+ * evidence the host met the bounds at that density. A lower step's miss is
+ * reported next to it (report.md lists every failing step and says when one sits
+ * below the knee) rather than extrapolated over it.
  */
 export function computeKnees(steps: StepMetrics[], baseline: Record<TurnStep, number>, bounds: Bounds = DEFAULT_BOUNDS): Knees {
   const ordered = [...steps].sort((a, b) => a.n - b.n)
   const verdicts = ordered.map((s) => evaluateStep(s, baseline, bounds))
-  let cpuKnee = 0
-  let ramKnee = 0
-  let cpuOpen = true
-  let ramOpen = true
-  for (const v of verdicts) {
-    if (cpuOpen && v.cpuPass) cpuKnee = v.n
-    else cpuOpen = false
-    if (ramOpen && v.ramPass) ramKnee = v.n
-    else ramOpen = false
-  }
+  const highest = (pass: (v: StepVerdict) => boolean) => verdicts.filter(pass).reduce((max, v) => Math.max(max, v.n), 0)
+  const cpuKnee = highest((v) => v.cpuPass)
+  const ramKnee = highest((v) => v.ramPass)
   return { cpuKnee, ramKnee, recommended: Math.min(cpuKnee, ramKnee), verdicts }
 }
 
@@ -151,5 +159,11 @@ export function ramCeilingsBySize(input: {
   sizesMiB?: number[]
 }): { sizeMiB: number; maxVms: number }[] {
   const sizes = input.sizesMiB ?? [2048, 4096]
-  return sizes.map((sizeMiB) => ({ sizeMiB, maxVms: ramCeilingForSize({ ...input, perVmRssMiB: input.perVmRssMiB }) }))
+  // Budget the *configured* size: a guest sized 4096 MiB may touch all of it, so
+  // a host cannot be told it fits 218 of them because they happened to stay idle
+  // during the soak. Measured RSS is only a floor.
+  return sizes.map((sizeMiB) => ({
+    sizeMiB,
+    maxVms: ramCeilingForSize({ ...input, perVmRssMiB: Math.max(sizeMiB, input.perVmRssMiB) }),
+  }))
 }
