@@ -135,6 +135,7 @@ Flags (all optional):
 | `--burst-window` | `60s` | window to start the burst turns in |
 | `--burst-fraction` | `0.25` | share of N started at once |
 | `--mem-mib` / `--vcpus` | host's `METAL_MEM_MIB` / `METAL_VCPUS` | VM sizing |
+| `--revision` | `$DENSITY_SOAK_REVISION` | commit being run, recorded in `env.json`; the harness digest is computed either way |
 | `--assume-cordoned` | off | you cordoned by hand |
 | `--no-restart-agent` | off | do not restart the agent for the env swap |
 | `--no-probe-resume` | off | skip the resume-latency probes |
@@ -159,8 +160,25 @@ baseline + teardown.
 1.5× the N=1 baseline, CPU PSI `some avg60` stayed under 25%, and resume p95 held
 the 2 s SLO. The RAM knee is the highest N with zero OOM kills, no sustained
 swap-in (≥ 100 pages/s), memory PSI `full avg60` under 1%, and `MemAvailable`
-above 10%. Both are the last **unbroken** pass from the smallest N: a step that
-fails and then "recovers" at a higher N is noise, not headroom.
+above 10%.
+
+The knee is the **highest N that passed**, not the last unbroken pass from the
+smallest N. The first step of a ladder is cold — fresh image, cold page cache,
+turn p95 mixing warm-up with steady state — and on the real host it missed a turn
+bound that the same bounds then passed at 60 and 80 VMs. Under a
+first-failure-closes-the-gate rule that one sample reported a knee of 0. Each step
+is a held 10-minute measurement, so a higher pass is evidence; a lower miss is
+listed in the report under **Below the knee** rather than extrapolated over it.
+
+The baseline those ratios divide by is the **p95** of 20 lone-VM turns — the same
+statistic the steps are compared on. It has to be: with a p50 baseline a host
+with no contention fails on its own tail (see defect 5 below). The baseline turns
+are written to `turns.csv` as `n=1` rows, so the denominator is auditable.
+
+**Nominal N is not assigned N.** The ramp runs one VM at a time and the hold
+starts when the step does, so a step reaches ~80–93% of its nominal N (N=160
+assigned 132 over a 10 min hold). Read the `assigned` count in the log and the
+RAM-committed column, and treat the recommendation as a nominal cap.
 
 **The recommendation** is `min(CPU knee, RAM knee)`, with the burst result shown
 next to it. The report also gives the RAM ceiling at 2 GiB and 4 GiB VMs from the
@@ -168,7 +186,7 @@ measured per-VM RSS, because RAM is per-VM and the idle tail dominates.
 
 ## What the first live run changed (2026-11-23, `latitude-dal-1`)
 
-Running this on the real host found four defects that neither the unit tests nor
+Running this on the real host found eight defects that neither the unit tests nor
 the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
 
 1. **A guest is not reachable at its `/assign` URL from the host itself.**
@@ -191,6 +209,41 @@ the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
    allow-list, and a bare shell does not inherit the host's
    `NODE_TLS_REJECT_UNAUTHORIZED=0`. `run-density-soak.sh` now sources
    `/etc/metal-agent.env` before it runs the runner.
+5. **The baseline was measured as p50 and compared as p95.** The first run that
+   completed every step (`density-2026-11-23T0707`) reported `CPU knee 0 · RAM
+   knee 100 · recommend METAL_MAX_VMS_PER_HOST=0` for a host that had just
+   carried 160 VMs. It failed N=40 with `install p95 2.68x baseline` at **CPU PSI
+   0.3%** — the step's tail against the baseline's median of the same
+   distribution. `computeKnees` closes a gate at the first failure, so that one
+   noise sample became a CPU knee of 0 and a recommendation to run nothing.
+   `baselineFromTurns()` now uses p95, and a knee of 0 renders as "no
+   recommendation / failed measurement" instead of a capacity of zero.
+6. **The per-size RAM table priced every size at the measured RSS.** It printed
+   `218` for both 2048 MiB and 4096 MiB guests because the observed RSS (2124
+   MiB) replaced the configured size in the calculation. Each row now budgets
+   `max(configured size, measured RSS)`.
+7. **"RAM physical" was every Firecracker process on the host**, tenants
+   included, so the per-VM RSS and the whole RAM-ceiling table were derived from
+   other projects' memory: a step with 160 GiB committed by the soak reported
+   258 GiB "physical". The column is now the delta over the FC RSS measured
+   before the soak's first VM.
+8. **The burst ran on unprimed guests.** It took the first N VMs regardless of
+   role, and 83% of the mix is idle — a guest that was never primed has no
+   template, so its turn died at the first step (`cd: /app/workspace/... no such
+   file`) and recorded nothing. 15 of 20 burst turns on 2026-11-23 were empty;
+   the burst now targets primed agent VMs only.
+9. **The app role was never seeded either.** Only `role === 'agent'` guests got
+   the template, so `startAppRoles` started `app-server.ts` in a directory that
+   did not exist (`exit 7`, `cd: /app/workspace/density/tpl: No such file or
+   directory`). `planSeeding` now decides per guest: agent guests get the full
+   prime (template + warm cache + git), app guests get the template files alone,
+   idle guests stay cold. Note what this did and did not fix: `report.ts` had **no
+   app column at all**, so "the app response times were missing from the report"
+   was true for a second, independent reason — nothing could display them even if
+   they had been measured. The report now carries `app p50`/`app p95` per step
+   (`—` when the window recorded nothing), which is what makes the seeding fix
+   observable; the app guest in the 2026-11-26 run was measured under the old
+   harness, so that artifact's app column is empty and says so.
 
 Two operational notes from that attempt:
 
@@ -229,20 +282,180 @@ measure density rather than its tenants.
 
 ## Recommendation from the completed run
 
-> **Not yet filled in.** The harness, its unit tests and this runbook are
-> complete, but the live run needs SSH to the staging host (and a super-admin
-> token for the cordon), which the developer sandbox does not have. The run is
-> the one remaining step; see the card thread for exactly what is needed. Do not
-> guess a number here — the whole point of the card is that the current 80/120
-> are guesses.
+**Hold prod at `METAL_MAX_VMS_PER_HOST=80`; do not raise it to 120.** Two runs
+completed on `latitude-dal-1`: `density-2026-11-23T0707` (67 tenant projects
+resident) and `density-2026-11-23T1106` (120 resident). The binding constraints
+are memory pressure and restore latency, and they land at 80–100 VMs.
 
-When the run lands, replace this section with:
+From `density-2026-11-23T1106/report.md` (2 vCPU / 4096 MiB guests, EPYC 7443P,
+24 threads, 503 GiB):
 
-- the recommended `METAL_MAX_VMS_PER_HOST` and which knee set it,
-- whether `METAL_MEM_MIB` should change,
-- the burst result at the recommended N,
-- RAM-overcommit settings worth a follow-up (swappiness, balloon reclaim of idle
-  guests / free-page reporting, KSM).
+| signal | limit | 40 | 60 | 80 | 100 | 120 | 160 |
+|---|---|---|---|---|---|---|---|
+| CPU PSI `some avg60` | 25% | 0.3 | 0.3 | 0.3 | 0.3 | 1.1 | 3.3 |
+| `MemAvailable` | ≥ 10% | 44.0 | 34.3 | 25.2 | 26.3 | 34.9 | 14.2 |
+| swap-in pages/s | < 100 | 2.1 | 5.8 | 8.3 | 33.7 | 39.9 | **136.2** |
+| memory PSI `full avg60` | < 1% | 0.0 | 0.0 | 0.0 | **1.38** | **1.76** | **4.92** |
+| resume p95 | < 2000 ms | 651 | 918 | 1239 | 604 | 634 | **3954** |
+| OOM kills | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| turn p95 `install` vs baseline | ≤ 1.5× | **2.78×** | **2.79×** | **1.93×** | **2.95×** | **1.72×** | **3.73×** |
+
+**RAM knee = 80.** memory PSI `full avg60` is 0.0% through 80 and crosses the 1%
+limit at 100; swap-in climbs from 8 to 34 pages/s between 80 and 100 and reaches
+136 at 160; `MemAvailable` falls to 14.2% at 160. There were no OOM kills at any
+step, so the RAM knee arrives as pressure, not as a crash.
+
+**The CPU knee is 0, and that is a statement about the bound, not the host.** No
+step met the 1.5× turn-p95 bound — including N=40, at 3.33:1 vCPU
+oversubscription with CPU PSI **0.3%** and 44% of RAM free. `install` p95 goes
+2.78× → 2.79× → 1.93× → 2.95× → 1.72× → 3.73× as density rises monotonically:
+latency *improves* from 60 to 80 and from 100 to 120. A fleet-wide p95 over N
+guests is not the same statistic as the p95 of one warm guest — more guests means
+more unlucky samples, and each step's p95 is set by a handful of pathological
+turns. So `min(CPU knee, RAM knee)` is 0 and the report says **no
+recommendation**, which is honest but not actionable on its own; the number above
+comes from the RAM knee and the restore SLO.
+
+**No bound was changed to make this pass.** Moving a limit because a run
+disagrees with it is how this number becomes fiction. The open follow-up, for the
+planner to decide:
+
+- compare fleet **p50** against baseline p50 (both "the typical turn"), keeping
+  the absolute p95 as its own SLO, or
+- re-measure the baseline VM **during** each step so both sides of the ratio see
+  the same interference, or
+- set the ratio limit from the bound's own measured noise floor instead of 1.5×.
+
+**CPU is not what runs out first.** At 160 VMs (13.3:1) CPU PSI is 3.3% against a
+25% limit and API p95 stays at 6–10 ms through 120. What fails is memory
+pressure, and then restore latency.
+
+**The burst at 80 is measured: 13 simultaneous turns, and turn latency does not
+degrade.** Run 1106's burst turns were driven at idle guests that had never run a
+turn, so 15 of its 20 failed to start at all; the two figures this section used to
+carry (`install` 2360 ms, `build` 3613 ms) were the max of the 5 that did run, and
+are no longer reported as a burst result. The re-run on the fixed harness
+(`density-2026-11-26T0054`, `--steps 80 --burst`) primed the guests first and
+fired **13 turns — every agent guest at the prod mix — at once inside a 60 s
+window, and all 13 completed**:
+
+| burst @ N=80 | p95 | vs baseline |
+|---|---|---|
+| cpu | 3047.8 ms | 1.00× |
+| install | 246.8 ms | **0.70×** |
+| build | 1156.3 ms | **0.61×** |
+| CPU PSI `some avg60` | 0.46% | limit 25% |
+| MemAvailable | 41.6% | floor 10% |
+| OOM kills | 0 | — |
+
+The ratios divide by the **measured N=1 p95 baseline** (3042.0 / 353.3 / 1899.2 ms,
+from the run's own `turns.csv`), which is the same denominator the failing N=80 step
+is reported against. The artifact's baseline table printed a step's p50
+(3045.1 / 424.9 / 2005.5) before this branch fixed it, which put a different number
+in the ratio column than the failure reasons used.
+
+Two things to read carefully. **A 25%-of-N burst (20 concurrent) is not expressible
+at the prod mix**: 16% of 80 is 13 agent guests, so 13 is the most turns the mix can
+start at once, and the run says so (`turns_started: 13` in `burst.csv`).
+
+**The row still prints `pass = FAIL`, and it is a RAM gate, not latency.** `pass` is
+`cpuPass && ramPass`, and every turn-latency bound passed. What failed is
+`mem PSI full avg60`, and where that number comes from is the part to be precise
+about: harness `61403ca40` — the tree that ran — scored the burst window on its
+**last sample** and did not record the value in the row at all, so the artifact has
+to say what it read. The window's last sample was **1.02%**, just over the 1% limit;
+the window's **worst** sample, from the committed `samples.csv`, is **2.53%**, and
+both are the decaying tail of the hold that ran immediately before it (6.59% during
+the N=80 hold). A 60 s `full avg60` cannot separate burst pressure from the hold
+that preceded it. That is why this branch makes the window record its worst sample,
+carries `mem PSI full` and swap-in in the burst row, and prints `not sampled` — not
+`0 ms` — for the resume bound a burst never exercises.
+
+A burst that starts more turns than there are agent guests needs a higher agent share
+in `--mix`; that is worth a follow-up if the 25% case matters.
+
+The single-step ladder this run used also prints **CPU knee 0 · RAM knee 0 ·
+recommend none**, and that is a property of the print, not a new capacity result:
+one step that misses any bound leaves no passing step, so `computeKnees` has
+nothing to recommend. The steady-state number in this section still comes from the
+full 40→160 ladder.
+
+**`METAL_MEM_MIB` should not change** on this host: the RAM knee arrives as
+pressure at 4 GiB guests (memory PSI crossing 1% between 80 and 100), with
+`MemAvailable` still at 14.2% of 503 GiB when the ladder ended at 160 — so host
+RAM is not what runs out, the tail is. A per-size ceiling cannot be quoted until
+a run measures RSS per soak VM (see below); the ceilings are not what set the
+number above.
+
+**Measured host RSS is attributable only to the soak.** Run 1106 recorded every
+Firecracker process on the host in its RAM column, so its 258 941 MiB over 40 soak
+VMs was 6473 MiB per VM against 4096 MiB guests — it counted the 120 resident
+tenants too, and the 111-VM-per-size table that came from it was that number
+divided by a configured size. `steps.csv` now carries `ram_physical_basis`, the
+report labels an unattributed column as host-wide instead of soak RAM, and per-VM
+RSS and the per-size ceiling are derived only from `soak-delta` steps. Run 1106
+predates the column, so its artifact says "not measured" rather than repeating the
+old figure.
+
+Follow-ups worth their own cards: swap pressure above 100 VMs (swappiness, balloon
+reclaim of idle guests, free-page reporting, KSM), and the turn-latency bound
+above.
+
+The run itself — report and per-step table, as recorded and then re-derived by
+the rules in this branch — is committed at
+[`runs/metal-density-latitude-dal-1-2026-11-23T1106.md`](./runs/metal-density-latitude-dal-1-2026-11-23T1106.md)
+(and `.steps.csv`). `apps/metal-agent/load/results/` is gitignored, so the raw
+`samples.csv` / `turns.csv` were kept on the host at
+`/root/metal-agent/load/results/density-2026-11-23T1106/`; staging self-updated
+its runtime image at 12:58Z and the staging harness staging step re-creates
+`/root/metal-agent`, so the host copy is gone. A working copy of the four CSVs is
+in the project's `.tmp-results/` on the machine that ran the soak, and the
+committed `.steps.csv` is the part the numbers above come from.
+
+The burst re-run is committed the same way, at
+[`runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md`](./runs/metal-density-burst-latitude-dal-1-2026-11-26T0054.md)
+(criteria 5's burst), with `.burst.csv`, `.steps.csv`, `.env.json`, `.samples.csv`
+and `.turns.csv` beside it. That run took 00:54–01:15Z on a host carrying **36
+metered VMs (449 GiB of 503 free)**: the serialized ramp (`--ramp-concurrency 1`,
+because the host still runs the pre-SHO-545 boot path) reached N=80 with **0 failed
+assigns**, held 5 min, and tore down 83 soak VMs to 0 with the env restored. Its
+`turns.csv` has 46 rows — 33 steady agent turns and 13 burst turns — and **all 46
+succeeded**.
+
+**Which harness measured it.** `env.json` recorded `gitSha: "unknown"`, because the
+soak host runs `/root/metal-agent`, a deployed copy with no `.git`. The tree that ran
+is **`61403ca40`**: all four files it executes (`density-soak.ts`,
+`density/guest-workload.ts`, `density/report.ts`, `density/knee.ts`) are byte-identical
+to that commit's versions, and the whole harness hashes to
+`fac63fdc366bacc4bc3ca63d1a8099147a1a2fd4dd7703c00d303c86c4f9e1d3`. Those two facts are
+now recorded in `env.json` (`harnessRevision`, `harnessSha256`) and printed in the
+report, so a future run cannot be published without saying what produced it. Note the
+run therefore predates every fix in this branch that touches the harness: the
+`planSeeding` app fix, the window-worst sampling, the app columns and the burst row's
+PSI columns are **not** in this artifact — it was re-derived from its own CSVs with
+the current rules, which is why its app column is `—` and its burst row says the
+PSI number was not recorded.
+
+**The 2026-11-23T13:15Z burst blocker — resolved (SHO-549, and the burst is
+measured above).** Staging release `718a651`
+rebuilt the golden rootfs from
+`shogo-runtime:staging-multiarch-718a651fc7b4352876b4b13510138c63377746b9` and
+activated it at 12:58Z. That image has no `/usr/local/bin/fc-init`, which is what
+`METAL_GUEST_INIT` points at, so every cold boot now dies before userspace:
+
+```
+[    0.438396] Kernel panic - not syncing: Requested init /usr/local/bin/fc-init failed (error -2).
+```
+
+Mounting the image confirms it: `/opt/fc-spike/img/runtime.ext4` has no
+`fc-init`, while `img/docker-runtime.ext4` does. Warm boots from the pre-update
+snapshots keep working, which is why existing workspace traffic survives; new
+assigns fail host-wide (`VM … exited before healthy` / `FC API socket never
+appeared` in the metal-agent journal). The soak's baseline VM was one of them, so
+the run stops before its first step and restores the host. Nothing in the harness
+can work around a missing guest init, and the run must not be retried against a
+different image than the one measured — those numbers would not be comparable to
+the ladder above.
 
 ## Related
 

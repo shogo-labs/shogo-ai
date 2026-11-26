@@ -14,10 +14,10 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
-import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl } from '../density-soak'
+import { dirname, join } from 'path'
+import { DensitySoak, parseArgs, parseDuration, parseEnvFile, planSeeding, renderEnvFile, resolveGuestUrl } from '../density-soak'
 
 interface FakeState {
   assigned: { projectId: string }[]
@@ -73,7 +73,7 @@ METAL_REGISTER_TOKEN=tok
 METAL_VCPUS=2
 METAL_MEM_MIB=2048
 METAL_MAX_VMS_PER_HOST=80
-METAL_IDLE_SUSPEND_MS=0
+METAL_IDLE_SUSPEND_MS=1800000
 `
 }
 
@@ -124,7 +124,7 @@ describe('parseEnvFile / renderEnvFile', () => {
     expect(env.METAL_HOST_ID).toBe('soak-test-host')
     expect(env.METAL_MAX_VMS_PER_HOST).toBe('80')
     expect(renderEnvFile(env)).toBe(
-      'METAL_HOST_ID=soak-test-host\nMETAL_REGION=us\nMETAL_CONTROL_PLANE_URL=https://api-staging.shogo.ai\nMETAL_REGISTER_TOKEN=tok\nMETAL_VCPUS=2\nMETAL_MEM_MIB=2048\nMETAL_MAX_VMS_PER_HOST=80\nMETAL_IDLE_SUSPEND_MS=0\n',
+      'METAL_HOST_ID=soak-test-host\nMETAL_REGION=us\nMETAL_CONTROL_PLANE_URL=https://api-staging.shogo.ai\nMETAL_REGISTER_TOKEN=tok\nMETAL_VCPUS=2\nMETAL_MEM_MIB=2048\nMETAL_MAX_VMS_PER_HOST=80\nMETAL_IDLE_SUSPEND_MS=1800000\n',
     )
   })
 
@@ -174,6 +174,28 @@ describe('preflight', () => {
     await soak.preflight()
     expect(readFileSync(envFile, 'utf8')).toBe(envText)
   })
+
+  test('refuses an env that an interrupted run left soaked', async () => {
+    // The failure mode this guards: a run dies without its trap, leaving
+    // IDLE_SUSPEND_MS=0 and MAX=200. The next run then captures *those* as its
+    // original env and restores them at the end.
+    const state: FakeState = { assigned: [], suspended: [], destroyed: [], suspendedCalls: [], touched: [], fleetHosts: [{ hostId: 'soak-test-host', live: true }] }
+    const { envFile, base } = setup(state)
+    writeFileSync(envFile, originalEnv('https://api-staging.shogo.ai').replace('METAL_IDLE_SUSPEND_MS=1800000', 'METAL_IDLE_SUSPEND_MS=0'))
+    const soak = new DensitySoak(opts(envFile, base))
+    await expect(soak.preflight()).rejects.toThrow(/left the host soaked/)
+  })
+
+  test('saves the pre-run env under a run-scoped name', async () => {
+    const state: FakeState = { assigned: [], suspended: [], destroyed: [], suspendedCalls: [], touched: [], fleetHosts: [{ hostId: 'soak-test-host', live: true }] }
+    const { envFile, base, envText } = setup(state)
+    const soak = new DensitySoak(opts(envFile, base))
+    await soak.preflight()
+    const backups = readdirSync(dirname(envFile)).filter((f) => f.includes('.pre-soak-') && f.endsWith('.bak'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(envFile), backups[0]), 'utf8')).toBe(envText)
+    await soak.teardown()
+  })
 })
 
 describe('teardown', () => {
@@ -198,6 +220,8 @@ describe('teardown', () => {
 
     // Every soak VM was destroyed and none is left.
     for (const id of soakIds) expect(state.destroyed).toContain(id)
+    // Destroy only: suspending first uploads a snapshot per guest (~90 s each).
+    expect(state.suspendedCalls).toHaveLength(0)
     expect(state.assigned.filter((v) => v.projectId.startsWith('soak-'))).toHaveLength(0)
     expect(state.suspended.filter((v) => v.projectId.startsWith('soak-'))).toHaveLength(0)
 
@@ -256,6 +280,42 @@ describe('parseArgs', () => {
     expect(o.mix).toEqual({ agent: 0.16, app: 0.01, idle: 0.83 })
     expect(o.allowHosts).toEqual(['latitude-dal-1'])
     expect(o.allowControlPlanes).toContain('api-staging.shogo.ai')
+  })
+})
+
+describe('planSeeding', () => {
+  // The 2026-11-26 run started the app role against a guest that had never been
+  // seeded — `cd /app/workspace/density/tpl: No such file or directory` — so the
+  // app column of every report was empty. Only agent VMs were ever primed.
+  const vm = (role: 'agent' | 'app' | 'idle', assigned = true, url = 'http://10.0.0.1:8080') => ({
+    projectId: `soak-x-${role}-0001`,
+    role,
+    url,
+    assigned,
+  })
+
+  test('seeds the app role, not just the agent role', () => {
+    const plan = planSeeding([vm('agent'), vm('app'), vm('idle')])
+    expect(plan.prime.map((v) => v.role)).toEqual(['agent'])
+    expect(plan.seed.map((v) => v.role)).toEqual(['app'])
+  })
+
+  test('leaves idle guests cold', () => {
+    const plan = planSeeding([vm('idle'), vm('idle')])
+    expect(plan).toEqual({ seed: [], prime: [] })
+  })
+
+  test('skips a guest that never came up', () => {
+    const plan = planSeeding([vm('app', false), { ...vm('agent'), url: undefined }])
+    expect(plan).toEqual({ seed: [], prime: [] })
+  })
+
+  test('does not redo work already done for a guest', () => {
+    const plan = planSeeding([
+      { ...vm('agent'), seeded: 'prime' as const },
+      { ...vm('app'), seeded: 'seed' as const },
+    ])
+    expect(plan).toEqual({ seed: [], prime: [] })
   })
 })
 

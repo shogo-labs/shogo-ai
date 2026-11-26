@@ -125,6 +125,22 @@ const TEMPLATE_FILES: Record<string, string> = {
 
 
 /**
+ * Write the template files (including `app-server.ts`) into the guest.
+ *
+ * The app role needs only this: `startAppLoad` runs `app-server.ts` with `bun`,
+ * which resolves the file without a `node_modules`.
+ */
+export async function seedTemplate(url: string, dir = DEFAULT_TEMPLATE_DIR): Promise<void> {
+  const mk = await guestExec(url, `mkdir -p ${dir}/src`, 30_000)
+  if (mk.code !== 0) throw new Error(`creating ${dir} failed (exit ${mk.code}): ${mk.out.slice(-800)}`)
+  for (const [rel, body] of Object.entries(TEMPLATE_FILES)) {
+    const b64 = Buffer.from(body, 'utf8').toString('base64')
+    const one = await guestExec(url, `printf %s '${b64}' | base64 -d > ${dir}/${rel}`, 30_000)
+    if (one.code !== 0) throw new Error(`seeding ${dir}/${rel} failed (exit ${one.code}): ${one.out.slice(-800)}`)
+  }
+}
+
+/**
  * Seed the template and prime the package cache once per VM, so the `install`
  * step measures CPU and disk rather than the npm registry.
  */
@@ -137,13 +153,7 @@ export async function primeWarmCache(url: string, dir = DEFAULT_TEMPLATE_DIR, ti
   // the shell never sees a bare marker — it waits for the rest of the heredoc
   // until the command times out. (Two live runs died exactly there.) base64 is
   // also immune to the tty's 4 KiB canonical line limit.
-  const mk = await guestExec(url, `mkdir -p ${dir}/src`, 30_000)
-  if (mk.code !== 0) throw new Error(`creating ${dir} failed (exit ${mk.code}): ${mk.out.slice(-800)}`)
-  for (const [rel, body] of Object.entries(TEMPLATE_FILES)) {
-    const b64 = Buffer.from(body, 'utf8').toString('base64')
-    const one = await guestExec(url, `printf %s '${b64}' | base64 -d > ${dir}/${rel}`, 30_000)
-    if (one.code !== 0) throw new Error(`seeding ${dir}/${rel} failed (exit ${one.code}): ${one.out.slice(-800)}`)
-  }
+  await seedTemplate(url, dir)
   const install = await guestExec(url, `cd ${dir} && bun install --frozen-lockfile 2>/dev/null || bun install`, timeoutMs)
   if (install.code !== 0) throw new Error(`priming bun cache failed (exit ${install.code}): ${install.out.slice(-800)}`)
   const git = await guestExec(

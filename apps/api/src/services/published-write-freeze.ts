@@ -22,6 +22,13 @@
  *   3. Wait until the archive's `LastModified` is at or after the freeze began
  *      (`isArchiveFresh`), so the seed cannot read the copy from before the flush.
  *
+ * A pod published before the flush endpoint existed answers 404. That is not a
+ * failed freeze: it still rewrites the same archive every
+ * `PUBLISHED_DATA_SYNC_INTERVAL` (30 s), and the archive carries `dev.db-wal`, so
+ * once writes are stopped a periodic upload is complete by construction. Step 2
+ * then means "wait one interval for that upload" — and step 3 still proves it, so
+ * an old pod that never uploads fails the move instead of seeding a stale copy.
+ *
  * The caller must `end()` in a `finally`: lifting maintenance is what puts the
  * site back, and a failure that left it on would turn a refused publish into a
  * site-wide outage. `end()` is a no-op when `begin()` never ran.
@@ -40,6 +47,14 @@ import {
 export const FLUSH_TIMEOUT_MS = 60_000
 const FLUSH_POLL_MS = 1_000
 
+/**
+ * `PUBLISHED_DATA_SYNC_INTERVAL`: how often a published pod rewrites its archive
+ * when it cannot be asked to flush on demand. A pod older than the flush endpoint
+ * uploads on this timer, so the wait for it is one interval on top of the flush
+ * budget — a slow snapshot of a large database still gets room.
+ */
+export const PERIODIC_ARCHIVE_INTERVAL_MS = 30_000
+
 export interface FlushResult {
   ok: boolean
   /** The pod uploaded (its content had changed since the last upload). */
@@ -48,7 +63,40 @@ export interface FlushResult {
   unchanged: boolean
   /** False when nothing is serving — no pod, so no pending writes. */
   warm: boolean
+  /**
+   * The pod predates `/agent/published-data/flush` (HTTP 404/405). Its periodic
+   * upload is the only flush it has, so the freeze waits for that instead of
+   * refusing a move that can be done safely.
+   */
+  unsupported?: boolean
   detail?: string
+}
+
+/**
+ * How a flush response maps to a freeze decision.
+ *
+ * 404/405 is the one status that is not a failure: it means the serving pod was
+ * built before the endpoint existed. It still uploads to the same archive on its
+ * own timer, so the freeze waits for that instead — and the archive's freshness
+ * still has to be proven before anything seeds from it.
+ */
+export function flushResultFromResponse(
+  status: number,
+  body: { ok?: boolean; flushed?: boolean; unchanged?: boolean; error?: string; message?: string } = {},
+): FlushResult {
+  if (status === 404 || status === 405) {
+    return { ok: true, flushed: false, unchanged: false, warm: true, unsupported: true }
+  }
+  if (status < 200 || status >= 300) {
+    return {
+      ok: false,
+      flushed: false,
+      unchanged: false,
+      warm: true,
+      detail: body.message ?? body.error ?? `HTTP ${status}`,
+    }
+  }
+  return { ok: true, flushed: body.flushed === true, unchanged: body.unchanged === true, warm: true }
 }
 
 export interface WriteFreezeDeps {
@@ -118,7 +166,22 @@ export function createWriteFreeze(
         return { ok: true as const }
       }
 
-      const deadline = startedAt + FLUSH_TIMEOUT_MS
+      // A pod built before the flush endpoint can only upload on its own timer,
+      // so allow one interval on top of the flush budget. The freshness check
+      // below is what keeps this safe: the move still refuses to seed an archive
+      // written before writes stopped, so an old pod that never uploads fails.
+      const waitBudgetMs = flush.unsupported
+        ? FLUSH_TIMEOUT_MS + PERIODIC_ARCHIVE_INTERVAL_MS
+        : FLUSH_TIMEOUT_MS
+      if (flush.unsupported) {
+        deps.log(
+          `[Publish] The serving pod predates the flush endpoint, so it uploads on its own ` +
+            `${Math.round(PERIODIC_ARCHIVE_INTERVAL_MS / 1000)}s timer; waiting up to ` +
+            `${Math.round(waitBudgetMs / 1000)}s for that archive`,
+        )
+      }
+
+      const deadline = startedAt + waitBudgetMs
       while (true) {
         const archive = await deps.headArchive().catch(() => null)
         const fresh =
@@ -142,10 +205,13 @@ export function createWriteFreeze(
           return {
             ok: false as const,
             code: 'write_freeze_failed',
-            message:
-              `The live app flushed its database but the archive did not update within ` +
-              `${Math.round(FLUSH_TIMEOUT_MS / 1000)}s, so the last writes cannot be proven copied. ` +
-              `It is still serving on SQLite with its data.`,
+            message: flush.unsupported
+              ? `The live app predates the flush endpoint and its own periodic archive did not ` +
+                `update within ${Math.round(waitBudgetMs / 1000)}s, so the last writes cannot be proven copied. ` +
+                `It is still serving on SQLite with its data.`
+              : `The live app flushed its database but the archive did not update within ` +
+                `${Math.round(waitBudgetMs / 1000)}s, so the last writes cannot be proven copied. ` +
+                `It is still serving on SQLite with its data.`,
           }
         }
         await deps.sleep(FLUSH_POLL_MS)
@@ -217,21 +283,9 @@ export function defaultWriteFreezeDeps(input: {
           error?: string
           message?: string
         }
-        if (!res.ok) {
-          return {
-            ok: false,
-            flushed: false,
-            unchanged: false,
-            warm: true,
-            detail: body?.message ?? body?.error ?? `HTTP ${res.status}`,
-          }
-        }
-        return {
-          ok: true,
-          flushed: body.flushed === true,
-          unchanged: body.unchanged === true,
-          warm: true,
-        }
+        // A 404/405 here is a pod published before the flush endpoint existed:
+        // not a failed freeze, but a wait for its own periodic upload.
+        return flushResultFromResponse(res.status, body ?? {})
       } catch (err: any) {
         return { ok: false, flushed: false, unchanged: false, warm: true, detail: err?.message ?? String(err) }
       }
