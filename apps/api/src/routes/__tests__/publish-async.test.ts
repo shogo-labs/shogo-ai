@@ -216,6 +216,9 @@ mock.module('../../services/checkpoint.service', () => ({
   recordCheckpointForCommit: async () => {},
 }))
 
+/** When set, `/agent/publish-build` answers with it (a failed build). */
+let buildFailure: { status: number; body: any } | null = null
+
 const DIST_FILES = [
   { path: 'index.html', content: Buffer.from('<html>async</html>').toString('base64') },
 ]
@@ -225,7 +228,10 @@ beforeEach(() => {
   globalThis.fetch = (async (url: any) => {
     const path = new URL(String(url)).pathname
     if (path === '/agent/server-info') return Response.json({ serverBacked: false })
-    if (path === '/agent/publish-build') return Response.json({ ok: true })
+    if (path === '/agent/publish-build') {
+      if (buildFailure) return Response.json(buildFailure.body, { status: buildFailure.status })
+      return Response.json({ ok: true })
+    }
     if (path === '/agent/dist-files') return Response.json(DIST_FILES)
     return new Response('{}', { status: 200 })
   }) as any
@@ -234,6 +240,7 @@ beforeEach(() => {
   lockPatches.length = 0
   uploadGate = null
   configureError = null
+  buildFailure = null
 })
 afterEach(() => {
   globalThis.fetch = realFetch
@@ -338,6 +345,39 @@ describe('publish as a background job', () => {
     configureError = null
     expect((await postPublish('p1', { subdomain: 'broken-app' })).status).toBe(202)
     await until(() => projects.get('p1')!.publishStatus === 'live', 'live after retry')
+  })
+
+  it('reports an out-of-memory Expo export as build_oom with the runtime\'s own reason', async () => {
+    seed('p1')
+    buildFailure = {
+      status: 500,
+      body: {
+        ok: false,
+        code: 'build_oom',
+        error: 'expo export failed (exit 7) — out of memory on the editing runtime',
+      },
+    }
+
+    expect((await postPublish('p1', { subdomain: 'oom-app' })).status).toBe(202)
+    await until(() => projects.get('p1')!.publishStatus === 'failed', 'failed')
+
+    // The code survives the 500, and the reason is stored next to it.
+    expect(projects.get('p1')!.publishError).toBe(
+      'build_oom: expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+
+    const state = await (await getState('p1')).json()
+    expect(state.publishStatus).toBe('failed')
+    expect(state.publishError).toBe('build_oom')
+    expect(state.publishErrorMessage).toBe(
+      'expo export failed (exit 7) — out of memory on the editing runtime',
+    )
+    // Nothing was uploaded or configured: a failed build is not a live roll.
+    const ladder = statusWrites.map((w) => w.status)
+    expect(ladder[ladder.length - 1]).toBe('failed')
+    expect(ladder).not.toContain('uploading')
+    expect(ladder).not.toContain('configuring')
+    expect(ladder).not.toContain('live')
   })
 
   it('refuses a second publish while one is in flight with 409 publish_in_progress', async () => {

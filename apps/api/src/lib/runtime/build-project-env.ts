@@ -531,6 +531,12 @@ export async function buildPublishedProjectEnv(
 
   env.SHOGO_PUBLISHED_MODE = 'true'
   env.PUBLISHED_SUBDOMAIN = subdomain
+  // The pages of a published app are built once, on the editing runtime, at
+  // publish: the bundle this same publish uploaded is what the `*.shogo.one`
+  // Worker serves. This pod answers `/api/*` only, so it must not re-run
+  // `expo export` — a cold Metro build needs ~2 GB and OOM-killed a size-`s`
+  // VM before `server.tsx` ever started (SHO-587).
+  env.SHOGO_PUBLISHED_WEB = 'artifact'
   env.PUBLISH_DOMAIN = publishDomain
   env.PUBLIC_PREVIEW_URL = `https://${subdomain}.${publishDomain}`
   // Source is restored read-only from the durable git repo (carries the

@@ -28,6 +28,8 @@ import { prisma } from '../lib/prisma'
 import { getUpstreamCredential } from '../lib/federated-upstream'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { hashSitePassword } from '../lib/cloudflare-site-auth-kv'
+import { splitPublishError } from '../routes/publish'
+import { publishFailureMessage } from '@shogo/shared-runtime/publish-status'
 
 /** A publish can take minutes (install + build + upload); don't cut it short. */
 const LOCAL_PUBLISH_BUILD_TIMEOUT_MS = 180_000
@@ -151,13 +153,15 @@ async function setLocalPublishStatus(
   projectId: string,
   status: 'idle' | 'building' | 'uploading' | 'live' | 'failed',
   errorCode: string | null = null,
+  /** Why the step failed — stored as `code: detail`, the same shape the cloud keeps. */
+  errorDetail: string | null = null,
 ): Promise<void> {
   try {
     await prisma.project.update({
       where: { id: projectId },
       data: {
         publishStatus: status as any,
-        publishError: errorCode,
+        publishError: errorCode ? (errorDetail ? `${errorCode}: ${errorDetail}` : errorCode) : null,
         publishStatusAt: new Date(),
       },
     })
@@ -258,15 +262,20 @@ async function buildBundle(
     }
   }
 
-  const buildBody = (await build.json().catch(() => null)) as { ok?: boolean; error?: string } | null
+  const buildBody = (await build.json().catch(() => null)) as
+    | { ok?: boolean; error?: string; code?: string }
+    | null
   if (!build.ok || buildBody?.ok !== true) {
-    const code = 'build_failed'
-    await setLocalPublishStatus(projectId, 'failed', code)
+    // Keep the runtime's own code (`build_oom`) and, as the detail, the reason
+    // it gave — a desktop publish has no dashboard to go read a build log from.
+    const code = buildBody?.code || 'build_failed'
+    const detail = buildBody?.error || `The publish build failed (HTTP ${build.status}).`
+    await setLocalPublishStatus(projectId, 'failed', code, detail)
     return {
       ok: false,
       status: 500,
       code,
-      message: buildBody?.error || `The publish build failed (HTTP ${build.status}).`,
+      message: detail,
     }
   }
 
@@ -374,6 +383,10 @@ export async function localPublishState(projectId: string) {
     return { ok: false as const, status: 404, code: 'project_not_found', message: 'Project not found' }
   }
   const hosts = await readPublishHosts()
+  // Stored as `code` or `code: detail`, exactly like the cloud's reader
+  // (`splitPublishError`): the panel compares the code and shows the detail, so
+  // a desktop failure says the same thing a cloud one does (SHO-587).
+  const { code: publishError, detail: publishErrorDetail } = splitPublishError(project.publishError ?? null)
   return {
     ok: true as const,
     subdomain: project.publishedSubdomain ?? undefined,
@@ -383,7 +396,11 @@ export async function localPublishState(projectId: string) {
     siteTitle: project.siteTitle ?? undefined,
     siteDescription: project.siteDescription ?? undefined,
     publishStatus: project.publishStatus ?? undefined,
-    publishError: project.publishError ?? undefined,
+    publishError: publishError ?? undefined,
+    /** The failing step's own reason, when it recorded one. */
+    publishErrorMessage: publishError
+      ? (publishErrorDetail ?? publishFailureMessage(publishError))
+      : undefined,
     // Desktop-only: whether a cloud key is connected decides if publishing can
     // work at all, and the panel disables the button when it can't.
     cloudConnected: !!(await getUpstreamCredential()),
