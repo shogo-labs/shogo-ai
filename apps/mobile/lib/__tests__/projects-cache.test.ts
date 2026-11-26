@@ -127,3 +127,77 @@ describe('projects cache storage', () => {
     )
   })
 })
+
+/**
+ * SHO-581 — the project open screen. It is routed to an id, so the row is kept
+ * by project (not by workspace), and it paints before the network answers while
+ * never outliving one, and never being erased by a failed load.
+ */
+describe('one project on the device', () => {
+  const rowKey = 'u1:cloud:project:p1'
+
+  test('the key is scoped by user, origin and project, and refused when unscoped', () => {
+    expect(cache.cachedProjectKey('u1', 'cloud', 'p1')).toBe('u1:cloud:project:p1')
+    expect(cache.cachedProjectKey('u2', 'cloud', 'p1')).not.toBe(
+      cache.cachedProjectKey('u1', 'cloud', 'p1'),
+    )
+    expect(cache.cachedProjectKey('u1', 'cloud', 'p2')).not.toBe(
+      cache.cachedProjectKey('u1', 'cloud', 'p1'),
+    )
+    expect(cache.cachedProjectKey(null, 'cloud', 'p1')).toBeNull()
+    expect(cache.cachedProjectKey('u1', 'cloud', null)).toBeNull()
+  })
+
+  test('AC4: the cached row paints before the network answer, and the answer wins', () => {
+    const cached: Project = { id: 'p1', name: 'Atlas', createdAt: 1 }
+    const loaded: Project = { id: 'p1', name: 'Atlas (renamed)', createdAt: 1 }
+
+    expect(cache.firstPaintProject(cached, null)).toBe(cached)
+    expect(cache.firstPaintProject(cached, loaded)).toBe(loaded)
+    expect(cache.firstPaintProject(null, null)).toBeNull()
+  })
+
+  test('AC1: the row is readable on the next frame and after a relaunch', async () => {
+    const project: Project = { id: 'p1', name: 'Atlas', createdAt: 1 }
+    cache.writeCachedProject(rowKey, project)
+
+    expect(cache.peekCachedProject<Project>(rowKey)).toEqual(project)
+
+    await flush()
+    cache.resetProjectsCacheState()
+    expect(cache.peekCachedProject(rowKey)).toBeNull()
+
+    expect(await cache.readCachedProject<Project>(rowKey)).toEqual(project)
+  })
+
+  test('AC4: a failed or empty load never erases the cached row', async () => {
+    const project: Project = { id: 'p1', name: 'Atlas', createdAt: 1 }
+    cache.writeCachedProject(rowKey, project)
+
+    cache.writeCachedProject(rowKey, null)
+    cache.writeCachedProject(rowKey, undefined)
+    expect(cache.peekCachedProject<Project>(rowKey)).toEqual(project)
+
+    await flush()
+    cache.resetProjectsCacheState()
+    expect(await cache.readCachedProject<Project>(rowKey)).toEqual(project)
+  })
+
+  test('a row never answers for another project or user', () => {
+    cache.writeCachedProject(rowKey, { id: 'p1', name: 'Atlas', createdAt: 1 })
+
+    expect(cache.peekCachedProject(cache.cachedProjectKey('u1', 'cloud', 'p2'))).toBeNull()
+    expect(cache.peekCachedProject(cache.cachedProjectKey('u2', 'cloud', 'p1'))).toBeNull()
+  })
+
+  test('clearing drops the rows with the lists', async () => {
+    cache.writeCachedProjects('u1:cloud:w1', { projects: PROJECTS, folders: [] })
+    cache.writeCachedProject(rowKey, PROJECTS[0])
+    await flush()
+    expect(store.size).toBeGreaterThan(0)
+
+    await cache.clearProjectsCache()
+    expect(cache.peekCachedProject(rowKey)).toBeNull()
+    expect(store.size).toBe(0)
+  })
+})
