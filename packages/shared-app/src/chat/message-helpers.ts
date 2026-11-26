@@ -56,7 +56,11 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // Overage is on and the plan is paid, but the card has never been charged
   // (a trialing subscription whose first invoice is $0). Overage starts after
   // the first real payment.
-  overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
+  overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and Shogo credit — add or verify a payment method to enable on-demand usage now.",
+  // Windows are spent, overage does not apply, and the workspace still holds
+  // Shogo credit — but the refused call was not a Hoshi model, and credit pays
+  // for Hoshi only (SHO-572). The way out is a free model switch, not a plan.
+  shogo_credit_hoshi_only: "Your Shogo credit pays for Hoshi models only. Switch the model to Hoshi, or upgrade to keep using this one.",
   session_expired: 'Your session has expired. Please refresh the page.',
   // The $99 Solo Founder offer (SHO-428) refuses a purchase for a reason the
   // buyer can act on. These codes come from /api/billing/checkout and are shown
@@ -441,6 +445,7 @@ export type UsageLimitCode =
   | 'email_verification_required'
   | 'account_review_required'
   | 'overage_requires_payment'
+  | 'shogo_credit_hoshi_only'
 
 const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   usage_limit_reached: 'usage_limit_reached',
@@ -451,6 +456,7 @@ const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   email_verification_required: 'email_verification_required',
   account_review_required: 'account_review_required',
   overage_requires_payment: 'overage_requires_payment',
+  shogo_credit_hoshi_only: 'shogo_credit_hoshi_only',
 }
 
 /**

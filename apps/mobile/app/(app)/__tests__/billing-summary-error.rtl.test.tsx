@@ -176,7 +176,7 @@ mock.module('@shogo/shared-app/hooks', () => ({
     refetchUsageWallet: () => {},
     planSource: 'free',
     usageWindows: null,
-    promoCredit: null,
+    shogoCredit: null,
     trialEligible: false,
     trialEndsAt: null,
     trialMaxSeats: 1,

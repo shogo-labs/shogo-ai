@@ -24,6 +24,8 @@ let grantsByWs = new Map<string, any[]>()
 let membersByWs = new Map<string, any[]>()
 let usageEvents: any[] = []
 let billingAccountsByWs = new Map<string, any>()
+// Shogo credit (SHO-572): the balance lives in grants now, not on the wallet.
+let creditGrants: any[] = []
 // SHO-416: the signup trust gate reads these two.
 let assessmentsByUser = new Map<string, any>()
 let usersById = new Map<string, any>()
@@ -210,6 +212,88 @@ const mockPrisma: any = {
       return created
     },
   },
+  shogoCreditGrant: {
+    findFirst: async (args: any) => {
+      const now = new Date(args.where.OR[1].expiresAt.gt)
+      const rows = creditGrants
+        .filter((g) =>
+          g.workspaceId === args.where.workspaceId &&
+          g.remainingUsd > 0 &&
+          g.revokedAt === null &&
+          (g.expiresAt === null || g.expiresAt.getTime() > now.getTime()),
+        )
+        .sort((a: any, b: any) => {
+          const at = a.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+          const bt = b.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+          return at - bt || a.createdAt.getTime() - b.createdAt.getTime()
+        })
+      return rows[0] ?? null
+    },
+    findMany: async (args: any) =>
+      creditGrants.filter((g) => {
+        if (args.where.workspaceId !== undefined && g.workspaceId !== args.where.workspaceId) return false
+        if (args.where.source !== undefined && g.source !== args.where.source) return false
+        if (args.where.revokedAt === null && g.revokedAt !== null) return false
+        if (args.where.remainingUsd?.gt !== undefined && !(g.remainingUsd > args.where.remainingUsd.gt)) return false
+        return true
+      }),
+    create: async (args: any) => {
+      if (creditGrants.some((g) => g.source === args.data.source && g.sourceRef === args.data.sourceRef)) {
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
+      }
+      const row = {
+        id: `cg-${creditGrants.length + 1}`,
+        remainingUsd: args.data.amountUsd,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        ...args.data,
+      }
+      creditGrants.push(row)
+      return { ...row }
+    },
+    updateMany: async (args: any) => {
+      const ids: string[] = args.where.id?.in ?? (args.where.id ? [args.where.id] : [])
+      const rows = creditGrants.filter((g) => {
+        if (ids.length > 0 && !ids.includes(g.id)) return false
+        if (args.where.revokedAt === null && g.revokedAt !== null) return false
+        if (args.where.remainingUsd?.gt !== undefined && !(g.remainingUsd > args.where.remainingUsd.gt)) return false
+        if (args.where.remainingUsd?.gte !== undefined && !(g.remainingUsd >= args.where.remainingUsd.gte)) return false
+        return true
+      })
+      for (const g of rows) {
+        if (args.data.remainingUsd?.decrement !== undefined) g.remainingUsd -= args.data.remainingUsd.decrement
+        else if (typeof args.data.remainingUsd === 'number') g.remainingUsd = args.data.remainingUsd
+        if ('revokedAt' in args.data) g.revokedAt = args.data.revokedAt
+      }
+      return { count: rows.length }
+    },
+    count: async (args: any) =>
+      creditGrants.filter((g) => {
+        if (args.where.workspaceId !== undefined && g.workspaceId !== args.where.workspaceId) return false
+        if (args.where.source !== undefined && g.source !== args.where.source) return false
+        return true
+      }).length,
+    aggregate: async (args: any) => {
+      const rows = creditGrants.filter((g) => {
+        if (args.where.workspaceId !== undefined && g.workspaceId !== args.where.workspaceId) return false
+        if (args.where.source !== undefined && g.source !== args.where.source) return false
+        if (args.where.revokedAt === null && g.revokedAt !== null) return false
+        if (args.where.remainingUsd?.gt !== undefined && !(g.remainingUsd > args.where.remainingUsd.gt)) return false
+        // `liveGrantWhere` allows `expiresAt: null` OR a future expiry.
+        if (args.where.OR) {
+          const gt = new Date(args.where.OR[1].expiresAt.gt).getTime()
+          if (g.expiresAt !== null && g.expiresAt.getTime() <= gt) return false
+        }
+        return true
+      })
+      const sums: Record<string, number | null> = {}
+      for (const field of Object.keys(args._sum ?? {})) {
+        sums[field] = rows.length > 0 ? rows.reduce((t, g) => t + (g[field] ?? 0), 0) : null
+      }
+      return { _sum: sums }
+    },
+  },
   $transaction: async (fn: (tx: any) => any) => fn(mockPrisma),
 }
 
@@ -224,11 +308,6 @@ mock.module('../config/usage-plans', () => ({
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
-  // Mirrors config/usage-plans promoCreditAvailableUsd (mock replaces the whole module).
-  promoCreditAvailableUsd: (wallet: any, now: Date = new Date()) =>
-    wallet?.promoCreditExpiresAt && new Date(wallet.promoCreditExpiresAt).getTime() > now.getTime()
-      ? Math.max(0, wallet.promoCreditUsd ?? 0)
-      : 0,
   SEVEN_DAY_MS: 7 * 24 * 60 * 60 * 1000,
   PLAN_INCLUDED_USD: { free: 0, basic: 5, pro: 20, business: 40 },
   PLAN_RANK: { free: 0, basic: 1, pro: 2, business: 3, enterprise: 4 },
@@ -473,6 +552,7 @@ beforeEach(() => {
   grantsByWs.clear()
   membersByWs.clear()
   billingAccountsByWs.clear()
+  creditGrants = []
   assessmentsByUser.clear()
   usersById.clear()
   _clearSignupTrustCacheForTests()
@@ -1235,7 +1315,7 @@ describe('consumeUsage — per-seat allowance (SHO-312)', () => {
   })
 })
 
-describe('consumeUsage promo credit', () => {
+describe('consumeUsage Shogo credit', () => {
   const FUTURE = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000)
   const PAST = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const fullWindows = {
@@ -1243,106 +1323,143 @@ describe('consumeUsage promo credit', () => {
     weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
   }
 
-  test('spends promo credit after the windows are full and before overage', async () => {
+  function seedCredit(ws: string, amountUsd: number, expiresAt: Date | null = FUTURE) {
+    const row = {
+      id: `cg-${creditGrants.length + 1}`,
+      workspaceId: ws,
+      source: 'signup',
+      sourceRef: `signup:${ws}:${creditGrants.length}`,
+      amountUsd,
+      remainingUsd: amountUsd,
+      expiresAt,
+      revokedAt: null,
+      createdAt: new Date(),
+    }
+    creditGrants.push(row)
+    return row
+  }
+
+  test('spends Shogo credit after the windows are full and before overage', async () => {
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 1 }])
-    seedWallet('ws-1', {
-      ...fullWindows,
-      overageEnabled: true, overageHardLimitUsd: 1000,
-      promoCreditUsd: 2, promoCreditGrantedUsd: 2, promoCreditStage: 2, promoCreditExpiresAt: FUTURE,
-    })
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: true, overageHardLimitUsd: 1000 })
+    const grant = seedCredit('ws-1', 2)
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.5, shogoCreditModel: 'hoshi-2.0',
     })
     expect(res.success).toBe(true)
     expect(res.source).toBe('promo')
     expect(res.overageChargedUsd).toBe(0)
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBeCloseTo(1.5)
+    expect(grant.remainingUsd).toBeCloseTo(1.5)
     expect(walletByWs.get('ws-1').overageAccumulatedUsd).toBe(0)
     expect(usageEvents[0].source).toBe('promo')
+    expect(usageEvents[0].actionMetadata).toMatchObject({ shogoCreditGrantIds: [grant.id] })
   })
 
-  test('splits a charge: the promo remainder pays first, overage meters the rest', async () => {
+  test('splits a charge: the credit remainder pays first, overage meters the rest', async () => {
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 1 }])
-    seedWallet('ws-1', {
-      ...fullWindows,
-      overageEnabled: true, overageHardLimitUsd: 1000,
-      promoCreditUsd: 0.2, promoCreditGrantedUsd: 2, promoCreditStage: 2, promoCreditExpiresAt: FUTURE,
-    })
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: true, overageHardLimitUsd: 1000 })
+    const grant = seedCredit('ws-1', 0.2)
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.5, shogoCreditModel: 'hoshi-2.0',
     })
     expect(res.success).toBe(true)
     expect(res.source).toBe('overage')
     expect(res.overageChargedUsd).toBeCloseTo(0.3)
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBeCloseTo(0)
+    expect(grant.remainingUsd).toBeCloseTo(0)
     expect(walletByWs.get('ws-1').overageAccumulatedUsd).toBeCloseTo(0.3)
   })
 
-  test('free tier: the last of the promo balance absorbs a larger call (no free repeat calls)', async () => {
-    seedWallet('ws-1', {
-      ...fullWindows,
-      overageEnabled: false,
-      promoCreditUsd: 0.2, promoCreditGrantedUsd: 10, promoCreditStage: 2, promoCreditExpiresAt: FUTURE,
-    })
+  test('free tier: the last of the credit absorbs a larger call (no free repeat calls)', async () => {
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: false })
+    const grant = seedCredit('ws-1', 0.2)
     const first = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.5, shogoCreditModel: 'hoshi-2.0',
     })
     expect(first.success).toBe(true)
     expect(first.source).toBe('promo')
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBeCloseTo(0)
+    expect(grant.remainingUsd).toBeCloseTo(0)
     expect(usageEvents[0].billedUsd).toBe(0.5)
     expect(usageEvents[0].balanceAfter).toBeCloseTo(0)
 
-    expect((await billing.checkUsageBalance('ws-1')).ok).toBe(false)
+    expect((await billing.checkUsageBalance('ws-1', 0.001, undefined, { shogoCredit: 'turn' })).ok).toBe(false)
   })
 
-  test('overage payment pending: promo remainder absorbs the call instead of refusing it', async () => {
+  test('overage payment pending: the credit remainder absorbs the call instead of refusing it', async () => {
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
       ...fullWindows,
       overageEnabled: true, overageHardLimitUsd: 1000, overageOutstandingInvoiceId: 'in_1',
-      promoCreditUsd: 0.2, promoCreditGrantedUsd: 2, promoCreditStage: 2, promoCreditExpiresAt: FUTURE,
     })
+    const grant = seedCredit('ws-1', 0.2)
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.5, shogoCreditModel: 'hoshi-2.0',
     })
     expect(res.success).toBe(true)
     expect(res.source).toBe('promo')
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBeCloseTo(0)
+    expect(grant.remainingUsd).toBeCloseTo(0)
     expect(walletByWs.get('ws-1').overageAccumulatedUsd).toBe(0)
   })
 
-  test('ignores expired promo credit (no spend, hard limit applies)', async () => {
-    seedWallet('ws-1', {
-      ...fullWindows,
-      promoCreditUsd: 2, promoCreditGrantedUsd: 2, promoCreditStage: 2, promoCreditExpiresAt: PAST,
-    })
+  test('ignores expired credit (no spend, hard limit applies)', async () => {
+    seedWallet('ws-1', { ...fullWindows })
+    const grant = seedCredit('ws-1', 2, PAST)
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 0.5,
+      actionType: 'chat', billedUsd: 0.5, shogoCreditModel: 'hoshi-2.0',
     })
     expect(res.success).toBe(false)
     expect(res.error).toBe('Usage limit reached')
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBe(2)
+    expect(grant.remainingUsd).toBe(2)
   })
 
   test('is spendable on the free tier (no paid entitlement needed)', async () => {
-    seedWallet('ws-1', {
-      ...fullWindows,
-      overageEnabled: false,
-      promoCreditUsd: 2, promoCreditGrantedUsd: 2, promoCreditStage: 2, promoCreditExpiresAt: FUTURE,
-    })
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: false })
+    const grant = seedCredit('ws-1', 2)
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
-      actionType: 'chat', billedUsd: 1,
+      actionType: 'chat', billedUsd: 1, shogoCreditModel: 'hoshi-2.0',
     })
     expect(res.success).toBe(true)
     expect(res.source).toBe('promo')
-    expect(walletByWs.get('ws-1').promoCreditUsd).toBeCloseTo(1)
+    expect(grant.remainingUsd).toBeCloseTo(1)
+  })
+
+  // The credit is Hoshi-only: the same call on any other model must be refused
+  // with that reason, and the balance must be untouched.
+  test('is not spent on a non-Hoshi model, and the refusal says why', async () => {
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: false })
+    const grant = seedCredit('ws-1', 2)
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
+      actionType: 'chat', billedUsd: 1, shogoCreditModel: 'claude-opus-4-7',
+    })
+    expect(res.success).toBe(false)
+    expect(res.reason).toBe('shogo_credit_hoshi_only')
+    expect(grant.remainingUsd).toBe(2)
+  })
+
+  test('balance preflight admits only the opted-in call, with or without a known model', async () => {
+    seedWallet('ws-1', { ...fullWindows, overageEnabled: false })
+    seedCredit('ws-1', 2)
+    // No opt-in: credit is never a default (voice, media, jobs pass nothing).
+    expect((await billing.checkUsageBalance('ws-1', 0.001)).ok).toBe(false)
+    // A chat turn does not know its model yet, so it is admitted on any balance.
+    expect((await billing.checkUsageBalance('ws-1', 0.001, undefined, { shogoCredit: 'turn' })).ok).toBe(true)
+    // A known model call is admitted only when it is Hoshi.
+    expect(
+      (await billing.checkUsageBalance('ws-1', 0.001, undefined, { shogoCredit: 'hoshi', shogoCreditModel: 'hoshi-2.0' })).ok,
+    ).toBe(true)
+    const blocked = await billing.checkUsageBalance('ws-1', 0.001, undefined, {
+      shogoCredit: 'hoshi',
+      shogoCreditModel: 'claude-opus-4-7',
+    })
+    expect(blocked.ok).toBe(false)
+    expect(blocked.reason).toBe('shogo_credit_hoshi_only')
+    expect(blocked.shogoCreditUsd).toBeCloseTo(2)
   })
 })
 

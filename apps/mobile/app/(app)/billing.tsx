@@ -180,7 +180,7 @@ export default observer(function BillingPage() {
     refetchUsageWallet,
     planSource,
     usageWindows,
-    promoCredit,
+    shogoCredit,
     trialEligible,
     trialEndsAt,
     trialMaxSeats,
@@ -531,7 +531,11 @@ export default observer(function BillingPage() {
   // What the card is charged if the trial ends now: the plan's price for the
   // seats already on the subscription, at the subscription's OWN interval —
   // not the page's monthly/annual toggle, which the user can flip without
-  // touching the subscription — less any spendable workspace credit.
+  // touching the subscription.
+  //
+  // It is exactly the list price: Shogo credit pays for Hoshi usage and never a
+  // subscription, and nothing server-side applies it to the Stripe invoice
+  // (SHO-572 fixed the quote that used to subtract it).
   const endTrialCharge = useMemo(() => {
     if (!subscription) return null
     const planKey: 'basic' | 'business' = (subscription.planId ?? '').toLowerCase().startsWith('business')
@@ -542,34 +546,19 @@ export default observer(function BillingPage() {
     const interval = annual ? 'annual' as const : 'monthly' as const
     const pricing = PLAN_PRICING[planKey]
     const listUsd = (annual ? pricing.annual : pricing.monthly) * seats
-    // Credit is denominated in USD and comes off the invoice, so it lowers the
-    // figure we quote rather than being folded into the per-seat price.
-    const creditUsd = Math.max(0, promoCredit?.availableUsd ?? 0)
-    const netUsd = Math.max(0, listUsd - creditUsd)
     const fmt = (usd: number) =>
       annual ? fmtAnnualPrice(usd, planKey) : fmtPrice(usd, planKey, interval)
     return {
       seats,
-      amount: fmt(netUsd),
+      amount: fmt(listUsd),
       listAmount: fmt(listUsd),
-      creditAppliedUsd: Math.max(0, listUsd - netUsd),
     }
-  }, [subscription, promoCredit?.availableUsd, fmtAnnualPrice, fmtPrice])
+  }, [subscription, fmtAnnualPrice, fmtPrice])
 
   // One string for both the native Alert and the web dialog, so the two cannot
-  // drift. Credit is called out separately rather than silently folded in:
-  // `endTrialCharge` quotes the net figure, and the owner should know why it is
-  // lower than the list price.
+  // drift.
   const endTrialConfirmBody = endTrialCharge
-    ? [
-        `You'll be charged ${endTrialCharge.amount} today for ${endTrialCharge.seats} × ${planName} and the trial ends immediately.`,
-        endTrialCharge.creditAppliedUsd > 0
-          ? `That is the ${endTrialCharge.listAmount} list price less your available workspace credit.`
-          : null,
-        'You can add more seats once the plan is paid.',
-      ]
-        .filter(Boolean)
-        .join(' ')
+    ? `You'll be charged ${endTrialCharge.amount} today for ${endTrialCharge.seats} × ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`
     : `Your card will be charged for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`
 
   const requestEndTrialConfirm = useCallback((): Promise<boolean> => {
@@ -944,19 +933,19 @@ export default observer(function BillingPage() {
         />
       )}
 
-      {/* Signup credit + free trial status */}
-      {(promoCredit && (promoCredit.availableUsd > 0 || promoCredit.pendingVerificationUsd > 0)) || trialEndsAt ? (
+      {/* Shogo credit + free trial status */}
+      {(shogoCredit && (shogoCredit.availableUsd > 0 || shogoCredit.pendingVerificationUsd > 0)) || trialEndsAt ? (
         <Card className="mb-4 rounded-2xl border-border shadow-none">
           <CardContent className="p-4 gap-2">
-            {promoCredit && promoCredit.availableUsd > 0 && (
+            {shogoCredit && shogoCredit.availableUsd > 0 && (
               <Text className="text-sm font-medium text-foreground">
-                ${promoCredit.availableUsd.toFixed(2)} free credit left
-                {promoCredit.expiresAt ? ` · expires ${fmtBillingDate(promoCredit.expiresAt)}` : ''}
+                Shogo credit · ${shogoCredit.availableUsd.toFixed(2)} · Hoshi models
+                {shogoCredit.expiresAt ? ` · expires ${fmtBillingDate(shogoCredit.expiresAt)}` : ''}
               </Text>
             )}
-            {promoCredit && !promoCredit.emailVerified && promoCredit.pendingVerificationUsd > 0 && (
+            {shogoCredit && !shogoCredit.emailVerified && shogoCredit.pendingVerificationUsd > 0 && (
               <Text className="text-sm text-muted-foreground">
-                Verify your email to unlock ${promoCredit.pendingVerificationUsd.toFixed(2)} more free credit.
+                Verify your email to unlock ${shogoCredit.pendingVerificationUsd.toFixed(2)} more Shogo credit.
               </Text>
             )}
             {trialEndsAt && (

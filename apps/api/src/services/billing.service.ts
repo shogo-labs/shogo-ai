@@ -35,7 +35,6 @@ import {
   getPlanAllowance,
   getWindowLimitsForPlan,
   normalizePlanId,
-  promoCreditAvailableUsd,
   TRIAL_MAX_SEATS,
   type WindowLimits,
 } from '../config/usage-plans';
@@ -48,6 +47,13 @@ import { getBillingWorkspaceTrustHold, SIGNUP_TRUST_MESSAGES } from '../lib/sign
 import { recordLocalUsage } from './billing-local';
 import { invalidateAnalyticsCache } from '../lib/analytics-cache';
 import { invalidateAgentReplyCapacity } from './agent-reply-capacity';
+import {
+  availableShogoCredit,
+  isShogoCreditModel,
+  resolveShogoCreditSource,
+  spendShogoCredit,
+  type ShogoCreditSource,
+} from './shogo-credit.service';
 export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -164,107 +170,7 @@ export async function resolveBillingWorkspaceId(workspaceId: string): Promise<st
   return workspaceId;
 }
 
-/** The reads `resolvePromoCreditSource` needs, from `prisma` or a tx client. */
-type PromoCreditSourceClient = {
-  workspace: { findUnique: typeof prisma.workspace.findUnique }
-  member: { findFirst: typeof prisma.member.findFirst }
-  usageWallet: { findUnique: typeof prisma.usageWallet.findUnique }
-}
-
-/** Where a workspace's signup promo credit is spent, and how much is left. */
-export interface PromoCreditSource {
-  walletId: string
-  availableUsd: number
-}
-
-/**
- * Memoise the *resolution* (workspace kind + credit workspace), not the credit
- * itself: `consumeUsage` is the hottest write in billing and the two `member`
- * lookups almost never change, so a team workspace — the common case — costs
- * zero queries after the first call instead of three on every metered request.
- */
-const promoSourceCache = new Map<
-  string,
-  { kind: string | null; creditWorkspaceId: string | null; expiresAt: number }
->()
-const PROMO_SOURCE_TTL_MS = 5 * 60 * 1000
-
-/** Test seam: drop the memoised lookups. */
-export function clearPromoSourceCache() {
-  promoSourceCache.clear()
-}
-
-/**
- * Resolve the wallet that funds promo-credit spend for a billing workspace.
- *
- * Normally that's the workspace's own wallet. But signup credit is granted on
- * the user's *team* workspace, and a new user's first messages are just as
- * likely to land in their *personal* one — without this fallback the free
- * window blocks them at 18 minutes while $10 of their own credit sits
- * untouched one workspace over. So a personal workspace may also draw on the
- * owner's signup-credit wallet.
- *
- * Returns `null` when no unexpired credit is available anywhere.
- */
-async function resolvePromoCreditSource(
-  client: PromoCreditSourceClient,
-  billingWorkspaceId: string,
-  ownWallet: { promoCreditUsd: number; promoCreditExpiresAt: Date | string | null } | null,
-  now: Date,
-): Promise<PromoCreditSource | null> {
-  const ownAvailable = promoCreditAvailableUsd(ownWallet, now)
-  if (ownAvailable > 0) return { walletId: billingWorkspaceId, availableUsd: ownAvailable }
-
-  const cached = promoSourceCache.get(billingWorkspaceId)
-  let entry = cached && cached.expiresAt > now.getTime() ? cached : null
-
-  if (!entry) {
-    const ws = await client.workspace.findUnique({
-      where: { id: billingWorkspaceId },
-      select: { kind: true },
-    })
-    let creditWorkspaceId: string | null = null
-    if (ws?.kind === 'personal') {
-      const owner = await client.member.findFirst({
-        where: { workspaceId: billingWorkspaceId, role: 'owner', projectId: null },
-        select: { userId: true },
-      })
-      if (owner?.userId) {
-        // Same workspace `findSignupCreditWorkspaceId` resolves: the user's
-        // first top-level team workspace is where sign-up granted the credit.
-        const creditWorkspace = await client.member.findFirst({
-          where: {
-            userId: owner.userId,
-            role: 'owner',
-            projectId: null,
-            workspace: { kind: 'team', parentWorkspaceId: null },
-          },
-          select: { workspaceId: true },
-          orderBy: { createdAt: 'asc' },
-        })
-        const id = creditWorkspace?.workspaceId ?? null
-        creditWorkspaceId = id && id !== billingWorkspaceId ? id : null
-      }
-    }
-    entry = {
-      kind: ws?.kind ?? null,
-      creditWorkspaceId,
-      expiresAt: now.getTime() + PROMO_SOURCE_TTL_MS,
-    }
-    promoSourceCache.set(billingWorkspaceId, entry)
-  }
-
-  if (entry.kind !== 'personal' || !entry.creditWorkspaceId) return null
-
-  // Credit only ever decreases, so this read is not cached: granting credit we
-  // have already spent would be worse than one query.
-  const creditWallet = await client.usageWallet.findUnique({
-    where: { workspaceId: entry.creditWorkspaceId },
-    select: { promoCreditUsd: true, promoCreditExpiresAt: true },
-  })
-  const available = promoCreditAvailableUsd(creditWallet, now)
-  return available > 0 ? { walletId: entry.creditWorkspaceId, availableUsd: available } : null
-}
+/** The reads `resolveShogoCreditSource` needs live in `shogo-credit.service`. */
 
 /**
  * Get USD usage wallet for a workspace. Child workspaces resolve to the
@@ -1009,6 +915,19 @@ function healStaleOverageFlag(billingWorkspaceId: string): void {
 }
 
 /**
+ * Opt-in for Shogo credit on one balance check / debit (SHO-572).
+ *
+ * `hoshi` = a model call: credit applies only when `shogoCreditModel` is Hoshi.
+ * `turn` = a chat turn whose model is not known yet: any credit balance admits
+ * it, and the per-call check inside the turn still enforces Hoshi-only.
+ */
+export interface ShogoCreditOpts {
+  shogoCredit?: 'hoshi' | 'turn'
+  /** The model the user asked for (never the backing id behind an alias). */
+  shogoCreditModel?: string | null
+}
+
+/**
  * Check if workspace can spend at least `minimumRequiredUsd`, with the
  * reason when it can't. True when either rolling window still has room,
  * when the plan is uncapped, or when metered overage is enabled and within
@@ -1019,11 +938,22 @@ function healStaleOverageFlag(billingWorkspaceId: string): void {
  * windows rather than the workspace wallet. Omit it when there is no seat
  * behind the request (internal / unattributed usage) and the pooled allowance
  * (paid) or the free wallet allowance applies.
+ *
+ * `opts.shogoCredit` opts this call in to Shogo credit (SHO-572). It is
+ * **opt-in, never default**: with no opts the credit is ignored entirely, so
+ * voice, media, published apps, VM/storage jobs and the hourly jobs can never
+ * spend it and need no change of their own.
+ *   - `'hoshi'`: an AI-model call. Spends credit only when
+ *     `opts.shogoCreditModel` is a Hoshi model.
+ *   - `'turn'`: a chat turn that starts before its model is known. Admitted on
+ *     any Shogo credit balance; each model call inside the turn is gated again
+ *     with `'hoshi'`, so a non-Hoshi call in that turn is still refused.
  */
 export async function checkUsageBalance(
   workspaceId: string,
   minimumRequiredUsd = 0.001,
   memberId?: string,
+  opts?: ShogoCreditOpts,
 ): Promise<BalanceCheck> {
   if (isLocalMode) return { ok: true }
 
@@ -1086,7 +1016,7 @@ export async function checkUsageBalance(
 
   // The window that actually blocks, for the refusal log.
   const bindingWindow: UsageWindowKind = fiveRoom <= weekRoom ? 'five_hour' : 'weekly';
-  const refuse = (reason: UsageBlockReason): BalanceCheck => {
+  const refuse = (reason: UsageBlockReason, shogoCreditUsd?: number): BalanceCheck => {
     logUsageRefused({
       workspaceId,
       billingWorkspaceId,
@@ -1098,11 +1028,11 @@ export async function checkUsageBalance(
       usedUsd: bindingWindow === 'five_hour' ? five.used : week.used,
       limitUsd: bindingWindow === 'five_hour' ? limits.fiveHourUsd : limits.weeklyUsd,
     });
-    return { ok: false, reason };
+    return { ok: false, reason, ...(shogoCreditUsd != null ? { shogoCreditUsd } : {}) };
   };
 
   // A held signup gets no free allowance at all (SHO-416): the included
-  // windows and the promo credit are for real users. Checked before the window
+  // windows and Shogo credit are for real users. Checked before the window
   // room so a fresh bot account is refused on its first call, not after it has
   // drained a window. Paid tiers are never held — a held account can't have one.
   if (!paidTier) {
@@ -1112,26 +1042,42 @@ export async function checkUsageBalance(
 
   if (windowRoom >= minimumRequiredUsd) return { ok: true };
 
-  // Windows exhausted — unexpired signup promo credit is next. Which models it
-  // can pay for is the plan's model-tier gate in ai-proxy (economy on Free and
-  // Basic); promo credit doesn't change it. A personal workspace can draw the
-  // owner's credit, which is granted on their team workspace.
-  const promoSource = await resolvePromoCreditSource(prisma, billingWorkspaceId, wallet, now);
-  if (promoSource && promoSource.availableUsd >= minimumRequiredUsd) return { ok: true };
+  // Windows exhausted — Shogo credit is next, but only for the calls that
+  // opted in, and (for a known model) only when it is a Hoshi model. Which
+  // models a plan may use is the separate tier gate in ai-proxy; credit does
+  // not change it. A personal workspace can draw the owner's credit, which is
+  // granted on their team workspace.
+  const ownCreditUsd =
+    opts?.shogoCredit ? await availableShogoCredit(prisma, billingWorkspaceId, now) : 0;
+  const creditSource = opts?.shogoCredit
+    ? await resolveShogoCreditSource(prisma, billingWorkspaceId, ownCreditUsd, now)
+    : null;
+  const shogoCreditUsd = creditSource?.availableUsd ?? 0;
+  const creditCanPay =
+    opts?.shogoCredit === 'turn' || (opts?.shogoCredit === 'hoshi' && isShogoCreditModel(opts.shogoCreditModel));
+  if (creditCanPay && shogoCreditUsd >= minimumRequiredUsd) return { ok: true };
+
+  // Credit is sitting there but this call cannot use it (a non-Hoshi model).
+  // Say that instead of a generic limit — "switch to Hoshi" is actionable and
+  // "enable usage-based pricing" is not.
+  const refuseSpend = (fallback: UsageBlockReason): BalanceCheck =>
+    shogoCreditUsd > 0 && opts?.shogoCredit === 'hoshi'
+      ? refuse('shogo_credit_hoshi_only', shogoCreditUsd)
+      : refuse(fallback);
 
   // Overage is the fallback when enabled and uncapped,
   // and only while the paid entitlement behind it is still live.
-  if (!wallet.overageEnabled) return refuse('usage_limit_reached');
+  if (!wallet.overageEnabled) return refuseSpend('usage_limit_reached');
   if (!paidTier) {
     healStaleOverageFlag(billingWorkspaceId);
-    return refuse('entitlement_expired');
+    return refuseSpend('entitlement_expired');
   }
   // A trialing subscription is a paid tier but its card has never been charged
   // (a trial's first invoice is $0). Do not let overage become the first real
   // charge on that card — the fraud trials of Nov 2026 all failed there. The
   // user's `overageEnabled` setting is left alone: it switches on by itself
   // once `firstPaidAt` is set by the first paid invoice.
-  if (!overageTrusted) return refuse('overage_requires_payment');
+  if (!overageTrusted) return refuseSpend('overage_requires_payment');
   if (wallet.overageOutstandingInvoiceId) {
     reconcileOutstandingOverage(billingWorkspaceId, wallet.overageOutstandingInvoiceId).catch((err) =>
       console.error('[billing] failed to reconcile outstanding overage invoice:', err),
@@ -1211,6 +1157,20 @@ export interface ConsumeUsageParams {
   /** Marked-up USD to charge the workspace. */
   billedUsd: number
   actionMetadata?: Record<string, unknown>
+  /**
+   * The model the user asked for (never the backing id behind a public alias).
+   * Shogo credit is spent **only** when this is a Hoshi model, and only on the
+   * call sites that pass it — voice, media, published apps, VM/storage jobs and
+   * the hourly jobs pass nothing and so can never spend credit (SHO-572).
+   */
+  shogoCreditModel?: string | null
+  /**
+   * Upper bound on how much of this debit Shogo credit may cover. A chat-turn
+   * debit bundles token cost with any images/video generated in the same turn;
+   * credit is Hoshi *model* credit, so the caller caps it at the token portion
+   * and the media part falls through to overage (or the plan's window).
+   */
+  shogoCreditMaxUsd?: number
 }
 
 export interface ConsumeUsageResult {
@@ -1558,7 +1518,7 @@ async function _consumeUsageTransaction(
     const { limits, paidTier, overageTrusted, seat, counters, scope } = meter
 
     // A held signup gets no free allowance (SHO-416). Paid tiers are never
-    // held, so this only ever refuses the free windows and promo credit.
+    // held, so this only ever refuses the free windows and Shogo credit.
     if (!paidTier && trustHold) {
       logUsageRefused({
         workspaceId,
@@ -1576,11 +1536,10 @@ async function _consumeUsageTransaction(
       }
     }
 
-    // Which wallet pays for promo spend if a window is exhausted. Usually this
-    // one; a personal workspace falls back to the owner's signup credit, which
-    // lives on their team workspace.
-    const promoSource = await resolvePromoCreditSource(tx, billingWorkspaceId, wallet, now);
-    const promoAvailableUsd = promoSource?.availableUsd ?? 0;
+    // Which wallet pays and how much it holds when a window is exhausted:
+    // this one, or (for a personal workspace) the owner's team workspace.
+    // Resolved only on that path — the common windowed debit costs no query.
+    let shogoSource: ShogoCreditSource | null = null;
 
     // Lazy window reset: a window "opens" on the first action and resets once
     // its full duration has elapsed (fixed-window-from-first-event).
@@ -1636,11 +1595,31 @@ async function _consumeUsageTransaction(
           week.start,
         );
 
-        // Order after the windows: signup promo credit first (it is already
-        // paid for and expires), then metered overage, then the hard limit.
-        // Overage only applies while the paid entitlement behind it is live:
-        // an expired grant / lapsed subscription falls through to the hard
-        // "Usage limit reached" branch instead of metering unbillable usage.
+        // Order after the windows: Shogo credit first (already paid for, and
+        // it can expire), then metered overage, then the hard limit. Credit is
+        // Hoshi-only and opt-in: `shogoCreditModel` is the model the user
+        // asked for, and a call that is not Hoshi leaves it untouched.
+        // Opt-in: a caller that names no model (voice, media, published apps,
+        // hourly jobs) can never spend Shogo credit, so the balance is not even
+        // read — and an unrelated charge is never refused with a Hoshi-only
+        // message just because credit happens to sit in the wallet.
+        const creditOptedIn = params.shogoCreditModel != null;
+        const creditSource = creditOptedIn
+          ? await resolveShogoCreditSource(
+              tx,
+              billingWorkspaceId,
+              await availableShogoCredit(tx, billingWorkspaceId, now),
+              now,
+            )
+          : null;
+        const hoshiOnlyBlocked = creditOptedIn && !isShogoCreditModel(params.shogoCreditModel) && (creditSource?.availableUsd ?? 0) > 0;
+        shogoSource = isShogoCreditModel(params.shogoCreditModel) ? creditSource : null;
+        // Credit covers at most the caller's cap (the token part of a turn that
+        // also generated media), never more than the live balance.
+        const promoAvailableUsd = Math.min(
+          shogoSource?.availableUsd ?? 0,
+          params.shogoCreditMaxUsd ?? Number.POSITIVE_INFINITY,
+        );
         const overageDue = Math.max(0, billedUsd - promoAvailableUsd);
         const overageApplies = wallet.overageEnabled && paidTier && overageTrusted;
         let overageBlock: 'overage_payment_pending' | 'overage_cap_reached' | null = null;
@@ -1656,8 +1635,8 @@ async function _consumeUsageTransaction(
         }
 
         if (promoAvailableUsd > 0 && (overageDue === 0 || !overageApplies || overageBlock)) {
-          // Promo covers the call. When nothing billable sits behind it, the
-          // last of the balance absorbs the whole call: `checkUsageBalance`
+          // Shogo credit covers the call. When nothing billable sits behind it,
+          // the last of the balance absorbs the whole call: `checkUsageBalance`
           // already admitted it on any positive balance, and a refused debit
           // would leave the balance untouched and the call free, repeatedly.
           source = 'promo';
@@ -1710,8 +1689,8 @@ async function _consumeUsageTransaction(
             };
           }
           // Beyond-window usage is metered to overage and does NOT accrue to
-          // the windows (the window is already full). Any remaining promo
-          // balance pays for the first part of the call.
+          // the windows (the window is already full). Any remaining Shogo
+          // credit pays for the first part of the call.
           source = 'overage';
           promoCharged = promoAvailableUsd;
           balanceBefore = overageAccumulatedUsd;
@@ -1740,10 +1719,12 @@ async function _consumeUsageTransaction(
             });
           }
           const reason: UsageBlockReason = isStaleOverageFlag
-            ? 'entitlement_expired'
+            ? (hoshiOnlyBlocked ? 'shogo_credit_hoshi_only' : 'entitlement_expired')
             : requiresPayment
-              ? 'overage_requires_payment'
-              : 'usage_limit_reached'
+              ? (hoshiOnlyBlocked ? 'shogo_credit_hoshi_only' : 'overage_requires_payment')
+              : hoshiOnlyBlocked
+                ? 'shogo_credit_hoshi_only'
+                : 'usage_limit_reached'
           logUsageRefused({
             workspaceId,
             billingWorkspaceId,
@@ -1772,6 +1753,16 @@ async function _consumeUsageTransaction(
       week.used += billedUsd;
     }
 
+    // Shogo credit is debited from the grants themselves — the wallet's legacy
+    // `promoCredit*` columns are no longer written. `spendShogoCredit` is the
+    // conditional-update walk that makes concurrent debits safe.
+    let shogoCreditGrantIds: string[] = [];
+    if (promoCharged > 0 && shogoSource) {
+      const spend = await spendShogoCredit(tx, shogoSource.workspaceId, promoCharged, now);
+      promoCharged = spend.spentUsd;
+      shogoCreditGrantIds = spend.grantIds;
+    }
+
     await tx.usageWallet.update({
       where: { workspaceId: billingWorkspaceId },
       data: {
@@ -1785,11 +1776,6 @@ async function _consumeUsageTransaction(
               weeklyUsedUsd: week.used,
             }),
         overageAccumulatedUsd,
-        // Promo spend is debited from whichever wallet funded it — this one, or
-        // (for a personal workspace) the owner's signup-credit wallet.
-        ...(promoCharged > 0 && promoSource?.walletId === billingWorkspaceId
-          ? { promoCreditUsd: { decrement: promoCharged } }
-          : {}),
         ...(needsMonthlyReset ? { lastMonthlyReset: now, overageBilledUsd: 0 } : {}),
       },
     });
@@ -1806,20 +1792,18 @@ async function _consumeUsageTransaction(
       })
     }
 
-    if (promoCharged > 0 && promoSource && promoSource.walletId !== billingWorkspaceId) {
-      await tx.usageWallet.update({
-        where: { workspaceId: promoSource.walletId },
-        data: { promoCreditUsd: { decrement: promoCharged } },
-      });
-    }
-
     await tx.usageEvent.create({
       data: {
         workspaceId,
         projectId,
         memberId,
         actionType,
-        actionMetadata: actionMetadata ?? null,
+        // `source: 'promo'` stays the analytics bucket for credit spend; the
+        // grant ids say which credit it was.
+        actionMetadata:
+          shogoCreditGrantIds.length > 0
+            ? { ...(actionMetadata ?? {}), shogoCreditGrantIds, shogoCreditUsd: promoCharged }
+            : actionMetadata ?? null,
         rawUsd,
         billedUsd,
         source,

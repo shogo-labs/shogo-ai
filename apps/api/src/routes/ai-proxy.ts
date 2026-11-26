@@ -4043,6 +4043,7 @@ export async function recordUsage(
   chatSessionId?: string | null,
   internalUsage?: { actionType: string } | null,
   reasoningTokens: number = 0,
+  requestedModel?: string | null,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), the API
   // server's own internal proxy token uses 'system', and a project-less
@@ -4097,7 +4098,7 @@ export async function recordUsage(
   }
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId, reasoningTokens)) {
+  if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId, reasoningTokens, requestedModel)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     // Per-request cache breakdown — same gate as the agent-runtime cache-debug
     // logs so a single env flag turns the whole picture on. This is the
@@ -4134,6 +4135,11 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
+      // Direct proxy usage is token-only, so the whole charge is model spend:
+      // Shogo credit may pay for it when the call ran on Hoshi (SHO-572).
+      // `requestedModel` is the name the caller asked for, before the alias was
+      // resolved — that is what the credit gate reads.
+      shogoCreditModel: requestedModel ?? model,
       actionMetadata: { model, billingModel: recordedModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, ...(pricingUnknown ? { pricingUnknown } : {}) },
     })
 
@@ -5864,6 +5870,10 @@ export function aiProxyRoutes() {
     // anything reads `request.model` — including the cloud-forwarding branch
     // below, which must send the cloud a concrete id rather than `auto`.
     const request: ChatCompletionRequest = await c.req.json()
+    // The name the caller asked for, before `auto`/`basic`/`advanced` is
+    // resolved. Shogo credit is gated on THIS name (SHO-572): read after the
+    // rewrite, a call the user made on Hoshi would look like its backing model.
+    const requestedModelForCredit: string | null = request?.model ?? null
     if (request?.model) {
       request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
@@ -5895,9 +5905,16 @@ export function aiProxyRoutes() {
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const accessDenied = await enforceSpendAndRate(c, tokenPayload)
       if (accessDenied) return accessDenied
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
+      const balanceCheck = await billingService.checkUsageBalance(
+        tokenPayload.workspaceId,
+        0.001,
+        resolveUsageMemberId(tokenPayload),
+        { shogoCredit: 'hoshi', shogoCreditModel: requestedModelForCredit ?? request.model },
+      )
       if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason, {
+          shogoCreditUsd: balanceCheck.shogoCreditUsd,
+        })
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
           userId: tokenPayload.userId,
           source: 'ai-proxy',
@@ -6115,12 +6132,12 @@ export function aiProxyRoutes() {
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
           const upstream = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, 0, requestedModelForCredit ?? request.model)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         } else {
           const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok)
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok, requestedModelForCredit ?? request.model)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         }
@@ -6146,6 +6163,7 @@ export function aiProxyRoutes() {
             chatSessionId,
             internalUsage,
             completionUsage.reasoningTokens,
+            requestedModelForCredit ?? request.model,
           )
         }
 
@@ -6201,6 +6219,9 @@ export function aiProxyRoutes() {
     // Read the body and resolve the requested model (incl. `auto`) before the
     // cloud-forwarding branch below (see chat/completions).
     const body = await c.req.json()
+    // The name the caller asked for, before it is resolved (SHO-572): Shogo
+    // credit reads this, never the id that replaced it.
+    const requestedModelForCredit: string | null = body?.model ?? null
     if (body?.model) {
       body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
@@ -6228,9 +6249,16 @@ export function aiProxyRoutes() {
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const accessDenied = await enforceSpendAndRate(c, tokenPayload)
       if (accessDenied) return accessDenied
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
+      const balanceCheck = await billingService.checkUsageBalance(
+        tokenPayload.workspaceId,
+        0.001,
+        resolveUsageMemberId(tokenPayload),
+        { shogoCredit: 'hoshi', shogoCreditModel: requestedModelForCredit ?? body?.model },
+      )
       if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason, {
+          shogoCreditUsd: balanceCheck.shogoCreditUsd,
+        })
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
           userId: tokenPayload.userId,
           source: 'ai-proxy',
@@ -6351,6 +6379,7 @@ export function aiProxyRoutes() {
             usage.output_tokens_details?.reasoning_tokens ||
               usage.completion_tokens_details?.reasoning_tokens ||
               0,
+            requestedModelForCredit ?? requestedModel,
           )
         }
         capture?.recordResponse({
@@ -6404,7 +6433,7 @@ export function aiProxyRoutes() {
         },
         flush() {
           if (inputTokens || outputTokens || cachedInputTokens) {
-            recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage)
+            recordUsage(tokenPayload, requestedModel, inputTokens, outputTokens, cachedInputTokens, 0, chatSessionId, internalUsage, 0, requestedModelForCredit ?? requestedModel)
           }
         },
       })
@@ -6680,14 +6709,30 @@ export function aiProxyRoutes() {
     // chat/completions for the credit-ledger FK rationale).
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
+    // Read the body before the preflight: the model the user asked for lives in
+    // it, and that is what decides whether Shogo credit (Hoshi-only) can pay
+    // for this call. Hono caches the body, so the handler's own read below is
+    // the same bytes.
+    const body = await c.req.text()
+    let parsed: any = {}
+    try { parsed = JSON.parse(body) } catch { /* cloud reports malformed bodies */ }
+    const requestModel = parsed.model || 'advanced'
+
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const accessDenied = await enforceSpendAndRate(c, tokenPayload)
       if (accessDenied) return accessDenied
-      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
+      const balanceCheck = await billingService.checkUsageBalance(
+        tokenPayload.workspaceId,
+        0.001,
+        resolveUsageMemberId(tokenPayload),
+        { shogoCredit: 'hoshi', shogoCreditModel: requestModel },
+      )
       if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason, {
+          shogoCreditUsd: balanceCheck.shogoCreditUsd,
+        })
         const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
           userId: tokenPayload.userId,
           source: 'ai-proxy',
@@ -6701,10 +6746,6 @@ export function aiProxyRoutes() {
 
     let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
-      const body = await c.req.text()
-      let parsed: any = {}
-      try { parsed = JSON.parse(body) } catch { /* ok */ }
-      const requestModel = parsed.model || 'advanced'
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
@@ -6876,7 +6917,10 @@ export function aiProxyRoutes() {
           const openaiResult = await response.json() as any
           const oaiPrompt = splitOpenAIPromptUsage(openaiResult.usage)
           const oaiCompletion = splitOpenAICompletionUsage(openaiResult.usage)
-          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, oaiCompletion.outputTokens, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage, oaiCompletion.reasoningTokens)
+          // `resolvedModel` is what ran; `requestModel` is what the user asked
+          // for, and only that can look like Hoshi behind a public alias —
+          // Shogo credit reads the asked-for name (SHO-572).
+          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, oaiCompletion.outputTokens, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage, oaiCompletion.reasoningTokens, requestModel)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           capture?.recordResponse({
             status: 200,
@@ -6969,7 +7013,7 @@ export function aiProxyRoutes() {
         const cacheWriteTok = responseBody.usage?.cache_creation_input_tokens || 0
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, 0, requestModel)
         capture?.recordResponse({
           status: 200,
           body: responseBody,
@@ -7022,7 +7066,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId, internalUsage)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens, streamCachedInputTokens, streamCacheWriteTokens, chatSessionId, internalUsage, 0, requestModel)
         },
       })
 

@@ -29,6 +29,10 @@
  *   - `overage_requires_payment`: overage is on and the plan is paid, but the
  *     card has never been charged (a trialing subscription whose first invoice
  *     is $0). Overage starts after the first real payment.
+ *   - `shogo_credit_hoshi_only`: the windows are spent, the call's model is not
+ *     a Hoshi model, overage does not apply, and the workspace still has Shogo
+ *     credit. The credit is real money but it pays for Hoshi only (SHO-572), so
+ *     the accurate answer is "switch to Hoshi", not "upgrade your plan".
  *   - `usage_limit_reached`: the generic case — no overage configured at
  *     all (or an uncapped/free wallet was never found), so the window is
  *     just the hard stop.
@@ -41,12 +45,30 @@ export type UsageBlockReason =
   | 'account_review_required'
   | 'account_banned'
   | 'overage_requires_payment'
+  | 'shogo_credit_hoshi_only'
   | 'usage_limit_reached'
 
 export interface BalanceCheck {
   ok: boolean
   /** Only set when `ok` is `false`. */
   reason?: UsageBlockReason
+  /** Spendable Shogo credit when `reason` is `shogo_credit_hoshi_only`. */
+  shogoCreditUsd?: number
+}
+
+/**
+ * The `shogo_credit_hoshi_only` message, with the balance when the caller knows
+ * it. The amount is the point: "$2 of credit you cannot use here" is what makes
+ * switching models the obvious move.
+ */
+export function shogoCreditHoshiOnlyMessage(shogoCreditUsd?: number): string {
+  const balance = shogoCreditUsd != null && shogoCreditUsd > 0
+    ? `Your $${shogoCreditUsd.toFixed(2)} Shogo credit`
+    : 'Your Shogo credit'
+  return (
+    `You're out of included usage. ${balance} pays for Hoshi models only. ` +
+    'Switch to Hoshi to keep going, or wait for your limit to reset.'
+  )
 }
 
 /**
@@ -56,7 +78,10 @@ export interface BalanceCheck {
  * "Enable usage-based pricing" message even when the user already has
  * on-demand usage turned on.
  */
-export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { code: string; message: string } {
+export function usageLimitErrorPayload(
+  reason: UsageBlockReason | undefined,
+  opts?: { shogoCreditUsd?: number },
+): { code: string; message: string } {
   switch (reason) {
     case 'entitlement_expired':
       return {
@@ -96,7 +121,12 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
       return {
         code: 'overage_requires_payment',
         message:
-          "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
+          "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and Shogo credit — add or verify a payment method to enable on-demand usage now.",
+      }
+    case 'shogo_credit_hoshi_only':
+      return {
+        code: 'shogo_credit_hoshi_only',
+        message: shogoCreditHoshiOnlyMessage(opts?.shogoCreditUsd),
       }
     default:
       return {

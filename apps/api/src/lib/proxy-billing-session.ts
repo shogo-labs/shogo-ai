@@ -145,6 +145,13 @@ interface BillingSession {
   workspaceId: string
   userId: string
   model: string
+  /**
+   * The model the user *asked* for, before any public alias (Hoshi) was
+   * swapped for the id that actually runs. Shogo credit is gated on this
+   * name — see `shogoCreditModel` at charge time (SHO-572). Null for a
+   * session whose callers never answered the question.
+   */
+  requestedModel: string | null
   inputTokens: number
   cachedInputTokens: number
   cacheWriteTokens: number
@@ -210,6 +217,7 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     workspaceId,
     userId,
     model: 'sonnet',
+    requestedModel: null,
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
@@ -250,6 +258,7 @@ function parseSessionHash(
     workspaceId: hash.workspaceId,
     userId: hash.userId,
     model: hash.model || 'sonnet',
+    requestedModel: hash.requestedModel || null,
     inputTokens: Number(hash.inputTokens || 0),
     cachedInputTokens: Number(hash.cachedInputTokens || 0),
     cacheWriteTokens: Number(hash.cacheWriteTokens || 0),
@@ -295,6 +304,9 @@ if redis.call('EXISTS', KEYS[1]) == 0 then
   return 0
 end
 redis.call('HSET', KEYS[1], 'model', ARGV[1])
+if ARGV[9] ~= '' then
+  redis.call('HSET', KEYS[1], 'requestedModel', ARGV[9])
+end
 redis.call('HINCRBY', KEYS[1], 'inputTokens', ARGV[2])
 redis.call('HINCRBY', KEYS[1], 'outputTokens', ARGV[3])
 redis.call('HINCRBY', KEYS[1], 'cachedInputTokens', ARGV[4])
@@ -414,6 +426,7 @@ function accumulateUsageLocal(
   cacheWriteTokens: number,
   reasoningTokens: number,
   chatSessionId?: string | null,
+  requestedModel?: string | null,
 ): boolean {
   const session = lookupSessionLocal(projectId, chatSessionId)
   if (!session) return false
@@ -424,6 +437,7 @@ function accumulateUsageLocal(
   session.reasoningTokens += reasoningTokens
   session.requestCount += 1
   session.model = model
+  if (requestedModel) session.requestedModel = requestedModel
   session.lastActivityAt = Date.now()
   return true
 }
@@ -603,6 +617,7 @@ async function accumulateUsageRedis(
   cacheWriteTokens: number,
   reasoningTokens: number,
   chatSessionId?: string | null,
+  requestedModel?: string | null,
 ): Promise<boolean> {
   const composite = chatSessionId ? redisHashKey(sessionKey(projectId, chatSessionId)) : null
   const legacy = redisHashKey(projectId)
@@ -611,7 +626,7 @@ async function accumulateUsageRedis(
     const result = await r.eval(
       ACCUMULATE_SCRIPT, 1, key,
       model, String(inputTokens), String(outputTokens), String(cachedInputTokens), String(cacheWriteTokens),
-      String(reasoningTokens), String(now), String(REDIS_TTL_MS),
+      String(reasoningTokens), String(now), String(REDIS_TTL_MS), requestedModel ?? '',
     )
     if (result === 1) return true
   }
@@ -959,16 +974,17 @@ export async function accumulateUsage(
   cacheWriteTokens: number = 0,
   chatSessionId?: string | null,
   reasoningTokens: number = 0,
+  requestedModel?: string | null,
 ): Promise<boolean> {
   const r = redisOrNull()
   if (r) {
     try {
-      return await withRedisTimeout(accumulateUsageRedis(r, projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId))
+      return await withRedisTimeout(accumulateUsageRedis(r, projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId, requestedModel))
     } catch (err) {
       console.warn(`[BillingSession] Redis accumulateUsage failed, falling back to local map:`, (err as Error).message)
     }
   }
-  return accumulateUsageLocal(projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId)
+  return accumulateUsageLocal(projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId, requestedModel)
 }
 
 /**
@@ -1332,6 +1348,14 @@ export async function closeSession(
       actionType: 'chat_message',
       rawUsd,
       billedUsd,
+      // Shogo credit may pay for the model tokens of this turn, and only those:
+      // the cap keeps it off any image/video/3D/music the turn generated, whose
+      // own debits never opt in (SHO-572). The gate is the model the user
+      // asked for — `requestedModel` — never the id a public alias (Hoshi)
+      // resolved to; `session.model` is only the fallback for a caller whose
+      // requests already carried the public name.
+      shogoCreditModel: session.requestedModel ?? session.model,
+      shogoCreditMaxUsd: tokenCost.billedUsd,
       actionMetadata: {
         inputTokens: session.inputTokens,
         cachedInputTokens: session.cachedInputTokens,

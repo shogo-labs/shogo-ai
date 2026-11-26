@@ -119,6 +119,7 @@ const EXPECTED_PATTERNS = [
   /\bemail_verification_required\b/i,
   /\baccount_review_required\b/i,
   /\boverage_requires_payment\b/i,
+  /\bshogo_credit_hoshi_only\b/i,
   /usage limit reached/i,
   /usage-based pricing/i,
   /sending messages too quickly/i,

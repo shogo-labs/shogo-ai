@@ -43,7 +43,11 @@ import {
   allocateFreeWallet,
 } from '../services/billing.service'
 import { releaseSignupCreditOnVerification } from '../services/signup-credit.service'
-import { promoCreditAvailableUsd } from '../config/usage-plans'
+import {
+  availableShogoCredit,
+  grantedShogoCreditUsd,
+  soonestShogoCreditExpiry,
+} from '../services/shogo-credit.service'
 import {
   E2E_BOOTSTRAP_HEADER,
   e2eBootstrapEnabled as bootstrapEnabled,
@@ -554,20 +558,29 @@ app.get('/signup-credit-state', async (c) => {
     workspaceId ? getUsageWallet(workspaceId) : Promise.resolve(null),
   ])
 
+  // Shogo credit (SHO-572): the balance lives in grants now. `promoCredit` is
+  // the deprecated alias the staging e2e suites still read; both carry the same
+  // numbers so a suite can assert either.
+  const shogoCredit =
+    workspaceId
+      ? {
+          availableUsd: await availableShogoCredit(prisma, workspaceId),
+          expiresAt: await soonestShogoCreditExpiry(prisma, workspaceId),
+          hoshiOnly: true,
+          grantedUsd: await grantedShogoCreditUsd(prisma, workspaceId, 'signup'),
+          // Stage is the wallet's idempotency marker, not a balance.
+          stage: wallet?.promoCreditStage ?? 0,
+        }
+      : null
+
   return c.json({
     ok: true,
     userId: user.id,
     workspaceId,
     emailVerified: user.emailVerified,
     assessment,
-    promoCredit: wallet
-      ? {
-          availableUsd: promoCreditAvailableUsd(wallet),
-          grantedUsd: wallet.promoCreditGrantedUsd,
-          stage: wallet.promoCreditStage,
-          expiresAt: wallet.promoCreditExpiresAt,
-        }
-      : null,
+    shogoCredit,
+    promoCredit: shogoCredit,
   })
 })
 

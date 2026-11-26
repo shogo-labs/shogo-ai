@@ -1794,13 +1794,19 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // The seat that owns this turn — same identity the usage event bills to.
       const limitUserId = (parsedBody as any)?.userId || c.req.header("X-Billing-User-Id")
+      // A turn starts before its model is known: admit it on any Shogo credit
+      // balance ('turn') and let each model call inside the turn be gated
+      // Hoshi-only in ai-proxy, which is what actually spends (SHO-572).
       const balanceCheck = await billingService.checkUsageBalance(
         project.workspaceId,
         0.001,
         limitUserId || undefined,
+        { shogoCredit: 'turn' },
       )
       if (!balanceCheck.ok) {
-        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason, {
+          shogoCreditUsd: balanceCheck.shogoCreditUsd,
+        })
         chatSpan.setAttribute("error.type", code)
         chatSpan.end()
         // The cap is recorded by buildUsageLimitInfo (firstCapHitAt + hit_cap),

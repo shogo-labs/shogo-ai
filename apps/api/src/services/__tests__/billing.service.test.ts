@@ -79,6 +79,35 @@ const wallets = new Map<string, Wallet>()
 const grants = new Map<string, Grant[]>() // by workspaceId
 const usageEvents: UsageEvent[] = []
 const billingAccounts = new Map<string, BillingAccount>()
+/**
+ * Shogo credit grants (SHO-572). The balance lives in one row per grant now,
+ * not on the wallet, so the fake delegate below has to answer the same queries
+ * `shogo-credit.service` makes.
+ */
+type CreditGrant = {
+  id: string
+  workspaceId: string
+  source: string
+  sourceRef: string
+  amountUsd: number
+  remainingUsd: number
+  expiresAt: Date | null
+  revokedAt: Date | null
+  createdAt: Date
+}
+const creditGrants: CreditGrant[] = []
+let creditGrantSeq = 1
+
+function liveCreditGrants(workspaceId: string, now = new Date()): CreditGrant[] {
+  return creditGrants.filter(
+    (g) =>
+      g.workspaceId === workspaceId &&
+      g.remainingUsd > 0 &&
+      g.revokedAt === null &&
+      (g.expiresAt === null || g.expiresAt.getTime() > now.getTime()),
+  )
+}
+
 const members: Member[] = []
 const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null; hostInstanceId?: string | null }>()
 const instances = new Map<string, { id: string; workspaceId: string; userId: string | null }>()
@@ -324,6 +353,81 @@ const prismaApi = {
       return fresh
     },
   },
+  shogoCreditGrant: {
+    findFirst: async ({ where }: any) => {
+      const now = where?.OR?.[1]?.expiresAt?.gt ?? new Date()
+      const rows = liveCreditGrants(where.workspaceId, now).sort((a, b) => {
+        const at = a.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+        const bt = b.expiresAt?.getTime() ?? Number.POSITIVE_INFINITY
+        return at - bt || a.createdAt.getTime() - b.createdAt.getTime()
+      })
+      return rows[0] ?? null
+    },
+    findMany: async ({ where }: any) => creditGrants.filter((g) => {
+      if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+      if (where.source !== undefined && g.source !== where.source) return false
+      if (where.revokedAt === null && g.revokedAt !== null) return false
+      if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+      if (where.expiresAt?.lte !== undefined) {
+        if (!g.expiresAt || g.expiresAt.getTime() > new Date(where.expiresAt.lte).getTime()) return false
+      }
+      return true
+    }),
+    create: async ({ data }: any) => {
+      if (creditGrants.some((g) => g.source === data.source && g.sourceRef === data.sourceRef)) {
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
+      }
+      const row: CreditGrant = {
+        id: `cg-${creditGrantSeq++}`,
+        remainingUsd: data.amountUsd,
+        revokedAt: null,
+        expiresAt: null,
+        createdAt: new Date(),
+        ...data,
+      }
+      creditGrants.push(row)
+      return { ...row }
+    },
+    updateMany: async ({ where, data }: any) => {
+      const ids: string[] = where.id?.in ?? (where.id ? [where.id] : [])
+      const rows = creditGrants.filter((g) => {
+        if (ids.length > 0 && !ids.includes(g.id)) return false
+        if (where.revokedAt === null && g.revokedAt !== null) return false
+        if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+        if (where.remainingUsd?.gte !== undefined && !(g.remainingUsd >= where.remainingUsd.gte)) return false
+        return true
+      })
+      for (const g of rows) {
+        if (data.remainingUsd?.decrement !== undefined) g.remainingUsd -= data.remainingUsd.decrement
+        else if (typeof data.remainingUsd === 'number') g.remainingUsd = data.remainingUsd
+        if ('revokedAt' in data) g.revokedAt = data.revokedAt
+      }
+      return { count: rows.length }
+    },
+    count: async ({ where }: any) => creditGrants.filter((g) => {
+      if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+      if (where.source !== undefined && g.source !== where.source) return false
+      return true
+    }).length,
+    aggregate: async ({ _sum, where }: any) => {
+      const rows = creditGrants.filter((g) => {
+        if (where.workspaceId !== undefined && g.workspaceId !== where.workspaceId) return false
+        if (where.source !== undefined && g.source !== where.source) return false
+        if (where.revokedAt === null && g.revokedAt !== null) return false
+        if (where.remainingUsd?.gt !== undefined && !(g.remainingUsd > where.remainingUsd.gt)) return false
+        if (where.OR) {
+          const live = g.expiresAt === null || g.expiresAt.getTime() > new Date(where.OR[1].expiresAt.gt).getTime()
+          if (!live) return false
+        }
+        return true
+      })
+      const sums: Record<string, number | null> = {}
+      for (const field of Object.keys(_sum ?? {})) {
+        sums[field] = rows.length > 0 ? rows.reduce((t, g) => t + ((g as any)[field] ?? 0), 0) : null
+      }
+      return { _sum: sums }
+    },
+  },
   $transaction: async (fn: any) => fn(prismaApi),
 }
 
@@ -398,6 +502,8 @@ beforeEach(() => {
   subs.clear()
   wallets.clear()
   grants.clear()
+  creditGrants.length = 0
+  creditGrantSeq = 1
   usageEvents.length = 0
   billingAccounts.clear()
   members.length = 0
@@ -2162,13 +2268,13 @@ describe('desktop-hosted workspace inherits the host workspace plan (SHO-472)', 
 })
 
 // ============================================================================
-// Signup credit reaches the personal workspace
+// Shogo credit reaches the personal workspace
 // ============================================================================
 // Credit is granted on the user's team workspace, but a new user's first
-// messages often land in their personal one. Without the fallback the free
+// messages often land in their personal one. Without the fallback the spent
 // window blocked them while untouched credit sat one workspace over.
-describe('personal workspace draws the owner\'s signup credit', () => {
-  function setupPersonalWithCredit(creditOver: Partial<Wallet> = {}) {
+describe("personal workspace draws the owner's Shogo credit", () => {
+  function setupPersonalWithCredit(creditOver: Partial<CreditGrant> = {}) {
     const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     workspaces.set('personal', { id: 'personal', name: 'Personal', slug: 'personal', kind: 'personal', parentWorkspaceId: null } as any)
     workspaces.set('team', { id: 'team', name: 'Team', slug: 'team', kind: 'team', parentWorkspaceId: null } as any)
@@ -2180,40 +2286,76 @@ describe('personal workspace draws the owner\'s signup credit', () => {
     wallets.set('personal', freshWallet({
       workspaceId: 'personal',
       fiveHourWindowStart: new Date(),
-      fiveHourUsedUsd: 0.2,
+      fiveHourUsedUsd: 0.5,
       weeklyWindowStart: new Date(),
-      weeklyUsedUsd: 0.5,
+      weeklyUsedUsd: 2,
     }))
-    wallets.set('team', freshWallet({
+    wallets.set('team', freshWallet({ workspaceId: 'team' }))
+    creditGrants.push({
+      id: 'cg-team',
       workspaceId: 'team',
-      promoCreditUsd: 10,
-      promoCreditExpiresAt: future,
+      source: 'signup',
+      sourceRef: 'signup:team:stage1',
+      amountUsd: 10,
+      remainingUsd: 10,
+      expiresAt: future,
+      revokedAt: null,
+      createdAt: new Date(),
       ...creditOver,
-    }))
+    })
   }
 
-  it('checkUsageBalance admits a call on the team wallet\'s credit', async () => {
+  it('admits a chat turn on the team workspace\'s credit', async () => {
     setupPersonalWithCredit()
-    expect((await billing.checkUsageBalance('personal')).ok).toBe(true)
+    const check = await billing.checkUsageBalance('personal', 0.001, undefined, { shogoCredit: 'turn' })
+    expect(check.ok).toBe(true)
   })
 
-  it('consumeUsage debits the credit from the team wallet, not the personal one', async () => {
+  // Credit is opt-in at the call site: the same workspace with the same balance
+  // is refused when the caller did not ask for it (voice, media, jobs, …).
+  it('refuses the same call when the caller did not opt in', async () => {
+    setupPersonalWithCredit()
+    const check = await billing.checkUsageBalance('personal', 0.001)
+    expect(check.ok).toBe(false)
+  })
+
+  it('debits a Hoshi call from the team workspace grant, attributing the event to the personal one', async () => {
     setupPersonalWithCredit()
     const result = await billing.consumeUsage({
       workspaceId: 'personal',
       memberId: 'm1',
+      projectId: null,
       actionType: 'ai_proxy_completion',
       billedUsd: 0.05,
       rawUsd: 0.02,
+      shogoCreditModel: 'hoshi-2.0',
     })
     expect(result.success).toBe(true)
     expect(result.source).toBe('promo')
-    expect(wallets.get('team')!.promoCreditUsd).toBeCloseTo(9.95, 10)
-    expect(wallets.get('personal')!.promoCreditUsd).toBe(0)
+    expect(creditGrants[0].remainingUsd).toBeCloseTo(9.95, 10)
+    expect(usageEvents.at(-1)).toMatchObject({ workspaceId: 'personal', source: 'promo' })
+    expect(usageEvents.at(-1)!.actionMetadata).toMatchObject({ shogoCreditGrantIds: ['cg-team'] })
+  })
+
+  it('refuses a non-Hoshi call with the reason that sends the user to Hoshi', async () => {
+    setupPersonalWithCredit()
+    const result = await billing.consumeUsage({
+      workspaceId: 'personal',
+      memberId: 'm1',
+      projectId: null,
+      actionType: 'ai_proxy_completion',
+      billedUsd: 0.05,
+      rawUsd: 0.02,
+      shogoCreditModel: 'claude-opus-4-7',
+    })
+    expect(result.success).toBe(false)
+    expect(result.reason).toBe('shogo_credit_hoshi_only')
+    expect(creditGrants[0].remainingUsd).toBe(10)
   })
 
   it('blocks when the credit has expired', async () => {
-    setupPersonalWithCredit({ promoCreditExpiresAt: new Date(Date.now() - 1000) })
-    expect((await billing.checkUsageBalance('personal')).ok).toBe(false)
+    setupPersonalWithCredit({ expiresAt: new Date(Date.now() - 1000) })
+    const check = await billing.checkUsageBalance('personal', 0.001, undefined, { shogoCredit: 'turn' })
+    expect(check.ok).toBe(false)
   })
 })

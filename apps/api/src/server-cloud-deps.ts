@@ -23,6 +23,7 @@ import * as affiliateService from './services/affiliate.service'
 import * as trialService from './services/trial.service'
 import * as soloFounderService from './services/solo-founder.service'
 import * as signupCreditService from './services/signup-credit.service'
+import * as shogoCreditService from './services/shogo-credit.service'
 import {
   sendPlanUpgradedEmail,
   sendTrialEndingEmail,
@@ -94,6 +95,7 @@ export {
   trialService,
   soloFounderService,
   signupCreditService,
+  shogoCreditService,
   sendPlanUpgradedEmail,
   sendTrialEndingEmail,
   sendTrialUnavailableEmail,

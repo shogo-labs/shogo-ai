@@ -227,6 +227,7 @@ model Workspace {
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
+  shogoCreditGrants      ShogoCreditGrant[]
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   storageUsageDaily      StorageUsageDaily[]
@@ -1469,6 +1470,30 @@ model UsageEvent {
   // `usage_events_memberId_idx` and sorts (measured: 44 s on one usage log).
   @@index([memberId, createdAt])
   @@map("usage_events")
+}
+
+/// Shogo credit (SHO-572). Mirrors `ShogoCreditGrant` in prisma/schema.prisma:
+/// one row per grant, spent Hoshi-only through
+/// `services/shogo-credit.service.ts`. Ships on both tracks for parity; local
+/// mode never spends it (billing returns early), so the table stays empty on a
+/// desktop install.
+model ShogoCreditGrant {
+  id           String    @id @default(uuid())
+  workspaceId  String
+  /// signup | learn_reward | admin — SQLite has no enum, so TEXT.
+  source       String
+  sourceRef    String
+  amountUsd    Float
+  remainingUsd Float
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([source, sourceRef])
+  @@index([workspaceId, expiresAt])
+  @@map("shogo_credit_grants")
 }
 
 // =============================================================================
