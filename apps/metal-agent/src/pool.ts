@@ -1727,6 +1727,7 @@ export class MetalWarmPool {
       partBytes: cfg.hydrateProxyPartBytes,
       concurrency: cfg.s3GetConcurrency,
       maxConcurrent: cfg.hydrateProxyMaxConcurrent,
+      maxInFlightBytes: cfg.hydrateProxyMaxInFlightBytes,
       // Only the window to REDEEM, which the guest does within a second of
       // being handed the URL; the transfer itself is unbounded by this because
       // redeeming consumes the grant. Deliberately far shorter than the
@@ -3384,7 +3385,7 @@ export class MetalWarmPool {
     destDir?: string,
   ): Promise<void> {
     const token = env.RUNTIME_AUTH_SECRET
-    const auth = token ? { Authorization: `Bearer ${token}` } : {}
+    const auth: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
     const budgetMs = this.hydrateBudgetMs(ref.bytes)
 
     const proxied = this.hydrateProxy.mint({
