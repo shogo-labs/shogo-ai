@@ -42,8 +42,10 @@ import {
   pickWakeTargets,
   reclaimSummary,
   summarizeWake,
+  tenantSnapshot,
   type IdleMemoryPoint,
   type IdleVmState,
+  type TenantSnapshot,
   type WakeSummary,
 } from './density/reclaim'
 import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
@@ -243,6 +245,11 @@ class AgentClient {
 
 const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
 
+/** GiB for a log line, or `?` when the run could not read /proc/meminfo. */
+function gibOf(miB: number | null | undefined): string {
+  return miB === null || miB === undefined ? '?' : (miB / 1024).toFixed(0)
+}
+
 /**
  * Turns measured on the lone baseline VM. `percentile` is nearest-rank, so p95
  * of 9 samples is just the max; 20 puts it on the second-highest instead.
@@ -372,6 +379,8 @@ export class DensitySoak {
    * so the soak's share of it is the delta from here.
    */
   private rssBeforeMiB = 0
+  /** Tenants sharing the host when the run started; also written to env.json. */
+  private tenantsStart?: TenantSnapshot
   /** The env file exactly as it was, so teardown restores it byte-for-byte. */
   private originalEnvText: string | null = null
   private cordoned = false
@@ -742,6 +751,12 @@ export class DensitySoak {
 
     this.rssBeforeMiB = this.sampler.sample().fcRssMiB
     log('preflight', `FC RSS before the soak: ${this.rssBeforeMiB} MiB`)
+    this.tenantsStart = await this.snapshotTenants()
+    log(
+      'tenants',
+      `start: ${this.tenantsStart.assigned} tenant VM(s) assigned (${this.tenantsStart.active} active / ${this.tenantsStart.evictable} evictable), ` +
+        `${this.tenantsStart.suspended} suspended, MemAvailable ${gibOf(this.tenantsStart.memAvailableMiB)} GiB, swap used ${gibOf(this.tenantsStart.swapUsedMiB)} GiB — recorded so A/B/C stay comparable`,
+    )
     this.startSampling()
     this.startKeepAlive()
 
@@ -922,6 +937,7 @@ export class DensitySoak {
       maxVmsPerHost: Number(this.originalEnv?.METAL_MAX_VMS_PER_HOST ?? 80),
       idleSuspendMs: Number(this.originalEnv?.METAL_IDLE_SUSPEND_MS ?? 0),
       idleReclaimMs: Number(this.originalEnv?.METAL_IDLE_RECLAIM_MS ?? 0),
+      tenants: this.tenantsStart,
       startedAt: this.startedAt,
       finishedAt: new Date().toISOString(),
       abortReason: this.abortReason,
@@ -946,6 +962,29 @@ export class DensitySoak {
         last?.mem ? `Final MemAvailable ${last.mem.availableMiB} MiB of ${last.mem.totalMiB} MiB.` : '',
       ].filter(Boolean),
     }
+  }
+
+  /** The tenant population right now, for the A/B/C comparability check. */
+  private async snapshotTenants(): Promise<TenantSnapshot> {
+    const vms = await this.agent.vms()
+    return tenantSnapshot({
+      assigned: vms.json?.assigned ?? [],
+      suspended: vms.json?.suspended ?? [],
+      mem: this.sampler.sample().mem,
+    })
+  }
+
+  /**
+   * Record the tenant population at the end of the run, once our own soak VMs
+   * are gone, so the column says what the host was carrying when it finished.
+   */
+  async captureTenantsEnd(env: RunEnv): Promise<void> {
+    env.tenantsEnd = await this.snapshotTenants()
+    log(
+      'tenants',
+      `end: ${env.tenantsEnd.assigned} tenant VM(s) assigned (${env.tenantsEnd.active} active / ${env.tenantsEnd.evictable} evictable), ` +
+        `${env.tenantsEnd.suspended} suspended, MemAvailable ${gibOf(env.tenantsEnd.memAvailableMiB)} GiB`,
+    )
   }
 
   // -- teardown -------------------------------------------------------------
@@ -1042,6 +1081,7 @@ async function main() {
   }
 
   if (report) {
+    await soak.captureTenantsEnd(report.env).catch((err) => log('tenants', `end snapshot failed: ${String((err as any)?.message ?? err)}`))
     const dir = soak.writeOutput(report)
     console.log(`\n===== DENSITY SOAK =====`)
     console.log(`CPU knee ${report.knees.cpuKnee} · RAM knee ${report.knees.ramKnee} · recommend METAL_MAX_VMS_PER_HOST=${report.recommendation.maxVmsPerHost}`)

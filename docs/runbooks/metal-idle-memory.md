@@ -222,6 +222,7 @@ restore-after-an-interrupted-run list (`METAL_MAX_VMS_PER_HOST`,
 - **VMs-per-host RAM knee** from the step ladder (highest N with no OOM, no sustained swap-in, memory PSI `full avg60` < 1%, `MemAvailable` > 10%).
 - **ksmd CPU**: average of `metal_ksmd_cpu_pct` over the hold — budget **≤ 10% of one thread**.
 - **wake-from-reclaim latency**: at the end of each hold, one proxied request to ≥ 10 idle-role VMs that are ballooned (`balloonedMiB > 0` in B/C; the same count of idle VMs in A), timed to the response, p50/p95 per run. Budget **≤ +100 ms p95 over A**. This is a *different* measurement from suspend→resume: `probeResume()` times `/suspend` → `/assign`, i.e. a snapshot restore, and never touches a balloon. Keep both — with reclaim on, a VM suspended while ballooned must still restore and deflate (SHO-534's `restoreVM` gate).
+- **tenant population**: `GET /vms` non-soak `assigned` / `active` / `evictable`, plus `MemAvailable` and swap used, sampled at the start and the end of every run and written into its `env.json` (and `abc.md`). A/B/C are only comparable if this background did not move: if non-soak residents at the start of B or C differ from A's by more than ±20 (or ~25%), or a deploy landed in between, say so next to that column and carry on — do not re-run.
 - **agent turn times under the burst**: must not regress (the soak's `turns.csv`).
 - **snap/restore with free page reporting on**: snapshot a B-run VM, restore it, confirm the guest boots and its balloon config still reads back (the config lives in the vmstate). Also restore a snapshot taken **before** the change (free page reporting off) to prove the two coexist.
 
@@ -245,6 +246,9 @@ next to its density run.
 | wake p95 vs A (ms, budget ≤ +100) | — | | |
 | agent turn p95 under burst (ms) | | | |
 | METAL_IDLE_RECLAIM_MS (run setting) | off | 300000 | 300000 |
+| Tenant VMs at start (assigned / active / evictable) | | | |
+| Tenant VMs at end (assigned / active / evictable) | | | |
+| MemAvailable / swap used at start (GiB) | | | |
 
 **Recommendation for prod** (reclaim on/off, `METAL_IDLE_RECLAIM_MS`, FPR) — fill
 from the three columns once they exist; KSM stays Russell's call.

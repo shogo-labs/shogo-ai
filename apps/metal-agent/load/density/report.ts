@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { HostSample } from './host-sampler'
 import { TURN_STEPS, type Knees, type StepMetrics, type StepVerdict, type TurnStep } from './knee'
-import type { IdleMemoryPoint, ReclaimSummary } from './reclaim'
+import type { IdleMemoryPoint, ReclaimSummary, TenantSnapshot } from './reclaim'
 
 /**
  * What `ramPhysicalMiB` counts. `soak-delta` is the host's Firecracker RSS
@@ -106,6 +106,13 @@ export interface RunEnv {
   idleSuspendMs: number
   /** `METAL_IDLE_RECLAIM_MS` this run put in place. 0/absent = reclaim was off. */
   idleReclaimMs?: number
+  /**
+   * The staging tenants sharing the host when the run started and when it
+   * finished. A/B/C are only comparable if this background did not move, so it
+   * is recorded per run rather than trusted.
+   */
+  tenants?: TenantSnapshot
+  tenantsEnd?: TenantSnapshot
   startedAt: string
   finishedAt?: string
   abortReason?: string
@@ -497,6 +504,11 @@ function burstP95(input: ReportInput): number | null {
  * happened, and filling it from the other runs is exactly what this card exists
  * to stop.
  */
+/** GiB with no decimals, or an em dash when the run never measured it. */
+function gib(miB: number | null | undefined): string {
+  return miB === null || miB === undefined ? '—' : (miB / 1024).toFixed(0)
+}
+
 export function abcMarkdown(runs: AbcRun[]): string {
   const out: string[] = []
   out.push(`# Metal idle reclaim — A/B/C — ${new Date().toISOString()}`)
@@ -520,6 +532,9 @@ export function abcMarkdown(runs: AbcRun[]): string {
     ['wake p95 vs A (ms, budget ≤ +100)', (i) => (i.reclaim?.wake?.deltaP95Ms === null || i.reclaim?.wake?.deltaP95Ms === undefined ? '—' : `${i.reclaim.wake.deltaP95Ms > 0 ? '+' : ''}${i.reclaim.wake.deltaP95Ms}`)],
     ['agent turn p95 under burst (ms)', (i) => pct(burstP95(i), 0)],
     ['METAL_IDLE_RECLAIM_MS (run setting)', (i) => (i.env.idleReclaimMs ? String(i.env.idleReclaimMs) : 'off')],
+    ['Tenant VMs at start (assigned / active / evictable)', (i) => (i.env.tenants ? `${i.env.tenants.assigned} / ${i.env.tenants.active} / ${i.env.tenants.evictable}` : '—')],
+    ['Tenant VMs at end (assigned / active / evictable)', (i) => (i.env.tenantsEnd ? `${i.env.tenantsEnd.assigned} / ${i.env.tenantsEnd.active} / ${i.env.tenantsEnd.evictable}` : '—')],
+    ['MemAvailable / swap used at start (GiB)', (i) => (i.env.tenants ? `${gib(i.env.tenants.memAvailableMiB)} / ${gib(i.env.tenants.swapUsedMiB)}` : '—')],
   ]
   for (const [label, pick] of rows) out.push(`| ${label} | ` + runs.map((r) => cell(r, pick)).join(' | ') + ' |')
   out.push('')

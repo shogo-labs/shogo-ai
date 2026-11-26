@@ -257,3 +257,59 @@ export function idleVmStates(input: {
   }
   return out
 }
+
+/**
+ * The staging tenants that shared the host with a run.
+ *
+ * A/B/C are only comparable if the host was carrying the same background as
+ * each other, so every run records this at its start and its end. `assigned`
+ * counts only non-soak VMs — our own soak VMs are not background load.
+ */
+export interface TenantSnapshot {
+  at: string
+  /** Non-soak VMs the agent had running. */
+  assigned: number
+  /** Of those, residency `active` (holding their RAM right now). */
+  active: number
+  /** Of those, residency `evictable` (could be suspended any time). */
+  evictable: number
+  /** VMs already suspended, so holding disk and state but no RAM. */
+  suspended: number
+  /** Our own soak VMs still assigned at the same moment, so they can be netted out. */
+  soak: number
+  memAvailableMiB: number | null
+  swapUsedMiB: number | null
+}
+
+/** Snapshot the tenant population from a `GET /vms` payload plus `/proc/meminfo`. */
+export function tenantSnapshot(input: {
+  assigned: { projectId?: string; residency?: string }[]
+  suspended?: { projectId?: string }[]
+  mem: { availableMiB: number; swapTotalMiB: number; swapFreeMiB: number } | null
+  at?: number
+}): TenantSnapshot {
+  let assigned = 0
+  let active = 0
+  let evictable = 0
+  let soak = 0
+  for (const v of input.assigned) {
+    if ((v.projectId ?? '').startsWith('soak-')) {
+      soak++
+      continue
+    }
+    assigned++
+    if (v.residency === 'active') active++
+    else if (v.residency === 'evictable') evictable++
+  }
+  const suspended = (input.suspended ?? []).filter((v) => !(v.projectId ?? '').startsWith('soak-')).length
+  return {
+    at: new Date(input.at ?? Date.now()).toISOString(),
+    assigned,
+    active,
+    evictable,
+    suspended,
+    soak,
+    memAvailableMiB: input.mem ? Math.round(input.mem.availableMiB) : null,
+    swapUsedMiB: input.mem ? Math.round(input.mem.swapTotalMiB - input.mem.swapFreeMiB) : null,
+  }
+}

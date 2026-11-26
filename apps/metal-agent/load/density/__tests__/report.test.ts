@@ -374,6 +374,24 @@ describe('abcMarkdown', () => {
     expect(md).toContain('(**aborted:** MemAvailable < 5%)')
   })
 
+  test('carries the tenant population in each column, so A/B/C can be checked for comparability', () => {
+    const start = {
+      at: '2026-11-26T09:20:00.000Z',
+      assigned: 75,
+      active: 75,
+      evictable: 0,
+      suspended: 58,
+      soak: 0,
+      memAvailableMiB: 295_936,
+      swapUsedMiB: 55_296,
+    }
+    const b = { ...input([step(40)]), env: { ...input([step(40)]).env, tenants: start } }
+    const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'B', input: b }])
+    expect(md).toContain('| Tenant VMs at start (assigned / active / evictable) | — | 75 / 75 / 0 |')
+    expect(md).toContain('| MemAvailable / swap used at start (GiB) | — | 289 / 54 |')
+    expect(md).toContain('| Tenant VMs at end (assigned / active / evictable) | — | — |')
+  })
+
   test('shows the reclaim window each run actually used, not a per-column "recommendation"', () => {
     const b = { ...withReclaim(), env: { ...withReclaim().env, idleReclaimMs: 300000 } }
     const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'B', input: b }])

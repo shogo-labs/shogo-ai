@@ -24,6 +24,7 @@ import {
   pickWakeTargets,
   reclaimSummary,
   summarizeWake,
+  tenantSnapshot,
   type IdleVmState,
 } from '../reclaim'
 
@@ -295,5 +296,41 @@ describe('idleVmStates', () => {
       rssForVmId: () => 100,
     })
     expect(states[0].balloonedMiB).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tenantSnapshot — the background each run was measured against
+// ---------------------------------------------------------------------------
+
+describe('tenantSnapshot', () => {
+  test('counts only other people\'s VMs, split by residency', () => {
+    const t = tenantSnapshot({
+      assigned: [
+        { projectId: 'ws:proj:8dc7cbb9', residency: 'active' },
+        { projectId: 'ws:proj:21f917c2', residency: 'active' },
+        { projectId: 'ws:090f178e', residency: 'evictable' },
+        { projectId: 'soak-sho553-1', residency: 'active' },
+      ],
+      suspended: [{ projectId: 'ws:proj:aaaa' }, { projectId: 'soak-sho553-2' }],
+      mem: { availableMiB: 295_936.4, swapTotalMiB: 262_144, swapFreeMiB: 206_848 },
+      at: Date.UTC(2026, 10, 26, 9, 20),
+    })
+    expect(t.assigned).toBe(3)
+    expect(t.active).toBe(2)
+    expect(t.evictable).toBe(1)
+    expect(t.suspended).toBe(1)
+    // Assigned only: `suspended` is already counted separately, without soak VMs.
+    expect(t.soak).toBe(1)
+    expect(t.memAvailableMiB).toBe(295_936)
+    expect(t.swapUsedMiB).toBe(55_296)
+    expect(t.at).toBe('2026-11-26T09:20:00.000Z')
+  })
+
+  test('a host it could not read /proc/meminfo from leaves the memory cells empty, not zero', () => {
+    const t = tenantSnapshot({ assigned: [{ projectId: 'ws:proj:x', residency: 'active' }], mem: null })
+    expect(t.assigned).toBe(1)
+    expect(t.memAvailableMiB).toBeNull()
+    expect(t.swapUsedMiB).toBeNull()
   })
 })
