@@ -219,9 +219,10 @@ describe('writable-state guard against a precondition-enforcing store', () => {
 
   test('an oversized archive is rejected before any network call', async () => {
     freshStore()
-    // Only `byteLength` is read before the size check short-circuits, so the
-    // test does not need to allocate a gigabyte to exercise it.
-    const huge = { byteLength: DATA_MAX_BYTES + 1 } as Uint8Array
+    // A spooled body reports its size without being read, so only `size` is
+    // touched before the check short-circuits — no gigabyte is allocated. The
+    // size check must run on it exactly as it does on a file the guest sent.
+    const huge = { size: DATA_MAX_BYTES + 1 } as unknown as BunFile
 
     const out = await uploadProjectDataGuarded(
       'p1',
