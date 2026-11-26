@@ -42,6 +42,8 @@ const HOST_INSTANCE = 'inst-macbook'
 const KEY_USER = 'user-owner'
 const SENDER = 'user-sender'
 const HOSTED_PROJECT = 'proj-hosted'
+const FIRST_PAID_AT = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+
 
 const keyFacts = { workspaceId: KEY_WORKSPACE, userId: KEY_USER, kind: 'device' }
 const instance = { workspaceId: KEY_WORKSPACE, userId: KEY_USER }
@@ -177,7 +179,7 @@ mock.module('../lib/prisma', () =>
                 seats: 1,
                 stripeSubscriptionId: 'sub_stripe_1',
                 stripeCustomerId: 'cus_owner',
-                firstPaidAt: new Date('2026-01-01T00:00:00Z'),
+                firstPaidAt: FIRST_PAID_AT,
               }
             : null,
       },
@@ -198,7 +200,7 @@ mock.module('../lib/prisma', () =>
           subscription: {
             findFirst: async ({ where }: any) =>
               where.workspaceId === KEY_WORKSPACE
-                ? { planId: 'pro', seats: 1, stripeCustomerId: 'cus_owner', firstPaidAt: new Date('2026-01-01T00:00:00Z') }
+                ? { planId: 'pro', seats: 1, stripeCustomerId: 'cus_owner', firstPaidAt: FIRST_PAID_AT }
                 : null,
           },
         }),
