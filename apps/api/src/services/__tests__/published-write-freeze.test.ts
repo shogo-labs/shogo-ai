@@ -13,7 +13,9 @@
 import { describe, expect, it } from 'bun:test'
 import {
   FLUSH_TIMEOUT_MS,
+  PERIODIC_ARCHIVE_INTERVAL_MS,
   createWriteFreeze,
+  flushResultFromResponse,
   type FlushResult,
   type WriteFreezeDeps,
 } from '../published-write-freeze'
@@ -189,5 +191,104 @@ describe('createWriteFreeze', () => {
     await handle.end(null)
     await handle.end(null)
     expect(built.maintenance).toHaveLength(2)
+  })
+})
+
+/**
+ * A live pod published before §G has no `/agent/published-data/flush`, so it
+ * answered 404 and the first KIF cutover was refused — correctly, but forever,
+ * because that pod can never grow the endpoint. It does still upload to the same
+ * archive on `PUBLISHED_DATA_SYNC_INTERVAL`, and maintenance has already stopped
+ * writes, so waiting for that upload is lossless.
+ */
+describe('cutting over from a pod older than the flush endpoint', () => {
+  it('treats 404 and 405 as "flush on your own timer", not as a failure', () => {
+    for (const status of [404, 405]) {
+      const result = flushResultFromResponse(status, {})
+      expect(result.ok).toBe(true)
+      expect(result.unsupported).toBe(true)
+      expect(result.warm).toBe(true)
+      expect(result.flushed).toBe(false)
+    }
+  })
+
+  it('still fails on a real flush error and reports its reason', () => {
+    const result = flushResultFromResponse(503, { message: 'upstream connect error' })
+    expect(result.ok).toBe(false)
+    expect(result.unsupported).toBeUndefined()
+    expect(result.detail).toBe('upstream connect error')
+
+    expect(flushResultFromResponse(500, { error: 'flush_failed' }).detail).toBe('flush_failed')
+    expect(flushResultFromResponse(418, {}).detail).toBe('HTTP 418')
+  })
+
+  it('reads a normal answer as before', () => {
+    expect(flushResultFromResponse(200, { ok: true, flushed: true })).toEqual({
+      ok: true,
+      flushed: true,
+      unchanged: false,
+      warm: true,
+    })
+    expect(flushResultFromResponse(200, { ok: true, unchanged: true }).unchanged).toBe(true)
+  })
+
+  it('waits for the old pod’s periodic upload and then goes ahead', async () => {
+    let polls = 0
+    const built = deps({
+      async requestFlush() {
+        return { ok: true, flushed: false, unchanged: false, warm: true, unsupported: true }
+      },
+      // The 30 s timer uploads on the 31st poll; nothing is fresh before that.
+      async headArchive() {
+        polls++
+        const fresh = polls >= 31
+        return { lastModifiedMs: fresh ? built.clock.now : T0 - 60_000, bytes: 4096 }
+      },
+    })
+    const handle = freeze(built.deps)
+    expect(await handle.begin()).toEqual({ ok: true })
+    expect(polls).toBe(31)
+    expect(built.log.join('\n')).toContain('predates the flush endpoint')
+    expect(built.log.join('\n')).toContain('Final flush landed')
+  })
+
+  it('gives the old pod a whole interval more than the flush budget', async () => {
+    // A large database's snapshot can take longer than FLUSH_TIMEOUT_MS to
+    // appear; the extended budget is what lets it. Fresh only after 90 s, which
+    // the plain 60 s flush budget would have refused.
+    const built = deps({
+      async requestFlush() {
+        return { ok: true, flushed: false, unchanged: false, warm: true, unsupported: true }
+      },
+      async headArchive() {
+        const fresh = built.clock.now - T0 >= 90_000
+        return { lastModifiedMs: fresh ? built.clock.now : T0 - 60_000, bytes: 1 }
+      },
+    })
+    const handle = freeze(built.deps)
+    expect(await handle.begin()).toEqual({ ok: true })
+    expect(built.clock.now - T0).toBeGreaterThanOrEqual(90_000)
+    expect(PERIODIC_ARCHIVE_INTERVAL_MS).toBe(30_000)
+  })
+
+  it('refuses the move when an old pod never uploads, and lifts maintenance', async () => {
+    const built = deps({
+      async requestFlush() {
+        return { ok: true, flushed: false, unchanged: false, warm: true, unsupported: true }
+      },
+      async headArchive() {
+        return { lastModifiedMs: T0 - 3_600_000, bytes: 4096 }
+      },
+    })
+    const handle = freeze(built.deps)
+    const result = await handle.begin()
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('write_freeze_failed')
+      expect(result.message).toContain('predates the flush endpoint')
+      expect(result.message).toContain('still serving on SQLite')
+    }
+    await handle.end('write_freeze_failed: no periodic upload')
+    expect(built.maintenance.map((m) => m.on)).toEqual([true, false])
   })
 })
