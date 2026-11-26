@@ -66,6 +66,7 @@ import { historyRoutes } from '../routes/history'
 import { chatMentionRoutes } from '../routes/chat-mentions'
 import { scopedAnalyticsRoutes } from '../routes/scoped-analytics'
 import { costAnalyticsRoutes } from '../routes/cost-analytics'
+import { HOSTED_ANALYTICS_PATHS, hostedAnalyticsUpstream } from '../routes/local-hosted-analytics'
 import { localSystemRoutes } from '../routes/local-system'
 import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
@@ -223,6 +224,12 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
   // Usage and Cost Optimizer on the desktop. server.ts mounts these for cloud
   // only; without these two lines every local analytics call 404s.
+  //
+  // A paired desktop that forwards its AI traffic reads these from the cloud
+  // instead (SHO-590 §C): the cloud meters the forward calls, so its ledger is
+  // the one true answer on both surfaces. The gate runs ahead of the routes and
+  // falls through untouched for an unpaired or BYOK install.
+  for (const path of HOSTED_ANALYTICS_PATHS) app.use(path, hostedAnalyticsUpstream())
   app.route('/api', scopedAnalyticsRoutes())
   app.route('/api', costAnalyticsRoutes())
   app.route('/api', diagnosticsRoutes({ workspacesDir }))

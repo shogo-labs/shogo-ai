@@ -23,6 +23,7 @@ import {
   type ProjectVisibility,
 } from '@shogo/authz'
 import { prisma } from '../prisma'
+import { deviceKeyMayReadHostedWorkspace } from '../hosted-usage-attribution'
 
 export interface Principal {
   userId?: string
@@ -32,6 +33,8 @@ export interface Principal {
   workspaceId?: string
   /** Runtime token project. */
   projectId?: string
+  /** `api_keys.kind` for an `apiKey` principal (`'device'` | `'user'` | …). */
+  apiKeyKind?: string
   tunnelAuthenticated?: boolean
 }
 
@@ -61,6 +64,28 @@ export const RUNTIME_TOKEN_WORKSPACE_PERMISSIONS: readonly Permission[] = ['work
 function cacheKey(principal: Principal, scope: AccessScope): string {
   const who = `${principal.via ?? 'anon'}:${principal.userId ?? ''}:${principal.workspaceId ?? ''}:${principal.projectId ?? ''}`
   return scope.projectId ? `${who}|p:${scope.projectId}` : `${who}|w:${scope.workspaceId}`
+}
+
+/**
+ * May this `apiKey` principal act on `workspaceId` when it is not the key's own
+ * workspace? Only when it is a device key and the workspace is hosted by a
+ * machine registered to that key's user in the key's workspace — the binding in
+ * `lib/hosted-usage-attribution.ts`, which memoises the proof. Anything else is
+ * the plain "a key never reaches past its workspace" rule.
+ */
+async function deviceKeyMayActOnHostedWorkspace(
+  principal: Principal,
+  workspaceId: string,
+): Promise<boolean> {
+  if (!principal.userId) return false
+  return deviceKeyMayReadHostedWorkspace(
+    {
+      workspaceId: principal.workspaceId!,
+      userId: principal.userId,
+      kind: principal.apiKeyKind ?? 'user',
+    },
+    workspaceId,
+  )
 }
 
 function none(base: Partial<AccessContext>): AccessContext {
@@ -212,8 +237,18 @@ async function computeAccess(principal: Principal, scope: AccessScope): Promise<
     }
   }
 
-  if (principal.via === 'apiKey' && (!principal.workspaceId || principal.workspaceId !== workspaceId)) {
-    return none(base)
+  if (principal.via === 'apiKey') {
+    if (!principal.workspaceId || !workspaceId) return none(base)
+    if (principal.workspaceId !== workspaceId) {
+      // A device key stands for the machine that holds it, and a hosted
+      // workspace's rows are that machine's own (SHO-285: it pushes every one
+      // of them through this same key). So the key may act on a workspace its
+      // machine provably hosts — `resolveHostedUsageAttribution` runs the same
+      // binding the wallet already trusts. What the key's *user* may do there is
+      // still decided by their membership below, so this is not a bypass.
+      const mayAct = await deviceKeyMayActOnHostedWorkspace(principal, workspaceId)
+      if (!mayAct) return none(base)
+    }
   }
 
   const userId = principal.userId!

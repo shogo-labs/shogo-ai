@@ -1198,8 +1198,30 @@ export interface ConsumeUsageParams {
    * keeps the real `workspaceId` so per-child usage attribution is preserved.
    */
   billingWorkspaceId?: string
+  /**
+   * The workspace whose billing relationship decides the wallet, when the event
+   * is recorded against a different one (SHO-590). A paired desktop's forwarded
+   * call is recorded against the hosted workspace the turn ran in but paid for
+   * by the workspace that owns the device key — so the wallet is resolved with
+   * `resolveBillingWorkspaceId()` from here, and that workspace's own parent or
+   * host hop still applies, exactly as it did when the event was recorded
+   * against it. Defaults to `workspaceId`, which is every other caller.
+   *
+   * Unlike `billingWorkspaceId` this is a *basis*, not a resolved id: leave it
+   * unset rather than passing the workspace you think pays.
+   */
+  payerWorkspaceId?: string
   projectId: string | null
   memberId: string
+  /**
+   * The member whose seat this debit meters, when that is not the member the
+   * event records (SHO-590). A paired desktop's forwarded call is *attributed*
+   * to the person who sent the turn, but it is *paid for* by the device key's
+   * holder — the seat, the trust hold and the per-member limits must all resolve
+   * to that seat, exactly as they did before attribution moved. Defaults to
+   * `memberId`, which is every other caller.
+   */
+  seatMemberId?: string
   /**
    * Must be registered in `config/usage-action-types.ts`. Typing it here is what
    * makes a new billed type fail typecheck until it is added to the dashboard
@@ -1369,7 +1391,8 @@ export async function consumeUsage(
   const mode = getUsageWalletHomeWriterMode()
   if (mode !== 'off' && RAW_REGION_ID) {
     const billingWorkspaceId =
-      params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(params.workspaceId))
+      params.billingWorkspaceId ??
+      (await resolveBillingWorkspaceId(params.payerWorkspaceId ?? params.workspaceId))
     const homeRegion = await resolveWorkspaceHomeRegion(billingWorkspaceId)
 
     if (homeRegion !== RAW_REGION_ID) {
@@ -1433,9 +1456,12 @@ export async function consumeUsageLocal(
 
   // Resolve the workspace whose wallet is actually debited (parent for a
   // child workspace). Overage charging and usage alerts operate on that
-  // pooled wallet, not the child.
+  // pooled wallet, not the child. `payerWorkspaceId` keeps that resolution
+  // anchored on the paying workspace when the event is recorded against
+  // another one (SHO-590).
   const billingWorkspaceId =
-    params.billingWorkspaceId ?? (await resolveBillingWorkspaceId(workspaceId))
+    params.billingWorkspaceId ??
+    (await resolveBillingWorkspaceId(params.payerWorkspaceId ?? workspaceId))
 
   for (let attempt = 0; ; attempt++) {
     try {
@@ -1514,6 +1540,11 @@ async function _consumeUsageTransaction(
 ): Promise<ConsumeUsageResult> {
   const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
   const rawUsd = params.rawUsd ?? null
+  // Who pays and who is recorded can differ: a desktop-forwarded call is
+  // attributed to the person who sent the turn but metered to the device key
+  // holder's seat (SHO-590). Every path below uses `seatMemberId` for the meter,
+  // the trust hold and the seat counters, and `memberId` for the event.
+  const seatMemberId = params.seatMemberId ?? memberId
   // Wallet/windows are pooled to the billing workspace (parent for children);
   // the UsageEvent below is still attributed to the real `workspaceId`.
   const billingWorkspaceId = params.billingWorkspaceId ?? workspaceId
@@ -1521,7 +1552,7 @@ async function _consumeUsageTransaction(
   // Resolved before the transaction: one cached lookup, and a held account must
   // not open a wallet or write a usage row (SHO-416). Whether it applies still
   // depends on `paidTier`, which only the meter inside the transaction knows.
-  const trustHold = await getBillingWorkspaceTrustHold(billingWorkspaceId, memberId)
+  const trustHold = await getBillingWorkspaceTrustHold(billingWorkspaceId, seatMemberId)
 
   return prisma.$transaction(async (tx) => {
     let wallet = await tx.usageWallet.findUnique({
@@ -1551,7 +1582,7 @@ async function _consumeUsageTransaction(
     const meter = await resolveMeter(tx, {
       workspaceId,
       billingWorkspaceId,
-      memberId,
+      memberId: seatMemberId,
       now,
       wallet,
     })
