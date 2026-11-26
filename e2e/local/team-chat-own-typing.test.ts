@@ -67,11 +67,11 @@ test.describe("Team chat: you never see your own typing", () => {
   let channelId: string
   let threadRootId: string
 
-  test.beforeAll(async ({ browser }: { browser: Browser }) => {
+  test.beforeAll(async ({ browser }: { browser: Browser }, testInfo) => {
     // Both windows must share one session, so one explicit context: the
     // implicit context behind `browser.newPage()` refuses a second page
     // ("Please use browser.newContext()").
-    context = await browser.newContext()
+    context = await browser.newContext({ baseURL: String(testInfo.project.use.baseURL) })
     windowA = await context.newPage()
     await windowA.setViewportSize({ width: 1440, height: 900 })
     await openTeamHome(windowA)

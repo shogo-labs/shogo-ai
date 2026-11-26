@@ -228,15 +228,15 @@ describe('Activity · Sent', () => {
     fireEvent.click(screen.getByText('Sent'))
 
     fireEvent.click(screen.getByText('shipped the fix'))
-    expect(push.mock.calls[0][0]).toMatchObject({
+    expect(push.mock.calls[0][0]).toEqual({
       pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: 'c1' },
+      params: { conversationId: 'c1', msg: 'm1' },
     })
 
     fireEvent.click(screen.getByText('reply in the thread'))
-    expect(push.mock.calls[1][0]).toMatchObject({
+    expect(push.mock.calls[1][0]).toEqual({
       pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: 'c1', thread: 'root-1' },
+      params: { conversationId: 'c1', thread: 'root-1', msg: 'm2' },
     })
   })
 
@@ -265,6 +265,18 @@ describe('Activity · Sent', () => {
  * `useInbox.pagination.test.tsx`); this is the wiring that asks it to.
  */
 describe('Activity · inbound paging', () => {
+  test('a top-level inbox message opens the DM focused on that message', () => {
+    inboxState = { ...baseInbox, items: [inboxRow('i1', '2026-10-20T12:00:00.000Z')] }
+    render(createElement(ActivityFeed))
+
+    fireEvent.click(screen.getByText('mention i1'))
+
+    expect(push.mock.calls[0][0]).toEqual({
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'c1', msg: 'm-i1' },
+    })
+  })
+
   test('every row the hook holds is rendered — the list is not capped at page one', () => {
     inboxState = {
       ...baseInbox,

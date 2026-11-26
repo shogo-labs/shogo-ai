@@ -270,8 +270,16 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (unreadTotal !== null || !unread || summaryUnread === undefined) return
     setUnreadTotal(summaryUnread)
   }, [unreadTotal, unread, summaryUnread])
-  // Pause mark-read while filtered: the user hasn't seen everyone else's messages.
-  useMarkReadWhileVisible(threadRootId || !conversation.joined || !!memberFilterKey ? null : conversation.id, newestSeq, visible, readPaused)
+  // An anchored notification view is intentionally a non-contiguous slice.
+  // A realtime insert or reconnect can add a much newer row to that slice,
+  // but the reader has not seen the gap between it and the target yet.
+  // Pause mark-read while filtered too: the user hasn't seen everyone else's messages.
+  useMarkReadWhileVisible(
+    threadRootId || !conversation.joined || !!memberFilterKey ? null : conversation.id,
+    newestSeq,
+    visible,
+    readPaused || timeline.hasMoreNewer,
+  )
 
   const onMarkUnread = useCallback((m: ChatMessage) => {
     const afterSeq = Math.max(0, m.seq - 1)
@@ -285,6 +293,9 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (props.highlightMessageId) setHighlight(props.highlightMessageId)
   }, [props.highlightMessageId])
   const highlightLoaded = !!highlight && timeline.state.messages.some((m) => m.id === highlight)
+  const isDirectMessage = conversation.kind === 'dm' || conversation.kind === 'group_dm'
+  const [locatedHighlight, setLocatedHighlight] = useState<string | null>(null)
+  const waitingForTarget = isDirectMessage && !!highlight && !highlightLoaded && locatedHighlight !== highlight
   useEffect(() => {
     if (!highlightLoaded) return
     const t = setTimeout(() => setHighlight(null), HIGHLIGHT_MS)
@@ -343,16 +354,45 @@ export function TimelinePane(props: TimelinePaneProps) {
 
   const sought = useRef<string | null>(null)
   useEffect(() => {
-    if (!highlight || highlightLoaded || timeline.loading || threadRootId || sought.current === highlight) return
+    if (!highlight || threadRootId) return
+    if (highlightLoaded) {
+      if (isDirectMessage) setLocatedHighlight(highlight)
+      return
+    }
+    if (timeline.loading || sought.current === highlight) return
     sought.current = highlight
     const id = highlight
     void (async () => {
-      if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
-      // Too far back to load into the timeline: show it on its own in the thread view.
-      const message = await api.message(id).catch(() => null)
-      if (message && props.onOpenThread) props.onOpenThread(message)
+      let targetLoaded = false
+      try {
+        if (isDirectMessage) {
+          // In DMs the target endpoint gives us its sequence directly. Fetching
+          // it first avoids paging through up to 1,200 unrelated messages.
+          const message = await api.message(id).catch(() => null)
+          if (!message || message.conversationId !== conversation.id) return
+          if (!message.threadRootId) {
+            targetLoaded = await timeline.loadBeforeSeq(message.seq + 1).catch(() => false)
+          } else {
+            props.onOpenThread?.(message)
+            // The reply lives in its own thread, not this DM timeline. Stop
+            // hiding the DM so it is ready when the reader closes that thread.
+            setHighlight((current) => current === id ? null : current)
+            targetLoaded = true
+          }
+          return
+        }
+
+        if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
+        const message = await api.message(id).catch(() => null)
+        if (!message || message.conversationId !== conversation.id) return
+        // In channels, keep the existing fallback for messages beyond the
+        // seek window; replies still open their actual thread.
+        if (props.onOpenThread) props.onOpenThread(message)
+      } finally {
+        if (isDirectMessage && !targetLoaded) setLocatedHighlight(id)
+      }
     })()
-  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread])
+  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread, timeline.loadBeforeSeq, conversation.id, isDirectMessage])
 
   const oldestLoaded = timeline.state.messages.find((m) => !m.pending)
   const unreadNotLoaded = !!unread && timeline.state.hasMoreOlder && !!oldestLoaded &&
@@ -375,6 +415,11 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [timeline.remove])
   const onStop = useCallback((m: ChatMessage) => void timeline.stopAgent(m.id).catch(() => {}), [timeline.stopAgent])
   const onLoadOlder = useCallback(() => void timeline.loadOlder().catch(() => {}), [timeline.loadOlder])
+  const onLoadNewer = useCallback(() => void timeline.loadNewer().catch(() => {}), [timeline.loadNewer])
+  const onJumpToLatest = useCallback(() => {
+    setHighlight(null)
+    void timeline.reload().catch(() => {})
+  }, [timeline.reload])
   const onEditLast = useCallback(() => {
     const messages = timeline.state.messages
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -544,8 +589,8 @@ export function TimelinePane(props: TimelinePaneProps) {
     />
   ) : (
     <MessageList
-      state={{ ...timeline.state, messages: visibleMessages }}
-      loading={timeline.loading}
+      state={{ ...timeline.state, messages: waitingForTarget ? [] : visibleMessages }}
+      loading={timeline.loading || waitingForTarget}
       me={me}
       names={names}
       mentionables={mentionables}
@@ -557,6 +602,9 @@ export function TimelinePane(props: TimelinePaneProps) {
       header={props.header}
       emptyText={filtering ? 'No matching activity yet.' : threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
       onLoadOlder={threadRootId ? undefined : onLoadOlder}
+      hasMoreNewer={timeline.hasMoreNewer}
+      onLoadNewer={timeline.hasMoreNewer ? onLoadNewer : undefined}
+      onJumpToLatest={timeline.hasMoreNewer ? onJumpToLatest : undefined}
       onTrim={timeline.trimOld}
       trimThreshold={TIMELINE_SOFT_LIMIT}
       onReply={props.onOpenThread}
@@ -577,6 +625,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       unreadCount={filtering ? null : unreadTotal}
       onRevealUnread={onRevealUnread}
       highlightId={highlight}
+      deferHighlightReveal={isDirectMessage && !!props.highlightMessageId}
       insets={listInsets}
     />
   )

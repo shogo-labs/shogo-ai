@@ -813,7 +813,7 @@ const apiCors = cors({
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },
   credentials: true,
-  exposeHeaders: ['Content-Disposition'],
+  exposeHeaders: ['Content-Disposition', 'Content-Range'],
 })
 app.use('/*', (c, next) => {
   const path = new URL(c.req.url).pathname
