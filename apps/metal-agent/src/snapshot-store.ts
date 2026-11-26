@@ -235,6 +235,54 @@ async function writeGzip(srcPath: string, destPath: string): Promise<void> {
   await bash('if command -v pigz >/dev/null 2>&1; then Z=pigz; else Z=gzip; fi; $Z -c "$0" > "$1"', [srcPath, destPath])
 }
 /**
+ * A gzip stream over a file on disk.
+ *
+ * `Bun.file(...).stream()` reads in small chunks and `CompressionStream` gzips
+ * as it goes, so neither side holds the image. The consumer must not buffer the
+ * result — see `S3Store.streamUpload`, which is the whole point of this existing
+ * as a stream rather than a `Bun.write(..., new Response(pipe))`.
+ */
+function gzipStream(path: string): ReadableStream<Uint8Array> {
+  return Bun.file(path).stream().pipeThrough(new CompressionStream('gzip'))
+}
+
+/**
+ * The slice of Bun's S3 `NetworkSink` a snapshot push needs, so a test can stand
+ * in for it without a bucket.
+ */
+export interface ChunkWriter {
+  write(chunk: Uint8Array): number | Promise<number>
+  end(error?: Error): number | Promise<number>
+}
+
+/**
+ * Pump `stream` into `sink` one chunk at a time, awaiting every write.
+ *
+ * Awaiting is what bounds memory: a Bun S3 sink returns a promise when the
+ * network cannot take the bytes yet, so a caller that fired writes without
+ * waiting would let the sink accumulate the entire object — which is exactly the
+ * bug this replaced, where `Bun.write(file, new Response(pipeThrough(gzip)))`
+ * held a 4 GiB `mem.gz` in `arrayBuffers` before the upload even started.
+ * Nothing here collects the stream.
+ */
+export async function pumpStream(stream: ReadableStream<Uint8Array>, sink: ChunkWriter): Promise<number> {
+  const reader = stream.getReader()
+  let moved = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+      await sink.write(value)
+      moved += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return moved
+}
+
+/**
  * Inflate a local .gz file to a local dest path.
  *
  * Prefers `pigz` (parallel gzip) which inflates on all cores — the single
@@ -531,16 +579,7 @@ class S3Store implements SnapshotStore {
     // Never publish a torn snapshot (see FsStore.push). A missing/empty source
     // aborts the push before any object is written to S3.
     await assertArtifacts(files)
-    // Tracked as one hold: `mem.gz` and the CoW diff go up as a Response whose
-    // body is a gzip stream of unknown length, so if that body is buffered
-    // anywhere the probe shows it as `unknown` with a growing age rather than
-    // as a plausible byte count (SHO-593).
-    const mem = memProbe.begin('snapshot:push', meta.projectId)
-    try {
-      await this.pushObjects(files, meta)
-    } finally {
-      memProbe.end(mem)
-    }
+    await this.pushObjects(files, meta)
   }
 
   private async pushObjects(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
@@ -550,23 +589,23 @@ class S3Store implements SnapshotStore {
     // transfers the few MiB of real divergence, not the whole ~8 GiB device.
     const rootfsCodec: 'none' | 'gzip' = this.slim && rootfsMode === 'diff' ? 'gzip' : 'none'
     const rootfsName = (rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4') + (rootfsCodec === 'gzip' ? '.gz' : '')
-    // Large artifacts stream from disk; Bun.file → S3Client.write handles it.
+    const prefix = pid.startsWith('published:') ? 'published' : 'vm'
     if (this.slim) {
-      await Bun.write(this.client.file(this.key(pid, 'mem.gz')), new Response(Bun.file(files.mem).stream().pipeThrough(new CompressionStream('gzip'))))
+      await this.streamUpload(this.key(pid, 'mem.gz'), gzipStream(files.mem), `${prefix} mem.gz`, 'application/gzip')
     } else {
-      await this.client.write(this.key(pid, 'mem'), Bun.file(files.mem))
+      await this.streamUpload(this.key(pid, 'mem'), Bun.file(files.mem).stream(), `${prefix} mem`, 'application/octet-stream')
     }
     if (rootfsCodec === 'gzip') {
-      await Bun.write(this.client.file(this.key(pid, rootfsName)), new Response(Bun.file(files.rootfs).stream().pipeThrough(new CompressionStream('gzip'))))
+      await this.streamUpload(this.key(pid, rootfsName), gzipStream(files.rootfs), `${prefix} ${rootfsName}`, 'application/gzip')
     } else {
-      await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
+      await this.streamUpload(this.key(pid, rootfsName), Bun.file(files.rootfs).stream(), `${prefix} ${rootfsName}`, 'application/octet-stream')
     }
     await this.client.write(this.key(pid, 'vmstate'), Bun.file(files.vmstate))
     if (files.workspaceDrive) {
       const tgz = `${files.workspaceDrive}.push.tgz`
       try {
         await packSparseFile(files.workspaceDrive, tgz)
-        await this.client.write(this.key(pid, WORKSPACE_DRIVE_ARTIFACT), Bun.file(tgz))
+        await this.streamUpload(this.key(pid, WORKSPACE_DRIVE_ARTIFACT), Bun.file(tgz).stream(), `${prefix} workspace drive`, 'application/gzip')
       } finally {
         await rm(tgz, { force: true }).catch(() => {})
       }
@@ -580,6 +619,41 @@ class S3Store implements SnapshotStore {
       workspaceDrive: workspaceDriveMeta(files),
     }
     await this.client.write(this.key(pid, 'meta.json'), JSON.stringify(full))
+  }
+
+  /**
+   * Upload a stream through a multipart writer with a fixed part size.
+   *
+   * The alternative — `Bun.write(file, new Response(stream))` — made Bun read
+   * the WHOLE body into memory before it started uploading, because a Response
+   * with an unknown length has no other way to be sent. Measured on staging with
+   * a `[mem]` probe (SHO-593): one snapshot push of a 4 GiB VM held 4.1 GiB of
+   * `arrayBuffers` for over 100 s. With a writer, the same stream costs one part
+   * plus what the queue is uploading, and the object never exists in memory.
+   */
+  private async streamUpload(
+    key: string,
+    stream: ReadableStream<Uint8Array>,
+    label: string,
+    contentType: string,
+  ): Promise<void> {
+    const partSize = Math.max(5 * 1024 * 1024, this.cfg.snapshotPushPartBytes)
+    const queueSize = Math.max(1, this.cfg.snapshotPushQueue)
+    const mem = memProbe.begin('snapshot:push', label)
+    // The hold this upload is ALLOWED to take: one part in flight per queue slot.
+    // Reported as the size because that is the ceiling, not a guess at the file.
+    memProbe.held(mem, partSize * queueSize)
+    const writer = this.client.file(key).writer({ partSize, queueSize, type: contentType })
+    try {
+      await pumpStream(stream, writer)
+    } catch (err) {
+      // Abort the multipart upload rather than leaving orphaned parts.
+      await Promise.resolve(writer.end(err as Error)).catch(() => {})
+      memProbe.end(mem)
+      throw err
+    }
+    await writer.end()
+    memProbe.end(mem)
   }
 
   async head(projectId: string): Promise<SnapshotMeta | null> {
