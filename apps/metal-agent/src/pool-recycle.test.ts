@@ -26,7 +26,7 @@ class TestPool extends MetalWarmPool {
   source: Outcome<any> = { status: 'written', etag: '"s"' }
   repo: Outcome<any> = { status: 'written', etag: '"r"' }
   data: Outcome<any> = { status: 'written', etag: '"d"' }
-  dataExport: any = { bytes: new Uint8Array([1]), tag: 't1' }
+  dataExport: any = { body: new Uint8Array([1]), tag: 't1' }
   guestMembers: string[] | null = null
   removed: string[] = []
 
@@ -75,7 +75,7 @@ class TestPool extends MetalWarmPool {
     return this.data
   }
   protected override async fetchHomeExport(): Promise<any> {
-    return { bytes: new Uint8Array([3]), tag: 'h1' }
+    return { body: new Uint8Array([3]), tag: 'h1' }
   }
   protected override async uploadHomeGuarded(projectId: string, _b: Uint8Array, opts: any): Promise<any> {
     this.events.push(`home ${projectId}`)
@@ -380,7 +380,7 @@ describe('pool.recycle', () => {
     const pool = makePool()
     pool.add('p1')
     let release!: () => void
-    pool.dataExport = { bytes: new Uint8Array([1]), tag: 't1' }
+    pool.dataExport = { body: new Uint8Array([1]), tag: 't1' }
     const gate = new Promise<void>((r) => (release = r))
     const origRepo = (pool as any).fetchRepoExport.bind(pool)
     ;(pool as any).fetchRepoExport = async (...args: any[]) => {

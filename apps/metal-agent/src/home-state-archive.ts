@@ -21,7 +21,8 @@
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
 import { dataS3Target, planDataWrite, type DataLineage, type DataWriteOutcome } from './project-data-archive'
-import { memoryBody, quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
+import { archiveBodySha256, archiveBodySize, type ArchiveBody } from './archive-body'
+import { quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
@@ -57,7 +58,7 @@ export async function describeHomeStateArchive(
 
 async function quarantine(
   projectId: string,
-  bytes: Uint8Array,
+  bytes: ArchiveBody,
   cfg: MetalConfig,
   bookkeeping?: QuarantineBookkeeping,
 ): Promise<string | null> {
@@ -67,7 +68,7 @@ async function quarantine(
   return quarantinedCopy({
     projectId,
     kind: 'home',
-    body: memoryBody(bytes),
+    body: { size: archiveBodySize(bytes), sha256: () => archiveBodySha256(bytes) },
     key,
     write: (k) => s3.client.write(k, bytes, { type: CONTENT_TYPE }).then(() => {}),
     state: bookkeeping?.state,
@@ -82,12 +83,13 @@ async function quarantine(
  */
 export async function uploadHomeStateGuarded(
   projectId: string,
-  bytes: Uint8Array,
+  bytes: ArchiveBody,
   opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   cfg: MetalConfig,
 ): Promise<DataWriteOutcome> {
-  if (bytes.byteLength > HOME_STATE_MAX_BYTES) {
-    return { status: 'too-large', bytes: bytes.byteLength, limit: HOME_STATE_MAX_BYTES }
+  const size = archiveBodySize(bytes)
+  if (size > HOME_STATE_MAX_BYTES) {
+    return { status: 'too-large', bytes: size, limit: HOME_STATE_MAX_BYTES }
   }
 
   const plan = planDataWrite(opts.lineage)

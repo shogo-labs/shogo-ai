@@ -38,7 +38,8 @@ import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
-import { BodyTooLargeError, ByteBudget, readBoundedBody } from './byte-budget'
+import type { BunFile } from 'bun'
+import { archiveBodySize, type ArchiveBody } from './archive-body'
 import { memProbe } from './mem-probe'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -1210,7 +1211,7 @@ export interface GuestExportError extends Error {
 }
 
 /** What `/pool/export-data` gave back: bytes, or why it gave none. */
-type DataExportResult = { bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null
+type DataExportResult = { body: ArchiveBody; tag: string | null } | 'unchanged' | 'unsupported' | null
 
 /**
  * Turn a failed `/pool/export-data` reply into an error, keeping the guest's
@@ -1681,13 +1682,6 @@ export class MetalWarmPool {
   private lastCowInvalid = 0
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
   private heavy: Semaphore
-  /**
-   * Total bytes of guest exports in memory at once (SHO-593). Every whole-object
-   * export read reserves here first, so a slow 33 GiB workspace member cannot
-   * pile up behind three small backups and take the host's control plane with
-   * it. See `readBoundedBody`.
-   */
-  readonly exportBudget: ByteBudget
   /** Single-flight guard for pool fills (see reconcile). */
   private reconciling: Promise<void> | null = null
   /**
@@ -1729,7 +1723,6 @@ export class MetalWarmPool {
     this.live = new LiveRegistry(cfg.runDir)
     rmSync(this.exportSpoolDir, { recursive: true, force: true })
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
-    this.exportBudget = new ByteBudget(cfg.exportBudgetBytes)
     this.hydrateProxy = new HydrateProxy({
       partBytes: cfg.hydrateProxyPartBytes,
       concurrency: cfg.s3GetConcurrency,
@@ -2637,19 +2630,23 @@ export class MetalWarmPool {
     const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
     let outcome: 'exported' | 'conflict' | 'empty' = 'empty'
     let detail: string | undefined
-    if (bytes) {
-      const stored = await this.storeMemberSource(assigned, projectId, bytes)
-      if (stored.ok) {
-        outcome = 'exported'
-        detail = stored.outcome.status
-      } else if (stored.outcome.status === 'conflict' && stored.outcome.quarantineKey) {
-        outcome = 'conflict'
-        detail = `quarantined at ${stored.outcome.quarantineKey}`
-      } else {
-        throw new Error(
-          `source export of ${projectId} from ${assigned.projectId} is not durable (${stored.outcome.status}); left mounted`,
-        )
+    try {
+      if (bytes) {
+        const stored = await this.storeMemberSource(assigned, projectId, bytes)
+        if (stored.ok) {
+          outcome = 'exported'
+          detail = stored.outcome.status
+        } else if (stored.outcome.status === 'conflict' && stored.outcome.quarantineKey) {
+          outcome = 'conflict'
+          detail = `quarantined at ${stored.outcome.quarantineKey}`
+        } else {
+          throw new Error(
+            `source export of ${projectId} from ${assigned.projectId} is not durable (${stored.outcome.status}); left mounted`,
+          )
+        }
       }
+    } finally {
+      this.disposeExport(bytes)
     }
     const slot = this.memberDataSlot(assigned, projectId, destDir)
     await this.dataFlight
@@ -3490,9 +3487,9 @@ export class MetalWarmPool {
    * `protected` seam so tests can inject bytes (or null) without a live guest.
    * Returns null when the guest reports nothing to back up (204, empty project).
    */
-  protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
+  protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<ArchiveBody | null> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
-    const mem = memProbe.begin('export:source', handle.id)
+    const mem = memProbe.begin('spool:source', handle.id)
     let bytes = 0
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export`, {
@@ -3507,9 +3504,9 @@ export class MetalWarmPool {
       if (res.status === 204) return null
       if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await this.readExportBody(res, `source ${handle.id}${dir ? ` ${dir}` : ''}`)
-      bytes = buf.byteLength
-      return bytes ? buf : null
+      const body = await this.spoolExport(res, handle, 'source', `source ${handle.id}${dir ? ` ${dir}` : ''}`)
+      bytes = body ? archiveBodySize(body) : 0
+      return body
     } catch (err) {
       // A read that stopped early — deadline, or a body the guest is still
       // sending — must be torn down, not merely abandoned: the guest only
@@ -3538,7 +3535,7 @@ export class MetalWarmPool {
    */
   protected uploadBackupGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: {
       parentEtag?: string
       adoptWhenUnknown?: boolean
@@ -3567,44 +3564,72 @@ export class MetalWarmPool {
     if (publishedSourceId(a.projectId)) return 'empty'
     return this.sourceLock.run(a.projectId, async () => {
       const bytes = await this.fetchExport(a.handle, a.runtimeToken)
-      if (!bytes) {
-        console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
-        return 'empty'
+      try {
+        if (!bytes) {
+          console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
+          return 'empty'
+        }
+        const outcome = await this.storeSource(a, bytes)
+        return outcome
+      } finally {
+        this.disposeExport(bytes)
       }
-      return this.storeSource(a, bytes)
     })
   }
 
   /**
-   * Read one guest export body under the shared budget and the size cap.
+   * Spool one guest export to disk and hand back the file, or null when the
+   * guest produced nothing.
    *
-   * Every export goes through here for the reason in `byte-budget.ts`: the guest
-   * streams whatever its spool file holds and there is no cap on the guest side,
-   * so the host is the only place the read can be bounded (SHO-593).
+   * Every export goes through here (SHO-593). The guest packs its archive into
+   * a file and streams it, so writing it back out to a file costs one chunk of
+   * memory at a time however large it is — the same shape the repo export has
+   * always used. `spoolResponse` enforces `exportMaxBytes` while it writes, and
+   * cancels the read the moment that ceiling is passed, so a runaway guest is
+   * cut off rather than buffered.
    */
-  private async readExportBody(res: Response, label: string): Promise<Uint8Array> {
+  private async spoolExport(
+    res: Response,
+    handle: FcVmHandle,
+    kind: string,
+    label: string,
+  ): Promise<BunFile | null> {
+    const path = this.exportSpoolPath(handle.id, kind)
+    let spooled: { size: number; sha256: string }
     try {
-      return await readBoundedBody(res, {
-        budget: this.exportBudget,
-        capBytes: this.cfg.exportMaxBytes,
-        label,
-      })
+      spooled = await spoolResponse(res, path, this.cfg.exportMaxBytes)
     } catch (err) {
-      if (err instanceof BodyTooLargeError) {
+      rmSync(path, { force: true })
+      if (err instanceof ExportTooLargeError) {
         metrics.inc(M.exportTooLarge)
         console.error(
-          `[pool] refusing ${err.message} — nothing buffered, the durable backup is left in place`,
+          `[pool] refusing ${label}: ${err.message} — nothing was held; the durable backup is left in place`,
         )
       }
       throw err
     }
+    if (!spooled.size) {
+      rmSync(path, { force: true })
+      return null
+    }
+    return Bun.file(path)
+  }
+
+  /**
+   * Drop a spooled export once its bytes are durable. In-memory bodies (tests,
+   * and the pre-spool callers) have nothing to clean up.
+   */
+  private disposeExport(body: ArchiveBody | null | undefined): void {
+    if (!body || body instanceof Uint8Array) return
+    const path = (body as BunFile).name
+    if (typeof path === 'string' && path.startsWith(this.exportSpoolDir)) rmSync(path, { force: true })
   }
 
   /**
    * Upload source bytes under the lineage guard. Returns true when the bytes
    * are durable somewhere — written, or diverted to a quarantine key.
    */
-  private async storeSourceBytes(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
+  private async storeSourceBytes(a: AssignedVm, bytes: ArchiveBody): Promise<boolean> {
     return (await this.storeSource(a, bytes)) !== 'lost'
   }
 
@@ -3625,7 +3650,7 @@ export class MetalWarmPool {
     }
   }
 
-  private async storeSource(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
+  private async storeSource(a: AssignedVm, bytes: ArchiveBody): Promise<'written' | 'quarantined' | 'lost'> {
     // Its source is the project's archive, which is already durable.
     if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
@@ -3642,7 +3667,7 @@ export class MetalWarmPool {
         metrics.inc(M.backupTemplatePromotion)
         console.log(
           `[pool] promoted real source over a template-shaped backup for ${a.projectId} ` +
-            `(${bytes.byteLength} bytes); replaced placeholder kept at ${outcome.supersededKey}`,
+            `(${archiveBodySize(bytes)} bytes); replaced placeholder kept at ${outcome.supersededKey}`,
         )
       // falls through — a promotion anchors lineage exactly like a normal write
       case 'created':
@@ -3653,14 +3678,14 @@ export class MetalWarmPool {
         a.backupParentEtag = outcome.etag ?? a.backupParentEtag
         a.workspaceOrigin = 'backup'
         this.writeLive(a)
-        console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
+        console.log(`[pool] saved source backup for ${a.projectId} (${archiveBodySize(bytes)} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
         return 'written'
       case 'conflict': {
         metrics.inc(M.backupConflict)
         if (outcome.reason === 'size-regression') metrics.inc(M.backupSizeRegression)
         const why =
           outcome.reason === 'size-regression'
-            ? `SIZE BACKSTOP tripped — this ${bytes.byteLength}-byte (template-shaped) export would have ` +
+            ? `SIZE BACKSTOP tripped — this ${archiveBodySize(bytes)}-byte (template-shaped) export would have ` +
               `collapsed a real durable backup; refusing to adopt/overwrite`
             : outcome.reason === 'untrusted'
               ? `its source tree is untrusted (${a.sourceUntrustedReason})`
@@ -3669,7 +3694,7 @@ export class MetalWarmPool {
               `(etag=${outcome.currentEtag ?? 'none'})`
         console.error(
           `[pool] REFUSED to overwrite durable backup for ${a.projectId} — ${why}. ` +
-            `Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — ` +
+            `Export quarantined at ${outcome.quarantineKey} (${archiveBodySize(bytes)} bytes) — ` +
             `durable backup left intact.`,
         )
         return outcome.quarantineKey ? 'quarantined' : 'lost'
@@ -3748,8 +3773,9 @@ export class MetalWarmPool {
     const failed: Array<{ projectId: string; reason: string }> = []
     const { ids } = await this.workspaceMembersForBackup(a)
     for (const projectId of ids) {
+      let bytes: ArchiveBody | null = null
       try {
-        const bytes = await this.fetchExport(
+        bytes = await this.fetchExport(
           a.handle,
           a.runtimeToken,
           `/app/workspace/${projectId}`,
@@ -3762,13 +3788,15 @@ export class MetalWarmPool {
         }
         const { ok, outcome } = await this.storeMemberSource(a, projectId, bytes)
         if (ok) {
-          console.log(`[pool] saved workspace member backup for ${projectId} (${bytes.byteLength} bytes)`)
+          console.log(`[pool] saved workspace member backup for ${projectId} (${archiveBodySize(bytes)} bytes)`)
         } else {
           failed.push({ projectId, reason: `not promoted (${outcome.status})` })
         }
       } catch (error: any) {
         failed.push({ projectId, reason: error?.message ?? String(error) })
         console.error(`[pool] workspace member backup failed for ${projectId}:`, error?.message ?? error)
+      } finally {
+        this.disposeExport(bytes)
       }
     }
     return failed
@@ -3782,7 +3810,7 @@ export class MetalWarmPool {
   private async storeMemberSource(
     a: AssignedVm,
     memberId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
   ): Promise<{ ok: boolean; outcome: BackupWriteOutcome }> {
     const state = this.memberDataState(a, memberId)
     const outcome = await this.uploadBackupGuarded(memberId, bytes, {
@@ -3816,7 +3844,7 @@ export class MetalWarmPool {
               ? `this member's tree is untrusted (${state.sourceUntrustedReason})`
               : `lineage (parentEtag=${state.sourceParentEtag ?? 'none'}) does not match current ` +
                 `backup (etag=${outcome.currentEtag ?? 'none'})`) +
-            `. Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — durable backup left intact.`,
+            `. Export quarantined at ${outcome.quarantineKey} (${archiveBodySize(bytes)} bytes) — durable backup left intact.`,
         )
         return { ok: false, outcome }
       default:
@@ -3984,7 +4012,7 @@ export class MetalWarmPool {
     dir?: string,
   ): Promise<DataExportResult> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
-    const mem = memProbe.begin('export:data', handle.id)
+    const mem = memProbe.begin('spool:data', handle.id)
     let bytes = 0
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
@@ -4004,10 +4032,15 @@ export class MetalWarmPool {
       if (res.status === 404) return 'unsupported'
       if (!res.ok) throw await exportError(res)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await this.readExportBody(res, `writable state ${handle.id}${dir ? ` ${dir}` : ''}`)
-      bytes = buf.byteLength
-      if (!bytes) return null
-      return { bytes: buf, tag: res.headers.get('etag') }
+      const body = await this.spoolExport(
+        res,
+        handle,
+        'data',
+        `writable state ${handle.id}${dir ? ` ${dir}` : ''}`,
+      )
+      bytes = body ? archiveBodySize(body) : 0
+      if (!body) return null
+      return { body, tag: res.headers.get('etag') }
     } catch (err) {
       dl.abort(err)
       throw err
@@ -4020,7 +4053,7 @@ export class MetalWarmPool {
   /** Guarded (conditional) upload of writable state. `protected` for tests. */
   protected uploadDataGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<DataWriteOutcome> {
     return uploadProjectDataGuarded(projectId, bytes, opts, this.cfg)
@@ -5504,7 +5537,7 @@ export class MetalWarmPool {
       return false
     }
     if (!exported) return false
-    const { bytes, tag } = exported
+    const { body, tag } = exported
     // A snapshot arrived, so whatever the last failure was, it is over. Cleared
     // before the upload, not after: the guest producing a snapshot is the fact
     // the rotation rule and the alert care about, and a refused upload
@@ -5516,11 +5549,12 @@ export class MetalWarmPool {
 
     if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
 
-    const outcome = await this.uploadDataGuarded(slot.storageId, bytes, {
+    const outcome = await this.uploadDataGuarded(slot.storageId, body, {
       quarantine: this.quarantineFor(a),
       lineage,
       preserveOnRefusal: opts.final === true,
     })
+    this.disposeExport(body)
     switch (outcome.status) {
       case 'created':
       case 'written': {
@@ -5529,7 +5563,7 @@ export class MetalWarmPool {
         state.parentEtag = outcome.etag ?? state.parentEtag
         state.untrustedReason = undefined
         state.lastUploadAt = now
-        state.lastBytes = bytes.byteLength
+        state.lastBytes = archiveBodySize(body)
         slot.commit()
         if (tag) this.dataTags.set(slot.flightKey, tag)
         metrics.inc(
@@ -5541,7 +5575,7 @@ export class MetalWarmPool {
         )
         console.log(
           `[pool] saved writable state for ${slot.label} ` +
-            `(${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+            `(${archiveBodySize(body)} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
         return true
       }
@@ -5832,7 +5866,7 @@ export class MetalWarmPool {
   /** Guarded (conditional) upload of the home archive. `protected` for tests. */
   protected uploadHomeGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: { lineage: DataLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   ): Promise<DataWriteOutcome> {
     return uploadHomeStateGuarded(projectId, bytes, opts, this.cfg)
@@ -5876,8 +5910,8 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     token?: string,
     knownTag?: string,
-  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | 'too-large' | null> {
-    const mem = memProbe.begin('export:home', handle.id)
+  ): Promise<{ body: ArchiveBody; tag: string | null } | 'unchanged' | 'unsupported' | 'too-large' | null> {
+    const mem = memProbe.begin('spool:home', handle.id)
     let bytes = 0
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export-home`, {
@@ -5894,10 +5928,10 @@ export class MetalWarmPool {
       if (res.status === 413) return 'too-large'
       if (!res.ok) throw new Error(`/pool/export-home failed (${res.status}): ${await res.text()}`)
       memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
-      const buf = await this.readExportBody(res, `home ${handle.id}`)
-      bytes = buf.byteLength
-      if (!bytes) return null
-      return { bytes: buf, tag: res.headers.get('etag') }
+      const body = await this.spoolExport(res, handle, 'home', `home ${handle.id}`)
+      bytes = body ? archiveBodySize(body) : 0
+      if (!body) return null
+      return { body, tag: res.headers.get('etag') }
     } finally {
       memProbe.end(mem, bytes)
     }
@@ -5957,11 +5991,12 @@ export class MetalWarmPool {
     }
     if (!exported) return false
 
-    const outcome = await this.uploadHomeGuarded(a.projectId, exported.bytes, {
+    const outcome = await this.uploadHomeGuarded(a.projectId, exported.body, {
       quarantine: this.quarantineFor(a),
       lineage,
       preserveOnRefusal: opts.final === true,
     })
+    this.disposeExport(exported.body)
     switch (outcome.status) {
       case 'created':
       case 'written':
@@ -5972,7 +6007,7 @@ export class MetalWarmPool {
         metrics.inc(opts.final ? M.homeUploadFinal : M.homeUploadPeriodic)
         console.log(
           `[pool] saved home directory for ${a.projectId} ` +
-            `(${exported.bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+            `(${archiveBodySize(exported.body)} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
         return true
       case 'conflict': {
@@ -8652,10 +8687,15 @@ export class MetalWarmPool {
     metrics.gauge(M.agentRssBytes, own.rss)
     metrics.gauge(M.agentExternalBytes, own.external)
     metrics.gauge(M.agentArrayBuffersBytes, own.arrayBuffers)
-    // How much of the export budget is spoken for, and how long exports queued
-    // for it: the pair that says whether the bound is costing latency (SHO-593).
-    metrics.gauge(M.exportInflightBytes, this.exportBudget.inUse)
-    metrics.gauge(M.exportBudgetWaitMs, Math.round(this.exportBudget.waitedMs))
+    // Exports are spooled to disk now, not buffered (SHO-593), so the number
+    // that matters is how many bytes are crossing the spool — not how much is
+    // queued for memory, which there is no queue for any more.
+    metrics.gauge(
+      M.exportInflightBytes,
+      memProbe
+        .inFlight()
+        .reduce((sum, site) => sum + (site.kind.startsWith('spool:') ? site.bytes : 0), 0),
+    )
     const disk = this.disk()
     metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
     metrics.gauge(M.diskFreeBytes, disk.freeBytes)

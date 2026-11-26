@@ -284,7 +284,6 @@ export const M = {
   // how often an export had to queue, and `tooLarge` counts bodies refused
   // rather than buffered — the tail the budget exists to keep off the host.
   exportInflightBytes: 'metal_export_inflight_bytes',
-  exportBudgetWaitMs: 'metal_export_budget_wait_ms',
   exportTooLarge: 'metal_export_too_large_total',
   ksmPagesSharing: 'metal_ksm_pages_sharing',
   ksmPagesShared: 'metal_ksm_pages_shared',

@@ -40,7 +40,7 @@ class TestPool extends MetalWarmPool {
   source: Outcome<any> = { status: 'written', etag: '"s"' }
   repo: Outcome<any> = { status: 'written', etag: '"r"' }
   data: Outcome<any> = { status: 'written', etag: '"d"' }
-  dataExport: any = { bytes: new Uint8Array([1]), tag: 't1' }
+  dataExport: any = { body: new Uint8Array([1]), tag: 't1' }
   repoExports = 0
 
   protected override async guestHasRepoBundles(): Promise<boolean> {
@@ -82,7 +82,7 @@ class TestPool extends MetalWarmPool {
     return this.data
   }
   protected override async fetchHomeExport(): Promise<any> {
-    return { bytes: new Uint8Array([3]), tag: 'h1' }
+    return { body: new Uint8Array([3]), tag: 'h1' }
   }
   protected override async uploadHomeGuarded(projectId: string): Promise<any> {
     this.events.push(`home ${projectId}`)

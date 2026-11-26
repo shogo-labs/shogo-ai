@@ -526,19 +526,16 @@ export const config = {
   s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
 
   /**
-   * Guest exports are pulled into host memory whole, so they are the one read
-   * with no natural bound (SHO-593): one workspace-member export kept reading
-   * for 60 s and the agent was holding ~33 GiB of it by 15 s in. `exportBudgetBytes`
-   * is the total of in-flight export bytes across all kinds — one big export, or
-   * several small ones. `exportMaxBytes` refuses a single body past that size
-   * rather than buffering it, because the export deadline would have killed it
-   * after the buffer was built anyway.
+   * Ceiling on ONE guest export body (SHO-593).
    *
-   * 512 MiB + 1 GiB is the memory ceiling this buys: a chunked export costs at
-   * most twice its size (chunks, then the join) before the cap stops it.
+   * Exports are spooled to disk rather than buffered, so this is not a memory
+   * bound — it is the runaway guard, set to the same 4 GiB the repo archive
+   * already refuses past (`REPO_MAX_BYTES`) so a source, writable-state or home
+   * export is never rejected for a size the store would have taken. A body past
+   * it is cut off mid-transfer and counted in `metal_export_too_large_total`;
+   * what was written is discarded and the durable backup is left as it was.
    */
-  exportBudgetBytes: parseInt(env('METAL_EXPORT_BUDGET_MIB', '512'), 10) * 1024 * 1024,
-  exportMaxBytes: parseInt(env('METAL_EXPORT_MAX_MIB', '1024'), 10) * 1024 * 1024,
+  exportMaxBytes: parseInt(env('METAL_EXPORT_MAX_MIB', '4096'), 10) * 1024 * 1024,
 
   /**
    * The same trick applied to cold-boot hydrate, with the host fetching on the
