@@ -302,6 +302,7 @@ describe('planSeeding', () => {
     role,
     url,
     assigned,
+    assignedAtMs: 0,
   })
 
   test('seeds the app role, not just the agent role', () => {
