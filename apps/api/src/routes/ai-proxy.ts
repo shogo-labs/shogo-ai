@@ -2749,7 +2749,15 @@ export function splitGoogleThoughtMessage(payload: any): boolean {
   return changed
 }
 
-/** A line rewriter may need to emit more than one line, and may hold text back. */
+/**
+ * A line rewriter may need to emit more than one line, and may hold text back.
+ *
+ * Every returned string is written as **one complete SSE event** by the proxy
+ * (that is the only consumer), so a rewriter can answer one upstream line with
+ * several `data:` chunks without them collapsing into a single event whose
+ * data is the lines joined with `\n`. Non-`data:` lines it hands back are sent
+ * unchanged.
+ */
 export interface SseLineRewriter {
   (line: string): string | string[]
   /** Lines owed when the upstream stream ends (text held back mid-tag). */
@@ -3711,6 +3719,47 @@ export async function proxyOpenAIStream(
     }
   }
 
+  /**
+   * Write one rewritten piece as one complete SSE event.
+   *
+   * A rewriter answers an upstream line with several OpenAI chunk lines (the
+   * Gemini rewriters push a content chunk and a usage chunk, sometimes a
+   * reasoning chunk as well), and under the SSE spec consecutive `data:` lines
+   * are *one* event whose data is those lines joined with `\n`. Writing the
+   * pieces as `piece\n` and letting the upstream blank line end the event made
+   * the client `JSON.parse("{…}\n{…}")` and die with "Could not parse message
+   * into JSON" on the very first chunk of every native video turn. So each
+   * piece carries its own terminating blank line, and the upstream separator
+   * that follows is dropped instead of being re-emitted as an empty event.
+   */
+  const emit = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    rewritten: string | string[] | undefined,
+  ) => {
+    if (rewritten === undefined) return
+    for (const piece of Array.isArray(rewritten) ? rewritten : [rewritten]) {
+      if (piece.trim() === '') continue
+      if (!piece.startsWith('data:')) {
+        // `event:`, `id:`, `retry:` and comments go through untouched; the
+        // data line that follows closes the event they belong to.
+        controller.enqueue(encoder.encode(`${piece}\n`))
+        continue
+      }
+      const data = piece.slice('data:'.length).trim()
+      if (data && data !== '[DONE]') {
+        try {
+          noteUsage(JSON.parse(data))
+        } catch {
+          // Skip unparseable lines
+        }
+      }
+      // A CRLF body leaves the upstream `\r` on the piece; the event's own
+      // terminator makes it redundant, so the output stays canonical `\n\n`.
+      const framed = piece.endsWith('\r') ? piece.slice(0, -1) : piece
+      controller.enqueue(encoder.encode(`${framed}\n\n`))
+    }
+  }
+
   const buildTransformStream = (lineRewriter: SseLineRewriter | null) =>
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
@@ -3735,49 +3784,18 @@ export async function proxyOpenAIStream(
 
         // A rewriter can turn one upstream line into several (the Gemini
         // thought rewriter splits "</thought>answer" into thinking then text),
-        // so each piece is enqueued and counted on its own.
-        const emit = (rewritten: string | string[]) => {
-          for (const piece of Array.isArray(rewritten) ? rewritten : [rewritten]) {
-            if (piece.startsWith('data: ')) {
-              const data = piece.slice(6).trim()
-              if (data && data !== '[DONE]') {
-                try {
-                  noteUsage(JSON.parse(data))
-                } catch {
-                  // Skip unparseable lines
-                }
-              }
-            }
-            controller.enqueue(encoder.encode(`${piece}\n`))
-          }
-        }
-
+        // so each piece is enqueued and counted on its own — as its own event.
         sseBuffer += decoder.decode(chunk, { stream: true })
         const lines = sseBuffer.split('\n')
         sseBuffer = lines.pop() ?? ''
         for (const line of lines) {
-          emit(rewrite(line))
+          emit(controller, rewrite(line))
         }
       },
       flush(controller) {
         const rewrite = lineRewriter
-        const emit = (rewritten: string | string[] | undefined) => {
-          for (const piece of rewritten === undefined ? [] : Array.isArray(rewritten) ? rewritten : [rewritten]) {
-            if (piece.startsWith('data: ')) {
-              const data = piece.slice(6).trim()
-              if (data && data !== '[DONE]') {
-                try {
-                  noteUsage(JSON.parse(data))
-                } catch {
-                  // Skip unparseable lines
-                }
-              }
-            }
-            controller.enqueue(encoder.encode(`${piece}\n`))
-          }
-        }
-        if (rewrite && sseBuffer) emit(rewrite(sseBuffer))
-        if (rewrite?.flush) emit(rewrite.flush())
+        if (rewrite && sseBuffer) emit(controller, rewrite(sseBuffer))
+        if (rewrite?.flush) emit(controller, rewrite.flush())
         onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
       },
     })
