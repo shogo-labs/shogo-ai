@@ -67,6 +67,23 @@ function matchWhere<T extends Record<string, any>>(row: T, where?: any): boolean
   return true
 }
 
+/**
+ * `workspaceSessionIds` is a real query the service runs once per read
+ * (SHO-598), so the raw mock answers it from the fixture store instead of the
+ * canned queue: the sessions that belong to the workspace directly, plus the
+ * ones whose project does.
+ */
+function fixtureWorkspaceSessionIds(sql: string, args: any[]): string[] | null {
+  if (!sql.includes('UNION ALL SELECT cs."id" FROM "chat_sessions"')) return null
+  const workspaceIds = args.map(String)
+  const projectIds = store.projects
+    .filter((p) => workspaceIds.includes(p.workspaceId))
+    .map((p) => String(p.id))
+  return store.chatSessions
+    .filter((s) => workspaceIds.includes(s.workspaceId) || projectIds.includes(s.contextId))
+    .map((s) => String(s.id))
+}
+
 function makeModel<T extends Record<string, any>>(rows: T[]) {
   return {
     count: async (args?: any) => rows.filter((r) => matchWhere(r, args?.where)).length,
@@ -135,6 +152,8 @@ const mockPrisma: any = {
   session: makeModel(store.sessions),
   $queryRawUnsafe: async (sql: string, ...args: any[]) => {
     rawCalls.push({ sql, args })
+    const sessionIds = fixtureWorkspaceSessionIds(sql, args)
+    if (sessionIds) return sessionIds.map((id) => ({ id }))
     return rawQueue.length ? rawQueue.shift()! : []
   },
   $queryRaw: async () => (rawQueue.length ? rawQueue.shift()! : []),

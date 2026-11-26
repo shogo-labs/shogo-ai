@@ -46,7 +46,7 @@ import {
   type RawActivity,
   type WorkTotals,
 } from '../lib/engagement-compute'
-import { periodToWindow, type AnalyticsPeriod } from './analytics.service'
+import { periodToWindow, workspaceSessionIds, type AnalyticsPeriod } from './analytics.service'
 import { BILLED_USAGE_ACTION_TYPE_LIST } from '../config/usage-action-types'
 import { splitUsageCost } from '../lib/usage-cost'
 
@@ -134,15 +134,12 @@ export async function collectActivity(
   const createdAt = { gte: from, lte: to }
   const user = scope.userId
 
-  // ChatSession scope: a session belongs to the workspace directly, or
-  // through the project it runs in. Named for `session` — `chatSession` is the
-  // relation name on `ToolCallLog`, not here.
-  const sessionScope = {
-    OR: [
-      { workspaceId: { in: workspaceIds } },
-      { project: { workspaceId: { in: workspaceIds } } },
-    ],
-  }
+  // ChatSession scope: a session belongs to the workspace directly, or through
+  // the project it runs in. `workspaceSessionIds` is the one definition of that
+  // rule (SHO-598); resolving it to ids keeps the relation `OR` — which
+  // Postgres cannot drive from an index — out of every chat read here.
+  const sessionIds = await workspaceSessionIds(workspaceIds)
+  const noSessions = sessionIds.length === 0
 
   const [
     usageEvents,
@@ -172,27 +169,24 @@ export async function collectActivity(
         createdAt: true,
       },
     }),
-    prisma.toolCallLog.findMany({
-      where: {
-        createdAt,
-        userId: user ?? { not: null },
-        chatSession: {
-          OR: [
-            { workspaceId: { in: workspaceIds } },
-            { project: { workspaceId: { in: workspaceIds } } },
-          ],
+    noSessions
+      ? Promise.resolve([] as any[])
+      : prisma.toolCallLog.findMany({
+        where: {
+          chatSessionId: { in: sessionIds },
+          createdAt,
+          userId: user ?? { not: null },
         },
-      },
-      select: {
-        userId: true,
-        toolName: true,
-        status: true,
-        linesAdded: true,
-        linesRemoved: true,
-        chatSessionId: true,
-        createdAt: true,
-      },
-    }),
+        select: {
+          userId: true,
+          toolName: true,
+          status: true,
+          linesAdded: true,
+          linesRemoved: true,
+          chatSessionId: true,
+          createdAt: true,
+        },
+      }),
     prisma.conversationMessage.findMany({
       where: {
         workspaceId: { in: workspaceIds },
@@ -264,52 +258,56 @@ export async function collectActivity(
     // Prompts a person typed into an agent chat. The author is stamped at
     // write time; rows written before that column existed fall back to the
     // session owner, and a shared chat with no owner is counted, not guessed.
-    prisma.chatMessage.findMany({
-      where: {
-        role: 'user',
-        agent: { not: PROJECT_CALL_MESSAGE_AGENT },
-        createdAt,
-        AND: [
-          { session: sessionScope },
-          user
-            ? {
-                OR: [
-                  { authorUserId: user },
-                  { authorUserId: null, session: { createdByUserId: user } },
-                ],
-              }
-            : {
-                OR: [
-                  { authorUserId: { not: null } },
-                  { authorUserId: null, session: { createdByUserId: { not: null } } },
-                ],
-              },
-        ],
-      },
-      select: {
-        id: true,
-        authorUserId: true,
-        createdAt: true,
-        content: true,
-        sessionId: true,
-        session: {
-          select: { name: true, inferredName: true, createdByUserId: true, contextType: true, contextId: true },
+    noSessions
+      ? Promise.resolve([] as any[])
+      : prisma.chatMessage.findMany({
+        where: {
+          role: 'user',
+          agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+          createdAt,
+          AND: [
+            { sessionId: { in: sessionIds } },
+            user
+              ? {
+                  OR: [
+                    { authorUserId: user },
+                    { authorUserId: null, session: { createdByUserId: user } },
+                  ],
+                }
+              : {
+                  OR: [
+                    { authorUserId: { not: null } },
+                    { authorUserId: null, session: { createdByUserId: { not: null } } },
+                  ],
+                },
+          ],
         },
-      },
-    }),
+        select: {
+          id: true,
+          authorUserId: true,
+          createdAt: true,
+          content: true,
+          sessionId: true,
+          session: {
+            select: { name: true, inferredName: true, createdByUserId: true, contextType: true, contextId: true },
+          },
+        },
+      }),
     // User prompts in a chat whose sender is unknowable: no stamped author and
     // no session owner (project chats are shared).
-    prisma.chatMessage.count({
-      where: {
-        role: 'user',
-        agent: { not: PROJECT_CALL_MESSAGE_AGENT },
-        authorUserId: null,
-        createdAt,
-        session: {
-          AND: [sessionScope, { createdByUserId: null }],
+    noSessions
+      ? Promise.resolve(0)
+      : prisma.chatMessage.count({
+        where: {
+          role: 'user',
+          agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+          authorUserId: null,
+          createdAt,
+          session: {
+            AND: [{ id: { in: sessionIds } }, { createdByUserId: null }],
+          },
         },
-      },
-    }),
+      }),
     // Board actions. Agent actions carry `actorAgentRef` and no user, so the
     // `actorUserId` filter alone keeps them out.
     prisma.workItemEvent.findMany({

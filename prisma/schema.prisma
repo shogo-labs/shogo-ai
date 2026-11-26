@@ -1783,6 +1783,12 @@ model UsageEvent {
   // planner either scans every event of the window or heap-fetches through
   // `usage_events_memberId_idx` and sorts (measured: 44 s on one usage log).
   @@index([memberId, createdAt])
+  // The usage log and the dashboard's count read "one workspace, one set of
+  // action types, one date window" (SHO-598). With only `(workspaceId,
+  // createdAt)` the planner walks every action type in the window — for a
+  // workspace that is 34 % of all events that was 7.9 s on prod data; leading
+  // with `actionType` makes it an index-only range scan per type.
+  @@index([workspaceId, actionType, createdAt])
   @@map("usage_events")
 }
 
@@ -2389,7 +2395,13 @@ model ToolCallLog {
   // Relations
   chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
 
-  @@index([chatSessionId])
+  // Analytics reach this table as `"chatSessionId" IN (<the workspace's session
+  // ids>) AND "createdAt" >= … AND "status" = …` (SHO-598). Leading with the
+  // session id lets the nested loop answer that from the index; the old
+  // single-column index then sent every candidate to the heap to check the
+  // window and the status. Cascade deletes and per-session reads still use the
+  // leading column.
+  @@index([chatSessionId, createdAt, status])
   @@index([messageId])
   @@index([userId, createdAt])
   // Tool-call analytics is a date-window aggregate over the whole table; the

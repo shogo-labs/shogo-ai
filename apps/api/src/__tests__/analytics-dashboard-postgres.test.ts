@@ -50,11 +50,16 @@ beforeEach(() => {
 const window = { period: '30d' as const }
 
 describe('getUsageDashboard on Postgres', () => {
-  test('issues one statement and never selects actionMetadata', async () => {
+  test('issues one scan (plus the session-id resolution) and never selects actionMetadata', async () => {
     await getUsageDashboard({ workspaceId: 'ws_1' }, window)
 
-    expect(captured).toHaveLength(1)
-    const [{ sql }] = captured
+    // SHO-598 added one statement: the tool-call tile's workspace scope is
+    // resolved to session ids before the count. Everything the tab renders
+    // still comes from exactly one aggregate scan of `usage_events`.
+    expect(captured).toHaveLength(2)
+    const scans = captured.filter((c) => c.sql.includes('GROUP BY'))
+    expect(scans).toHaveLength(1)
+    const { sql } = scans[0]
     expect(sql).toContain('GROUP BY')
     expect(sql).toContain('DATE_TRUNC')
     // The JSON is read by the aggregation: this is what stops ~42 MB of JSONB
