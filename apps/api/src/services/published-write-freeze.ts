@@ -259,7 +259,11 @@ export function defaultWriteFreezeDeps(input: {
 
     async requestFlush() {
       const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
-      const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+      // A *published* pod's env carries `RUNTIME_AUTH_SECRET` — the project token —
+      // and nothing else. `deriveProjectRuntimeToken` resolves to the workspace
+      // token, which a published pod answers 401 to (verified on KIF's prod pod),
+      // so the flush would look like a failure even on a runtime that has the route.
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
       const manager = getKnativeProjectManager()
       try {
         const status = await manager.getServiceStatus(`published-${input.projectId}`, input.projectId)
@@ -274,7 +278,7 @@ export function defaultWriteFreezeDeps(input: {
       try {
         const res = await fetch(`${manager.publishedServiceUrl(input.projectId)}/agent/published-data/flush`, {
           method: 'POST',
-          headers: { 'x-runtime-token': await deriveProjectRuntimeToken(input.projectId) },
+          headers: { 'x-runtime-token': await deriveRuntimeToken(input.projectId) },
           signal: AbortSignal.timeout(45_000),
         })
         const body = (await res.json().catch(() => ({}))) as {
