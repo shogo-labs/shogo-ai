@@ -110,6 +110,24 @@ describe('pool per-class liveness classification', () => {
     expect(metrics.getGauge(M.assignedIdleTail)).toBe(0)
   })
 
+  test('publishes the agent\'s own memory gauges (SHO-593)', () => {
+    const pool = makePool(dir)
+    pool.seed('a', {})
+
+    pool.status() // triggers publishGauges()
+
+    const usage = process.memoryUsage()
+    // The gauges are the agent's own numbers, not the host's: that is the whole
+    // point — a 40 GiB control-plane burst left no trace in metal_host_mem_*.
+    // rss moves between the tick and this read, so compare magnitudes.
+    expect(metrics.getGauge(M.agentRssBytes)).toBeGreaterThan(0)
+    expect(Math.abs(metrics.getGauge(M.agentRssBytes) - usage.rss)).toBeLessThan(256 * 1024 * 1024)
+    expect(metrics.getGauge(M.agentExternalBytes)).toBeGreaterThanOrEqual(0)
+    expect(metrics.getGauge(M.agentArrayBuffersBytes)).toBeGreaterThanOrEqual(0)
+    expect(metrics.prometheus()).toContain('metal_agent_rss_bytes ')
+    expect(metrics.prometheus()).toContain('metal_agent_array_buffers_bytes ')
+  })
+
   test('counts assigned-but-unhealthy separately from the disjoint buckets', () => {
     const pool = makePool(dir)
     pool.seed('mute', { lastHealthOk: false, activeStreams: 0 })

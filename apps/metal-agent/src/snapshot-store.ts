@@ -26,6 +26,7 @@ import { mkdir, copyFile, readFile, writeFile, rm, stat, open, rename, readdir }
 import { existsSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import type { MetalConfig } from './config'
+import { memProbe } from './mem-probe'
 import type { VmNet } from './net'
 
 /** The three on-disk artifacts that make a restorable snapshot. */
@@ -530,6 +531,19 @@ class S3Store implements SnapshotStore {
     // Never publish a torn snapshot (see FsStore.push). A missing/empty source
     // aborts the push before any object is written to S3.
     await assertArtifacts(files)
+    // Tracked as one hold: `mem.gz` and the CoW diff go up as a Response whose
+    // body is a gzip stream of unknown length, so if that body is buffered
+    // anywhere the probe shows it as `unknown` with a growing age rather than
+    // as a plausible byte count (SHO-593).
+    const mem = memProbe.begin('snapshot:push', meta.projectId)
+    try {
+      await this.pushObjects(files, meta)
+    } finally {
+      memProbe.end(mem)
+    }
+  }
+
+  private async pushObjects(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
     const pid = meta.projectId
     const rootfsMode = meta.rootfsMode ?? 'full'
     // Slim + a CoW diff → gzip the sparse (mostly-zero) store so a cold pull
@@ -627,31 +641,38 @@ class S3Store implements SnapshotStore {
   }
 
   private async download(key: string, dest: string): Promise<void> {
-    await mkdir(dirname(dest), { recursive: true })
-    const partBytes = this.cfg.s3GetPartBytes
-    const concurrency = this.cfg.s3GetConcurrency
-    // Large objects: parallel ranged GET to saturate the link. Small objects
-    // (vmstate, or anything <= one part) go single-stream — the overhead of a
-    // stat + range split isn't worth it.
-    if (concurrency > 1 && partBytes > 0) {
-      let size = 0
-      try {
-        size = (await this.client.file(key).stat()).size
-      } catch {
-        size = 0
+    const mem = memProbe.begin('snapshot:pull', key)
+    let fetched = 0
+    try {
+      await mkdir(dirname(dest), { recursive: true })
+      const partBytes = this.cfg.s3GetPartBytes
+      const concurrency = this.cfg.s3GetConcurrency
+      // Large objects: parallel ranged GET to saturate the link. Small objects
+      // (vmstate, or anything <= one part) go single-stream — the overhead of a
+      // stat + range split isn't worth it.
+      if (concurrency > 1 && partBytes > 0) {
+        let size = 0
+        try {
+          size = (await this.client.file(key).stat()).size
+        } catch {
+          size = 0
+        }
+        if (size > partBytes) {
+          fetched = size
+          await downloadRanged(
+            dest,
+            size,
+            async (start, end) => new Uint8Array(await this.client.file(key).slice(start, end).arrayBuffer()),
+            { partBytes, concurrency },
+          )
+          return
+        }
       }
-      if (size > partBytes) {
-        await downloadRanged(
-          dest,
-          size,
-          async (start, end) => new Uint8Array(await this.client.file(key).slice(start, end).arrayBuffer()),
-          { partBytes, concurrency },
-        )
-        return
-      }
+      // S3 → disk via the client's file handle (Bun buffers/streams internally).
+      await Bun.write(dest, this.client.file(key))
+    } finally {
+      memProbe.end(mem, fetched)
     }
-    // S3 → disk via the client's file handle (Bun buffers/streams internally).
-    await Bun.write(dest, this.client.file(key))
   }
 
   /**

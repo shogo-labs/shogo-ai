@@ -38,6 +38,7 @@ import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
+import { memProbe } from './mem-probe'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
 import {
@@ -3482,6 +3483,8 @@ export class MetalWarmPool {
    */
   protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    const mem = memProbe.begin('export:source', handle.id)
+    let bytes = 0
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export`, {
         method: 'POST',
@@ -3494,8 +3497,10 @@ export class MetalWarmPool {
       })
       if (res.status === 204) return null
       if (!res.ok) throw new Error(`/pool/export failed (${res.status}): ${await res.text()}`)
+      memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
       const buf = await res.arrayBuffer()
-      return buf.byteLength ? new Uint8Array(buf) : null
+      bytes = buf.byteLength
+      return bytes ? new Uint8Array(buf) : null
     } catch (err) {
       // A read that stopped early — deadline, or a body the guest is still
       // sending — must be torn down, not merely abandoned: the guest only
@@ -3504,6 +3509,7 @@ export class MetalWarmPool {
       throw err
     } finally {
       dl.dispose()
+      memProbe.end(mem, bytes)
     }
   }
 
@@ -3566,6 +3572,23 @@ export class MetalWarmPool {
    */
   private async storeSourceBytes(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
     return (await this.storeSource(a, bytes)) !== 'lost'
+  }
+
+  /**
+   * Rescue path: the guest is gone and the source was extracted to disk. The
+   * file is read whole (there is no stream into the lineage guard), so the read
+   * is tracked — this is the one hold that has no size cap at all.
+   */
+  private async storeSourceBytesFromDisk(a: AssignedVm, path: string): Promise<boolean> {
+    const mem = memProbe.begin('rescue:disk', a.projectId)
+    let bytes = 0
+    try {
+      const buf = readFileSync(path)
+      bytes = buf.byteLength
+      return (await this.storeSource(a, new Uint8Array(buf))) !== 'lost'
+    } finally {
+      memProbe.end(mem, bytes)
+    }
   }
 
   private async storeSource(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
@@ -3927,6 +3950,8 @@ export class MetalWarmPool {
     dir?: string,
   ): Promise<DataExportResult> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+    const mem = memProbe.begin('export:data', handle.id)
+    let bytes = 0
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
         method: 'POST',
@@ -3944,7 +3969,9 @@ export class MetalWarmPool {
       // failure because it is permanent for this VM and must not be retried.
       if (res.status === 404) return 'unsupported'
       if (!res.ok) throw await exportError(res)
+      memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
       const buf = await res.arrayBuffer()
+      bytes = buf.byteLength
       if (!buf.byteLength) return null
       return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
     } catch (err) {
@@ -3952,6 +3979,7 @@ export class MetalWarmPool {
       throw err
     } finally {
       dl.dispose()
+      memProbe.end(mem, bytes)
     }
   }
 
@@ -5815,22 +5843,30 @@ export class MetalWarmPool {
     token?: string,
     knownTag?: string,
   ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | 'too-large' | null> {
-    const res = await fetch(`${handle.agentUrl}/pool/export-home`, {
-      method: 'POST',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(knownTag ? { 'If-None-Match': knownTag } : {}),
-      },
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
-    })
-    if (res.status === 304) return 'unchanged'
-    if (res.status === 204) return null
-    if (res.status === 404) return 'unsupported'
-    if (res.status === 413) return 'too-large'
-    if (!res.ok) throw new Error(`/pool/export-home failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    if (!buf.byteLength) return null
-    return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    const mem = memProbe.begin('export:home', handle.id)
+    let bytes = 0
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/export-home`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+        },
+        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      })
+      if (res.status === 304) return 'unchanged'
+      if (res.status === 204) return null
+      if (res.status === 404) return 'unsupported'
+      if (res.status === 413) return 'too-large'
+      if (!res.ok) throw new Error(`/pool/export-home failed (${res.status}): ${await res.text()}`)
+      memProbe.held(mem, Number(res.headers.get('content-length')) || 0)
+      const buf = await res.arrayBuffer()
+      bytes = buf.byteLength
+      if (!bytes) return null
+      return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+    } finally {
+      memProbe.end(mem, bytes)
+    }
   }
 
   private trustedHomeEtag(a: AssignedVm): string | undefined {
@@ -7853,7 +7889,7 @@ export class MetalWarmPool {
       )
       let ok = true
       if (repo) ok = (await this.storeRepoBytes(a, Bun.file(repo), null)) !== 'lost' && ok
-      if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
+      if (source) ok = (await this.storeSourceBytesFromDisk(a, source)) && ok
       return ok
     } finally {
       rmSync(outDir, { recursive: true, force: true })
@@ -8575,6 +8611,13 @@ export class MetalWarmPool {
   }
 
   private publishGauges(): void {
+    // The agent's own memory (SHO-593): a control-plane burst that reaches
+    // tens of GiB has to be visible on a dashboard before it is visible in
+    // dmesg. `arrayBuffers` is the one that names a buffered export or S3 read.
+    const own = memProbe.read()
+    metrics.gauge(M.agentRssBytes, own.rss)
+    metrics.gauge(M.agentExternalBytes, own.external)
+    metrics.gauge(M.agentArrayBuffersBytes, own.arrayBuffers)
     const disk = this.disk()
     metrics.gauge(M.diskUsedPct, +disk.usedPct.toFixed(2))
     metrics.gauge(M.diskFreeBytes, disk.freeBytes)

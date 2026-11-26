@@ -24,6 +24,7 @@
  */
 
 import type { S3Client } from 'bun'
+import { memProbe } from './mem-probe'
 
 /** A durable archive addressed by URL, with its bytes available on demand. */
 export interface ArchiveRef {
@@ -96,7 +97,7 @@ export async function describeObject(
     lastModified,
     url: presign(client, key, expiresInSec),
     range: async (start, end) => new Uint8Array(await client.file(key).slice(start, end).arrayBuffer()),
-    load: () => download(file),
+    load: () => download(file, key),
   }
 }
 
@@ -115,6 +116,14 @@ function presign(client: S3Client, key: string, expiresInSec: number): string | 
   }
 }
 
-async function download(file: ReturnType<S3Client['file']>): Promise<Uint8Array> {
-  return new Uint8Array(await file.arrayBuffer())
+async function download(file: ReturnType<S3Client['file']>, key: string): Promise<Uint8Array> {
+  const mem = memProbe.begin('archive:load', key)
+  let bytes = 0
+  try {
+    const buf = await file.arrayBuffer()
+    bytes = buf.byteLength
+    return new Uint8Array(buf)
+  } finally {
+    memProbe.end(mem, bytes)
+  }
 }
