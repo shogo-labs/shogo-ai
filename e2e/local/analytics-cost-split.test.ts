@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Analytics → Usage: spend is two lines, a **Model cost** and a **Shogo fee**,
- * on top of the same Total a person already sees (SHO-288).
+ * Analytics → Usage: spend is one figure — the Total a person is billed — with
+ * no model-cost / Shogo-fee breakdown (SHO-597, which reverses the display half
+ * of SHO-288).
  *
- * The plan's acceptance criterion is "the Usage tab on a cloud workspace and a
- * desktop workspace shows Model cost + Shogo fee = Total", and the split is
- * computed server-side per row (one clamp, before summing). So this spec fixes
- * the two shapes at the boundary — a cloud workspace, where `billedUsd` is
- * `rawUsd × 1.20`, and a desktop workspace, where `billedUsd` is 0 and the
- * provider cost lives in `rawUsd` — and asserts what the tab renders for each:
- * the Total, the two lines under it, and the pre-2026-04-24 note for billed
- * rows that have no provider cost recorded.
+ * The arithmetic still lives in the API, so this spec fixes the two shapes at
+ * the boundary — a cloud workspace, where `billedUsd` is `rawUsd × 1.20`, and a
+ * desktop workspace, where `billedUsd` is 0 and the provider cost lives in
+ * `rawUsd` — and asserts what the tab renders for each: the Total, and no split
+ * text anywhere on the surface, including the pre-2026-04-24 note.
  *
- * The arithmetic is the point, so the fixtures are hand-computable:
+ * The arithmetic is still the point, so the fixtures are hand-computable:
  *   cloud row       billed 1.20, raw 1.00  → model 1.00, fee 0.20
  *   desktop row     billed 0.00, raw 1.00  → model 1.00, fee 0.00
  *   pre-itemised    billed 1.00, raw null  → unitemised 1.00
  *   Total 3.20 = 2.00 model + 0.20 fee + 1.00 unitemised
  *
- * The last test reads the live endpoint and checks the invariant the UI depends
- * on — model + fee + unitemised adds up to the Total — so a stubbed payload
- * cannot hide a server that stopped sending the fields.
+ * The last test reads the live endpoint and checks the invariant `splitTotalUsd`
+ * depends on — model + fee + unitemised adds up to the Total — so a stubbed
+ * payload cannot hide a server that stopped sending the fields.
  *
  * Needs the local stack (`E2E_LOCAL_START_STACK=1` starts it).
  */
@@ -191,7 +189,7 @@ async function stubUsageTab(target: Page, totals: SplitTotals, model: string) {
   )
 }
 
-test.describe("Analytics usage spend split", () => {
+test.describe("Analytics usage spend shows one figure", () => {
   test.describe.configure({ mode: "serial" })
 
   test.beforeAll(async ({ browser }) => {
@@ -207,43 +205,48 @@ test.describe("Analytics usage spend split", () => {
     await page.context().close()
   })
 
-  test("a cloud workspace shows Model cost + Shogo fee under the Total, and they add up", async () => {
+  /** Nothing on a Usage surface may name the split any more. */
+  async function expectNoSplitText(locator: ReturnType<Page["getByTestId"]>) {
+    await expect(locator).not.toContainText("Shogo fee")
+    await expect(locator).not.toContainText("Shogo Fee")
+    await expect(locator).not.toContainText("Model $")
+    await expect(locator).not.toContainText("Fee $")
+    await expect(locator).not.toContainText("before itemized billing")
+  }
+
+  test("a cloud workspace shows the Total once, with no split under it", async () => {
     await stubUsageTab(page, CLOUD, CLOUD_MODEL)
     await openUsageTab(page)
 
     const spend = page.getByTestId("usage-section-spend")
-    // The Total is the same number as before this card — only the breakdown is new.
+    // The figure is the same number as before the split existed.
     await expect(spend).toContainText("$3.20", { timeout: 30_000 })
-    // 2.00 model + 0.20 fee + 1.00 from before itemised billing = 3.20.
-    await expect(spend).toContainText("Model $2.00 · Shogo fee $0.20 (20%)")
-    // A billed row with no provider cost is not guessed at; it says so.
-    await expect(spend).toContainText("$1.00 before itemized billing (Apr 24 2026)")
+    await expectNoSplitText(spend)
 
-    // The same two lines on the per-user × model row and on the request row.
+    // The per-user × model row and the request row show their totals, no split.
     const usage = page.getByTestId("usage-section-usage")
-    await expect(usage).toContainText("Model $2.00 · Shogo fee $0.20", { timeout: 30_000 })
-    // The request log is its own view of the same section.
+    await expect(usage).toContainText("$3.20", { timeout: 30_000 })
+    await expectNoSplitText(usage)
     await usage.getByText("Event Log", { exact: true }).click()
-    await expect(usage).toContainText("Model $1.00 · Shogo fee $0.20", { timeout: 30_000 })
+    await expect(usage).toContainText("$1.20", { timeout: 30_000 })
+    await expectNoSplitText(usage)
   })
 
-  test("a desktop workspace shows the same two lines with a $0.00 fee", async () => {
+  test("a desktop workspace shows its Total with no split either", async () => {
     await stubUsageTab(page, DESKTOP, DESKTOP_MODEL)
     await openUsageTab(page)
 
     const spend = page.getByTestId("usage-section-spend")
     await expect(spend).toContainText("$2.00", { timeout: 30_000 })
-    // Nothing is billed on desktop, so the whole spend is the provider's price.
-    await expect(spend).toContainText("Model $2.00 · Shogo fee $0.00 (20%)")
-    // And no pre-itemised note, because nothing is unitemised.
-    await expect(spend).not.toContainText("before itemized billing")
+    await expectNoSplitText(spend)
 
     const usage = page.getByTestId("usage-section-usage")
     await usage.getByText("Event Log", { exact: true }).click({ timeout: 30_000 })
-    await expect(usage).toContainText("Model $1.00 · Shogo fee $0.00", { timeout: 30_000 })
+    await expect(usage).toContainText("$1.00", { timeout: 30_000 })
+    await expectNoSplitText(usage)
   })
 
-  test("the live endpoint's split adds up to the Total it reports", async () => {
+  test("the live endpoint's split still adds up to the Total it reports", async () => {
     const res = await api(page, "GET", `/api/workspaces/${workspaceId}/analytics/dashboard?period=30d`)
     expect(res.status).toBe(200)
 
@@ -252,7 +255,7 @@ test.describe("Analytics usage spend split", () => {
     expect(typeof totals?.shogoFeeUsd).toBe("number")
     expect(typeof totals?.unitemizedUsd).toBe("number")
     expect(typeof totals?.shogoFeePercent).toBe("number")
-    // model + fee + unitemised is the Total the user already saw — never a new number.
+    // model + fee + unitemised is the one Total the user sees — never a new number.
     expect(
       totals.modelCostUsd + totals.shogoFeeUsd + totals.unitemizedUsd,
     ).toBeCloseTo(totals.totalSpendUsd, 6)

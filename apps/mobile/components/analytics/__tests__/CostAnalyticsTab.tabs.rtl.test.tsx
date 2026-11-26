@@ -61,40 +61,42 @@ mock.module('../LoadErrorNotice', () => ({
 
 const { CostAnalyticsTab } = await import('../CostAnalyticsTab')
 
-const fetchCostAnalytics = mock(
-  async (endpoint: string, _params?: Record<string, string>): Promise<any> => {
-    switch (endpoint) {
-      case 'agent-breakdown':
-        return {
-          breakdown: [],
-          totals: {
-            totalCreditCost: 0,
-            totalRuns: 0,
-            totalInputTokens: 0,
-            totalOutputTokens: 0,
-            totalToolCalls: 0,
-            uniqueAgents: 0,
-            uniqueModels: 0,
-          },
-        }
-      case 'trends':
-        return { trends: [], forecast: { nextMonth: 0, trend: 'stable', percentChange: 0 } }
-      case 'budget-alerts':
-        return []
-      case 'budget-status':
-        return null
-      case 'experiments':
-        return []
-      case 'optimizer-in-action':
-        return { overrides: [], experiments: [], evalScores: [] }
-      default:
-        throw new Error(`unexpected cost-analytics endpoint: ${endpoint}`)
-    }
-  },
-)
+const defaultFetch = async (
+  endpoint: string,
+  _params?: Record<string, string>,
+): Promise<any> => {
+  switch (endpoint) {
+    case 'agent-breakdown':
+      return {
+        breakdown: [],
+        totals: {
+          totalCreditCost: 0,
+          totalRuns: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalToolCalls: 0,
+          uniqueAgents: 0,
+          uniqueModels: 0,
+        },
+      }
+    case 'trends':
+      return { trends: [], forecast: { nextMonth: 0, trend: 'stable', percentChange: 0 } }
+    case 'budget-alerts':
+      return []
+    case 'budget-status':
+      return null
+    case 'experiments':
+      return []
+    case 'optimizer-in-action':
+      return { overrides: [], experiments: [], evalScores: [] }
+    default:
+      throw new Error(`unexpected cost-analytics endpoint: ${endpoint}`)
+  }
+}
+const fetchCostAnalytics = mock(defaultFetch)
 const postCostAnalytics = mock(async (): Promise<any> => ({}))
 
-const endpoints = () => fetchCostAnalytics.mock.calls.map(([endpoint]) => endpoint as string)
+const endpoints = () => fetchCostAnalytics.mock.calls.map(([endpoint]: any[]) => endpoint as string)
 
 /** Tab-strip labels, excluding the period selector and any section-rendered controls. */
 const tabLabels = () =>
@@ -115,6 +117,7 @@ const lastCall = (endpoint: string) =>
   [...fetchCostAnalytics.mock.calls].reverse().find(([e]) => e === endpoint)
 
 beforeEach(() => {
+  fetchCostAnalytics.mockImplementation(defaultFetch)
   fetchCostAnalytics.mockClear()
   postCostAnalytics.mockClear()
 })
@@ -158,6 +161,37 @@ describe('CostAnalyticsTab tab strip', () => {
 
     expect(screen.queryByTestId('section-budget')).toBeNull()
     expect(endpoints()).not.toContain('recommendations')
+  })
+
+  // SHO-597 AC4: one Cost card = provider cost + fee, and Avg Cost/Run divides
+  // that same total, so the two cards can never disagree.
+  test('the summary shows one Cost card and an Avg Cost/Run that divides it', async () => {
+    fetchCostAnalytics.mockImplementation(async (endpoint: string) => {
+      if (endpoint !== 'agent-breakdown') return defaultFetch(endpoint)
+      return {
+        breakdown: [],
+        totals: {
+          totalCreditCost: 1,
+          shogoFeeUsd: 0.2,
+          totalWithFeeUsd: 1.2,
+          totalRuns: 4,
+          unpricedRuns: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalToolCalls: 0,
+          uniqueAgents: 0,
+          uniqueModels: 1,
+        },
+      }
+    })
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Cost')).toBeTruthy())
+    expect(screen.getByText('$1.20')).toBeTruthy()
+    // 1.20 ÷ 4 runs, not 1.00 ÷ 4.
+    expect(screen.getByText('$0.30')).toBeTruthy()
+    expect(screen.queryByText('Model cost')).toBeNull()
+    expect(screen.queryByText(/Shogo Fee/)).toBeNull()
   })
 
   test('changing the period refetches the eagerly loaded tabs against the new window', async () => {

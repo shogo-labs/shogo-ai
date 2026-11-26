@@ -47,7 +47,7 @@ import { compactNumber } from '../../lib/engagement-utils'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import { Text } from '../settings/account-sheet-chrome'
 import { LoadErrorNotice } from './LoadErrorNotice'
-import { StatCard, CostSplitLines, formatDollarCost, getModelDisplayName } from './SharedAnalytics'
+import { StatCard, formatDollarCost, getModelDisplayName } from './SharedAnalytics'
 import { Spinner } from '@/components/ui/spinner'
 
 export type HeartbeatPeriod = '24h' | '7d' | '30d'
@@ -73,9 +73,9 @@ export interface HeartbeatAgentRow {
   ticks: number
   billedUsd: number
   rawUsd: number
-  /** Provider price (the "Model cost" line). */
+  /** Provider price across the row. */
   modelCostUsd?: number
-  /** What we add on top of the provider price (the "Shogo fee" line). */
+  /** What we add on top of the provider price. */
   shogoFeeUsd?: number
   /** Billed with no recorded provider cost (pre-2026-04-24). */
   unitemizedUsd?: number
@@ -425,7 +425,6 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
           label="Heartbeat spend"
           value={totals ? formatDollarCost(totals.billedUsd) : undefined}
           icon={Coins}
-          footer={totals ? <CostSplitLines entry={totals} className="mt-0.5" /> : undefined}
         />
         <StatCard
           label="Share of spend"
@@ -567,7 +566,6 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
                     </Cell>
                     <Cell width={84} align="right">
                       <Text className="text-xs font-medium text-foreground">{formatDollarCost(row.billedUsd)}</Text>
-                      <CostSplitLines entry={row} className="items-end" />
                     </Cell>
                     <Cell width={86} align="right">
                       <Text className="text-xs text-foreground">
@@ -610,7 +608,6 @@ export function WorkspaceHeartbeatsPanel({ workspaceId }: { workspaceId?: string
                   </Cell>
                   <Cell width={84} align="right">
                     <Text className="text-xs font-semibold text-foreground">{formatDollarCost(totals.billedUsd)}</Text>
-                    <CostSplitLines entry={totals} className="items-end" />
                   </Cell>
                   <Cell width={86} align="right">
                     <Text className="text-xs text-muted-foreground">

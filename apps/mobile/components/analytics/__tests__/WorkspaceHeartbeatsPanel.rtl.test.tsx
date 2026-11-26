@@ -46,11 +46,6 @@ mock.module('../SharedAnalytics', () => ({
   formatDollarCost: (n: number | null | undefined) =>
     n == null ? '—' : `$${Number(n).toFixed(2)}`,
   getModelDisplayName: (id: string) => id.replace(/^claude-/, 'Claude '),
-  CostSplitLines: ({ entry }: any) =>
-    createElement('span', { 'data-testid': 'cost-split' }, [
-      createElement('span', { key: 'm' }, `Model $${Number(entry.modelCostUsd ?? 0).toFixed(2)}`),
-      createElement('span', { key: 'f' }, ` · Shogo fee $${Number(entry.shogoFeeUsd ?? 0).toFixed(2)}`),
-    ]),
 }))
 mock.module('@/components/ui/alert-dialog', () => ({
   AlertDialog: ({ isOpen, children }: any) => (isOpen ? createElement('div', null, children) : null),
@@ -304,9 +299,8 @@ describe('WorkspaceHeartbeatsPanel', () => {
     expect(screen.getByText('ran on Claude haiku-4')).toBeTruthy()
   })
 
-  // SHO-288: spend is shown as two lines — the provider's model cost and the
-  // Shogo fee on top of it — and they add up to the total.
-  test('shows the model cost and the Shogo fee, and they add up to the total', async () => {
+  // SHO-597: one cost figure per row and in the totals, no model/fee split.
+  test('shows the billed total per row and in the totals, with no split', async () => {
     getWorkspaceAnalytics.mockImplementation(async () =>
       report({
         totals: {
@@ -328,14 +322,12 @@ describe('WorkspaceHeartbeatsPanel', () => {
     render(<WorkspaceHeartbeatsPanel />)
     await screen.findByText('Support triage')
 
-    const splits = screen.getAllByTestId('cost-split')
-    expect(splits.length).toBeGreaterThan(0)
-    for (const split of splits) {
-      expect(split.textContent).toContain('Model $1.00')
-      expect(split.textContent).toContain('Shogo fee $0.20')
-    }
-    // The total the card shows is the sum of the two lines.
+    expect(screen.queryByTestId('cost-split')).toBeNull()
+    expect(screen.queryByText(/Shogo fee/i)).toBeNull()
+    expect(screen.queryByText(/Model \$/)).toBeNull()
+    // The card and the totals row show the one billed figure.
     expect(screen.getByTestId('value-Heartbeat spend').textContent).toBe('$1.20')
+    expect(screen.getAllByText('$1.20').length).toBeGreaterThanOrEqual(2)
   })
 
   test('tapping a row opens that project', async () => {

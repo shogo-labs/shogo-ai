@@ -380,9 +380,7 @@ function SummaryCards({
   trends: TrendsData | null
   icons: CostAnalyticsIcons
 }) {
-  const totalCost = data?.totals.totalCreditCost ?? 0
-  const shogoFee = data?.totals.shogoFeeUsd ?? 0
-  const totalWithFee = data?.totals.totalWithFeeUsd ?? totalCost + shogoFee
+  const totalCost = data?.totals.totalWithFeeUsd ?? (data?.totals.totalCreditCost ?? 0) + (data?.totals.shogoFeeUsd ?? 0)
   const totalRuns = data?.totals.totalRuns ?? 0
   const unpricedRuns = data?.totals.unpricedRuns ?? 0
   const avgCost = totalRuns > 0 ? Math.round((totalCost / totalRuns) * 100) / 100 : 0
@@ -391,18 +389,11 @@ function SummaryCards({
   return (
     <View className="flex-row flex-wrap gap-2">
       <MiniCard
-        label="Model cost"
+        label="Cost"
         value={formatPartialCost(totalCost, unpricedRuns, totalRuns)}
         icon={icons.DollarSign}
         color="text-orange-400"
         subtitle={unpricedRuns > 0 ? `${formatNumber(unpricedRuns)} runs on models without published rates` : undefined}
-      />
-      <MiniCard
-        label={`Shogo Fee (${totalCost > 0 ? Math.round((shogoFee / totalCost) * 100) : 0}%)`}
-        value={formatDollarCost(shogoFee)}
-        icon={icons.DollarSign}
-        color="text-orange-400"
-        subtitle={`Total ${formatDollarCost(totalWithFee)}`}
       />
       <MiniCard
         label="Agent Runs"

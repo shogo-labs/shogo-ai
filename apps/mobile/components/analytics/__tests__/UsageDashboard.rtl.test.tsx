@@ -32,19 +32,13 @@ mock.module('../../settings/account-sheet-chrome', () => ({
 }))
 // The real module drags in the model catalog; the dashboard only needs these two exports.
 mock.module('../SharedAnalytics', () => ({
-  StatCard: ({ label, value, subtitle, footer }: any) =>
+  StatCard: ({ label, value, subtitle }: any) =>
     createElement('div', { 'data-testid': `stat-${label}` }, [
       createElement('span', { key: 'l' }, label),
       createElement('span', { key: 'v', 'data-testid': `value-${label}` }, String(value)),
       subtitle ? createElement('span', { key: 's' }, subtitle) : null,
-      footer ? createElement('span', { key: 'f' }, footer) : null,
     ]),
   formatDollarCost: (n: number) => `$${n.toFixed(2)}`,
-  CostSplitLines: ({ entry }: any) =>
-    createElement('span', { 'data-testid': 'cost-split' }, [
-      createElement('span', { key: 'm' }, `Model $${Number(entry.modelCostUsd ?? 0).toFixed(2)}`),
-      createElement('span', { key: 'f' }, ` · Shogo fee $${Number(entry.shogoFeeUsd ?? 0).toFixed(2)}`),
-    ]),
 }))
 mock.module('../StackedAreaChart', () => ({
   STACKED_PALETTE: ['#1', '#2', '#3', '#4', '#5', '#6', '#7', '#8', '#slate'],
@@ -154,9 +148,8 @@ describe('UsageDashboard', () => {
     expect(screen.getByText(/edit_file/)).toBeTruthy()
   })
 
-  // SHO-288: the Spend card shows the provider's model cost and the Shogo fee
-  // as two lines, and they add up to the total.
-  test('the Spend card shows the model cost and the Shogo fee', async () => {
+  // SHO-597: one cost figure, no model/fee breakdown underneath it.
+  test('the Spend card shows one total and no model/fee split', async () => {
     getMyAnalytics.mockImplementation(async () => ({
       ...stats(),
       totals: totals({ spendUsd: 1.2, modelCostUsd: 1, shogoFeeUsd: 0.2, unitemizedUsd: 0 }),
@@ -165,9 +158,9 @@ describe('UsageDashboard', () => {
 
     expect(await screen.findByText('Work activity')).toBeTruthy()
     expect(screen.getByTestId('value-Spend').textContent).toBe('$1.20')
-    const split = screen.getByTestId('cost-split')
-    expect(split.textContent).toContain('Model $1.00')
-    expect(split.textContent).toContain('Shogo fee $0.20')
+    expect(screen.queryByTestId('cost-split')).toBeNull()
+    expect(screen.queryByText(/Shogo fee/i)).toBeNull()
+    expect(screen.queryByText(/Model \$/)).toBeNull()
   })
 
   test('a workspace source requests that workspace, and one member when given', async () => {
