@@ -103,6 +103,12 @@ export interface WriteFreezeDeps {
   setMaintenance(on: boolean, detail?: string | null): Promise<void>
   requestFlush(): Promise<FlushResult>
   headArchive(): Promise<{ lastModifiedMs: number; bytes: number } | null>
+  /**
+   * Is the serving runtime up and answering? Used only for the old-pod path: a
+   * pod whose sync loop is running flushes within `PERIODIC_ARCHIVE_INTERVAL_MS`
+   * of any write, so an unchanged archive on a live pod means nothing is pending.
+   */
+  podAnswers?(): Promise<boolean>
   now(): number
   sleep(ms: number): Promise<void>
   log(message: string): void
@@ -202,6 +208,20 @@ export function createWriteFreeze(
           return { ok: true as const }
         }
         if (deps.now() >= deadline) {
+          // An old pod only uploads when its content changed, so a quiet app
+          // never produces the fresh archive. If the runtime is still answering,
+          // its 30 s sync loop is running and nothing can be pending — the
+          // archive it last wrote is the pod's state. A pod that does not answer
+          // proves nothing, so that still fails.
+          if (flush.unsupported && (await deps.podAnswers?.().catch(() => false))) {
+            deps.log(
+              `[Publish] No new upload in ${Math.round(waitBudgetMs / 1000)}s, but the serving pod is ` +
+                `answering and its sync loop flushes within ` +
+                `${Math.round(PERIODIC_ARCHIVE_INTERVAL_MS / 1000)}s of any write: nothing is pending, ` +
+                `the archive already holds its state`,
+            )
+            return { ok: true as const }
+          }
           return {
             ok: false as const,
             code: 'write_freeze_failed',
@@ -259,7 +279,11 @@ export function defaultWriteFreezeDeps(input: {
 
     async requestFlush() {
       const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
-      const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+      // A *published* pod's env carries `RUNTIME_AUTH_SECRET` — the project token —
+      // and nothing else. `deriveProjectRuntimeToken` resolves to the workspace
+      // token, which a published pod answers 401 to (verified on KIF's prod pod),
+      // so the flush would look like a failure even on a runtime that has the route.
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
       const manager = getKnativeProjectManager()
       try {
         const status = await manager.getServiceStatus(`published-${input.projectId}`, input.projectId)
@@ -274,7 +298,7 @@ export function defaultWriteFreezeDeps(input: {
       try {
         const res = await fetch(`${manager.publishedServiceUrl(input.projectId)}/agent/published-data/flush`, {
           method: 'POST',
-          headers: { 'x-runtime-token': await deriveProjectRuntimeToken(input.projectId) },
+          headers: { 'x-runtime-token': await deriveRuntimeToken(input.projectId) },
           signal: AbortSignal.timeout(45_000),
         })
         const body = (await res.json().catch(() => ({}))) as {
@@ -295,6 +319,26 @@ export function defaultWriteFreezeDeps(input: {
       const { defaultCutoverDeps } = await import('./published-cutover.service')
       const head = await defaultCutoverDeps().headArchive(input.subdomain)
       return head ? { lastModifiedMs: head.lastModifiedMs, bytes: head.bytes } : null
+    },
+
+    /**
+     * `/agent/status` is the one probe every published runtime has had for as
+     * long as published data has synced, so it works on a pod older than the
+     * flush endpoint too.
+     */
+    async podAnswers() {
+      const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
+      const manager = getKnativeProjectManager()
+      try {
+        const res = await fetch(`${manager.publishedServiceUrl(input.projectId)}/agent/status`, {
+          headers: { 'x-runtime-token': await deriveRuntimeToken(input.projectId) },
+          signal: AbortSignal.timeout(15_000),
+        })
+        return res.ok
+      } catch {
+        return false
+      }
     },
 
     now: () => Date.now(),

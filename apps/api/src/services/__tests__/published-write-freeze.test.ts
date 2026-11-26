@@ -279,6 +279,9 @@ describe('cutting over from a pod older than the flush endpoint', () => {
       async headArchive() {
         return { lastModifiedMs: T0 - 3_600_000, bytes: 4096 }
       },
+      async podAnswers() {
+        return false
+      },
     })
     const handle = freeze(built.deps)
     const result = await handle.begin()
@@ -290,5 +293,48 @@ describe('cutting over from a pod older than the flush endpoint', () => {
     }
     await handle.end('write_freeze_failed: no periodic upload')
     expect(built.maintenance.map((m) => m.on)).toEqual([true, false])
+  })
+
+  /**
+   * A quiet app never re-uploads: its sync skips the PUT when the archive content
+   * is byte-identical. Refusing that case deadlocks the cutover for a pod that
+   * can never grow the endpoint, so a live pod is taken as proof instead.
+   */
+  it('accepts an idle app whose pod is still answering: nothing can be pending', async () => {
+    const built = deps({
+      async requestFlush() {
+        return { ok: true, flushed: false, unchanged: false, warm: true, unsupported: true }
+      },
+      async headArchive() {
+        return { lastModifiedMs: T0 - 3_600_000, bytes: 3_994_434 }
+      },
+      async podAnswers() {
+        return true
+      },
+    })
+    const handle = freeze(built.deps)
+    expect(await handle.begin()).toEqual({ ok: true })
+    expect(built.log.join('\n')).toContain('nothing is pending')
+  })
+
+  it('never uses the live-pod shortcut for a pod that has the flush endpoint', async () => {
+    // A current pod answers 2xx and says `flushed`: its silence is not evidence,
+    // so the extra wait must not turn into an accept.
+    let asked = false
+    const built = deps({
+      async requestFlush() {
+        return { ok: true, flushed: true, unchanged: false, warm: true }
+      },
+      async headArchive() {
+        return { lastModifiedMs: T0 - 600_000, bytes: 1 }
+      },
+      async podAnswers() {
+        asked = true
+        return true
+      },
+    })
+    const result = await freeze(built.deps).begin()
+    expect(result.ok).toBe(false)
+    expect(asked).toBe(false)
   })
 })

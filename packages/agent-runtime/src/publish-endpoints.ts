@@ -206,9 +206,14 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
   }
 
   const { cp, mkdtemp, readFile, rm, stat } = await import('fs/promises')
-  const os = await import('os')
   const tar = await import('tar')
-  const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
+  // NOT `os.tmpdir()`. In a metal guest `/tmp` is tmpfs sized to half of RAM —
+  // about 2 GiB in a 4 GiB microVM — so packing the artifact there dies with
+  // `ENOSPC` on exactly the projects with the most to ship (Nada's publish
+  // failed this way while `/data` had 16 GB free). `spoolDir()` asks the
+  // filesystem and returns a disk-backed scratch directory.
+  const { spoolDir } = await import('./spool')
+  const tmpDir = await mkdtemp(join(spoolDir(), 'shogo-publish-artifact-'))
   const contextDir = join(tmpDir, 'context')
   const archivePath = join(tmpDir, 'artifact.tar.gz')
   try {
@@ -244,7 +249,7 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     // projects-pg stays empty (SHO-551, QA round 5).
     let dbContext: 'sqlite' | 'postgres' = 'sqlite'
     if ((c.req.query('db') || '').trim() === 'postgres') {
-      const { applyPostgresBuildContext } = await import('./published-build-db')
+      const { applyPostgresBuildContext, dropSqliteDatabaseFiles } = await import('./published-build-db')
       const converted = applyPostgresBuildContext(contextDir)
       for (const warning of converted.warnings) {
         console.warn('[agent-runtime] publish-artifact: postgres context:', warning)
@@ -262,6 +267,16 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
         )
       }
       dbContext = 'postgres'
+      // The image talks to projects-pg, so the builder's SQLite file is dead
+      // weight in a scratch directory that has to fit it. Rows a first deploy
+      // needs come from the live archive (or nothing, for `data: 'empty'`).
+      const droppedSqlite = dropSqliteDatabaseFiles(contextDir)
+      if (droppedSqlite.length > 0) {
+        console.log(
+          `[agent-runtime] publish-artifact: Postgres context — dropped ${droppedSqlite.join(', ')} ` +
+            `from the artifact (the environment never opens them)`,
+        )
+      }
       console.log(
         `[agent-runtime] publish-artifact: Postgres build context ready — provider ` +
           `${converted.schemaProvider}, db module ${converted.dbModule}` +
