@@ -87,6 +87,17 @@ export interface ProxyTokenPayload {
    * per-seat billing both read this, so they can never disagree.
    */
   actingUserId?: string
+  /**
+   * Usage attribution for a call a paired desktop forwarded from a workspace
+   * that machine hosts (SHO-590). Set only by the proxy auth validator, only
+   * for a device key, and only after `resolveHostedUsageAttribution` proved the
+   * binding — never trusted from the request. Read by the usage writers and
+   * their cache invalidation; the wallet, the gates and per-member limits keep
+   * using `workspaceId` / `actingUserId` above.
+   */
+  usageWorkspaceId?: string
+  usageProjectId?: string | null
+  usageMemberId?: string | null
 }
 
 // =============================================================================
