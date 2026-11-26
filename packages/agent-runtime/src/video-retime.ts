@@ -22,7 +22,7 @@
  * boundary.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { delimiter, extname, join } from 'node:path'
 import { readMp4Probe, type VideoProbe } from './mp4-probe'
