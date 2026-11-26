@@ -147,7 +147,11 @@ ssh_ "set -e
     cat > /etc/systemd/system/metal-agent.service.d/10-rolling.conf <<'DROPIN'
 [Service]
 KillMode=process
-TimeoutStopSec=30
+# Must outlast the agent's own drain: 180 s for an in-flight /assign or /resume
+# cold-open plus 30 s headroom. A shorter value SIGKILLs the agent mid-hydrate
+# and leaves the half-open VM SHO-584 was about (see server.ts
+# DRAIN_OPEN_TIMEOUT_MS and host-bootstrap.sh).
+TimeoutStopSec=210
 DROPIN"
 
 # Snapshot the live (assigned) microVMs BEFORE the restart so we can prove they

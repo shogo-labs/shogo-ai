@@ -38,6 +38,7 @@ import {
 } from './project-data-archive'
 import type { BunFile } from 'bun'
 import { createHash } from 'crypto'
+import { quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject, copyObject, sha256HexFile, type ConditionalPutResult, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
@@ -403,7 +404,7 @@ export function planManifestWrite(input: {
 export async function uploadRepoManifestGuarded(
   projectId: string,
   manifest: RepoManifest,
-  opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+  opts: { lineage: RepoLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   cfg: MetalConfig,
   store: RepoObjectStore | null = workspaceRepoStore(cfg),
 ): Promise<RepoWriteOutcome> {
@@ -413,8 +414,16 @@ export async function uploadRepoManifestGuarded(
   const quarantine = async (): Promise<string | null> => {
     if (!opts.preserveOnRefusal) return null
     const qkey = `conflict/${projectId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-manifest.json`
-    await store.write(qkey, body, 'application/json')
-    return qkey
+    return quarantinedCopy({
+      projectId,
+      kind: 'repo',
+      body: { size: Buffer.byteLength(body), sha256: async () => createHash('sha256').update(body).digest('hex') },
+      key: qkey,
+      write: (k) => store.write(k, body, 'application/json').then(() => {}),
+      state: opts.quarantine?.state,
+      onChange: opts.quarantine?.onChange,
+      dailyCap: quarantineDailyCap(cfg),
+    })
   }
 
   const existing = await store.head(key)
@@ -470,22 +479,38 @@ export async function preserveRepoArchive(projectId: string, cfg: MetalConfig): 
   return key
 }
 
+/**
+ * Park a `.git` archive we must not write. Goes through the shared helper, so
+ * an untrusted VM's every-sweep quarantine copy of the same bytes is uploaded
+ * once rather than once per sweep (SHO-584). The digest streams from disk for a
+ * spooled body, and is only computed when the size already matches the last
+ * copy, so a healthy export never pays for it.
+ */
 async function quarantine(
   projectId: string,
   bytes: RepoBody,
   cfg: MetalConfig,
+  bookkeeping?: QuarantineBookkeeping,
 ): Promise<string | null> {
   const s3 = workspaceS3(cfg)
   if (!s3) return null
   const key = repoQuarantineKey(projectId)
-  await s3.client.write(key, bytes, { type: 'application/gzip' })
-  return key
+  return quarantinedCopy({
+    projectId,
+    kind: 'repo',
+    body: { size: repoBodySize(bytes), sha256: () => repoBodySha256(bytes) },
+    key,
+    write: (k) => s3.client.write(k, bytes, { type: 'application/gzip' }).then(() => {}),
+    state: bookkeeping?.state,
+    onChange: bookkeeping?.onChange,
+    dailyCap: quarantineDailyCap(cfg),
+  })
 }
 
 export async function uploadRepoArchiveGuarded(
   projectId: string,
   bytes: RepoBody,
-  opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
+  opts: { lineage: RepoLineage; preserveOnRefusal?: boolean; quarantine?: QuarantineBookkeeping },
   cfg: MetalConfig,
 ): Promise<RepoWriteOutcome> {
   const size = repoBodySize(bytes)
@@ -495,7 +520,7 @@ export async function uploadRepoArchiveGuarded(
 
   const plan = planDataWrite(opts.lineage)
   if (plan.action === 'refuse') {
-    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+    const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
     return { status: 'refused', reason: plan.reason, quarantineKey: qkey }
   }
 
@@ -505,7 +530,7 @@ export async function uploadRepoArchiveGuarded(
   if (plan.action === 'create-only') {
     const s3 = workspaceS3(cfg)
     if (s3 && (await s3.client.file(repoArchiveKey(projectId)).exists())) {
-      const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+      const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
       return { status: 'conflict', quarantineKey: qkey, reason: 'raced-create' }
     }
   }
@@ -525,7 +550,7 @@ export async function uploadRepoArchiveGuarded(
       : { status: 'written', etag: result.etag }
   }
 
-  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg) : null
+  const qkey = opts.preserveOnRefusal ? await quarantine(projectId, bytes, cfg, opts.quarantine) : null
   return {
     status: 'conflict',
     quarantineKey: qkey,

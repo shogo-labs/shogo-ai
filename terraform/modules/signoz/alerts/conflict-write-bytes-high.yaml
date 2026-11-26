@@ -1,0 +1,98 @@
+# SigNoz alert: the fleet is writing `conflict/` bytes at a runaway rate
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules).
+#
+# Why: `conflict/` in `shogo-workspaces-production` reached 6.2 TB / 208k
+# objects, nearly all of it one VM's identical 525 MB source export every ten
+# minutes. Nothing measured how much we park there, so the growth was invisible
+# until someone listed the bucket (SHO-584).
+#
+# `metal_quarantine_bytes_total` is the bytes ACTUALLY written to `conflict/`
+# (deduped and capped copies are not counted, because they were not written).
+# It is reported `{kind=…}` and folded into the heartbeat as
+# `metal.host.counter{counter="metal_quarantine_bytes_total{kind=\"…\"}"}`.
+#
+# 1 GB/h across the fleet: a real incident is a handful of copies of a large
+# workspace (a few hundred MB), and 24 writes/project/day of a 500 MB archive is
+# the cap's worst case for ONE project. A sustained GB-per-hour means either
+# many projects are failing at once or something is looping.
+#
+# Absent series is "not reporting", not "nothing written": alertOnAbsent stays
+# off (old agents omit `counters`).
+
+alert: MetalQuarantineWriteRate
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: bytes
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.counter
+              spaceAggregation: sum
+              timeAggregation: increase
+          filter:
+            expression: "counter LIKE 'metal_quarantine_bytes_total%'"
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} conflict/ bytes written"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 1073741824
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 1h
+    frequency: 10m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 6h
+    alertStates: [firing]
+annotations:
+  summary: "Metal fleet is writing over 1 GB/h into conflict/ ({{host_id}})"
+  description: |-
+    More than 1 GiB of refused exports reached `conflict/` in the last hour on
+    this host. Quarantine bytes are billed storage and, unlike a versioned
+    object, they are never read again by the platform — they exist only for an
+    operator to recover a workspace by hand.
+
+    Until SHO-584 this is exactly how 5.4 TB appeared in six days without a
+    single alert. The cap (`METAL_QUARANTINE_DAILY_CAP`) bounds any ONE project
+    to 24 writes a day; this alert catches the case the cap cannot, many
+    projects failing together.
+
+    Triage:
+    1. `metal_quarantine_deduped_total` — mostly dedupe means one static
+       archive being re-offered; little dedupe means genuinely different bytes,
+       which is worse.
+    2. `metal_repo_corrupt_total` and `metal_mid_open_adopted_total` for the
+       cause (SHO-584's two).
+    3. Per project, `metal_repo_conflict_total` / `metal_home_conflict_total` /
+       `metal_data_collapse_observed_total` name which writer is refusing.
+    4. `shogo bucket ls conflict/` for the worst prefix before the 30-day
+       lifecycle rule reclaims it.
+
+    Runbook: docs/runbooks/metal-fleet.md

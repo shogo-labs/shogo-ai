@@ -140,7 +140,38 @@ export interface LiveVmEntry {
   repoLinked?: boolean
   /** See AssignedVm.publishedDataLoaded. */
   publishedDataLoaded?: boolean
+  /** See AssignedVm.quarantine — survives a restart so the cap cannot reset. */
+  quarantine?: LedgerQuarantineState
+  /** See AssignedVm.openState: `'opening'` means the assign was cut off (SHO-584). */
+  openState?: 'opening' | 'ready'
+  /**
+   * See AssignedVm.userSeenSinceAssign — persisted so an adopt can tell whether
+   * a mid-open VM holds work that exists nowhere else (SHO-584).
+   */
+  userSeenSinceAssign?: boolean
+  /** See AssignedVm.repoCorruptFailure. */
+  repoCorruptFailure?: { code: string; message: string; since: number; attempts: number; retryAt: number }
+  /** See AssignedVm.rotateRetryAt / rotationBlocked (SHO-584). */
+  rotateRetryAt?: number
+  rotationBlocked?: { reason: string; since: number }
+  /** See AssignedVm.refuseCount / refusedSince / refuseRetryAt / refusalLogged. */
+  refuseCount?: number
+  refusedSince?: number
+  refuseRetryAt?: number
+  refusalLogged?: boolean
   v: 1
+}
+
+/**
+ * The `conflict/` bookkeeping shape (see quarantine.ts). Redeclared structurally
+ * so this registry file stays free of the S3/quarantine module's dependencies.
+ */
+export interface LedgerQuarantineState {
+  last?: Partial<
+    Record<'source' | 'data' | 'home' | 'repo', { size: number; sha256: string; key: string }>
+  >
+  day?: string
+  writes?: number
 }
 
 export class LiveRegistry {

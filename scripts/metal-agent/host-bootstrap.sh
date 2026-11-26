@@ -337,9 +337,13 @@ RestartSec=2
 # never cold-restarts live projects. Without this, systemd's default
 # KillMode=control-group would SIGTERM the whole cgroup and take the VMs down.
 KillMode=process
-# On SIGTERM the agent releases only warm VMs and exits fast; give it room but
-# don't let a hang wedge the deploy.
-TimeoutStopSec=30
+# On SIGTERM the agent drains in-flight calls before it exits: 10 s for short
+# requests, and up to 180 s for an /assign or /resume that is still cold-opening
+# a workspace (a 812 MB hydrate takes about a minute). TimeoutStopSec must be
+# LONGER than that drain, or systemd SIGKILLs the agent mid-open and cuts off the
+# very call the drain exists to finish — that is how SHO-584's half-open VM was
+# created. 210 s = the 180 s open deadline + 30 s of headroom.
+TimeoutStopSec=210
 # microVMs + KVM need broad privileges; this host is single-tenant.
 User=root
 LimitNOFILE=1048576
