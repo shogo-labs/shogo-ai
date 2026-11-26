@@ -41,6 +41,8 @@
 #   TAINT_PCT     default 80   taint at/above this used%
 #   UNTAINT_PCT   default 75   remove the taint below this used%
 #   INTERVAL_S    default 60   seconds between reconciles
+#   MAX_READING_AGE_S default 1800  a reading older than this is not acted on
+#                              (the gc container stopped publishing); 0 disables
 #   KUBECTL       default kubectl
 #   DRY_RUN       default 0    log what it would change, call nothing that
 #                              mutates the node
@@ -58,6 +60,10 @@ STATUS_FILE="${STATE_DIR}/disk-status"
 TAINT_PCT="${TAINT_PCT:-80}"
 UNTAINT_PCT="${UNTAINT_PCT:-75}"
 INTERVAL_S="${INTERVAL_S:-60}"
+# Three GC passes of slack (INTERVAL_S 600 + retries): a reading older than this
+# means the gc container is not publishing and the number no longer describes
+# the node. 0 disables the check.
+MAX_READING_AGE_S="${MAX_READING_AGE_S:-1800}"
 KUBECTL="${KUBECTL:-kubectl}"
 DRY_RUN="${DRY_RUN:-0}"
 ONESHOT="${ONESHOT:-0}"
@@ -72,6 +78,17 @@ log() { echo "[node-disk-taint] ${NODE} $*"; }
 read_pct() {
   [ -r "$STATUS_FILE" ] || return 0
   sed -n 's/^pct=//p' "$STATUS_FILE" 2>/dev/null | head -1
+}
+
+# Seconds since the GC pass wrote the reading. Empty when the file carries no
+# `epoch=` (an older writer, or a half-copied file), which is treated as stale:
+# acting on a number of unknown age is how a node ends up tainted forever.
+reading_age() {
+  epoch="$(sed -n 's/^epoch=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
+  case "$epoch" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  echo $(( $(date -u +%s) - epoch ))
 }
 
 # Does this node carry the taint right now? Read from the API every tick rather
@@ -122,6 +139,18 @@ reconcile() {
       return 0
       ;;
   esac
+
+  # A reading older than MAX_READING_AGE_S means the GC container stopped
+  # publishing (cri-o unreachable, CrashLoopBackOff, node rebooting). Acting on
+  # it would keep a taint on a node that has since drained — or leave one off a
+  # node that has since filled. Unknown age counts as stale for the same reason.
+  if [ "$MAX_READING_AGE_S" -gt 0 ]; then
+    age="$(reading_age)"
+    if [ -z "$age" ] || [ "$age" -gt "$MAX_READING_AGE_S" ]; then
+      log "disk reading in ${STATUS_FILE} is ${age:-of unknown age}s old (max ${MAX_READING_AGE_S}s) — the GC pass is not publishing; leaving the node as it is"
+      return 0
+    fi
+  fi
 
   if [ "$pct" -ge "$TAINT_PCT" ]; then
     if current_tainted; then

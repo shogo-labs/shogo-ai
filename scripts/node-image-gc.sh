@@ -211,9 +211,14 @@ select_candidates() {
 # because the sidecar must also see a node that has recovered below 65% and
 # UNtaint it. Atomic: the sidecar polls this file every minute and must never
 # read a half-written value.
+#
+# `epoch` is what the sidecar ages the reading by: if this container stops
+# writing (cri-o unreachable, CrashLoopBackOff) the file goes stale and the
+# sidecar must stop acting on a number that no longer describes the node. `ts`
+# is for humans reading `kubectl exec ... cat`.
 write_status() {
   { mkdir -p "$STATE_DIR" \
-    && printf 'pct=%s\nts=%s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    && printf 'pct=%s\nepoch=%s\nts=%s\n' "$1" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       >"${STATUS_FILE}.tmp" \
     && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"; } 2>/dev/null || true
 }

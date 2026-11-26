@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path'
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 const SCRIPT = join(REPO_ROOT, 'scripts', 'node-disk-taint.sh')
+const SCRIPT_CONTENT = readFileSync(SCRIPT, 'utf8')
 
 const WORK = mkdtempSync(join(tmpdir(), 'node-disk-taint-'))
 const BIN = join(WORK, 'bin')
@@ -37,6 +38,10 @@ const TAINT = 'shogo.ai/disk-high'
 interface RunOpts {
   /** used% the GC pass reported. `null` = no status file at all. */
   pct?: number | null
+  /** How old the reading is, in seconds. Default 0 (just written). */
+  ageS?: number
+  /** Omit the `epoch=` line entirely, as an older/partial writer would. */
+  noEpoch?: boolean
   /** Does the node already carry the taint? */
   tainted?: boolean
   env?: Record<string, string>
@@ -44,10 +49,12 @@ interface RunOpts {
 
 function run(opts: RunOpts = {}): { status: number; stdout: string; calls: string[] } {
   const pct = opts.pct === undefined ? 82 : opts.pct
+  const ageS = opts.ageS ?? 0
   rmSync(STATE, { recursive: true, force: true })
   mkdirSync(STATE, { recursive: true })
   if (pct !== null) {
-    writeFileSync(join(STATE, 'disk-status'), `pct=${pct}\nts=2026-11-26T04:20:00Z\n`)
+    const epoch = opts.noEpoch ? '' : `epoch=${Math.floor(Date.now() / 1000) - ageS}\n`
+    writeFileSync(join(STATE, 'disk-status'), `pct=${pct}\n${epoch}ts=2026-11-26T04:20:00Z\n`)
   }
   if (opts.tainted) writeFileSync(TAINTED_FLAG, '')
   else rmSync(TAINTED_FLAG, { force: true })
@@ -160,6 +167,41 @@ describe('node-disk-taint — hold the 80-85% band shut', () => {
     expect(status).toBe(0)
     expect(stdout).toContain('no disk reading yet')
   })
+
+  it('does not act on a reading older than MAX_READING_AGE_S', () => {
+    // The gc container CrashLoopBackOff'd: its last reading is hours old, and
+    // the node has moved on. Tainting or untainting from that number would be
+    // acting on a measurement nobody took.
+    const { status, stdout, calls } = run({ pct: 91, tainted: false, ageS: 4000 })
+    expect(status).toBe(0)
+    expect(mutations(calls)).toEqual([])
+    expect(stdout).toContain('not publishing')
+  })
+
+  it('does not REMOVE a taint from a stale reading either', () => {
+    // The dangerous direction: a stale 40% would untaint a node that has since
+    // refilled, and the scheduler would start placing pods there again.
+    const { status, calls } = run({ pct: 40, tainted: true, ageS: 4000 })
+    expect(status).toBe(0)
+    expect(calls).toEqual([])
+  })
+
+  it('treats a reading with no epoch as stale rather than acting blind', () => {
+    const { status, stdout, calls } = run({ pct: 91, tainted: false, noEpoch: true })
+    expect(status).toBe(0)
+    expect(mutations(calls)).toEqual([])
+    expect(stdout).toContain('unknown age')
+  })
+
+  it('still acts on a reading inside the freshness window', () => {
+    const { calls } = run({ pct: 91, tainted: false, ageS: 1200 })
+    expect(mutations(calls)).toHaveLength(1)
+  })
+
+  it('MAX_READING_AGE_S=0 disables the freshness check', () => {
+    const { calls } = run({ pct: 91, tainted: false, ageS: 999_999, env: { MAX_READING_AGE_S: '0' } })
+    expect(mutations(calls)).toHaveLength(1)
+  })
 })
 
 describe('a tainted node stays visible and keeps its DaemonSets (SHO-592 §4)', () => {
@@ -223,5 +265,15 @@ describe('a tainted node stays visible and keeps its DaemonSets (SHO-592 §4)', 
     for (const wf of ['.github/workflows/deploy.yml', '.github/workflows/deploy-staging.yml']) {
       expect(REPO(wf), wf).toContain('--from-file=node-disk-taint.sh=scripts/node-disk-taint.sh')
     }
+  })
+
+  it('the manifest and the writer agree on how a reading is aged', () => {
+    const manifest = REPO('k8s/base/node-image-gc.yaml')
+    // Without MAX_READING_AGE_S in the pod the sidecar falls back to its own
+    // default, and a stale reading from a dead gc container would be trusted.
+    expect(manifest).toMatch(/- name: MAX_READING_AGE_S\n\s+value: "1800"/)
+    // The freshness check is only meaningful if the gc pass stamps `epoch=`.
+    expect(REPO('scripts/node-image-gc.sh')).toContain("epoch=%s")
+    expect(SCRIPT_CONTENT).toContain('sed -n \'s/^epoch=//p\'')
   })
 })

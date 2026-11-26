@@ -405,7 +405,13 @@ describe('node-image-gc — a pass that cannot do its job FAILS (SHO-592)', () =
   it('publishes the measured used% for the taint sidecar', () => {
     writeFixtures(stagingShape())
     run({ used: 8100, available: 1900 })
-    expect(readFileSync(join(WORK, 'state', 'disk-status'), 'utf8')).toContain('pct=81')
+    const first = readFileSync(join(WORK, 'state', 'disk-status'), 'utf8')
+    expect(first).toContain('pct=81')
+    // `epoch=` is what the sidecar ages the reading by: without it a reading
+    // from a dead gc container is treated as stale (SHO-592 §4).
+    const epoch = Number((/^epoch=(\d+)$/m.exec(first) ?? [])[1])
+    expect(Number.isFinite(epoch) && epoch > 0).toBe(true)
+    expect(Math.abs(Date.now() / 1000 - epoch)).toBeLessThan(120)
     // Below EARLY-return still updates it, or a recovered node could never be
     // untainted (the sidecar runs at 75%, under RECLAIM_PCT).
     run({ used: 5000, available: 5000 })

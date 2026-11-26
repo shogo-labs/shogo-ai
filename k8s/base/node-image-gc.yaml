@@ -237,6 +237,12 @@ spec:
               value: "80"
             - name: UNTAINT_PCT
               value: "75"
+            # Three gc passes (INTERVAL_S 600 + RETRY_S 30) of slack. Older than
+            # that and the reading is not a description of the node any more —
+            # the sidecar leaves the taint exactly as it is instead of acting on
+            # a number whose writer has stopped.
+            - name: MAX_READING_AGE_S
+              value: "1800"
             - name: INTERVAL_S
               value: "60"
           resources:

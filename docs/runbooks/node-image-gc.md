@@ -215,6 +215,24 @@ kubectl -n kube-system exec <pod> -c disk-taint -- \
 Removing the taint by hand is safe but temporary — the next reconcile (60 s)
 puts it back while the node is at/above 80%, which is the point.
 
+**A reading goes stale.** `disk-status` carries `epoch=` (and a human `ts=`) from
+the pass that wrote it. If the `gc` container stops publishing — cri-o
+unreachable, `CrashLoopBackOff`, a node rebooting — the sidecar acts on nothing
+once the reading is older than `MAX_READING_AGE_S` (1800 s, three passes of
+slack) and logs:
+
+```
+disk reading in /run/shogo-node-image-gc-state/disk-status is 4210s old (max 1800s) — the GC pass is not publishing; leaving the node as it is
+```
+
+Leaving it as it is, in **both** directions, is deliberate: a stale 40% must not
+untaint a node that has refilled, and a stale 91% must not keep a half-empty node
+unschedulable. A reading with no `epoch=` at all is treated the same way — an
+unknown age is not a measurement. The node is not left unguarded meanwhile: the
+kubelet's own `DiskPressure` taint still fires at 85%, and the deploy gate and
+warm-pool-monitor still sample it directly. If that line is not a one-off, the
+`gc` container is the thing to look at (`kubectl -n kube-system logs <pod> -c gc`).
+
 ## Env reference
 
 | Var | Default | Meaning |
@@ -235,8 +253,9 @@ puts it back while the node is at/above 80%, which is the point.
 | `DRY_RUN` | `0` | Log candidates, remove nothing |
 | `ONESHOT` | `0` | One pass then exit (tests + manual runs) |
 
-The `disk-taint` sidecar has its own three: `TAINT_PCT` (80), `UNTAINT_PCT`
-(75) and `INTERVAL_S` (60, reconcile cadence).
+The `disk-taint` sidecar has its own four: `TAINT_PCT` (80), `UNTAINT_PCT`
+(75), `INTERVAL_S` (60, reconcile cadence) and `MAX_READING_AGE_S` (1800 — a
+`disk-status` older than this is not acted on; `0` disables the freshness check).
 
 ## Monitoring
 
