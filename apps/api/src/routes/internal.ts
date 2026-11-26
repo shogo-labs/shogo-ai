@@ -1149,6 +1149,96 @@ app.post('/mail/apply', async (c) => {
 })
 
 /**
+ * POST /api/internal/social/apply
+ *
+ * A Zernio webhook's event for a workspace homed here, forwarded from the region
+ * that received it (see `handleZernioWebhook`). The sender verified Zernio's
+ * signature; this checks the region secret and applies it locally, replying with
+ * the same `{ status, body }` the webhook would have returned — so the receiving
+ * region's answer to Zernio (retry or accept) is decided by the region that
+ * actually wrote.
+ */
+app.post('/social/apply', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || typeof body.workspaceId !== 'string' || typeof body.type !== 'string') {
+    return c.json({ error: 'Invalid social event' }, 400)
+  }
+  const { applySocialEvent } = await import('../services/social/webhooks')
+  return c.json(await applySocialEvent(body as any))
+})
+
+/**
+ * POST /api/internal/social/inbox
+ *
+ * An inbox write (a DM/comment reply, or an inbox sweep) for a workspace homed
+ * here, forwarded from the region that received it (see `forwardInboxWrite`).
+ * Runs the write locally and never routes again.
+ */
+app.post('/social/inbox', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || typeof body.workspaceId !== 'string') return c.json({ error: 'Invalid inbox write' }, 400)
+  const inbox = await import('../services/social/inbox.service')
+  try {
+    if (body.kind === 'reply-conversation' && typeof body.conversationId === 'string') {
+      return c.json(
+        await inbox.replyToConversationHere(
+          body.workspaceId,
+          body.conversationId,
+          { text: body.input?.text, idempotencyKey: body.input?.idempotencyKey ?? null },
+          body.projectId ?? null,
+        ),
+      )
+    }
+    if (body.kind === 'reply-comment' && typeof body.commentId === 'string') {
+      return c.json(
+        await inbox.replyToCommentHere(
+          body.workspaceId,
+          body.commentId,
+          { text: body.input?.text, idempotencyKey: body.input?.idempotencyKey ?? null },
+          body.projectId ?? null,
+        ),
+      )
+    }
+    if (body.kind === 'backfill') {
+      const limit = Number(body.limit)
+      return c.json(await inbox.backfillInboxHere(body.workspaceId, Number.isFinite(limit) ? { limit } : {}))
+    }
+    return c.json({ error: 'Invalid inbox write kind' }, 400)
+  } catch (err: any) {
+    // Surface the reason to the caller: a 409 ("no account linked yet") must not
+    // reach the person as a generic 503.
+    const status = typeof err?.status === 'number' ? err.status : 500
+    if (status >= 500) console.error('[Internal] forwarded inbox write failed:', err?.message ?? err)
+    return c.json({ error: err?.code ?? 'inbox_write_failed', message: err?.message ?? String(err) }, status)
+  }
+})
+
+/**
+ * POST /api/internal/conversations/post-message
+ *
+ * A team-chat message for a conversation homed here, forwarded from the region
+ * whose caller wrote it (see `postMessage`). Sequenced, mentioned, woken and
+ * hooked here, once. Replies `{ result }` with the home region's message.
+ */
+app.post('/conversations/post-message', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as { input?: Record<string, any> } | null
+  if (!body?.input || typeof body.input.conversationId !== 'string' || typeof body.input.text !== 'string') {
+    return c.json({ error: 'Invalid postMessage params' }, 400)
+  }
+  const { postMessageInHomeRegion } = await import('../services/conversation.service')
+  try {
+    return c.json({ result: await postMessageInHomeRegion(body.input as any) })
+  } catch (err: any) {
+    const status = typeof err?.status === 'number' ? err.status : 500
+    if (status >= 500) console.error('[Internal] forwarded postMessage failed:', err?.message ?? err)
+    return c.json({ error: err?.code ?? 'post_message_failed', message: err?.message ?? String(err) }, status)
+  }
+})
+
+/**
  * POST /api/internal/chat-providers/:provider/resume
  *
  * Resume a message held for an unlinked person, in the workspace's home region

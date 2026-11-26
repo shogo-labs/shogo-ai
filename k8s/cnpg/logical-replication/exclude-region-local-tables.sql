@@ -20,6 +20,16 @@
 -- not home-region routed, so the rows are kept (and pruned) where they were
 -- written.
 --
+-- `logical_replication_watchdog_state` (SHO-585) is the conflict watchdog's
+-- run-to-run memory: the last applied LSN per local subscription and when it
+-- last moved (the stall clock), the blind re-enable streak, the conflict
+-- counter snapshot and the last skip. It describes THIS region's apply worker,
+-- so a replicated copy would be meaningless — and its `subname` primary key
+-- would collide on every run. The watchdog CronJob creates it with
+-- `CREATE TABLE IF NOT EXISTS`, so it appears after a deploy without a
+-- migration; keeping it on this list is what stops the next reconciliation from
+-- publishing it.
+--
 -- `device_version_events` REJOINED the mesh (SHO-142, reverse of #1635): its
 -- ids are random since `20261022120000_device_version_events_region_ids` and
 -- its unique key is `(region, deviceId, version)`, so the two regions cannot
@@ -48,7 +58,7 @@ DO $$
 DECLARE
   -- `device_version_events` rejoined the mesh (SHO-142): random ids +
   -- (region, deviceId, version) key, so it is published on purpose again.
-  region_local text[] := ARRAY['storage_usage', 'storage_usage_daily', 'usage_wallets', 'proxy_turns'];
+  region_local text[] := ARRAY['storage_usage', 'storage_usage_daily', 'usage_wallets', 'proxy_turns', 'logical_replication_watchdog_state'];
   is_schema_pub boolean;
   t text;
 BEGIN

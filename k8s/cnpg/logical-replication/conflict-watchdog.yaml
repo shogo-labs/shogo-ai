@@ -1,37 +1,71 @@
-# CronJob: logical-replication conflict watchdog (self-heal).
+# CronJob: logical-replication conflict watchdog (self-heal + stall alarm).
 #
 # Productionized form of prod-investigation/recovery/recon/91_conflict_watchdog.sh.
 # For any LOCAL subscription that has auto-disabled (subenabled=false, the
-# subdisableonerr=t safety), it finds the latest fatal conflict LSN for that
-# subscription's replication origin in the local Postgres log, SKIPs that one
-# transaction (keep-local semantics), and re-enables the subscription. This
-# drains the occasional active-active collision that escapes single-writer
-# routing without a human, keeping the mesh up.
+# subdisableonerr=t safety), it finds the failing transaction **from the
+# database**, SKIPs that one transaction (keep-local semantics), and re-enables
+# the subscription. This drains the occasional active-active collision that
+# escapes single-writer routing without a human, keeping the mesh up.
+#
+# It also watches for a subscription that is NOT MOVING — enabled or not — and
+# pages. That is the failure the 2026-11-24 outage hid: both directions were
+# down for ~10 h while this job happily re-enabled a subscription every 5
+# minutes, each re-enable failing again seconds later. A green "nothing to do"
+# run in between reset the absence-based alert, so nothing paged (SHO-585).
 #
 # SAFETY (a skip is a data-loss event — it drops one remote transaction):
-#   * Only the KNOWN-SAFE conflict classes are skipped:
-#     insert_exists / update_exists / multiple_unique_conflicts. Any other
-#     disable reason is NOT skipped — the job exits non-zero so the
-#     ReplicationMonitorFailing / job-failed alert pages a human.
-#   * A disable caused by schema skew ("is missing replicated column", the
-#     peer region migrated first) is re-enabled without a skip and without
-#     paging: the apply worker retries the transaction once the local
-#     migration lands, so no data is dropped.
+#   * Only the KNOWN-SAFE conflict classes are skipped, and they are now read
+#     from `pg_stat_subscription_stats` (confl_insert_exists /
+#     confl_update_exists / confl_multiple_unique_conflicts) — a rise since the
+#     previous run. The log grep is only a fallback for a PG that cannot tell
+#     us. Any other disable reason is NOT skipped — the job exits non-zero so
+#     the ConflictWatchdogFailing / job-failed alert pages a human.
+#   * The failing transaction is found by PEEKING the publisher's slot
+#     (`pg_logical_slot_peek_binary_changes` over the subscription's own
+#     conninfo): the first BEGIN after the local origin's `remote_lsn` is the
+#     conflict's commit LSN, and its relation/tuple messages name what would be
+#     dropped. Peeking never advances the slot, and unlike `kubectl logs
+#     --since=15m` it cannot miss an error that fell out of the window.
+#   * A disable caused by schema skew ("is missing replicated column", the peer
+#     region migrated first) is re-enabled without a skip and without paging:
+#     the apply worker retries the transaction once the local migration lands,
+#     so no data is dropped.
 #   * A disable caused by a TABLESYNC error (the initial COPY of a newly
 #     published table failed, usually a duplicate key because the peer's rows
 #     already exist locally — the 2026-11-05 SHO-308 outage) is NOT re-enabled:
 #     a tablesync error cannot be SKIPped, and re-enabling just retries the
 #     same COPY and disables again seconds later. The job exits non-zero so a
 #     human reconciles the rows, then re-enables by hand.
+#   * NO BLIND RE-ENABLE LOOP. An unknown cause is re-enabled at most
+#     MAX_BLIND_ENABLE times in a row (state survives between runs); after that
+#     the subscription is left disabled and the job exits non-zero. Previously
+#     it re-enabled forever, which is what let a broken mesh look green.
 #   * SKIP_BUDGET caps skips per run. Hitting the budget (a conflict storm or a
 #     genuine bug producing endless distinct conflicts) stops auto-skipping and
 #     exits non-zero to page — so "auto-skip" can never silently become
 #     "auto-lose-unbounded-data".
-#   * Every skip prints a `WATCHDOG_SKIP` line (subname / relation / lsn) for
-#     the skip-review alert. Skips must be reviewed, not fire-and-forget.
+#   * Every skip prints `WATCHDOG_SKIP sub= relation= lsn= keys=` for the
+#     skip-review alert, so a reviewer can find (and repair) the dropped row.
+#     Skips must be reviewed, not fire-and-forget.
 #
-# Deploy once per region (US/EU). It only ever touches LOCAL subscriptions
-# on the local primary — no cross-region access.
+# STALL ALARM: prints `REPLICATION_STALLED sub= minutes=` and exits non-zero when
+# a subscription's origin `remote_lsn` has not advanced for >= STALL_MIN minutes
+# while the publisher still has WAL beyond it — whether or not the subscription
+# is currently enabled. The SigNoz alert `ReplicationStalled` pages on the marker
+# (terraform/modules/signoz/alerts/replication-stalled.yaml). Note the
+# difference from `replication-monitor`, which samples instantaneous state and
+# therefore cannot see a sub that flaps: this one compares against the previous
+# run's applied LSN, stored in `logical_replication_watchdog_state`.
+#
+# STATE: run-to-run state lives in `logical_replication_watchdog_state` on the
+# local primary. It is REGION-LOCAL and must stay out of `shogo_all_pub` (it is
+# in `exclude-region-local-tables.sql`, `check-publication-drift.ts` and the
+# monitor's EXCLUDED_TABLES) — a replicated counter would collide on exactly the
+# way this job exists to repair.
+#
+# Deploy once per region (US/EU). It only ever touches LOCAL subscriptions on
+# the local primary — no cross-region access except the read-only slot peek over
+# the subscription's own conninfo.
 #
 # Runs every 5 min, interleaved with replication-monitor (which detects; this
 # heals). Needs RBAC to read pod logs + exec psql on the local platform-pg
@@ -58,11 +92,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
-  # Read the conflict LSN from the primary's Postgres log.
+  # Fallback: read a conflict LSN from the primary's Postgres log when the
+  # publisher-side peek is unavailable.
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # Run psql (SKIP + ENABLE) inside the primary pod.
+  # Run psql (peek, SKIP + ENABLE) inside the primary pod.
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
@@ -107,9 +142,9 @@ spec:
           serviceAccountName: conflict-watchdog
           containers:
             - name: watchdog
-              # kubectl + jq + bash. Fully-qualified (nodes enforce short-name
-              # mode). Pin to the cluster's k8s minor; kubectl skew of +/-1
-              # minor is supported.
+              # kubectl + jq + bash + awk. Fully-qualified (nodes enforce
+              # short-name mode). Pin to the cluster's k8s minor; kubectl skew of
+              # +/-1 minor is supported.
               image: docker.io/alpine/k8s:1.29.1
               env:
                 - name: NS
@@ -120,13 +155,38 @@ spec:
                   value: "25"
                 - name: LOG_WINDOW
                   value: "15m"
+                # Consecutive re-enables of a subscription disabled for an
+                # unknown reason before it is left disabled for a human.
+                - name: MAX_BLIND_ENABLE
+                  value: "3"
+                # Minutes without the origin LSN advancing (while the publisher
+                # has WAL beyond it) before REPLICATION_STALLED pages.
+                - name: STALL_MIN
+                  value: "15"
+                # Changes peeked from the publisher's slot when hunting a
+                # conflict. One transaction's worth is plenty; 200 is cheap.
+                - name: PEEK_N
+                  value: "200"
+                - name: PGCONNECT_TIMEOUT
+                  value: "10"
               command:
                 - /bin/bash
                 - -ec
                 - |
                   echo "=== Conflict Watchdog — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+                  # Defaults mirror the CronJob's `env:` block; they exist so the
+                  # script is runnable (and testable) on its own.
+                  NS=${NS:-shogo-production-system}
+                  CLUSTER=${CLUSTER:-platform-pg}
+                  SKIP_BUDGET=${SKIP_BUDGET:-25}
+                  LOG_WINDOW=${LOG_WINDOW:-15m}
+                  MAX_BLIND_ENABLE=${MAX_BLIND_ENABLE:-3}
+                  STALL_MIN=${STALL_MIN:-15}
+                  PEEK_N=${PEEK_N:-200}
                   EXIT_RC=0
                   SKIPS=0
+                  STALLS=0
+                  STATE_TABLE=logical_replication_watchdog_state
 
                   PRIMARY=$(kubectl get pods -n "$NS" \
                     -l "cnpg.io/cluster=${CLUSTER},cnpg.io/instanceRole=primary" \
@@ -142,115 +202,337 @@ spec:
                       psql -U postgres -d shogo -X -tAF'|' "$@"
                   }
 
-                  # Disabled local subscriptions + their replication-origin name.
-                  DISABLED=$(psql_primary -c \
-                    "SELECT subname, 'pg_'||oid FROM pg_subscription WHERE NOT subenabled ORDER BY subname;")
+                  # Read a WAL position / peek the slot over the subscription's OWN
+                  # conninfo: that role already holds REPLICATION on the peer. A
+                  # failure is reported as an empty string so the caller can fall
+                  # back instead of dying under `set -e`.
+                  psql_peer() {
+                    local conn="$1"
+                    shift
+                    kubectl exec -n "$NS" "$PRIMARY" -c postgres -- \
+                      psql "$conn" -X -tAF'|' -q -c "$1" 2>/dev/null || true
+                  }
 
-                  if [ -z "$DISABLED" ]; then
-                    echo "all local subscriptions enabled — nothing to do"
+                  # --- wd:state --------------------------------------------------
+                  # Region-local run-to-run state: last applied LSN and when it last
+                  # moved (the stall clock), the blind re-enable streak, the conflict
+                  # counter snapshot and the last skip.
+                  psql_primary -c "
+                    CREATE TABLE IF NOT EXISTS ${STATE_TABLE} (
+                      subname text PRIMARY KEY,
+                      remote_lsn pg_lsn,
+                      applied_at timestamptz NOT NULL DEFAULT now(),
+                      updated_at timestamptz NOT NULL DEFAULT now(),
+                      enable_streak int NOT NULL DEFAULT 0,
+                      confl_insert_exists bigint NOT NULL DEFAULT 0,
+                      confl_update_exists bigint NOT NULL DEFAULT 0,
+                      confl_multiple bigint NOT NULL DEFAULT 0,
+                      last_skip_lsn pg_lsn,
+                      last_skip_at timestamptz
+                    ); -- wd:state" >/dev/null
+
+                  # --- wd:subs ---------------------------------------------------
+                  SUBS=$(psql_primary -c \
+                    "SELECT subname, oid::text, subenabled::text,
+                            coalesce(subslotname, ''),
+                            coalesce(array_to_string(subpublications, ','), '')
+                     FROM pg_subscription
+                     ORDER BY subname; -- wd:subs")
+
+                  if [ -z "$SUBS" ]; then
+                    echo "no local subscriptions — nothing to do"
                     exit 0
                   fi
 
-                  while IFS='|' read -r SUB ORIGIN; do
+                  # A subscription that has not moved for STALL_MIN minutes while
+                  # the publisher has WAL beyond it is stalled, enabled or not.
+                  # Replaces the 2026-11-24 blind spot: the old job only looked at
+                  # disabled subs and re-enabled them forever.
+                  while IFS='|' read -r SUB OID ENABLED SLOT PUBS; do
                     [ -z "${SUB:-}" ] && continue
-                    echo "--- disabled sub: $SUB (origin $ORIGIN) ---"
+                    ORIGIN="pg_${OID}"
 
-                    # Latest fatal, known-safe conflict LSN for this origin.
-                    LINE=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
-                      | grep -F 'conflict detected' \
+                    REMOTE=$(psql_primary -c \
+                      "SELECT coalesce(remote_lsn::text, '') FROM pg_replication_origin_status
+                       WHERE external_id = '${ORIGIN}'; -- wd:origin")
+                    if [ -z "$REMOTE" ]; then
+                      echo "WATCHDOG_ORIGIN_MISSING sub=$SUB origin=$ORIGIN — no replication origin row; skipping the stall check"
+                      continue
+                    fi
+
+                    CONNINFO=$(psql_primary -c \
+                      "SELECT subconninfo FROM pg_subscription WHERE subname = '${SUB}'; -- wd:conninfo")
+                    if [ -z "$CONNINFO" ]; then
+                      echo "WATCHDOG_PEER_UNKNOWN sub=$SUB — no conninfo; skipping the stall check"
+                      continue
+                    fi
+                    case "$CONNINFO" in
+                      *dbname=*) ;;
+                      *) CONNINFO="$CONNINFO dbname=shogo" ;;
+                    esac
+
+                    PEER_LSN=$(psql_peer "$CONNINFO" "SELECT pg_current_wal_lsn(); -- wd:peer-lsn")
+                    if [ -z "$PEER_LSN" ]; then
+                      echo "WATCHDOG_PEER_UNREACHABLE sub=$SUB — cannot read the publisher's WAL position; skipping the stall check"
+                      continue
+                    fi
+
+                    AHEAD=$(psql_primary -c \
+                      "SELECT ('${PEER_LSN}'::pg_lsn > '${REMOTE}'::pg_lsn)::text; -- wd:ahead" || true)
+                    AHEAD=${AHEAD:-false}
+
+                    # Advance the stall clock only while there is something to
+                    # apply: minutes since the origin LSN last moved. A first sight
+                    # of the sub, or a new LSN, resets both the clock and the
+                    # blind-re-enable streak.
+                    STALLED_MIN=$(psql_primary -c "
+                      INSERT INTO ${STATE_TABLE} (subname, remote_lsn, applied_at, updated_at)
+                      VALUES ('${SUB}', '${REMOTE}'::pg_lsn, now(), now())
+                      ON CONFLICT (subname) DO UPDATE SET
+                        updated_at = CASE
+                          WHEN '${AHEAD}' <> 'true' THEN now()
+                          WHEN ${STATE_TABLE}.remote_lsn IS DISTINCT FROM EXCLUDED.remote_lsn THEN now()
+                          ELSE ${STATE_TABLE}.updated_at
+                        END,
+                        applied_at = CASE
+                          WHEN ${STATE_TABLE}.remote_lsn IS DISTINCT FROM EXCLUDED.remote_lsn THEN now()
+                          ELSE ${STATE_TABLE}.applied_at
+                        END,
+                        enable_streak = CASE
+                          WHEN ${STATE_TABLE}.remote_lsn IS DISTINCT FROM EXCLUDED.remote_lsn THEN 0
+                          ELSE ${STATE_TABLE}.enable_streak
+                        END,
+                        remote_lsn = EXCLUDED.remote_lsn
+                      RETURNING floor(extract(epoch FROM (now() - updated_at)) / 60)::int; -- wd:stall" || true)
+                    case "${STALLED_MIN:-}" in
+                      ''|*[!0-9]*) STALLED_MIN=0 ;;
+                    esac
+
+                    if [ "$AHEAD" = "true" ] && [ "$STALLED_MIN" -ge "$STALL_MIN" ]; then
+                      echo "REPLICATION_STALLED sub=$SUB minutes=$STALLED_MIN remote_lsn=$REMOTE peer_lsn=$PEER_LSN enabled=$ENABLED"
+                      echo "CRITICAL: $SUB has applied nothing for ${STALLED_MIN}m while the publisher has WAL beyond $REMOTE — the mesh is down in this direction"
+                      STALLS=$((STALLS+1))
+                      EXIT_RC=1
+                    fi
+
+                    if [ "$ENABLED" = "true" ]; then
+                      continue
+                    fi
+
+                    echo "--- disabled sub: $SUB (origin $ORIGIN slot ${SLOT:-?}) ---"
+
+                    # A tablesync error cannot be SKIPped, and re-enabling just
+                    # retries the same COPY and disables again seconds later.
+                    # Signal: a relation of THIS subscription still in 'd' (data
+                    # copy) or 'i' (initialize) while the subscription is disabled
+                    # — current state, not the cumulative sync_error_count.
+                    SYNC_STUCK=$(psql_primary -c \
+                      "SELECT count(*) FROM pg_subscription_rel
+                       WHERE srsubid = (SELECT oid FROM pg_subscription WHERE subname = '${SUB}')
+                         AND srsubstate IN ('d','i'); -- wd:sync" 2>/dev/null || true)
+                    SYNC=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                      | grep -F 'COPY ' \
+                      | jq -rc '
+                          .record as $r
+                          | select((($r.context // "") | test("COPY .*, line [0-9]+")))
+                          | (($r.context // "") | (capture("COPY (?<t>[^,]+), line").t) // "?")
+                        ' 2>/dev/null | tail -1)
+                    if [ -n "$SYNC" ] || { [ -n "$SYNC_STUCK" ] && [ "$SYNC_STUCK" != "0" ]; }; then
+                      echo "WATCHDOG_TABLESYNC_ERROR sub=$SUB relation=${SYNC:-?} stuck_relations=${SYNC_STUCK:-0} — initial COPY failed; a tablesync error cannot be SKIPped"
+                      echo "CRITICAL: $SUB disabled by a tablesync error (relation ${SYNC:-?}, ${SYNC_STUCK:-0} relation(s) stuck in 'd'/'i') — NOT re-enabling. Reconcile the rows, then ALTER SUBSCRIPTION $SUB ENABLE."
+                      EXIT_RC=1
+                      continue
+                    fi
+
+                    # Schema skew: the peer region ran a migration that added
+                    # columns before this region did (US migrates before EU on
+                    # every deploy). Nothing is lost; the apply worker retries the
+                    # same transaction once the local migration lands, so re-enable
+                    # without skipping and without paging.
+                    SKEW=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                      | grep -F 'missing replicated column' \
                       | jq -rc --arg o "$ORIGIN" '
                           .record as $r
-                          | select(($r.message // "") | test("conflict detected"))
-                          | select(($r.message // "") | test("insert_exists|update_exists|multiple_unique_conflicts"))
-                          | select(($r.context // "") | test("\"" + $o + "\""))
-                          | (($r.context // "") | capture("finished at (?<l>[0-9A-F]+/[0-9A-F]+)").l) as $lsn
-                          | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?") as $rel
-                          | "\($lsn)|\($rel)"
+                          | select(($r.message // "") | test("is missing replicated column"))
+                          | select((($r.context // "") == "") or (($r.context // "") | test("\"" + $o + "\"")))
+                          | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?")
                         ' 2>/dev/null | tail -1)
+                    if [ -n "$SKEW" ]; then
+                      echo "WATCHDOG_SCHEMA_SKEW sub=$SUB relation=$SKEW — peer migrated first; re-enabling (no skip)"
+                      psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                      continue
+                    fi
 
-                    LSN=${LINE%%|*}
-                    REL=${LINE#*|}
+                    # --- wd:conflict -------------------------------------------
+                    # Classify from PG18 stats, not from log text: a rise in any
+                    # known-safe conflict counter since the previous run means the
+                    # disable is the collision class we may skip.
+                    DELTA=$(psql_primary -c \
+                      "SELECT coalesce(c.confl_insert_exists - s.confl_insert_exists, 0)
+                            + coalesce(c.confl_update_exists - s.confl_update_exists, 0)
+                            + coalesce(c.confl_multiple_unique_conflicts - s.confl_multiple, 0)
+                       FROM pg_stat_subscription_stats c
+                       LEFT JOIN ${STATE_TABLE} s ON s.subname = c.subname
+                       WHERE c.subname = '${SUB}'; -- wd:conflict" || true)
+                    DELTA=${DELTA:-0}
+                    case "$DELTA" in
+                      ''|*[!0-9-]*) DELTA=0 ;;
+                    esac
+                    psql_primary -c "
+                      UPDATE ${STATE_TABLE} s SET
+                        confl_insert_exists = c.confl_insert_exists,
+                        confl_update_exists = c.confl_update_exists,
+                        confl_multiple = c.confl_multiple_unique_conflicts
+                      FROM pg_stat_subscription_stats c
+                      WHERE s.subname = c.subname AND c.subname = '${SUB}'; -- wd:conflict-save" >/dev/null || true
+                    echo "conflict counters: known-safe delta=${DELTA} since the last run"
+
+                    # max-size guard: a negative delta means the counters were
+                    # reset (pg_stat_reset_subscription_stats) — treat it as "no
+                    # information", never as "known-safe".
+                    if [ "$DELTA" -lt 0 ]; then
+                      DELTA=0
+                    fi
+
+                    # --- wd:peek ----------------------------------------------
+                    # Find the failing transaction in the publisher's slot. The
+                    # first BEGIN whose commit LSN is past our origin's remote_lsn
+                    # is the one the apply worker refused; its relation and tuple
+                    # messages name what a SKIP would drop. Peeking never advances
+                    # the slot.
+                    LSN=""
+                    REL=""
+                    KEYS=""
+                    if [ -n "${SLOT:-}" ] && [ -n "${PUBS:-}" ]; then
+                      PEEK=$(psql_peer "$CONNINFO" "
+                        WITH raw AS (
+                          SELECT data FROM pg_logical_slot_peek_binary_changes(
+                            '${SLOT}', NULL, ${PEEK_N},
+                            'proto_version', '1', 'publication_names', '${PUBS}')
+                        ), r AS (
+                          SELECT data, position(decode('00','hex') in substring(data from 6)) AS ns_end
+                          FROM raw
+                        ), decoded AS (
+                          SELECT
+                            convert_from(substring(data from 1 for 1), 'LATIN1') AS kind,
+                            CASE WHEN get_byte(data, 0) = 66 THEN format('%s/%s',
+                                   to_hex((('x'||encode(substring(data from 2 for 8),'hex'))::bit(64)::bigint >> 32)),
+                                   to_hex((('x'||encode(substring(data from 2 for 8),'hex'))::bit(64)::bigint & 4294967295)))
+                            END AS commit_lsn,
+                            CASE WHEN get_byte(data, 0) = 82 THEN
+                              convert_from(substring(data from 6 for ns_end - 1), 'LATIN1') || '.' ||
+                              convert_from(substring(data from 6 + ns_end for position(decode('00','hex') in substring(data from 6 + ns_end)) - 1), 'LATIN1')
+                            END AS relation,
+                            CASE WHEN get_byte(data, 0) IN (68, 73, 85) THEN
+                              btrim(regexp_replace(regexp_replace(regexp_replace(
+                                encode(substring(data from 6), 'escape'),
+                                '\\[0-7]{3}', ' ', 'g'), '[^ -~]', ' ', 'g'), ' +', ' ', 'g'))
+                            END AS values_text
+                          FROM r
+                        )
+                        SELECT kind, coalesce(commit_lsn, ''), coalesce(relation, ''), coalesce(values_text, ''),
+                               CASE WHEN commit_lsn IS NULL THEN '' ELSE (commit_lsn::pg_lsn > '${REMOTE}'::pg_lsn)::text END
+                        FROM decoded; -- wd:peek")
+                    else
+                      PEEK=""
+                    fi
+
+                    while IFS='|' read -r KIND TXN RELNAME VALUES AFTER; do
+                      [ -z "${KIND:-}" ] && continue
+                      if [ "$KIND" = "B" ]; then
+                        # Stop at the first transaction that is NOT the failing one.
+                        [ -n "$LSN" ] && break
+                        [ "$AFTER" = "true" ] && LSN="$TXN"
+                        continue
+                      fi
+                      [ -z "$LSN" ] && continue
+                      [ "$KIND" = "R" ] && REL="$RELNAME"
+                      if [ "$KIND" = "I" ] || [ "$KIND" = "U" ]; then
+                        KEYS="${KEYS}${VALUES} "
+                      fi
+                    done <<< "$PEEK"
+                    KEYS=$(echo "$KEYS" | cut -c1-160)
+
+                    if [ -n "$LSN" ]; then
+                      echo "peeked failing txn: sub=$SUB relation=${REL:-?} lsn=$LSN keys=${KEYS:-?}"
+                    fi
 
                     if [ -z "$LSN" ]; then
-                      # Tablesync error: the initial COPY of a newly-published
-                      # A tablesync error cannot be SKIPped, and re-enabling just
-                      # retries the same COPY and disables again seconds later.
-                      # Do NOT re-enable; page a human.
-                      #
-                      # Signal: a relation of THIS subscription still in 'd'
-                      # (data copy) or 'i' (initialize) while the subscription is
-                      # disabled. That is current state, not a counter —
-                      # pg_stat_subscription_stats.sync_error_count is cumulative
-                      # and never resets, so it would take this branch forever
-                      # after one past failure and kill the schema-skew recovery.
-                      # The log supplies the relation name for the page.
-                      SYNC_STUCK=$(psql_primary -c \
-                        "SELECT count(*) FROM pg_subscription_rel
-                         WHERE srsubid = (SELECT oid FROM pg_subscription WHERE subname = '$SUB')
-                           AND srsubstate IN ('d','i');" \
-                        2>/dev/null | tr -d '[:space:]')
-                      SYNC=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
-                        | grep -F 'COPY ' \
-                        | jq -rc '
+                      # Fallback: the log. Only reached when the peek could not
+                      # run (no slot/publication, peer unreachable) or found
+                      # nothing past our LSN.
+                      LINE=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                        | grep -F 'conflict detected' \
+                        | jq -rc --arg o "$ORIGIN" '
                             .record as $r
-                            | select((($r.context // "") | test("COPY .*, line [0-9]+")))
-                            | (($r.context // "") | (capture("COPY (?<t>[^,]+), line").t) // "?")
+                            | select(($r.message // "") | test("conflict detected"))
+                            | select(($r.message // "") | test("insert_exists|update_exists|multiple_unique_conflicts"))
+                            | select(($r.context // "") | test("\"" + $o + "\""))
+                            | (($r.context // "") | capture("finished at (?<l>[0-9A-F]+/[0-9A-F]+)").l) as $lsn
+                            | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?") as $rel
+                            | "\($lsn)|\($rel)"
                           ' 2>/dev/null | tail -1)
-                      if [ -n "$SYNC" ] || { [ -n "$SYNC_STUCK" ] && [ "$SYNC_STUCK" != "0" ]; }; then
-                        echo "WATCHDOG_TABLESYNC_ERROR sub=$SUB relation=${SYNC:-?} stuck_relations=${SYNC_STUCK:-0} — initial COPY failed; a tablesync error cannot be SKIPped"
-                        echo "CRITICAL: $SUB disabled by a tablesync error (relation ${SYNC:-?}, ${SYNC_STUCK:-0} relation(s) stuck in 'd'/'i') — NOT re-enabling. Reconcile the rows, then ALTER SUBSCRIPTION $SUB ENABLE."
+                      LSN=${LINE%%|*}
+                      if [ -n "${LINE:-}" ]; then
+                        REL=${LINE#*|}
+                      fi
+                    fi
+
+                    if [ "$DELTA" -gt 0 ] && [ -z "$LSN" ]; then
+                      echo "WATCHDOG_CONFLICT_NO_LSN sub=$SUB delta=$DELTA — the stats say a known-safe conflict happened but no LSN could be found; NOT skipping"
+                      EXIT_RC=1
+                      continue
+                    fi
+
+                    if [ "$DELTA" -gt 0 ] || [ -n "$LSN" ]; then
+                      if [ -z "$LSN" ]; then
+                        echo "no failing LSN for a known-safe conflict on $SUB; NOT skipping"
                         EXIT_RC=1
                         continue
                       fi
-
-                      # Schema skew: the peer region ran a migration that added
-                      # columns before this region did (US migrates before EU on
-                      # every deploy). Nothing is lost; the apply worker retries the
-                      # same transaction once the local migration lands, so re-enable
-                      # without skipping and without paging.
-                      SKEW=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
-                        | grep -F 'missing replicated column' \
-                        | jq -rc --arg o "$ORIGIN" '
-                            .record as $r
-                            | select(($r.message // "") | test("is missing replicated column"))
-                            | select((($r.context // "") == "") or (($r.context // "") | test("\"" + $o + "\"")))
-                            | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?")
-                          ' 2>/dev/null | tail -1)
-                      if [ -n "$SKEW" ]; then
-                        echo "WATCHDOG_SCHEMA_SKEW sub=$SUB relation=$SKEW — peer migrated first; re-enabling (no skip)"
-                        psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                      if [ "$SKIPS" -ge "$SKIP_BUDGET" ]; then
+                        echo "CRITICAL: skip budget ($SKIP_BUDGET) exhausted this run; $SUB still disabled at $REL @ $LSN"
+                        echo "Not skipping further — conflict storm or a real bug. Paging."
+                        EXIT_RC=1
                         continue
                       fi
-
-                      # Disabled, but no known-safe conflict in the window. Do NOT
-                      # blind-skip an unknown cause. Try a plain re-enable (covers
-                      # transient disables); if it stays down the monitor pages.
-                      echo "no known-safe conflict for $SUB in $LOG_WINDOW; re-enabling (no skip)"
-                      psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
-                      echo "CRITICAL: $SUB was disabled with no known-safe conflict — review required"
-                      EXIT_RC=1
+                      echo "WATCHDOG_SKIP sub=$SUB relation=${REL:-?} lsn=$LSN keys=${KEYS:-?}"
+                      psql_primary -c \
+                        "ALTER SUBSCRIPTION $SUB SKIP (lsn='$LSN'); ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null
+                      psql_primary -c \
+                        "UPDATE ${STATE_TABLE} SET enable_streak = 0, last_skip_lsn = '$LSN'::pg_lsn, last_skip_at = now()
+                         WHERE subname = '${SUB}'; -- wd:skip-save" >/dev/null || true
+                      SKIPS=$((SKIPS+1))
                       continue
                     fi
 
-                    if [ "$SKIPS" -ge "$SKIP_BUDGET" ]; then
-                      echo "CRITICAL: skip budget ($SKIP_BUDGET) exhausted this run; $SUB still disabled at $REL @ $LSN"
-                      echo "Not skipping further — conflict storm or a real bug. Paging."
+                    # Disabled for a reason we cannot classify. Re-enable at most
+                    # MAX_BLIND_ENABLE times in a row: a transient disable recovers,
+                    # a repeating one stops being papered over and waits for a human.
+                    STREAK=$(psql_primary -c \
+                      "UPDATE ${STATE_TABLE} SET enable_streak = enable_streak + 1
+                       WHERE subname = '${SUB}' RETURNING enable_streak; -- wd:streak" || true)
+                    case "${STREAK:-}" in
+                      ''|*[!0-9]*) STREAK=1 ;;
+                    esac
+                    if [ "$STREAK" -gt "$MAX_BLIND_ENABLE" ]; then
+                      echo "WATCHDOG_ENABLE_BUDGET_EXHAUSTED sub=$SUB streak=$STREAK — disabled for an unknown cause ${STREAK} runs in a row; leaving it disabled"
+                      echo "CRITICAL: $SUB needs a human (unknown disable cause; no known-safe conflict and no schemas skew). See k8s/cnpg/logical-replication/RUNBOOK.md step 9."
                       EXIT_RC=1
                       continue
                     fi
+                    echo "no classified cause for $SUB (streak $STREAK/$MAX_BLIND_ENABLE); re-enabling (no skip)"
+                    psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                    echo "CRITICAL: $SUB was disabled with no known-safe conflict — review required"
+                    EXIT_RC=1
+                  done <<< "$SUBS"
 
-                    echo "WATCHDOG_SKIP sub=$SUB relation=$REL lsn=$LSN"
-                    psql_primary -c \
-                      "ALTER SUBSCRIPTION $SUB SKIP (lsn='$LSN'); ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null
-                    SKIPS=$((SKIPS+1))
-                  done <<< "$DISABLED"
-
-                  echo "=== Watchdog complete (skips=$SKIPS exit=$EXIT_RC) ==="
+                  echo "=== Watchdog complete (skips=$SKIPS stalls=$STALLS exit=$EXIT_RC) ==="
                   exit "$EXIT_RC"
               resources:
                 requests:
-                  memory: "96Mi"
+                  memory: "128Mi"
                   cpu: "50m"
                 limits:
-                  memory: "192Mi"
-                  cpu: "200m"
+                  memory: "256Mi"
+                  cpu: "250m"

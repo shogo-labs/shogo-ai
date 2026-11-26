@@ -1,0 +1,115 @@
+# SigNoz alert: a cross-region subscription has stopped applying (SHO-585)
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
+#
+# Why: on 2026-11-24 the US↔EU mesh was down in BOTH directions for ~10 hours.
+# Neither `ReplicationMonitorFailing` nor `ConflictWatchdogFailing` paged,
+# because both were shaped as "absence of a green run":
+#   * `conflict-watchdog` blindly re-enabled the broken subscription every 5
+#     minutes. Each re-enable failed again seconds later, but whenever a run
+#     happened to land in a healed moment it printed
+#     `Watchdog complete (skips=N exit=0)` — a GREEN marker — which reset the
+#     absence window. A flap that is green one run in three is invisible to an
+#     absence rule.
+#   * `replication-monitor` samples instantaneous state (`pid IS NULL`,
+#     `latest_end_time` age), so a subscription that is briefly enabled at
+#     sample time looks healthy.
+# The watchdog now compares each subscription's applied LSN against the previous
+# run's (state in `logical_replication_watchdog_state`), so a flap cannot hide:
+# if the origin LSN has not moved for STALL_MIN (15) minutes while the publisher
+# still has WAL beyond it, it prints
+# `REPLICATION_STALLED sub=<name> minutes=<n> ...` and exits non-zero — enabled
+# or not.
+#
+# This rule alerts on the PRESENCE of that marker (in_total > 0 over 15m), which
+# is the shape that also survives the region flapping: every stalled run emits
+# it, so the series exists and cannot be "absent". `alertOnAbsent` stays OFF for
+# the same reason as ReplicationMonitorFailing — a healthy cluster emits no
+# marker, and treating that as absence would page on every green region. The
+# separate `ConflictWatchdogFailing` rule still covers the job not running.
+alert: ReplicationStalled
+alertType: LOGS_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "k8s.pod.name LIKE 'conflict-watchdog%' AND body LIKE '%REPLICATION_STALLED%'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} stalled_runs"
+          # One bucket per scheduled run, so 3 buckets == 3 consecutive stalls.
+          stepInterval: 300s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: in_total
+        target: 0
+        channels: [platform-oncall]
+  # OFF on purpose: a healthy cluster emits no stall marker. See the header.
+  alertOnAbsent: false
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: logical_replication
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "a region has not applied any replicated transaction for 15+ minutes while its peer has WAL waiting"
+  description: |
+    The `conflict-watchdog` CronJob in this region reported `REPLICATION_STALLED`:
+    a local subscription's replication origin (`pg_replication_origin_status`) has
+    not advanced for >= 15 minutes even though the publisher still has WAL beyond
+    that LSN. Writes from that direction are silently NOT arriving.
+
+    This is the signal the 2026-11-24 outage lacked — the subscription was
+    re-enabled every 5 minutes and failed again each time, and every instantaneous
+    check sampled a moment where it looked fine.
+
+    Triage:
+    1. Which direction, and for how long?
+       kubectl get jobs -n shogo-production-system | grep conflict-watchdog
+       kubectl logs -n shogo-production-system job/<newest conflict-watchdog job> \
+         | grep -E 'REPLICATION_STALLED|WATCHDOG_'
+       The line names `sub=`, `minutes=`, `remote_lsn=`, `peer_lsn=` and whether
+       the subscription was enabled at the time.
+    2. Is the subscription disabled?
+       kubectl exec -n shogo-production-system <platform-pg primary> -c postgres -- \
+         psql -U postgres -d shogo -c \
+         "SELECT subname, subenabled, pid FROM pg_stat_subscription"
+       A disabled sub with a known-safe conflict is skipped automatically. One
+       that stays disabled after 3 consecutive unknown-cause re-enables is left
+       for a human — see `WATCHDOG_ENABLE_BUDGET_EXHAUSTED` in the job log.
+    3. Read the failing transaction from the DB rather than the log:
+       follow either `k8s/cnpg/logical-replication/RUNBOOK.md` step 9 (manual
+       skip) or "Stalled subscription" in the same runbook.
+    4. If the peer is the unhealthy one, the same alert fires there; fix the
+       peer first — a stalled apply is usually the symptom.
+
+    Runbook: k8s/cnpg/logical-replication/RUNBOOK.md
+    Plan: docs/runbooks/mesh-durably-healthy-plan.md

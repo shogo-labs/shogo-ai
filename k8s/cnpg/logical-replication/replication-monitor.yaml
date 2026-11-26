@@ -82,7 +82,7 @@ spec:
                   # key, so it is published on purpose and must not be listed here.
                   # Keep this list in sync with scripts/check-publication-drift.ts
                   # and exclude-region-local-tables.sql.
-                  EXCLUDED_TABLES="'storage_usage','usage_wallets','proxy_turns'"
+                  EXCLUDED_TABLES="'storage_usage','usage_wallets','proxy_turns','logical_replication_watchdog_state'"
 
                   # Deploy window. `prisma migrate deploy` creates tables a few
                   # minutes before deploy.yml publishes them

@@ -15,6 +15,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { routeToHomeRegion } from '../../lib/home-region-route'
 import { getSyncEngine } from '../../lib/sync-engine'
 import { emitWorkspaceEvent } from '../workspace-events'
 import { SocialError } from './client'
@@ -37,6 +38,12 @@ import {
 } from './zernio-webhook'
 
 const db = prisma as any
+
+/**
+ * The home region's half of a forwarded Zernio event (`POST
+ * /api/internal/social/apply`). Mirrors `MAIL_FORWARD_PATH`.
+ */
+export const SOCIAL_APPLY_PATH = '/api/internal/social/apply'
 
 export {
   ZERNIO_EVENT_ID_HEADER,
@@ -379,7 +386,46 @@ export async function handleZernioWebhook(input: ZernioWebhookInput): Promise<{ 
     return { status: 200, body: { ok: true, relayed: profile.localWorkspaceId } }
   }
 
-  const result = await applySocialEvent({
+  // Inbox rows are written only in the workspace's home region. Any region can
+  // receive this webhook, and `SocialComment.zernioCommentId` (and the
+  // conversation/message provider ids) are unique per region, so two regions
+  // importing the same event collide and poison logical replication (SHO-585:
+  // both regions imported the same Samsara Instagram comments). A 503 makes
+  // Zernio retry into the region that owns the workspace.
+  if (!profile.localWorkspaceId) {
+    const forward = socialForwardBody(profile, event)
+    const routed = await routeToHomeRegion<{ status: number; body: unknown }>(
+      profile.workspaceId,
+      SOCIAL_APPLY_PATH,
+      forward,
+    )
+    if (routed.outcome === 'unavailable') {
+      return {
+        status: 503,
+        body: { error: { code: 'home_region_unavailable', message: 'This workspace is served from another region right now' } },
+      }
+    }
+    if (routed.outcome === 'rejected') {
+      // The home region understood the event and refused it for good (no linked
+      // account, unknown profile). Zernio must not retry that, so acknowledge
+      // the delivery and record why — a 503 here would replay it forever.
+      console.warn('[social] home region refused the Zernio event', {
+        workspaceId: profile.workspaceId,
+        eventId: event.id,
+        status: routed.status,
+        error: routed.error,
+      })
+      return { status: 200, body: { ok: true, refused: true, status: routed.status } }
+    }
+    if (routed.outcome === 'forwarded') return routed.data ?? { status: 200, body: { ok: true } }
+    return applySocialEvent(forward)
+  }
+  return applySocialEvent(socialForwardBody(profile, event))
+}
+
+/** The event, normalised to the fields `applySocialEvent` reads. */
+function socialForwardBody(profile: SocialProfileRow, event: ZernioEvent): ApplySocialEventInput {
+  return {
     workspaceId: profile.workspaceId,
     externalId: profile.externalId,
     localWorkspaceId: '',
@@ -388,8 +434,7 @@ export async function handleZernioWebhook(input: ZernioWebhookInput): Promise<{ 
     account: event.account,
     detail: event.detail,
     payload: event.payload,
-  })
-  return result
+  }
 }
 
 /** Re-exported so callers get one error shape from this module. */
