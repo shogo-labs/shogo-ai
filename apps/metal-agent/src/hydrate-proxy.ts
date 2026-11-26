@@ -45,6 +45,19 @@ export interface HydrateProxyOptions {
    * waiting for a slot would be slower than the path we are replacing.
    */
   maxConcurrent: number
+  /**
+   * Hard ceiling on bytes in flight across EVERY transfer, in bytes. `maxConcurrent`
+   * is clamped down to fit it, so no combination of part size, fan-out and
+   * concurrency can put more than this on the host. `0` disables the clamp.
+   *
+   * Why a byte ceiling and not just the product: the exposure does not scale
+   * with archive size (a part is only fetched as a slot frees), so a GiB-scale
+   * archive costs the same memory as a 100 MB one — but it does scale with
+   * operator settings, and `s3GetConcurrency` is shared with the snapshot pull
+   * path. Without the clamp, raising that to 16 quietly doubles the hydrate
+   * ceiling.
+   */
+  maxInFlightBytes: number
   /** How long a grant is valid. Short: it is redeemed seconds after minting. */
   ttlSec: number
   /** Port the agent listens on, for the URL handed to the guest. */
@@ -64,17 +77,50 @@ export const HYDRATE_STREAM_PREFIX = '/hydrate-stream/'
 
 export class HydrateProxy {
   private grants = new Map<string, Grant>()
-  /** Grants minted but not yet finished — the thing `maxConcurrent` bounds. */
+  /** Grants minted but not yet finished — the thing `limit` bounds. */
   private active = 0
+  /** Bytes one transfer can hold: `partBytes * concurrency`, floored at one part. */
+  private readonly windowBytes: number
+  /** `maxConcurrent` after the byte ceiling is applied; 0 = the proxy is off. */
+  private readonly limit: number
 
   constructor(
     private readonly opts: HydrateProxyOptions,
     private readonly now: () => number = Date.now,
     private readonly log: (msg: string) => void = console.log,
-  ) {}
+  ) {
+    this.windowBytes =
+      Math.max(1, Math.floor(opts.partBytes)) * Math.max(1, Math.floor(opts.concurrency))
+    const fits =
+      opts.maxInFlightBytes > 0
+        ? Math.floor(opts.maxInFlightBytes / this.windowBytes)
+        : Math.floor(opts.maxConcurrent)
+    this.limit = Math.max(0, Math.min(Math.floor(opts.maxConcurrent), fits))
+    // Say the applied ceiling out loud at boot, but only when it actually bound:
+    // the product is a hand-computed number nowhere else, and the failure it
+    // guards against is an operator raising a shared knob (s3GetConcurrency) and
+    // never seeing the effect.
+    if (this.limit !== Math.floor(opts.maxConcurrent)) {
+      this.log(
+        `[hydrate-proxy] ceiling ${mib(this.limit * this.windowBytes)} MiB in flight: ` +
+          `${mib(this.windowBytes)} MiB per transfer (${mib(opts.partBytes)} x${opts.concurrency}-wide) ` +
+          `x ${this.limit} concurrent (asked for ${opts.maxConcurrent})`,
+      )
+    }
+  }
 
   get inFlight(): number {
     return this.active
+  }
+
+  /** Concurrent transfers the byte ceiling allows. 0 = proxy disabled. */
+  get maxConcurrent(): number {
+    return this.limit
+  }
+
+  /** Worst-case bytes in flight, after the clamp. */
+  get maxInFlightBytes(): number {
+    return this.limit * this.windowBytes
   }
 
   /**
@@ -99,7 +145,7 @@ export class HydrateProxy {
     // One part is one connection, which is the case this exists to avoid — and
     // for a small archive the single stream is not the bottleneck anyway.
     if (args.size <= this.opts.partBytes) return null
-    if (this.active >= this.opts.maxConcurrent) return null
+    if (this.limit === 0 || this.active >= this.limit) return null
 
     const token = randomBytes(32).toString('hex')
     this.grants.set(token, {
@@ -175,6 +221,11 @@ export class HydrateProxy {
       }
     }
   }
+}
+
+/** Bytes → whole MiB, for the ceiling line in the log. */
+function mib(bytes: number): number {
+  return Math.round(bytes / (1024 * 1024))
 }
 
 /**

@@ -548,12 +548,19 @@ export const config = {
    * 1.5-10.6 MB/s — against a ~100 s budget before the edge gives up.
    *
    * `maxConcurrent` bounds the host's exposure: each transfer holds at most
-   * `partBytes * s3GetConcurrency` (8 MB * 8 = 64 MB), so twelve of them is
-   * ~768 MB. Past that, hydrates take the presigned URL as they do today rather
-   * than wait for a slot. Set to 0 to turn the proxy off entirely.
+   * `partBytes * s3GetConcurrency` in flight, and `hydrateProxyMaxInFlightBytes`
+   * is the ceiling on the product across every transfer — `maxConcurrent` is
+   * clamped down to fit it, so raising the shared `s3GetConcurrency` cannot
+   * quietly raise the hydrate ceiling with it. Exposure does NOT grow with
+   * archive size: a part is only fetched as a slot frees, so a GiB-scale archive
+   * costs the same memory as a 100 MB one. Past the limit, hydrates take the
+   * presigned URL as they do today rather than queue. Set to 0 to turn the proxy
+   * off entirely.
    */
   hydrateProxyPartBytes: parseInt(env('METAL_HYDRATE_PROXY_PART_MB', '8'), 10) * 1024 * 1024,
   hydrateProxyMaxConcurrent: parseInt(env('METAL_HYDRATE_PROXY_MAX', '12'), 10),
+  /** Hard ceiling, in bytes, on hydrate bytes in flight across all transfers. */
+  hydrateProxyMaxInFlightBytes: parseInt(env('METAL_HYDRATE_PROXY_MAX_MIB', '256'), 10) * 1024 * 1024,
 
   /**
    * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +
