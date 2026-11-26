@@ -318,6 +318,46 @@ describe('SHO-596 AC2: the compat Gemini stream frames every rewrite as its own 
   })
 })
 
+// ─── QA: the framing invariant itself, read off the wire ──────────────────
+describe('SHO-596 QA: the wire carries one data line per event, and the flushed [DONE] is terminated', () => {
+  it('a CRLF native video body comes out canonical, with no empty event', async () => {
+    const body = nativeSse([
+      {
+        candidates: [{ content: { role: 'model', parts: [{ text: 'A red car.' }] } }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 3, totalTokenCount: 8 },
+      },
+      {
+        candidates: [{ content: { role: 'model', parts: [] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 3, totalTokenCount: 8 },
+      },
+    ])
+    nextNativeStream = body
+    nextCompatStream = ''
+    const response = await proxyOpenAIStream(videoTurn(), 'test-google-key', googleConfig as any, () => {})
+    const raw = await response.text()
+
+    const events = raw.split('\n\n').filter((event) => event !== '')
+    expect(events.length).toBeGreaterThan(0)
+    for (const event of events) {
+      // consecutive `data:` lines are one event — the bug in one line
+      expect(event.split('\n').filter((line) => line.startsWith('data:'))).toHaveLength(1)
+    }
+
+    // Google frames with CRLF; our output is canonical LF with blank lines.
+    expect(raw.includes('\r')).toBe(false)
+    expect(raw.endsWith('\n\n')).toBe(true)
+    // dropping the upstream separator must not leave an empty event behind
+    expect(raw.includes('\n\n\n')).toBe(false)
+
+    for (const event of events) expect(event.startsWith('data: ')).toBe(true)
+
+    // A native body never carries [DONE]; `flush()` synthesises it, and before
+    // the fix it was written with no terminating blank line at all, so every
+    // SSE client silently dropped the stream's only terminal.
+    expect(events.at(-1)).toBe('data: [DONE]')
+  })
+})
+
 // ─── The terminal scan is untouched ───────────────────────────────────────
 describe('SHO-596: the truncation scan still reads the upstream body', () => {
   it('a native body cut mid-answer is still reported as upstream_truncated', async () => {
