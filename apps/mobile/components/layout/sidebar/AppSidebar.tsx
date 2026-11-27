@@ -52,6 +52,7 @@ import {
   MessageSquarePlus,
   Inbox,
   Store,
+  Bookmark,
   Mic,
   Laptop,
   SlidersHorizontal,
@@ -129,6 +130,8 @@ import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
 import { SidebarScrollView } from "./SidebarScrollContext";
 import { HomePanel, MorePanel } from "./TabPanels";
+import { PanelLink } from "../../team-chat/ConversationRows";
+import { useSavedCount } from "../../../hooks/useChatItems";
 import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
@@ -374,6 +377,9 @@ export const AppSidebar = observer(function AppSidebar({
 
   const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId;
   const experience = useWorkspaceExperience();
+  // The drawer had no way into Later: saving a message on a phone left it
+  // unreachable until the saved list was found from the wide sidebar.
+  const savedCount = useSavedCount(experience.kind === "team" ? activeWorkspaceId : null);
 
   // Inviting people (SHO-454): one dialog, opened from the rail, the drawer and
   // the workspace menu. `canInvite` is the server's answer for this caller.
@@ -1508,6 +1514,20 @@ export const AppSidebar = observer(function AppSidebar({
               label="New Chat"
               collapsed={collapsed}
               onPress={handleNewChat}
+            />
+          )}
+          {/* The drawer is the only sidebar a phone gets, so Later has to live
+              here too — the wide sidebar's Home panel is not reachable on it. */}
+          {experience.kind === "team" && (
+            <PanelLink
+              icon={Bookmark}
+              label="Later"
+              count={savedCount}
+              countNoun="saved"
+              onPress={() => {
+                router.push("/(app)/c/later" as any);
+                onNavPress?.();
+              }}
             />
           )}
           {!isNativeDrawer && (

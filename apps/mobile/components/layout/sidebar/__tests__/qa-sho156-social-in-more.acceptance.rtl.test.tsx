@@ -68,6 +68,11 @@ mock.module(resolve(import.meta.dir, "../../../team-chat/TeamChatSidebarProvider
 mock.module(resolve(import.meta.dir, "../../../team-chat/ConversationRows"), () => ({
   PanelLink: () => null,
 }))
+// The Home panel asks for the saved-message count; the real hook builds the team
+// chat client (and its auth client) at import, which this suite does not provide.
+mock.module(resolve(import.meta.dir, "../../../../hooks/useChatItems"), () => ({
+  useSavedCount: () => 0,
+}))
 mock.module(resolve(import.meta.dir, "../NavItem"), () => ({ NavItem: () => null }))
 mock.module(resolve(import.meta.dir, "../WorkspaceChatsPanel"), () => ({ WorkspaceChatsPanel: () => null }))
 
