@@ -30,10 +30,14 @@ mock.module('../../lib/usage-cost', () => ({
 
 const consumeUsageCalls: any[] = []
 let consumeUsageImpl: (args: any) => Promise<any> = async () => ({ success: true, remainingIncludedUsd: 5 })
+const unbilledUsageCalls: any[] = []
 mock.module('../../services/billing.service', () => ({
   consumeUsage: async (args: any) => {
     consumeUsageCalls.push(args)
     return consumeUsageImpl(args)
+  },
+  recordUnbilledUsageEvent: async (params: any, reason: string) => {
+    unbilledUsageCalls.push({ params, reason })
   },
 }))
 
@@ -52,6 +56,7 @@ const {
   hasActiveSession,
   accumulateUsage,
   accumulateImageUsage,
+  accumulateVideoUsage,
   setQualitySignals,
   closeSession,
 } = await import('../proxy-billing-session')
@@ -64,6 +69,7 @@ const logs: { log: any[][]; warn: any[][]; error: any[][] } = { log: [], warn: [
 beforeEach(() => {
   calcCalls.length = 0
   consumeUsageCalls.length = 0
+  unbilledUsageCalls.length = 0
   consumeUsageImpl = async () => ({ success: true, remainingIncludedUsd: 5 })
   costMetricCalls.length = 0
   costMetricImpl = async () => {}
@@ -287,7 +293,7 @@ describe('closeSession', () => {
     expect(costMetricCalls[0].agentType).toBe('main-chat')
   })
 
-  it('discardPartial:true skips charging but still drains the session', async () => {
+  it('discardPartial:true skips charging, drains the session, and records the spend', async () => {
     await openSession('p1', 'w1', 'u1')
     await accumulateUsage('p1', 'sonnet', 100, 200)
     const r = await closeSession('p1', { discardPartial: true })
@@ -296,6 +302,11 @@ describe('closeSession', () => {
     expect(consumeUsageCalls).toHaveLength(0)
     expect(await hasSession('p1')).toBe(false)
     expect(String(logs.log[0])).toContain('Discarded partial session')
+    // Provider spend stays visible: one $0 row with the real cost.
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].reason).toBe('discarded_partial')
+    expect(unbilledUsageCalls[0].params.billedUsd).toBe(0)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeGreaterThan(0)
   })
 
   it('discardPartial on a zero-token session does not record a metric', async () => {
@@ -304,6 +315,38 @@ describe('closeSession', () => {
     expect(r.totalTokens).toBe(0)
     expect(consumeUsageCalls).toHaveLength(0)
     expect(costMetricCalls).toHaveLength(0)
+  })
+
+  // A finished video is charged in its own `ai_video_generation` row below,
+  // because a retry of the turn does not regenerate it. If the refused row
+  // also carried its cost, one render would be counted twice (SHO-599 QA r1).
+  it('discardPartial records a billed video once, not in both rows', async () => {
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 100, 200)
+    await accumulateVideoUsage('p1', 'veo-3', 8, 2.0, 2.0)
+    await closeSession('p1', { discardPartial: true })
+
+    const videoRow = consumeUsageCalls.find((c) => c.actionType === 'ai_video_generation')
+    expect(videoRow).toBeDefined()
+    expect(videoRow.rawUsd).toBe(2)
+
+    // Tokens only: (100 + 200) * 0.001, with the video's $2 left out.
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeCloseTo(0.3, 6)
+    expect(unbilledUsageCalls[0].params.actionMetadata.discardedBilledUsd).toBeCloseTo(0.6, 6)
+  })
+
+  // An unbilled video (its own debit was refused) has no video row to carry
+  // its cost, so the refused row must keep it.
+  it('discardPartial keeps an unbilled video in the refused row', async () => {
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 100, 200)
+    await accumulateVideoUsage('p1', 'veo-3', 8, 2.0, 0)
+    await closeSession('p1', { discardPartial: true })
+
+    expect(consumeUsageCalls.find((c) => c.actionType === 'ai_video_generation')).toBeUndefined()
+    expect(unbilledUsageCalls).toHaveLength(1)
+    expect(unbilledUsageCalls[0].params.rawUsd).toBeCloseTo(2.3, 6)
   })
 
   // Overwriting a stale map entry is bookkeeping, not a turn ending. Emitting

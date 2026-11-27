@@ -77,7 +77,7 @@ describe('trackChatStreamForBilling', () => {
     expect(args.actionMetadata.totalTokens).toBe(2750)
   })
 
-  test('stream EOF without data-turn-complete discards the session (no charge)', async () => {
+  test('stream EOF without data-turn-complete still charges the accumulated turn', async () => {
     const projectId = 'proj-eof'
     await openSession(projectId, 'ws-eof', 'user-eof')
     await accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 500)
@@ -89,10 +89,10 @@ describe('trackChatStreamForBilling', () => {
 
     await trackChatStreamForBilling(stream, projectId)
 
-    // Session is dropped without charging (auto-resuming-fetch will
-    // reconnect; we don't bill twice for the same turn).
+    // The tokens were really billed to the provider. A resumed leg accumulates
+    // into a NEW session, so charging this one cannot double-count (SHO-599).
     expect(await hasSession(projectId)).toBe(false)
-    expect(consumeUsageCalls.length).toBe(0)
+    expect(consumeUsageCalls.length).toBe(1)
   })
 
   test('quality signals are forwarded to the closeSession-emitted analytics', async () => {

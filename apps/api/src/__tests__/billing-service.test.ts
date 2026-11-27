@@ -961,13 +961,30 @@ describe('consumeUsage', () => {
   })
 
   test('fails when included exhausted, overage disabled', async () => {
-    seedWallet('ws-1', { dailyIncludedUsd: 0, monthlyIncludedUsd: 0 })
+    // Both windows are actually used up, so the debit is a call the gate would
+    // refuse now — the case rule B (SHO-599) leaves a refusal for. A call the
+    // gate would still admit is absorbed by the last of the room instead.
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, monthlyIncludedUsd: 0,
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
+    })
     const res = await billing.consumeUsage({
       workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
       actionType: 'chat', billedUsd: 1,
     })
     expect(res.success).toBe(false)
     expect(res.error).toBe('Usage limit reached')
+    // The refusal still leaves one row carrying the real cost (SHO-599), and
+    // charges nothing.
+    expect(usageEvents).toHaveLength(1)
+    expect(usageEvents[0]).toMatchObject({ source: 'refused', billedUsd: 0, rawUsd: 1 })
+    expect(usageEvents[0].actionMetadata).toMatchObject({
+      refused: true,
+      refusalReason: 'usage_limit_reached',
+      attemptedBilledUsd: 1,
+    })
+    expect(walletByWs.get('ws-1').weeklyUsedUsd).toBe(500)
   })
 
   test('fails when overage enabled but hard limit reached', async () => {
@@ -1356,7 +1373,12 @@ describe('consumeCredits (legacy shim)', () => {
   })
 
   test('propagates failure shape', async () => {
-    seedWallet('ws-1', { dailyIncludedUsd: 0, monthlyIncludedUsd: 0 })
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, monthlyIncludedUsd: 0,
+      // Windows used up: the gate would refuse this call, so the debit does too.
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
+    })
     const res = await billing.consumeCredits('ws-1', null, 'm-1', 'chat', 10)
     expect(res.success).toBe(false)
     expect(res.error).toBeDefined()
@@ -1909,7 +1931,7 @@ describe('SHO-416 signup trust hold', () => {
     expect(res).toEqual({ ok: false, reason: 'email_verification_required' })
   })
 
-  test('consumeUsage refuses a held caller and writes no usage row', async () => {
+  test('consumeUsage refuses a held caller but keeps the spend on record', async () => {
     seedFreeWithRoom('ws-held')
     assessmentsByUser.set('user-held', HIGH)
     usersById.set('user-held', { emailVerified: false })
@@ -1921,7 +1943,15 @@ describe('SHO-416 signup trust hold', () => {
     expect(res.success).toBe(false)
     expect(res.reason).toBe('email_verification_required')
     expect(res.error).toContain('Verify your email')
-    expect(usageEvents.length).toBe(0)
+    // A refusal charges nothing but must not make real provider spend vanish
+    // (SHO-599): one row, real cost, zero billed, counters untouched.
+    expect(usageEvents).toHaveLength(1)
+    expect(usageEvents[0]).toMatchObject({ source: 'refused', billedUsd: 0, rawUsd: 0.01 })
+    expect(usageEvents[0].actionMetadata).toMatchObject({
+      refused: true,
+      refusalReason: 'email_verification_required',
+      attemptedBilledUsd: 0.01,
+    })
     expect(walletByWs.get('ws-held').weeklyUsedUsd ?? 0).toBe(0)
   })
 

@@ -1108,11 +1108,15 @@ export async function setQualitySignals(
  * Close a billing session and charge USD based on total accumulated tokens.
  * Returns the marked-up USD charged (0 if no tokens or session not found).
  *
- * When `discardPartial: true`, the session is dropped WITHOUT charging.
- * Used when the upstream stream EOF'd before the runtime emitted its
- * terminal `data-turn-complete` marker — we don't want to bill a user
- * for a half-finished turn that the auto-resuming-fetch client will
- * reconnect and finish on a subsequent request.
+ * When `discardPartial: true`, the session is dropped WITHOUT charging the
+ * user — but the provider spend is still recorded (a `refused`-source row with
+ * `billedUsd` 0 and the real `rawUsd`, see `recordUnbilledUsageEvent`).
+ * Callers use it on a stream that EOF'd before the runtime emitted its
+ * terminal `data-turn-complete` marker where the auto-resuming-fetch client
+ * reconnects and finishes the turn. Closing pops the session either way, so a
+ * resumed leg accumulates into a fresh one and cannot double-count; chat paths
+ * that own the whole turn therefore charge the partial instead of discarding
+ * it (SHO-599).
  *
  * When `bookkeeping: true`, the close is internal session-map maintenance
  * rather than a turn ending, so a zero-token close does not emit a
@@ -1246,6 +1250,44 @@ export async function closeSession(
       `(stream EOF'd before turn-complete) — ${session.inputTokens} in, ${session.outputTokens} out, ` +
       `${session.requestCount} request(s), ${session.imageGenerationCount} image(s) NOT charged.`
     )
+    // Not charging the turn must not make the provider's spend invisible: the
+    // tokens were really billed to us, so the turn gets a `refused`-source row
+    // with `billedUsd` 0 and the real cost (SHO-599).
+    const discardedTokenCost = calculateUsageCost(
+      session.inputTokens, session.outputTokens, session.model,
+      session.cachedInputTokens, session.cacheWriteTokens,
+    )
+    // A video that was actually billed is charged in its own
+    // `ai_video_generation` row just below, so counting it here too would put
+    // the same provider cost on two rows for one render. Only the video the
+    // separate charge skips stays in this row (SHO-599 QA round 1).
+    const videoChargedSeparately = session.videoBilledUsd > 0
+    const discardedRawUsd = discardedTokenCost.rawUsd + session.imageRawUsd
+      + (videoChargedSeparately ? 0 : session.videoRawUsd)
+      + session.threeDRawUsd + session.musicRawUsd
+    const discardedBilledUsd = discardedTokenCost.billedUsd + session.imageBilledUsd
+      + (videoChargedSeparately ? 0 : session.videoBilledUsd)
+      + session.threeDBilledUsd + session.musicBilledUsd
+    if (discardedRawUsd > 0) {
+      await billingService.recordUnbilledUsageEvent({
+        workspaceId: session.workspaceId,
+        projectId: session.projectId,
+        memberId: session.userId,
+        actionType: 'chat_message',
+        rawUsd: discardedRawUsd,
+        billedUsd: 0,
+        actionMetadata: {
+          model: session.model,
+          inputTokens: session.inputTokens,
+          outputTokens: session.outputTokens,
+          cachedInputTokens: session.cachedInputTokens,
+          cacheWriteTokens: session.cacheWriteTokens,
+          requestCount: session.requestCount,
+          discardedBilledUsd,
+          ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
+        },
+      }, 'discarded_partial', { discardedPartialTurn: true })
+    }
     // A finished video is not regenerated when the client retries the turn,
     // and it is too expensive to drop with the partial tokens.
     if (session.videoBilledUsd > 0) {

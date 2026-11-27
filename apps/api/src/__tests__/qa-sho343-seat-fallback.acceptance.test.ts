@@ -214,11 +214,24 @@ describe('SHO-343 seat fallback (real database)', () => {
     expect(wallet.weeklyUsedUsd).toBeCloseTo(5)
   })
 
-  test('a single-seat workspace still blocks the same seatless spend', async () => {
+  test('a single-seat workspace drains its seat on the same seatless spend', async () => {
+    // Rule B (SHO-599): a call the preflight admitted is debited, even when it
+    // is bigger than the room left. The last of the room absorbs it and the
+    // counters go past the limit, so the next call is refused by the gate —
+    // instead of being admitted and refused, and billed to nobody, forever.
     const { parentId } = await seedFamily({ seats: 1 })
     const res = await spend(parentId, 'system', 5)
-    expect(res.success).toBe(false)
-    expect(res.reason).toBe('usage_limit_reached')
+    expect(res.success).toBe(true)
+    expect(res.source).toBe('window')
+
+    const wallet = await db.usageWallet.findUnique({ where: { workspaceId: parentId } })
+    expect(wallet.weeklyUsedUsd).toBeCloseTo(5)
+
+    // One seat's allowance, so the window is now shut for everyone.
+    expect((await billing.checkUsageBalance(parentId, 0.001)).ok).toBe(false)
+    const next = await spend(parentId, 'system', 0.01)
+    expect(next.success).toBe(false)
+    expect(next.reason).toBe('usage_limit_reached')
   })
 
   test('the free tier keeps its single shared allowance', async () => {
@@ -236,10 +249,18 @@ describe('SHO-343 seat fallback (real database)', () => {
     expect(bWindows.weekly.usedUsd).toBeCloseTo(0.15)
     expect(bWindows.weekly.limitUsd).toBeCloseTo(0.5)
 
-    // And the shared 5-hour guard still stops the next call.
+    // The last of the shared 5-hour room absorbs B's call (rule B, SHO-599), so
+    // the window runs past its limit and the *next* call is the one stopped —
+    // rather than every call being admitted and refused with nothing recorded.
     const over = await spend(parentId, b, 0.1)
-    expect(over.success).toBe(false)
-    expect(over.reason).toBe('usage_limit_reached')
+    expect(over.success).toBe(true)
+    expect(over.source).toBe('window')
+    const after = await billing.getUsageWindows(parentId, b)
+    expect(after.fiveHour.usedUsd).toBeCloseTo(0.25)
+
+    const blocked = await spend(parentId, b, 0.01)
+    expect(blocked.success).toBe(false)
+    expect(blocked.reason).toBe('usage_limit_reached')
   })
 
   test('a Business grant keeps the legacy $40-seat allowance', async () => {

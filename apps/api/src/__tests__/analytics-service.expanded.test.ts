@@ -550,6 +550,22 @@ describe('getUsageSummary', () => {
     expect(out.totals.totalRequests).toBe(2)
     expect(out.totals.uniqueModels).toBe(1)
   })
+
+  test('a refused row adds its provider cost but bills nothing (SHO-599)', async () => {
+    store.usageEvents.push(
+      { actionType: 'chat_message', memberId: 'u-1', billedUsd: 3, rawUsd: 2.5, workspaceId: 'w-1', projectId: 'p-1', source: 'window', createdAt: new Date(Date.now() - 60_000), actionMetadata: { model: 'm1', inputTokens: 100, outputTokens: 50, totalTokens: 150 } },
+      // The provider charged us for this turn; the wallet refused the debit, so
+      // it billed the user nothing and still has to show up as real spend.
+      { actionType: 'chat_message', memberId: 'u-1', billedUsd: 0, rawUsd: 4, workspaceId: 'w-1', projectId: 'p-1', source: 'refused', createdAt: new Date(Date.now() - 30_000), actionMetadata: { model: 'm1', totalTokens: 400, refused: true, refusalReason: 'overage_requires_payment' } },
+    )
+    store.users.push({ id: 'u-1', name: 'A', email: 'a@x', image: null })
+    rebuildModels()
+    const out = await analytics.getUsageSummary({ workspaceId: 'w-1' })
+    expect(out.summaries.length).toBe(1)
+    expect(out.summaries[0].requestCount).toBe(2)
+    expect(out.summaries[0].totalBilledUsd).toBe(3)
+    expect(out.summaries[0].totalRawUsd).toBe(6.5)
+  })
 })
 
 
