@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-const EXT_TO_LANG: Record<string, string> = {
+export const EXT_TO_LANG: Record<string, string> = {
   ts: "typescript",
   tsx: "tsx",
   js: "javascript",

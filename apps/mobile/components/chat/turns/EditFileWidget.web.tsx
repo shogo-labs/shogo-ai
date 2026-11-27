@@ -12,6 +12,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageFromPath, getLanguageLabel } from "./file-lang-map"
+import { loadHighlighter } from "../../../lib/code-highlight"
 import { type DiffLine, computeLineDiff } from "./diff-utils"
 
 export interface EditFileWidgetProps {
@@ -81,7 +82,7 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
     const timer = setTimeout(() => {
       ;(async () => {
         try {
-          const { codeToTokens } = await import("shiki")
+          const highlighter = await loadHighlighter()
           const allOldLines: string[] = []
           const allNewLines: string[] = []
           for (const l of lines) {
@@ -91,7 +92,7 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
           const combined = [...new Set([...allOldLines, ...allNewLines])]
           const fullCode = combined.join("\n")
 
-          const result = await codeToTokens(fullCode, {
+          const result = await highlighter.codeToTokens(fullCode, {
             lang: language === "text" ? "plaintext" : language,
             theme: isDark ? "github-dark-default" : "github-light-high-contrast",
           })

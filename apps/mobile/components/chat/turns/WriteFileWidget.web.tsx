@@ -12,6 +12,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { FilePlus2, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageFromPath, getLanguageLabel } from "./file-lang-map"
+import { loadHighlighter } from "../../../lib/code-highlight"
 
 const MAX_PREVIEW_LINES = 40
 const MAX_PREVIEW_CHARS = 4000
@@ -62,8 +63,8 @@ const HighlightedCode = memo(function HighlightedCode({ code, language }: { code
     const timer = setTimeout(() => {
       ;(async () => {
         try {
-          const { codeToHtml } = await import("shiki")
-          const html = await codeToHtml(code, {
+          const highlighter = await loadHighlighter()
+          const html = highlighter.codeToHtml(code, {
             lang: language === "text" ? "plaintext" : language,
             theme: isDark ? "github-dark-default" : "github-light-high-contrast",
           })
