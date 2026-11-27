@@ -446,7 +446,7 @@ function taskWakeIds(row: QueueRow): string[] {
 async function taskRowsForWake(row: QueueRow): Promise<Array<{ consumed: boolean; source: string }>> {
   const ids = taskWakeIds(row)
   if (!ids.length) return []
-  return (prisma as any).backgroundTask.findMany({
+  return prisma.backgroundTask.findMany({
     where: { id: { in: ids } },
     select: { consumed: true, source: true },
   })
@@ -712,7 +712,7 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
   if (head.kind !== 'task_notification') return head
   if (taskWakeBodyIsAlone(head.body)) return head
 
-  const pending: QueueRow[] = await (prisma as any).chatQueuedMessage.findMany({
+  const pending = await prisma.chatQueuedMessage.findMany({
     where: { sessionId: head.sessionId, status: 'pending' },
     orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
     take: 100,
@@ -755,7 +755,7 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
   type Merged = { content: string; parts: string; body: string; count: number } | null
   let merged: Merged = null
   try {
-    merged = await (prisma as any).$transaction(async (tx: any): Promise<Merged> => {
+    merged = await prisma.$transaction(async (tx): Promise<Merged> => {
       const taken: QueueRow[] = []
       for (const proposal of proposals) {
         const deleted = await tx.chatQueuedMessage.deleteMany({
