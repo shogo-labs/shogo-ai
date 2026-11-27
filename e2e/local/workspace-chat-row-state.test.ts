@@ -207,7 +207,7 @@ async function mockActiveChats(page: Page, running: Turn[]): Promise<void> {
  */
 const STREAM_PATH = /\/api\/workspaces\/[^/]+\/conversations\/events/;
 
-async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => void> {
+async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => Promise<void>> {
   const pending: TurnEdge[] = [];
   let connections = 0;
   await page.route(STREAM_PATH, async (route: Route) => {
@@ -223,7 +223,14 @@ async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => void> {
           .join(""),
     });
   });
-  return (edge) => {
+  // The app only reaches the stream leg after two socket failures, so a caller
+  // that pushes its first edge early waits for the connection rather than
+  // racing it.
+  return async (edge) => {
+    const deadline = Date.now() + 30_000;
+    while (connections === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     if (connections === 0) {
       throw new Error("the realtime stream never opened, so no turn edge could be pushed");
     }
@@ -463,7 +470,7 @@ test.describe("workspace chat row state (local)", () => {
     // cadence). A row may not sit on a spinner for a minute after the reply
     // landed, so the edge is pushed here and the mocked answer follows it.
     running.length = 0;
-    pushEdge({ chatSessionId: chatA.id, turnId: `turn_${chatA.id}`, state: "ended" });
+    await pushEdge({ chatSessionId: chatA.id, turnId: `turn_${chatA.id}`, state: "ended" });
     await expect(chatRow(page, chatA.name).getByLabel("Chat has new activity").first()).toBeVisible({
       timeout: 30_000,
     });

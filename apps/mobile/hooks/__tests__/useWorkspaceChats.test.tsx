@@ -553,6 +553,37 @@ describe("useWorkspaceChats poll cadence", () => {
     expect(result.current.completedIds.has("chat-2")).toBe(true);
   });
 
+  test("an ended edge ends an optimistic start the poll has not confirmed", async () => {
+    jest.useFakeTimers();
+    const { result } = await mount();
+
+    // A send this client watched start, in a chat it then left. No poll has
+    // heard from the server about it yet, so `serverRunning` knows nothing and
+    // the grace window is the only thing keeping the row spinning.
+    act(() => {
+      chatActivityEvents.emit({
+        workspaceId: "w1",
+        streamingSessionIds: ["chat-2"],
+        finishedSessionIds: [],
+      });
+    });
+    expect(result.current.streamingIds.has("chat-2")).toBe(true);
+
+    // The turn ends inside that window. An edge that says "ended" is proof the
+    // server has seen it finish, so the row must stop now and get its dot —
+    // waiting for the poll to contradict the grace would leave it spinning for
+    // a minute (SHO-602).
+    emitTurn("chat-2", "ended");
+    advance(150);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.streamingIds.has("chat-2")).toBe(false);
+    expect(result.current.completedIds.has("chat-2")).toBe(true);
+  });
+
   test("an edge refresh is not answered from the shared 5s window", async () => {
     jest.useFakeTimers();
     activeChatsResult = async () => [turn("chat-2")];

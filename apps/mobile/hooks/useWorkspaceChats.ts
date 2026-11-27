@@ -120,7 +120,7 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   const pollSoonRef = useRef<((within?: number) => void) | null>(null)
   // A turn edge off the realtime connection: one coalesced, uncached refresh.
   // This is what keeps a badge exact while the timer sits at 30–60 s (SHO-602).
-  const refreshNowRef = useRef<(() => void) | null>(null)
+  const refreshNowRef = useRef<((forcedEndId?: string) => void) | null>(null)
   // Read through a ref so the poll callback keeps one identity for its whole
   // life: it runs on a timer, and an unstable callback would restart the loop
   // on every render.
@@ -205,7 +205,7 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
    * `fresh` is a refresh someone asked for — a turn edge off the realtime
    * connection — so it must not be answered from the shared window's cache.
    */
-  const pollActiveChats = useCallback(async (fresh = false): Promise<void> => {
+  const pollActiveChats = useCallback(async (fresh = false, forcedEndId?: string): Promise<void> => {
     if (!workspaceId) return
     try {
       // Shared with every other activity/chats hook in the window: one
@@ -234,8 +234,20 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
       // start the server has not caught up with yet does not read as an ending.
       for (const [id, startedAtLocal] of localRunningAtRef.current) {
         if (serverRunningRef.current.has(id)) continue
-        if (now - startedAtLocal < UNCONFIRMED_START_MS) continue
+        // An edge that says "ended" is proof the server has seen this turn
+        // finish, so it ends an optimistic start the poll has not caught up
+        // with yet: the grace window is for silence, not for a contradiction.
+        if (id !== forcedEndId && now - startedAtLocal < UNCONFIRMED_START_MS) continue
         considerEnded(id)
+      }
+      if (forcedEndId) {
+        localRunningAtRef.current.delete(forcedEndId)
+        setLocalRunningIds((current) => {
+          if (!current.has(forcedEndId)) return current
+          const next = new Set(current)
+          next.delete(forcedEndId)
+          return next
+        })
       }
       serverRunningRef.current = new Set(startedAt.keys())
       // The endpoint answers for the whole workspace, including project chats.
@@ -478,12 +490,12 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     }
     // A turn edge off the realtime connection: one uncached refresh, coalesced
     // with any second edge 150 ms behind it.
-    refreshNowRef.current = () => {
+    refreshNowRef.current = (forcedEndId?: string) => {
       if (!live || !foreground()) return
       clearPoll()
       timer = setTimeout(() => {
         void (async () => {
-          await pollActiveChats(true)
+          await pollActiveChats(true, forcedEndId)
           schedulePoll()
         })()
       }, EDGE_REFRESH_MS)
@@ -508,7 +520,9 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   // A turn starting or ending anywhere in the workspace is exactly the news
   // this list paints. Reacting to the push — instead of polling for it — is
   // what lets the timer sit at 60 s while a turn runs (SHO-602).
-  useChatTurnEvents(workspaceId, () => refreshNowRef.current?.())
+  useChatTurnEvents(workspaceId, (edge) => {
+    refreshNowRef.current?.(edge.state === 'ended' ? edge.chatSessionId : undefined)
+  })
 
   const ensureLoaded = useCallback(
     async (sessionId: string) => {
