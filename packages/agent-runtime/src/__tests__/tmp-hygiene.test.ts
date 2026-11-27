@@ -127,6 +127,25 @@ describe('sweepTmpHygiene', () => {
     expect(git(proj, ['branch', '--list', 'sho-607-squash'])).toBe('')
   })
 
+  test('measureBytes: false still removes a clean pushed worktree and reports bytes as null', async () => {
+    // The one-time cleanup turns off `du` so a full pass over hundreds of
+    // worktrees finishes without being killed; removal must not depend on it.
+    const wt = addWorktree('wt-fast', 'sho-607-fast')
+    git(wt, ['push', '-u', 'origin', 'sho-607-fast'])
+
+    const report = await sweepTmpHygiene({
+      roots: [proj],
+      loadCardBranches: async () => indexOf([], []),
+      recentWindowMs: 0,
+      measureBytes: false,
+    })
+
+    const entry = report.removed.find((r) => r.path === wt)
+    expect(entry).toBeDefined()
+    expect(entry?.bytes).toBeNull()
+    expect(existsSync(wt)).toBe(false)
+  })
+
   test('AC2: keeps a dirty worktree and an unpushed one, with reasons', async () => {
     const dirty = addWorktree('wt-dirty', 'sho-607-dirty')
     git(dirty, ['push', '-u', 'origin', 'sho-607-dirty'])

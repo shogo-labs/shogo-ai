@@ -123,6 +123,14 @@ export interface TmpHygieneOptions {
    * one-time cleanup passes this; the runtime never does.
    */
   extraWorktrees?: Array<{ repoDir: string; path: string }>
+  /**
+   * Measure each removed worktree's size with `du -sk` (default true). The
+   * runtime sweep keeps it for its one-line summary; the one-time cleanup turns
+   * it off because `du` over hundreds of `node_modules` trees costs ~1 s each
+   * and the whole run must finish without being killed — it reports freed space
+   * from `df` instead.
+   */
+  measureBytes?: boolean
 }
 
 interface Candidate {
@@ -431,15 +439,19 @@ function cardLabelFor(installed: InstalledIndex, candidate: Candidate): string |
   return null
 }
 
-/** True when this worktree belongs to an open card (branch, or a detached PR head). */
+/** True when this worktree belongs to an open card (its branch, or a commit at an open PR's head). */
 function matchesOpenCard(installed: InstalledIndex, candidate: Candidate): boolean {
   if (candidate.branch && (installed.openBranches.has(candidate.branch) || installed.openPrBranches.has(candidate.branch))) {
     return true
   }
-  // A head SHA only names a worktree when nothing else does: several cards'
-  // checkouts can sit on the same commit, and matching by sha for a branch
-  // worktree would pin an unrelated card's checkout forever.
-  return candidate.detached && !!candidate.headSha && installed.openHeads.has(candidate.headSha)
+  // Match an open PR's head SHA for *any* candidate, not only a detached one: a
+  // reviewer can check the PR out under its own differently-named branch, and
+  // that worktree still sits at the PR head. Pinning it for as long as the card
+  // is open costs nothing — the protection lapses the moment the card closes —
+  // whereas deleting the reviewer's cwd mid-run is the failure this guard
+  // exists to prevent. A coincidental shared commit is rare (PR heads are branch
+  // tips, not `main`) and, for an open card, harmless to keep.
+  return !!candidate.headSha && installed.openHeads.has(candidate.headSha)
 }
 
 function matchesCard(card: CardBranchRef, candidate: Candidate): boolean {
@@ -511,8 +523,12 @@ async function deleteBranchIfSafe(candidate: Candidate, logger: Logger): Promise
   }
 }
 
-async function removeCandidate(candidate: Candidate, logger: Logger): Promise<number | null> {
-  const bytes = await measureBytes(candidate.path)
+async function removeCandidate(
+  candidate: Candidate,
+  logger: Logger,
+  sizeOf: (path: string) => Promise<number | null>,
+): Promise<number | null> {
+  const bytes = await sizeOf(candidate.path)
   if (candidate.kind === 'worktree') {
     const removed = await runGit(['worktree', 'remove', '--force', candidate.path], candidate.repoDir)
     // A worktree with a stale lock or an ignored `node_modules` can refuse;
@@ -646,6 +662,7 @@ export async function sweepTmpHygiene(opts: TmpHygieneOptions): Promise<TmpHygie
   const nowMs = (opts.now ?? Date.now)()
   const cutoffMs = nowMs - (opts.scratchMaxAgeDays ?? TMP_SCRATCH_MAX_AGE_DAYS) * 24 * 60 * 60_000
   const dryRun = opts.dryRun === true
+  const sizeOf = opts.measureBytes === false ? async () => null : measureBytes
   const report = emptyReport()
 
   const reportUsage = () => {
@@ -702,7 +719,7 @@ export async function sweepTmpHygiene(opts: TmpHygieneOptions): Promise<TmpHygie
         report.kept.push({ path: candidate.path, branch: candidate.branch, reason: verdict.reason, card })
         continue
       }
-      const bytes = dryRun ? await measureBytes(candidate.path) : await removeCandidate(candidate, logger)
+      const bytes = dryRun ? await sizeOf(candidate.path) : await removeCandidate(candidate, logger, sizeOf)
       report.removed.push({ path: candidate.path, branch: candidate.branch, bytes, card })
     }
   } else {

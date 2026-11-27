@@ -154,29 +154,74 @@ async function collectStrayWorktrees(roots: string[]): Promise<Array<{ repoDir: 
   return strays
 }
 
+/** Free bytes on the data volume (`df -k`, Available column), or null. */
+function freeBytes(): number | null {
+  const res = Bun.spawnSync(['df', '-k', DATA_DIR], { stdout: 'pipe', stderr: 'pipe' })
+  if (res.exitCode !== 0) return null
+  // macOS: Filesystem 1024-blocks Used Available Capacity iused ... — Available is col 4.
+  const line = res.stdout.toString().trim().split('\n').pop() ?? ''
+  const avail = Number(line.split(/\s+/)[3])
+  return Number.isFinite(avail) ? avail * 1024 : null
+}
+
+function gb(bytes: number | null): string {
+  return bytes == null ? 'unknown' : `${(bytes / 1024 ** 3).toFixed(2)} GB`
+}
+
+// Per-root so a slow or failing root can't sink the whole run, progress prints
+// as it goes (a kill leaves the removed ones gone — re-running resumes), and
+// `measureBytes: false` skips the ~1 s/`du` that made a full pass exceed the
+// 5-min cap and get killed before it reached the folders that mattered.
+const silent = { log: () => {}, warn: () => {}, error: () => {}, info: () => {}, debug: () => {} } as unknown as Console
+// Progress goes to stderr under --json so stdout stays a single JSON document.
+const progress: (...args: unknown[]) => void = asJson ? (...a) => console.error(...a) : (...a) => console.log(...a)
+
 const index = loadCardIndex()
 const roots = collectRoots(loadExternalProjectIds())
-const extras = await collectStrayWorktrees(roots)
+progress(`[cleanup] ${apply ? 'APPLIED' : 'DRY RUN'}: ${roots.length} roots; open ${index.open.length}, closed ${index.closed.length}`)
 
-const report = await sweepTmpHygiene({
-  roots,
-  extraWorktrees: extras,
-  loadCardBranches: async () => index,
-  dryRun: !apply,
-})
+const dfBefore = freeBytes()
+const removed: Array<{ path: string; card: string | null; root: string }> = []
+const kept: Array<{ path: string; reason: string }> = []
+const deferred: Array<{ path: string; reason: string }> = []
+const errors: string[] = []
+let looseFiles = 0
+let looseDirs = 0
 
-const bytes = report.removed.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) + report.loose.bytes
+for (let i = 0; i < roots.length; i++) {
+  const root = roots[i]
+  const short = root.split('/').slice(-1)[0]
+  try {
+    const extras = await collectStrayWorktrees([root])
+    const report = await sweepTmpHygiene({
+      roots: [root],
+      extraWorktrees: extras,
+      loadCardBranches: async () => index,
+      dryRun: !apply,
+      measureBytes: false,
+      logger: silent,
+    })
+    for (const entry of report.removed) removed.push({ path: entry.path, card: entry.card ?? null, root: short })
+    for (const entry of report.kept) kept.push({ path: entry.path, reason: entry.reason })
+    for (const entry of report.deferred) deferred.push({ path: entry.path, reason: entry.reason })
+    looseFiles += report.loose.files
+    looseDirs += report.loose.dirs
+    errors.push(...report.errors)
+    progress(`[cleanup] (${i + 1}/${roots.length}) ${short}: removed ${report.removed.length}, kept ${report.kept.length}, loose ${report.loose.files}f/${report.loose.dirs}d`)
+    for (const entry of report.removed) progress(`    - ${entry.path}${entry.card ? ` [${entry.card}]` : ''}`)
+  } catch (err: any) {
+    const msg = `root ${short} failed: ${err?.message ?? err}`
+    errors.push(msg)
+    progress(`[cleanup] ${msg}`)
+  }
+}
+
+const dfAfter = freeBytes()
+const freed = dfBefore != null && dfAfter != null ? dfBefore - dfAfter : null
 if (asJson) {
-  console.log(JSON.stringify({ apply, roots: roots.length, strays: extras.length, report }, null, 2))
+  console.log(JSON.stringify({ apply, roots: roots.length, removed, kept, deferred, loose: { files: looseFiles, dirs: looseDirs }, freedBytes: freed, errors }, null, 2))
 } else {
-  console.log(`[cleanup] ${apply ? 'APPLIED' : 'DRY RUN'}: ${roots.length} roots, ${extras.length} stray worktrees`)
-  console.log(`[cleanup] open cards: ${index.open.length}, closed cards: ${index.closed.length}`)
-  console.log(`[cleanup] worktrees removed: ${report.removed.length} (${(bytes / 1024 ** 3).toFixed(2)} GB)`)
-  for (const entry of report.removed) console.log(`  - ${entry.path}${entry.card ? ` [${entry.card}]` : ''}`)
-  console.log(`[cleanup] loose files removed: ${report.loose.files}, loose dirs: ${report.loose.dirs}`)
-  console.log(`[cleanup] kept: ${report.kept.length}`)
-  for (const entry of report.kept) console.log(`  · ${entry.path} — ${entry.reason}`)
-  console.log(`[cleanup] deferred: ${report.deferred.length}`)
-  for (const entry of report.deferred) console.log(`  … ${entry.path} — ${entry.reason}`)
-  if (report.errors.length) console.log(`[cleanup] errors: ${report.errors.join('; ')}`)
+  console.log(`[cleanup] DONE: removed ${removed.length} worktrees + ${looseFiles} loose files + ${looseDirs} loose dirs; kept ${kept.length}; deferred ${deferred.length}`)
+  console.log(`[cleanup] df free: ${gb(dfBefore)} → ${gb(dfAfter)} (freed ~${gb(freed)})`)
+  if (errors.length) console.log(`[cleanup] errors (${errors.length}): ${errors.slice(0, 10).join('; ')}${errors.length > 10 ? ` … +${errors.length - 10}` : ''}`)
 }
