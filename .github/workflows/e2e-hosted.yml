@@ -134,6 +134,16 @@ jobs:
     env:
       REPORT_STATUS: ${{ inputs.report_status && inputs.suite == 'critical' && (inputs.target || 'staging') == 'staging' }}
       STATUS_CONTEXT: e2e/staging-critical
+      # Job-level, not on the Configure step: the kubeconfig that step writes
+      # runs `oci ce cluster generate-token` on every later kubectl call, so
+      # the probe/diagnostics steps need the credentials too (step-scoped,
+      # they failed with `executable oci failed` and reported "unknown").
+      # Same binding as deploy-staging.yml's deploy job.
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
 
     steps:
       - name: Mark e2e/staging-critical pending
@@ -158,11 +168,6 @@ jobs:
       - name: Configure kubectl for OKE (staging)
         if: env.IS_STAGING == 'true'
         env:
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
         run: |
           mkdir -p ~/.kube
@@ -318,6 +323,14 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # Job-level for the same reason as preflight's: every kubectl call runs `oci`.
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -326,11 +339,6 @@ jobs:
 
       - name: Configure kubectl for OKE (staging)
         env:
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
         run: |
           mkdir -p ~/.kube
@@ -497,6 +505,14 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # Job-level for the same reason as preflight's: every kubectl call runs `oci`.
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -507,11 +523,6 @@ jobs:
       - name: Configure kubectl for OKE (staging)
         if: env.IS_STAGING == 'true'
         env:
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           OKE_CLUSTER_OCID: ${{ vars.OKE_CLUSTER_OCID }}
         run: |
           mkdir -p ~/.kube .tmp/diagnostics
