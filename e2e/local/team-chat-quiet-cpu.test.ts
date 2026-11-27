@@ -8,12 +8,16 @@
  * report, measured at a Pixel 7 viewport with the CPU throttled 4× — roughly
  * how the phone feels after a few minutes of heat:
  *
- *  - **Home, idle (30 s)** — CPU busy ≤ 3 % of the wall clock, and the buddy
- *    asks for ≤ 5 frames a second. Used to be 19.7 % and 120 rAF/s, drawing a
- *    header avatar that nothing was changing.
+ *  - **Home, idle (30 s)** — the buddy asks for ≤ 5 frames a second, and CPU
+ *    busy stays ≤ 10 % of the wall clock. Used to be 120 rAF/s and 19.7 %; the
+ *    rAF bound is the real signal, CPU carries headroom for a loaded runner.
  *  - **a channel, scrolling (30 s)** — no mounted message row and no markdown
- *    block re-renders, and ≤ 2 000 fibres/s. Used to be ~9 000 fibres/s and
- *    ~15 commits/s.
+ *    block re-renders, and ≤ 2 000 fibres/s. This one is a guard, not a
+ *    before/after: with mounts excluded the pre-SHO-600 list already read ~850
+ *    fibres/s and 0 row re-renders, so what it protects is that a scroll step
+ *    never re-renders a row that is already on screen (the ~9 000 fibres/s and
+ *    ~15 commits/s that prompted the card counted first mounts through a
+ *    virtualizer, and part C's `Intl` win is Hermes self-time this cannot see).
  *
  * The numbers come from CDP's `Performance.getMetrics` plus an init script that
  * counts frames and React work by the component that did it (a stand-in for the
@@ -40,8 +44,17 @@ import { expect, test, type CDPSession, type ElementHandle, type Page } from "@p
 import { LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, signInByApi } from "./team-nav-seed"
 
-/** Budgets. Each one is a row of the SHO-600 table. */
-const IDLE_CPU_BUSY_MAX = 3
+/**
+ * Budgets.
+ *
+ * The rAF bound is the machine-independent signal for this regression — the
+ * buddy asked for 120 a second, and it now asks for ~3 — so it stays tight.
+ * CPU-busy flaps with whatever else shares the runner: the same head reads
+ * 0.9 % on an idle Mac and 5.6 % in CI, while the unfixed buddy read 17.9 %
+ * there and 19.7 % on Planner's machine. 10 % separates those two worlds
+ * without turning a busy runner into a red gate.
+ */
+const IDLE_CPU_BUSY_MAX = 10
 const IDLE_RAF_PER_SECOND_MAX = 5
 const SCROLL_FIBRES_PER_SECOND_MAX = 2_000
 
@@ -101,7 +114,7 @@ const INIT_SCRIPT = `
           const name = nameOf(fiber.type)
           if (name) {
             counts.renders.push(name)
-            if (name === 'MarkdownText' || name === 'ChatMarkdownImpl') {
+            if (name === 'MarkdownText' || name === 'ChatMarkdown') {
               const props = fiber.memoizedProps || {}
               counts.markdown.push((props.message && props.message.id) || null)
             }
