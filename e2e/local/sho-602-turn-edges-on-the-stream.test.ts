@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-602 AC5 — the edges of an off-screen turn arrive on the socket, not on a
- * timer.
+ * SHO-602 AC5 — the edges of an off-screen turn arrive on the realtime stream,
+ * not on a timer.
  *
  * The card cut the `active-chats` + `agent-tasks` cadence from 5 s to 60 s for
  * a turn running on a chat this screen is not watching, which is only safe
@@ -10,12 +10,18 @@
  * refresh per edge, no faster timer. This spec is that claim, end to end:
  *
  *   - the mocked `active-chats` answer is the only thing that changes, and it
- *     changes *after* the frame is pushed, so the refresh the edge triggers is
+ *     changes *after* the frame arrives, so the refresh the edge triggers is
  *     what paints both ends;
  *   - every assertion gets 15 s (`AC5`'s budget) while the net is 60 s, so a
  *     build that polled would miss the deadline rather than pass slowly;
  *   - `active-chats` request counts are asserted, so "it reacted quickly" cannot
  *     be explained by a cadence that quietly went back to 5 s.
+ *
+ * The edge is pushed down the `…/conversations/events` leg, which is the one
+ * live in the local harness: `…/rt` answers 403 there, so a proxied socket is
+ * one the app has already abandoned (`lib/team-chat-realtime.ts` falls back to
+ * the stream). Either leg lands in the same `handleFrame`, which is what the
+ * row actually listens to.
  *
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts \
  *     sho-602-turn-edges --project chromium
@@ -80,21 +86,34 @@ async function mockActiveChats(page: Page, running: Turn[]): Promise<void> {
 }
 
 /**
- * Forward the real realtime connection and hand the spec a way to send a
+ * Hold the app's realtime stream open and hand the spec a way to send a
  * `chat-session.turn` frame down it — the event a turn edge really arrives on.
+ *
+ * `EventSource` reconnects by itself, so each fulfilled body carries whatever
+ * was pushed since the last connection, a `retry` later; a drained queue means
+ * an edge is never replayed into a later assertion.
  */
 async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => void> {
-  const sockets: Array<(frame: string) => void> = []
-  await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/rt/, (ws) => {
-    ws.connectToServer()
-    sockets.push((frame) => ws.send(frame))
+  const pending: TurnEdge[] = []
+  let connections = 0
+  await page.route(/\/api\/workspaces\/[^/]+\/conversations\/events/, async (route: Route) => {
+    connections += 1
+    const frames = pending.splice(0)
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      body:
+        "retry: 1000\n\n" +
+        frames
+          .map((edge) => `data: ${JSON.stringify({ type: "chat-session.turn", ...edge })}\n\n`)
+          .join(""),
+    })
   })
   return (edge) => {
-    if (sockets.length === 0) {
-      throw new Error("the realtime connection never opened, so no turn edge could be pushed")
+    if (connections === 0) {
+      throw new Error("the realtime stream never opened, so no turn edge could be pushed")
     }
-    const frame = JSON.stringify({ type: "chat-session.turn", ...edge })
-    for (const send of sockets) send(frame)
+    pending.push(edge)
   }
 }
 
@@ -110,7 +129,7 @@ function countActiveChats(page: Page): { count: () => number } {
 test.describe("SHO-602 turn edges (local)", () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
-  test("a turn in a chat this screen is not watching paints both ends off the socket", async ({
+  test("a turn in a chat this screen is not watching paints both ends off the realtime stream", async ({
     page,
   }) => {
     await localSignIn(page)
@@ -165,7 +184,7 @@ test.describe("SHO-602 turn edges (local)", () => {
 
     // The whole exchange — two edges, a 15 s budget each — has to fit inside a
     // single 60 s net tick, which is what makes the assertions above a proof
-    // that the socket painted them.
+    // that the stream painted them.
     expect(
       asks.count(),
       "the poll net must not have been the thing that painted the edges",

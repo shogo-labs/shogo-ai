@@ -188,28 +188,46 @@ async function mockActiveChats(page: Page, running: Turn[]): Promise<void> {
 }
 
 /**
- * Hold the real realtime connection open and hand the spec a way to send a
+ * Hold the app's realtime *stream* leg open and hand the spec a way to send a
  * `chat-session.turn` frame down it (SHO-299).
  *
- * A row learns "that turn ended" from the socket and treats the poll as the net
- * behind it, so a spec that only flips the mocked poll answer tests the net: at
- * SHO-602's 60 s off-screen cadence it would sit on the spinner for a minute,
- * where the app gets the edge in one frame. The route is forwarded to the real
- * server, so presence and every other frame still flow; only the edges below
- * are injected.
+ * A row learns "that turn ended" from its realtime stream and treats the poll
+ * as the net behind it, so a spec that only flips the mocked poll answer tests
+ * the net: at SHO-602's 60 s off-screen cadence it would sit on the spinner for
+ * a minute, where the app gets the edge in one frame.
+ *
+ * The WebSocket leg is the wrong one to stage this on. `TeamChatConnection`
+ * tries `…/rt` first and falls back to the `…/conversations/events` stream
+ * (`lib/team-chat-realtime.ts`), and in the local harness `…/rt` answers 403 —
+ * so a socket Playwright proxies is one the app has already given up on, and
+ * frames written to it reach nothing. The stream is the leg that is live here,
+ * so the edges go down it. `EventSource` reconnects by itself, so each
+ * fulfilled body carries whatever was pushed since the last connection, a
+ * `retry` later.
  */
+const STREAM_PATH = /\/api\/workspaces\/[^/]+\/conversations\/events/;
+
 async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => void> {
-  const sockets: Array<(frame: string) => void> = [];
-  await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/rt/, (ws) => {
-    ws.connectToServer();
-    sockets.push((frame) => ws.send(frame));
+  const pending: TurnEdge[] = [];
+  let connections = 0;
+  await page.route(STREAM_PATH, async (route: Route) => {
+    connections += 1;
+    const frames = pending.splice(0);
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      body:
+        "retry: 1000\n\n" +
+        frames
+          .map((edge) => `data: ${JSON.stringify({ type: "chat-session.turn", ...edge })}\n\n`)
+          .join(""),
+    });
   });
   return (edge) => {
-    if (sockets.length === 0) {
-      throw new Error("the realtime connection never opened, so no turn edge could be pushed");
+    if (connections === 0) {
+      throw new Error("the realtime stream never opened, so no turn edge could be pushed");
     }
-    const frame = JSON.stringify({ type: "chat-session.turn", ...edge });
-    for (const send of sockets) send(frame);
+    pending.push(edge);
   };
 }
 
