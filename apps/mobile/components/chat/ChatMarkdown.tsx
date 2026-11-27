@@ -5,7 +5,7 @@
  * scale. Team chat uses this so an agent's reply looks the same in a channel
  * or DM as it does in the session that wrote it.
  */
-import type { ReactElement } from "react"
+import { memo, type ReactElement } from "react"
 import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { MentionTarget } from "./file-links"
@@ -47,7 +47,7 @@ const MarkdownText: (props: ChatMarkdownProps) => ReactElement =
     ? require("./MarkdownText.web").MarkdownText
     : require("./MarkdownText").MarkdownText
 
-export function ChatMarkdown({
+const ChatMarkdownImpl = function ChatMarkdown({
   children,
   isStreaming,
   variant,
@@ -87,3 +87,10 @@ export function ChatMarkdown({
     </>
   )
 }
+
+/**
+ * A message body only re-renders when its own markdown, streaming flag or
+ * handlers change: a parent re-render (a delta in another row, a scroll step)
+ * must not walk into Streamdown again (SHO-600).
+ */
+export const ChatMarkdown = memo(ChatMarkdownImpl)

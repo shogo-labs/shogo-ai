@@ -13,6 +13,7 @@
  * a release that ends a drag suppresses the button press it would also fire.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -112,7 +113,7 @@ const SUPPRESS_PRESS_MS = 300;
  */
 const NAV_GAP_MS = 360;
 
-export function GlassTabRow({
+function GlassTabRowImpl({
   items,
   active,
   loading = false,
@@ -461,3 +462,9 @@ export function GlassTabRow({
   );
 }
 
+/**
+ * The pill re-renders only when its own props change. A channel with five
+ * agents streaming produced a new dock render per event before, for a badge
+ * number that had not moved (SHO-600).
+ */
+export const GlassTabRow = memo(GlassTabRowImpl);

@@ -138,6 +138,28 @@ const UNFOLD_TIME = 4
 /** Long enough for the state colour and glow to finish easing. */
 const WAKE_SETTLE_S = 1.5
 
+/**
+ * A blink or a fidget is a short burst of motion, not a settle: the idle
+ * character sleeps again as soon as its tweens are done (SHO-600).
+ */
+const AMBIENT_SETTLE_S = 0.3
+
+/**
+ * An idle character blinks and fidgets on its own schedule, and the render
+ * loop stops between them. Slow enough that the loop's average frame rate
+ * stays under a few frames a second.
+ */
+const IDLE_BLINK_MIN_S = 4
+const IDLE_BLINK_SPREAD_S = 4
+const IDLE_FIDGET_MIN_S = 14
+const IDLE_FIDGET_SPREAD_S = 8
+
+/**
+ * The frame interval an idle character is drawn at. Only a blink or a fidget
+ * is moving, and 20 fps reads the same as 60 for both.
+ */
+export const AMBIENT_FRAME_MS = 50
+
 /** The longest step the simulation will take, in seconds. */
 const MAX_STEP_S = 0.05
 
@@ -869,6 +891,8 @@ export class BuddyEngine {
   onWake: (() => void) | null = null
   /** Colour and glow keep easing for a moment after a change. */
   private awakeUntil = 0
+  /** Set while a blink or fidget runs, so `wake()` only asks for a short burst. */
+  private ambientBurst = false
 
   // Animated values
   sx = 1
@@ -929,8 +953,8 @@ export class BuddyEngine {
   private particles: Particle[] = []
   private jelly = JELLY_MODES.map((m) => ({ ...m, amp: 0, vel: 0, phase: Math.random() * Math.PI * 2 }))
   private t0 = nowS() - Math.random() * 5
-  private nextBlink = nowS() + 1.2 + Math.random() * 2
-  private nextFidget = nowS() + 4 + Math.random() * 4
+  private nextBlink = nowS() + IDLE_BLINK_MIN_S + Math.random() * IDLE_BLINK_SPREAD_S
+  private nextFidget = nowS() + IDLE_FIDGET_MIN_S + Math.random() * IDLE_FIDGET_SPREAD_S
   private lastAmbient = 0
   private pokes: number[] = []
   private dizzyUntil = 0
@@ -968,25 +992,61 @@ export class BuddyEngine {
     this.wake()
   }
 
+  /**
+   * Idle, full size, with nothing else going on: the only motion left is the
+   * blink or fidget it schedules every few seconds. Enough for the render loop
+   * to sleep in between instead of drawing 60 frames a second for nothing
+   * (SHO-600). An agent's state (working, thinking, …) keeps animating,
+   * because that motion says a run is live.
+   */
+  get idleAmbient(): boolean {
+    return (
+      this.state === "idle" &&
+      !this.isMini &&
+      !this.reducedMotion &&
+      this.scale > 0.001 &&
+      this.logo < 0.999 &&
+      this.dizzyUntil <= nowS() &&
+      this.hoverSince == null
+    )
+  }
+
   /** Nothing will change on screen until the next `onWake` or `msUntilWake`.
-   * Only the resting mark and a reduced-motion character ever get here; the
-   * full character always breathes and blinks. */
+   * The resting mark, a reduced-motion character, and an idle character
+   * between its blinks and fidgets all put the render loop to sleep. */
   get resting(): boolean {
     const n = nowS()
     if (n < this.awakeUntil || n < this.logoCoreUntil) return false
     if (this.tweens.size || this.particles.length || this.timers.size) return false
-    return this.reducedMotion || (this.logo >= 0.999 && this.scale <= 0.001)
+    if (this.reducedMotion) return true
+    if (this.logo >= 0.999 && this.scale <= 0.001) return true
+    return this.idleAmbient
   }
 
-  /** While resting, how long until the mark's next sheen. */
+  /** While resting, how long until the next frame worth drawing: the mark's
+   * next sheen, or the idle character's next blink or fidget. */
   msUntilWake(): number | null {
-    if (this.reducedMotion || this.logo < 0.999) return null
-    return Math.max(0, (this.nextSheen - nowS()) * 1000)
+    if (this.reducedMotion) return null
+    const n = nowS()
+    if (this.logo >= 0.999) return Math.max(0, (this.nextSheen - n) * 1000)
+    if (!this.idleAmbient) return null
+    return Math.max(0, (Math.min(this.nextBlink, this.nextFidget) - n) * 1000)
   }
 
   wake() {
-    this.awakeUntil = nowS() + WAKE_SETTLE_S
+    const settle = this.ambientBurst ? AMBIENT_SETTLE_S : WAKE_SETTLE_S
+    this.awakeUntil = Math.max(this.awakeUntil, nowS() + settle)
     this.onWake?.()
+  }
+
+  /** Runs an ambient blink or fidget as a short burst, not a full settle. */
+  private burst(run: () => void) {
+    this.ambientBurst = true
+    try {
+      run()
+    } finally {
+      this.ambientBurst = false
+    }
   }
 
   setState(next: BuddyState, force = false) {
@@ -1543,24 +1603,28 @@ export class BuddyEngine {
     const ambientMotion = this.scale > 0.001 && !this.reducedMotion
     if (n > this.nextBlink) {
       if (ambientMotion && this.state !== "sleeping" && this.state !== "dizzy") {
-        this.blink()
-        if (Math.random() < 0.22) this.later(230, () => this.blink())
+        this.burst(() => {
+          this.blink()
+          if (Math.random() < 0.22) this.later(230, () => this.burst(() => this.blink()))
+        })
       }
-      this.nextBlink = n + 2.2 + Math.random() * 3.2
+      this.nextBlink = n + IDLE_BLINK_MIN_S + Math.random() * IDLE_BLINK_SPREAD_S
     }
     if (n > this.nextFidget) {
       if (ambientMotion && this.state === "idle" && !this.isMini) {
         const roll = Math.random()
-        if (roll < 0.35) this.hop(0.12)
-        else if (roll < 0.7)
-          this.anim("yaw", [
-            [-0.5, 280, Ease.inOut],
-            [0.5, 520, Ease.inOut],
-            [0, 320, Ease.inOut],
-          ])
-        else this.jiggle(0.04)
+        this.burst(() => {
+          if (roll < 0.35) this.hop(0.12)
+          else if (roll < 0.7)
+            this.anim("yaw", [
+              [-0.5, 280, Ease.inOut],
+              [0.5, 520, Ease.inOut],
+              [0, 320, Ease.inOut],
+            ])
+          else this.jiggle(0.04)
+        })
       }
-      this.nextFidget = n + 5 + Math.random() * 5
+      this.nextFidget = n + IDLE_FIDGET_MIN_S + Math.random() * IDLE_FIDGET_SPREAD_S
     }
     if (this.eyeOverride && n > this.overrideUntil) {
       this.eyeOverride = null

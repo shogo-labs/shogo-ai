@@ -30,7 +30,8 @@ import { extractMessageQuotes } from '../../lib/message-quotes'
 import { previewOptOutMatcher } from '../../lib/link-preview-consent'
 import { MessageQuoteCards } from './MessageQuoteCard'
 import { activityTarget } from '../../lib/activity-target'
-import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
+import { formatFullTime, rowShortTimeLabel, rowTimeLabel } from '../../lib/team-chat-time'
+import { useStreamingEntry } from '../../lib/team-chat-streaming'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
 import { ShogoAvatar } from './ShogoAvatar'
@@ -810,7 +811,12 @@ function MessageEditForm({ message, names, mentionables, channelMemberIds, isWeb
 
 function MessageRowImpl(props: MessageRowProps) {
   const router = useRouter()
-  const { message, grouped, me, names, streaming, canManage, inThread } = props
+  const { message, grouped, me, names, canManage, inThread } = props
+  // A live reply is subscribed per message id, so a delta re-renders this row
+  // and not the channel. The prop is the fallback for callers that hand it over
+  // directly (thread views, tests).
+  const streamed = useStreamingEntry(message.id)
+  const streaming = streamed ?? props.streaming
   const { hovered, hoverIn, hoverOut } = useRowHover()
   const [pickerOpen, setPickerOpen] = useState(false)
   // Web anchor for the picker; null means "no button rect" (e.g. opened from the
@@ -1035,7 +1041,7 @@ function MessageRowImpl(props: MessageRowProps) {
   // "Hey Shogo" in a huddle: the request, with the transcript the agent was given behind a toggle.
   const wakeBlock = huddleWakeBlockOf(message.blocks)
   if (message.authorType === 'system' && wakeBlock) {
-    return <HuddleWakeNote block={wakeBlock} createdAt={formatTime(message.createdAt)} />
+    return <HuddleWakeNote block={wakeBlock} createdAt={rowTimeLabel(message.createdAt)} />
   }
 
   // A huddle's notes: the summary the meeting pipeline wrote, with the transcript behind it.
@@ -1055,7 +1061,7 @@ function MessageRowImpl(props: MessageRowProps) {
               {deleted ? 'Huddle notes deleted' : notesBlock.title || 'Huddle notes'}
             </Text>
             <TimeTooltip iso={message.createdAt}>
-              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{rowTimeLabel(message.createdAt)}</Text>}
             </TimeTooltip>
           </View>
           {deleted ? null : (
@@ -1098,7 +1104,7 @@ function MessageRowImpl(props: MessageRowProps) {
           <Text className="text-[11px] font-medium text-foreground">Notes</Text>
         </Pressable>
         <TimeTooltip iso={message.createdAt}>
-          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{rowTimeLabel(message.createdAt)}</Text>}
         </TimeTooltip>
       </View>
     )
@@ -1159,7 +1165,7 @@ function MessageRowImpl(props: MessageRowProps) {
           </Pressable>
         ) : (
           <TimeTooltip iso={message.createdAt}>
-            {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+            {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{rowTimeLabel(message.createdAt)}</Text>}
           </TimeTooltip>
         )}
       </Pressable>
@@ -1175,7 +1181,7 @@ function MessageRowImpl(props: MessageRowProps) {
         <UserPlus size={13} className="text-muted-foreground" />
         <Text className="min-w-0 flex-1 text-xs text-muted-foreground">{message.text}</Text>
         <TimeTooltip iso={message.createdAt}>
-          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+          {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{rowTimeLabel(message.createdAt)}</Text>}
         </TimeTooltip>
       </View>
     )
@@ -1212,7 +1218,7 @@ function MessageRowImpl(props: MessageRowProps) {
             <TimeTooltip iso={message.createdAt} align="start">
               {(h) => (
                 <Text numberOfLines={1} className={cn('pt-1 text-[10px] text-muted-foreground', h && 'underline')}>
-                  {formatShortTime(message.createdAt)}
+                  {rowShortTimeLabel(message.createdAt)}
                 </Text>
               )}
             </TimeTooltip>
@@ -1248,7 +1254,7 @@ function MessageRowImpl(props: MessageRowProps) {
               </View>
             ) : null}
             <TimeTooltip iso={message.createdAt}>
-              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{rowTimeLabel(message.createdAt)}</Text>}
             </TimeTooltip>
           </View>
         )}
@@ -1520,7 +1526,7 @@ function MessageRowImpl(props: MessageRowProps) {
               {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'}
             </Text>
             {message.lastReplyAt && (
-              <Text className="text-[11px] text-muted-foreground">Last reply {formatTime(message.lastReplyAt)}</Text>
+              <Text className="text-[11px] text-muted-foreground">Last reply {rowTimeLabel(message.lastReplyAt!)}</Text>
             )}
           </Pressable>
         )}

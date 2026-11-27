@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { BUDDY_FINISHES, BuddyEngine, type BuddyFinish, type BuddyState } from "./engine"
+import { AMBIENT_FRAME_MS, BUDDY_FINISHES, BuddyEngine, type BuddyFinish, type BuddyState } from "./engine"
 import { DEFAULT_BUDDY_LOOK, normalizeBuddyLook, type BuddyLook } from "./look"
 
 interface BuddyWebViewProps {
@@ -15,7 +15,7 @@ interface BuddyWebViewProps {
   still?: boolean
 }
 
-const initialProps: BuddyWebViewProps = {
+const defaults: BuddyWebViewProps = {
   size: 48,
   state: "idle",
   color: "#F47B3A",
@@ -25,10 +25,25 @@ const initialProps: BuddyWebViewProps = {
   still: false,
 }
 
+/**
+ * Props the host injected before this document loaded (`injectedJavaScriptBeforeContentLoaded`).
+ * The hidden snapshot renderer boots still, so its WebView never animates —
+ * not even for the first frame (SHO-600).
+ */
+const boot = (window as Window & { __shogoBuddyInitialProps?: Partial<BuddyWebViewProps> })
+  .__shogoBuddyInitialProps
+
+const initialProps: BuddyWebViewProps = {
+  ...defaults,
+  ...boot,
+  look: normalizeBuddyLook(boot?.look ?? DEFAULT_BUDDY_LOOK),
+}
+
 const canvas = document.getElementById("buddy") as HTMLCanvasElement
 const engine = new BuddyEngine()
 let props = initialProps
 let frameHandle = 0
+let ambientHandle: number | undefined
 let sleepHandle: number | undefined
 let last = performance.now()
 
@@ -46,16 +61,32 @@ function resize() {
 }
 
 function start() {
-  if (frameHandle || document.visibilityState === "hidden") return
+  if (frameHandle || ambientHandle || document.visibilityState === "hidden") return
   clearTimeout(sleepHandle)
+  sleepHandle = undefined
   last = performance.now()
   frameHandle = requestAnimationFrame(frame)
 }
 
 function stop() {
   cancelAnimationFrame(frameHandle)
+  clearTimeout(ambientHandle)
   clearTimeout(sleepHandle)
   frameHandle = 0
+  ambientHandle = undefined
+  sleepHandle = undefined
+}
+
+/** An idle character only blinks and fidgets, so it is drawn at a low rate. */
+function schedule() {
+  if (engine.idleAmbient) {
+    ambientHandle = window.setTimeout(() => {
+      ambientHandle = undefined
+      frameHandle = requestAnimationFrame(frame)
+    }, AMBIENT_FRAME_MS)
+  } else {
+    frameHandle = requestAnimationFrame(frame)
+  }
 }
 
 function frame(now: number) {
@@ -70,11 +101,11 @@ function frame(now: number) {
   ctx.clearRect(0, 0, props.size, props.size * 1.4)
   engine.draw(ctx, props.size, props.size * 1.4)
   if (props.still || engine.resting) {
-    const wait = engine.msUntilWake()
+    const wait = props.still ? null : engine.msUntilWake()
     if (wait != null) sleepHandle = window.setTimeout(start, wait)
     return
   }
-  start()
+  schedule()
 }
 
 function setProps(next: Partial<BuddyWebViewProps>) {

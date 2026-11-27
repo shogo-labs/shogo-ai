@@ -74,7 +74,10 @@ const localEnv = {
 // `phone-glass-header` is the SHO-490 phone navigation standard: it asserts the
 // one glass header on every pushed screen and pane, the profile pages included,
 // so it belongs in the phone job rather than being run by hand.
-const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach|phone-glass-header)\.test\.ts$/
+// `team-chat-quiet-cpu` is the SHO-600 gate that measures idle CPU and scroll
+// re-renders through CDP, so it runs on the Chromium device and skips WebKit.
+const PHONE_SPECS =
+  /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach|phone-glass-header|team-chat-quiet-cpu)\.test\.ts$/
 
 // Specs that have their own entry in the ci.yml matrix: they must not also
 // run inside a `--shard` job. Centralising the list here (testIgnore) rather
