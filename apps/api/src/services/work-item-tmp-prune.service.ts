@@ -24,7 +24,7 @@ import { fetchFromProjectRuntime } from '../lib/chat-runtime-fetch'
 import { agentRefProjectId } from './work-board-defaults'
 import { commentWorkItem } from './work-boards.service'
 
-const db = prisma as any
+const db = prisma
 
 const SYSTEM_ACTOR = { userId: null, agentRef: null, sessionId: null } as const
 const PRUNE_TIMEOUT_MS = 60_000
@@ -56,7 +56,10 @@ async function agentsThatTouched(item: any): Promise<string[]> {
   })
   for (const event of events) {
     if (typeof event.actorAgentRef === 'string') refs.add(event.actorAgentRef)
-    const data = event.eventData && typeof event.eventData === 'object' ? event.eventData : {}
+    const data: Record<string, unknown> =
+      event.eventData && typeof event.eventData === 'object' && !Array.isArray(event.eventData)
+        ? (event.eventData as Record<string, unknown>)
+        : {}
     if (typeof data.assigneeAgentRef === 'string') refs.add(data.assigneeAgentRef)
     // `moveWorkItem` records the column agent the card arrived at, so an agent
     // that only ever held it as a column is still a target.
@@ -102,7 +105,7 @@ async function cardRef(item: any): Promise<ClosedCardRef | null> {
         merged: metadata.merged === true,
       }
     })
-    .filter(Boolean)
+    .filter((p): p is NonNullable<typeof p> => p !== null)
   if (!branch && prs.length === 0) return null
   return { key: item.key, number: item.number, branch, prs }
 }

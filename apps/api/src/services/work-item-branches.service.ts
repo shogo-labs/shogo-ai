@@ -16,7 +16,7 @@
 import { prisma } from '../lib/prisma'
 import { isClosed } from './work-board-defaults'
 
-const db = prisma as any
+const db = prisma
 
 /** How far back a closed card's refs are still reported. */
 const CLOSED_LOOKBACK_DAYS = 90
