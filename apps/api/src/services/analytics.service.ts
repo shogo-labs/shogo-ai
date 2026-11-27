@@ -1267,7 +1267,7 @@ export async function getMemberInsights(
     ...(options.userId ? { memberId: options.userId } : {}),
   }
 
-  const [usageEvents, sessions, workspaceMembers] = await Promise.all([
+  const [usageEvents, sessionIds, workspaceMembers] = await Promise.all([
     prisma.usageEvent.findMany({
       where: usageWhere,
       select: {
@@ -1279,15 +1279,7 @@ export async function getMemberInsights(
         createdAt: true,
       },
     }),
-    prisma.chatSession.findMany({
-      where: {
-        OR: [
-          { workspaceId },
-          { project: { workspaceId } },
-        ],
-      },
-      select: { id: true },
-    }),
+    workspaceSessionIds([workspaceId]),
     prisma.member.findMany({
       where: {
         workspaceId,
@@ -1298,7 +1290,6 @@ export async function getMemberInsights(
     }),
   ])
 
-  const sessionIds = sessions.map((session) => session.id)
   const toolCalls = sessionIds.length === 0
     ? []
     : await prisma.toolCallLog.findMany({
@@ -3451,7 +3442,7 @@ export async function getUsageSummary(
   // Also get tool call counts per user (from ToolCallLog → ChatSession → Project)
   // We aggregate tool calls through the workspace scope if available
   const totalToolCalls = await prisma.toolCallLog.count({
-    where: toolCallWhereFor(scope, since),
+    where: await toolCallWhereFor(scope, since),
   })
 
   const summaries: UsageSummaryEntry[] = [...aggregateMap.values()]
@@ -3515,24 +3506,76 @@ export async function getUsageSummary(
 }
 
 /**
- * `ToolCallLog` has no workspace column: it reaches the workspace through its
- * chat session. A session can belong to a workspace directly (`workspaceId`
- * set, `contextId` null) or through a project, and the old project-only join
- * silently dropped the first kind — so a workspace's tool-call total was
- * low (SHO-140).
+ * The one definition of "this chat session belongs to workspace W" (SHO-598).
+ *
+ * A session belongs to a workspace directly (`workspaceId` set, `contextId`
+ * null — the workspace's own agent chats) or through the project it runs in.
+ * Both kinds count; a project-only join silently dropped the first (SHO-140).
+ *
+ * The rule used to be written as an `OR` across the two relations in every
+ * reader. Prisma renders that as LEFT JOINs plus a post-join `OR`, so Postgres
+ * could not drive the scan from the workspace: it walked every tenant's rows in
+ * the window and joined each one. `tool_call_logs` took 53–119 s in prod that
+ * way; resolving the workspace to its session ids with an indexed subquery
+ * (`chat_sessions.workspaceId`, `projects.workspaceId`) takes 0.39 s warm for
+ * the same window on the same data.
+ *
+ * `UNION ALL` can repeat an id (a session with both a `workspaceId` and a
+ * project `contextId`); every use is inside `IN`, where a duplicate is
+ * harmless, so no `DISTINCT` is paid for on the hot path.
  */
-function toolCallWhereFor(scope: AnalyticsScope, since?: Date): any {
+function workspaceSessionIdUnion(d: SqlDialect, workspaceIds: string[]): string {
+  // Bound per branch: `?` is positional on SQLite, so a placeholder cannot be
+  // reused there the way Postgres reuses `$1`.
+  const idsFor = () => workspaceIds.map((id) => d.bind(id)).join(', ')
+  return 'SELECT "id" FROM "chat_sessions"'
+    + ` WHERE "workspaceId" IN (${idsFor()})`
+    + ' UNION ALL SELECT cs."id" FROM "chat_sessions" cs'
+    + ' JOIN "projects" p ON p."id" = cs."contextId"'
+    + ` WHERE p."workspaceId" IN (${idsFor()})`
+}
+
+/**
+ * The workspace's session ids as a subquery, for a raw-SQL predicate
+ * (`"chatSessionId" IN ${workspaceSessionIdsSql(d, [id])}`).
+ *
+ * An empty scope is not "every workspace": `IN (NULL)` matches nothing, which
+ * is what a reader must return for a scope it was given nothing for.
+ */
+export function workspaceSessionIdsSql(d: SqlDialect, workspaceIds: string[]): string {
+  if (workspaceIds.length === 0) return '(NULL)'
+  return `(${workspaceSessionIdUnion(d, workspaceIds)})`
+}
+
+/**
+ * The same ids as a plain list, for Prisma callers (`chatSessionId: { in: ids }`
+ * / `sessionId: { in: ids }`). Resolve once per read, not per query: the
+ * biggest workspace has ~2.9k sessions, far under both bind limits.
+ */
+export async function workspaceSessionIds(workspaceIds: string[]): Promise<string[]> {
+  if (workspaceIds.length === 0) return []
+  const d = sqlDialect()
+  const rows = await prisma.$queryRawUnsafe<{ id: string }[]>(
+    `SELECT DISTINCT "id" FROM (${workspaceSessionIdUnion(d, workspaceIds)}) ws`,
+    ...d.params,
+  )
+  return rows.map((row) => String(row.id))
+}
+
+/**
+ * `ToolCallLog` has no workspace column: it reaches the workspace through its
+ * chat session, and the session ids come from {@link workspaceSessionIds} —
+ * never a relation `OR` (SHO-598).
+ */
+async function toolCallWhereFor(scope: AnalyticsScope, since?: Date): Promise<any> {
   const where: any = { status: 'complete' }
   if (scope.userId) where.userId = scope.userId
   if (scope.projectId) {
     where.chatSession = { contextId: scope.projectId }
   } else if (scope.workspaceId) {
-    where.chatSession = {
-      OR: [
-        { workspaceId: scope.workspaceId },
-        { project: { workspaceId: scope.workspaceId } },
-      ],
-    }
+    // No sessions is zero tool calls: Prisma answers an empty `in` with a
+    // never-matching predicate, so no second query and no special case.
+    where.chatSessionId = { in: await workspaceSessionIds([scope.workspaceId]) }
   }
   if (since) where.createdAt = { gte: since }
   return where
@@ -3674,7 +3717,7 @@ export async function getUsageDashboard(
         select: { id: true, name: true, email: true, image: true },
       }),
     modelRegistry.resolveModelLabels(models),
-    prisma.toolCallLog.count({ where: toolCallWhereFor(scope, from) }),
+    toolCallWhereFor(scope, from).then((where) => prisma.toolCallLog.count({ where })),
   ])
   const userMap = new Map(users.map((u) => [u.id, u]))
   const labelFor = (model: string, actionType?: string) =>
@@ -4459,11 +4502,20 @@ export async function getChatAnalytics(
 
   // Counted in the database (SHO-311): the page needs four numbers and a daily
   // series, not one row per session plus a per-session message count.
+  //
+  // Every number here is bounded by the period's start (SHO-598): the session
+  // series always was, so an unbounded message count divided all-time messages
+  // by the window's sessions and reported a nonsense average.
+  //
+  // Workspace scope matches sessions by id, the same rule `toolCallWhereFor`
+  // uses (SHO-140): a session belongs to the workspace directly or through its
+  // project. The old project-only `EXISTS` also left workspace-level chats out
+  // of the tile entirely.
   const sessionScope = (d: SqlDialect, alias: string) =>
     scope.projectId
       ? `${alias}."contextId" = ${d.bind(scope.projectId)}`
       : scope.workspaceId
-        ? `EXISTS (SELECT 1 FROM "projects" p WHERE p."id" = ${alias}."contextId" AND p."workspaceId" = ${d.bind(scope.workspaceId)})`
+        ? `${alias}."id" IN ${workspaceSessionIdsSql(d, [scope.workspaceId])}`
         : null
 
   const dayDialect = sqlDialect()
@@ -4474,7 +4526,11 @@ export async function getChatAnalytics(
     countByDay(dayDialect, '"chat_sessions" t', dayConditions),
     (() => {
       const d = sqlDialect()
-      const conditions = [`t."role" = 'user'`, `t."agent" = 'technical'`]
+      const conditions = [
+        `t."role" = 'user'`,
+        `t."agent" = 'technical'`,
+        `t."createdAt" >= ${d.bind(since)}`,
+      ]
       const scoped = sessionScope(d, 'cs')
       if (scoped) conditions.push(scoped)
       return prisma
@@ -4488,12 +4544,14 @@ export async function getChatAnalytics(
     })(),
     (() => {
       const d = sqlDialect()
+      const conditions = [`t."createdAt" >= ${d.bind(since)}`]
       const scoped = sessionScope(d, 'cs')
+      if (scoped) conditions.push(scoped)
       return prisma
         .$queryRawUnsafe<any[]>(
           'SELECT COUNT(*) AS "count" FROM "tool_call_logs" t'
             + ' JOIN "chat_sessions" cs ON cs."id" = t."chatSessionId"'
-            + (scoped ? ` WHERE ${scoped}` : ''),
+            + ` WHERE ${conditions.join(' AND ')}`,
           ...d.params,
         )
         .then((rows) => toNum(rows[0]?.count))
@@ -5218,7 +5276,7 @@ function toolCallFailedSql(d: SqlDialect, column = 'tc."result"'): string {
 /**
  * Tool-call usage and success-rate analytics. Per-tool counts + success rate,
  * overall totals, and a zero-filled daily {calls, errors, successRate} series.
- * Scope-aware via the chat session → project relation.
+ * Scope-aware through the shared workspace session scope (SHO-598).
  */
 export async function getToolCallAnalytics(
   scope: AnalyticsScope = {},
@@ -5231,13 +5289,17 @@ export async function getToolCallAnalytics(
 
   const internal = options.excludeInternal ? await getInternalUserIds() : null
 
-  const from_ = `FROM "tool_call_logs" tc`
+  // The project join is only there for `excludeInternal`, which reads the
+  // project's owner: joining it always would hand the planner a join it cannot
+  // use (SHO-598). The session join stays — every row must still reach a
+  // session to be in scope at all.
+  const fromFor = (withProject: boolean) => `FROM "tool_call_logs" tc`
     + ' JOIN "chat_sessions" cs ON cs."id" = tc."chatSessionId"'
-    + ' LEFT JOIN "projects" pj ON pj."id" = cs."contextId"'
+    + (withProject ? ' LEFT JOIN "projects" pj ON pj."id" = cs."contextId"' : '')
   // Same session scope as `toolCallWhereFor`: a session belongs to a workspace
-  // directly or through its project, and the project-only join silently dropped
-  // the first kind (SHO-140). No `status` filter here — an error row is a call
-  // the page counts *and* classifies.
+  // directly or through its project, and the ids come from one indexed
+  // subquery instead of a post-join `OR` (SHO-140, SHO-598). No `status` filter
+  // here — an error row is a call the page counts *and* classifies.
   const conditionsFor = (d: SqlDialect) => {
     const conditions = [
       `tc."createdAt" >= ${d.bind(from)}`,
@@ -5246,13 +5308,14 @@ export async function getToolCallAnalytics(
     if (scope.userId) conditions.push(`tc."userId" = ${d.bind(scope.userId)}`)
     if (scope.projectId) conditions.push(`cs."contextId" = ${d.bind(scope.projectId)}`)
     else if (scope.workspaceId) {
-      conditions.push(`(cs."workspaceId" = ${d.bind(scope.workspaceId)} OR pj."workspaceId" = ${d.bind(scope.workspaceId)})`)
+      conditions.push(`tc."chatSessionId" IN ${workspaceSessionIdsSql(d, [scope.workspaceId])}`)
     }
     if (internal && internal.size > 0) {
       conditions.push(`(pj."createdBy" IS NULL OR pj."createdBy" NOT IN (${[...internal].map((id) => d.bind(id)).join(', ')}))`)
     }
     return conditions
   }
+  const from_ = fromFor(!!internal && internal.size > 0)
 
   const totals = await (async () => {
     const d = sqlDialect()

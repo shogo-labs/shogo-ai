@@ -216,11 +216,23 @@ describe('getChatAnalytics', () => {
   test('counts sessions, messages and tool calls per workspace', async () => {
     const out = await analytics.getChatAnalytics({ workspaceId }, '30d')
 
-    expect(out.totalSessions).toBe(1)
+    // Both kinds of session belong to the workspace: the project chat and the
+    // workspace-level chat. This tile used to count project chats only, so the
+    // workspace chat was missing here while the tool-call tile counted it
+    // (SHO-140, finished for this tile in SHO-598).
+    expect(out.totalSessions).toBe(2)
+    // The message count follows the same period the session series does
+    // (SHO-598): it used to be all-time, divided by the window's sessions.
     expect(out.totalMessages).toBe(2)
-    expect(out.totalToolCalls).toBe(8)
-    expect(out.avgMessagesPerSession).toBe(2)
-    expect(out.dailySessions).toEqual([{ date: dayKey(dayB), count: 1 }])
+    // All ten calls, the workspace chat's two included (it was 8: the two rows
+    // on the workspace-level session, SHO-140's bug). No `status` filter here —
+    // an error row is a call, the same rule `getToolCallAnalytics` follows.
+    expect(out.totalToolCalls).toBe(10)
+    expect(out.avgMessagesPerSession).toBe(1)
+    expect(out.dailySessions).toEqual([
+      { date: dayKey(dayA), count: 1 },
+      { date: dayKey(dayB), count: 1 },
+    ])
   })
 })
 

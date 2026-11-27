@@ -717,6 +717,9 @@ model UsageEvent {
   @@index([memberId])
   @@index([createdAt])
   @@index([memberId, createdAt])
+  // Mirrors prisma/schema.prisma (SHO-598): the usage log reads one workspace
+  // and one set of action types over a window.
+  @@index([workspaceId, actionType, createdAt])
   @@map("usage_events")
 }
 
@@ -849,7 +852,10 @@ model ToolCallLog {
 
   chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
 
-  @@index([chatSessionId])
+  // Mirrors prisma/schema.prisma (SHO-598): analytics scope tool calls by
+  // `"chatSessionId" IN (…) AND "createdAt" >= … AND "status" = …`, so the
+  // index leads with the session id and carries the window and status.
+  @@index([chatSessionId, createdAt, status])
   @@index([messageId])
   @@index([createdAt])
   @@map("tool_call_logs")

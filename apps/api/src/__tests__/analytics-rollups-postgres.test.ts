@@ -102,9 +102,14 @@ describe('getToolCallAnalytics on Postgres', () => {
     const paged = sqls[1].sql
     expect(paged).toContain('tc."toolName" AS "toolName"')
     expect(paged).toContain('ORDER BY "total" DESC')
-    // Scope: the session OR the project it belongs to.
-    expect(paged).toContain('cs."workspaceId" = $')
-    expect(paged).toContain('pj."workspaceId" = $')
+    // Scope: the workspace's session ids from one indexed subquery — the
+    // session directly or through its project (SHO-140), and never a post-join
+    // `OR` over the project relation (SHO-598).
+    expect(paged).toContain('tc."chatSessionId" IN (SELECT "id" FROM "chat_sessions" WHERE "workspaceId" IN ($')
+    expect(paged).toContain('UNION ALL SELECT cs."id" FROM "chat_sessions" cs JOIN "projects" p')
+    expect(paged).not.toMatch(/OR\s+pj\."workspaceId"/)
+    // The project join is only needed for `excludeInternal`, which is off here.
+    expect(paged).not.toContain('LEFT JOIN "projects" pj')
   })
 
   test('binds the window, the scope and only then the page', async () => {
@@ -186,10 +191,14 @@ describe('the dashboard rollups on Postgres', () => {
   test('getUsageSummary reads the cached group scan, not the raw events', async () => {
     const sqls = await statements(() => analytics.getUsageSummary({ workspaceId: 'ws_1' }, '30d'))
 
-    expect(sqls).toHaveLength(1)
-    expect(sqls[0].sql).toContain('GROUP BY 1, 2, 3, 4, 5, 6')
+    // The group scan, plus the tool-call tile's session-id resolution (SHO-598).
+    expect(sqls).toHaveLength(2)
+    const scans = sqls.filter((s) => s.sql.includes('GROUP BY 1, 2, 3, 4, 5, 6'))
+    expect(scans).toHaveLength(1)
+    const [scan] = scans
+    expect(scan.sql).toContain('GROUP BY 1, 2, 3, 4, 5, 6')
     // acceptance 2: the JSON is opened in the database and never selected.
-    expect(sqls[0].sql).not.toMatch(/SELECT[\s\S]*?"actionMetadata"\s+AS/i)
+    expect(scan.sql).not.toMatch(/SELECT[\s\S]*?"actionMetadata"\s+AS/i)
     expect(mockPrisma.usageEvent.findMany).not.toHaveBeenCalled()
   })
 

@@ -23,6 +23,8 @@ const fx = {
   threadRoots: [] as any[],
   dmMembers: [] as any[],
   cardThreads: [] as any[],
+  /** What `workspaceSessionIds` resolves the scope to (SHO-598). */
+  sessionIds: ['sess_1'] as string[],
 }
 const calls: Record<string, any[]> = {}
 const record = (name: string, args: any) => {
@@ -76,6 +78,9 @@ mock.module('../model-registry.service', () => ({
   resolveModelLabels: async (ids: string[]) => new Map(ids.map((id) => [id, id === 'm-uuid' ? 'Claude Sonnet' : id])),
 }))
 mock.module('../analytics.service', () => ({
+  // The workspace session scope is resolved once per read (SHO-598); the
+  // fixtures name the ids rather than modelling chat_sessions here.
+  workspaceSessionIds: async () => fx.sessionIds,
   periodToWindow: (_p: any, fromIso?: string, toIso?: string) =>
     fromIso && toIso
       ? { from: new Date(fromIso), to: new Date(toIso) }
@@ -107,6 +112,7 @@ const channelApproval = (over: Record<string, any> = {}, asString = false) => {
 
 beforeEach(() => {
   for (const k of Object.keys(fx) as (keyof typeof fx)[]) fx[k] = []
+  fx.sessionIds = ['sess_1']
   for (const k of Object.keys(calls)) delete calls[k]
   delete process.env.SHOGO_LOCAL_MODE
 })
@@ -545,10 +551,11 @@ describe('getMemberWorkActivity', () => {
     // Only person-typed prompts are read: never agent output, never project-call scaffolding.
     const where = calls.chatMessage.at(-1).where
     expect(where.role).toBe('user')
-    // Scoped to this workspace's agent chats, never another workspace's.
-    // The relation is `session`: `chatSession` belongs to ToolCallLog and
-    // throws against a real database, which no mock would ever show.
-    expect(where.AND[0].session.OR[0]).toEqual({ workspaceId: { in: [WS] } })
+    // Scoped to this workspace's agent chats, never another workspace's — by
+    // session id, resolved once through `workspaceSessionIds` (SHO-598). No
+    // relation `OR` over `session`/`project` reaches the database.
+    expect(where.AND[0]).toEqual({ sessionId: { in: ['sess_1'] } })
+    expect(JSON.stringify(where)).not.toContain('"OR":[{"workspaceId"')
     expect(where.AND[1].OR).toEqual([
       { authorUserId: 'alice' },
       { authorUserId: null, session: { createdByUserId: 'alice' } },
