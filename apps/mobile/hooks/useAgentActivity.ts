@@ -14,7 +14,9 @@
  * caller that passes `watchRunning` and has a run to show, 60 s while a run is
  * off screen, 30 s when nothing is running. A turn edge off the realtime
  * connection is one uncached refresh, so the timer never has to be the thing
- * that makes a run appear or clear.
+ * that makes a run appear or clear — and because an edge only reports what
+ * happens while the screen is open, a newly mounted screen follows its shared
+ * first read with one confirm ask at the fast cadence.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
@@ -184,6 +186,16 @@ export function useAgentActivity({ polling = false, light = false, watchRunning 
     let live = true
     let appState = AppState.currentState
     let pollTimer: ReturnType<typeof setTimeout> | null = null
+    // A screen that has just mounted knows nothing, and its first read is
+    // allowed to be the answer another screen fetched moments ago (SHO-277: six
+    // consumers, one request). That answer can be older than the turn — a
+    // cache write from just before it started, or a read taken while the
+    // server was still registering it — and on the slow cadence it would stand
+    // for 30 s, long enough for a short turn to start and finish unseen. So one
+    // confirm ask follows the mount read, at the fast cadence, before the
+    // cadence takes over (SHO-602).
+    let confirmArmed = true
+    let confirming = false
     // React Native can report null briefly during launch; treat that as foreground.
     const foreground = () => appState === 'active' || appState === null
     const clearPoll = () => {
@@ -195,15 +207,21 @@ export function useAgentActivity({ polling = false, light = false, watchRunning 
       if (!live || !polling || !foreground()) return
       // 5 s only while what this screen shows is running; a run elsewhere is a
       // 60 s safety net because its edges arrive on the socket, and an idle
-      // screen asks every 30 s (SHO-602).
+      // screen asks every 30 s — after the one confirm ask below (SHO-602).
+      const confirm = confirming
+      confirming = false
       pollTimer = setTimeout(async () => {
-        await load()
+        await load(false, confirm)
         schedulePoll()
-      }, cadenceRef.current)
+      }, confirm ? ACTIVITY_WATCHING_POLL_MS : cadenceRef.current)
     }
     const refreshAndSchedule = async () => {
       if (!live || !foreground()) return
       await load(true)
+      if (confirmArmed) {
+        confirmArmed = false
+        confirming = true
+      }
       schedulePoll()
     }
     // A turn started or ended somewhere else: one uncached read, coalesced with

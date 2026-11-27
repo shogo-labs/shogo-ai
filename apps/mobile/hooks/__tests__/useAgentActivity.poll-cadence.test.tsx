@@ -78,6 +78,11 @@ const { workspaceActivity } = await import('../../lib/workspace-activity')
 /** Let the in-flight load land and React commit. */
 async function flush() {
   workspaceActivity.reset()
+  await settle()
+}
+
+/** The same, for a test that is deliberately exercising the shared cache. */
+async function settle() {
   await act(async () => {
     await Promise.resolve()
     await Promise.resolve()
@@ -118,6 +123,10 @@ afterEach(() => {
 describe('useAgentActivity poll cadence', () => {
   test('nothing running: an idle screen asks every 30s, not every 5', async () => {
     await mount()
+    // A freshly mounted screen makes one confirm ask at the fast cadence; the
+    // idle cadence starts after it.
+    advance(5_000)
+    await flush()
     const from = taskCalls
 
     advance(29_000)
@@ -143,6 +152,8 @@ describe('useAgentActivity poll cadence', () => {
   test('a run this screen only reports on asks every 60s', async () => {
     tasks = [RUNNING]
     await mount()
+    advance(5_000)
+    await flush()
     const from = taskCalls
 
     advance(30_000)
@@ -178,6 +189,40 @@ describe('useAgentActivity poll cadence', () => {
     expect(taskCalls - busyFrom.task).toBeLessThanOrEqual(6)
     expect(activeChatCalls - busyFrom.chat).toBeLessThanOrEqual(6)
     busy.unmount()
+  })
+
+  test('a cached answer written before this screen mounted cannot hide a run for 30s', async () => {
+    // A screen that is no longer mounted asked a second ago and got "nothing
+    // running"; the turn starts between that answer and this mount. The mount
+    // is allowed to share that answer (SHO-277) — but only for one confirm ask,
+    // not for a 30 s cadence, because a short turn does not live that long.
+    tasks = []
+    await workspaceActivity.agentTasks({} as never, 'ws-1')
+    advance(1_000)
+    tasks = [RUNNING]
+
+    const rendered = renderHook(() => useAgentActivity({ polling: true, light: true }))
+    await settle()
+    expect(rendered.result.current.running).toEqual([])
+
+    advance(5_000)
+    await settle()
+
+    expect(rendered.result.current.running.map((task) => task.id)).toEqual(['t1'])
+  })
+
+  test('a first read from before the server knew the turn is confirmed within 5s', async () => {
+    // The composer shows its stop button optimistically, so a screen can mount
+    // before `/active-chats` reports the turn. With one confirm ask the row
+    // appears while the turn is still running instead of after it ended.
+    const rendered = await mount()
+    expect(rendered.result.current.running).toEqual([])
+
+    tasks = [RUNNING]
+    advance(5_000)
+    await settle()
+
+    expect(rendered.result.current.running.map((task) => task.id)).toEqual(['t1'])
   })
 
   test('a turn edge off the socket refreshes at once, without waiting for the timer', async () => {
