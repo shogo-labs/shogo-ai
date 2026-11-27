@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FlatList, Platform, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from 'react-native'
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
 import type { ChatMessage, Mentionables } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
+import { StreamingContext, createStreamingStore } from '../../lib/team-chat-streaming'
 import { dayKey, formatDayDivider } from '../../lib/team-chat-time'
 import { attachNestedWheelPassthrough } from '../../lib/nested-wheel-passthrough'
 import { transcriptKeyboardDismissMode } from '../../lib/composer-keyboard-dismiss'
@@ -91,6 +92,14 @@ export function MessageList({
   const listRef = useRef<FlatList<Row>>(null)
   const rootRef = useRef<View | null>(null)
   const detachWheel = useRef<(() => void) | null>(null)
+
+  // Live replies reach their own row through a subscription, not through the
+  // list's props: a delta must not rebuild every cell (SHO-600).
+  const streamingStore = useRef<ReturnType<typeof createStreamingStore> | null>(null)
+  if (!streamingStore.current) streamingStore.current = createStreamingStore()
+  useLayoutEffect(() => {
+    streamingStore.current?.set(state.streaming)
+  }, [state.streaming])
 
   /**
    * RN-web's inverted list answers every wheel event inside it and only ever
@@ -182,7 +191,6 @@ export function MessageList({
         names={names}
         mentionables={mentionables}
         channelMemberIds={channelMemberIds}
-        streaming={state.streaming[item.message.id]}
         canManage={canManage}
         inThread={inThread}
         highlighted={item.message.id === highlightId}
@@ -205,7 +213,7 @@ export function MessageList({
         {body}
       </View>
     )
-  }, [me, names, mentionables, channelMemberIds, state.streaming, canManage, inThread, rowProps, firstUnreadId, highlightId])
+  }, [me, names, mentionables, channelMemberIds, canManage, inThread, rowProps, firstUnreadId, highlightId])
 
   if (loading && !state.messages.length) {
     return (
@@ -216,10 +224,12 @@ export function MessageList({
   }
 
   return (
+    <StreamingContext.Provider value={streamingStore.current}>
     <View className="flex-1" ref={rootRef}>
       <FlatList
         ref={listRef}
         inverted
+        testID="team-message-list"
         data={rows}
         keyExtractor={(row) => row.message.id}
         renderItem={renderItem}
@@ -299,5 +309,6 @@ export function MessageList({
         </Pressable>
       ) : null}
     </View>
+    </StreamingContext.Provider>
   )
 }

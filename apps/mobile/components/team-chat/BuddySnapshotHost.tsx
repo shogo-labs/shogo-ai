@@ -20,6 +20,11 @@ import {
 const HEIGHT = Math.round(SNAPSHOT_BODY_SIZE * 1.4)
 /** A draw that never answers shouldn't wedge the queue. */
 const DRAW_TIMEOUT_MS = 4000
+/**
+ * `webview-entry` reads this before it starts its loop, so the hidden renderer
+ * only ever draws the frames a snapshot asks for.
+ */
+const BOOT_STILL = 'window.__shogoBuddyInitialProps={still:true,reducedMotion:true};true;'
 
 export function BuddySnapshotHost() {
   if (Platform.OS === 'web') return null
@@ -77,6 +82,10 @@ function NativeHost() {
       <WebView
         ref={ref}
         source={{ html: BUDDY_WEBVIEW_HTML }}
+        // The renderer behind every avatar is hidden: it must boot still, not
+        // run the full animation from launch until the first snapshot is asked
+        // for (SHO-600). Injected before the page's own script runs.
+        injectedJavaScriptBeforeContentLoaded={BOOT_STILL}
         originWhitelist={['*']}
         javaScriptEnabled
         scrollEnabled={false}

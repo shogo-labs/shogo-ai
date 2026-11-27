@@ -3,6 +3,7 @@
 
 import { View } from "react-native"
 import { useBuddyLook } from "../../contexts/buddy-look"
+import { useBuddyStill } from "../../hooks/useBuddyStill"
 import { ShogoBuddy } from "../island/buddy/ShogoBuddy"
 import type { BuddyState } from "../island/buddy/engine"
 import { useIslandAccent } from "../island/island-accent"
@@ -20,6 +21,9 @@ interface WorkspaceAgentAvatarProps {
 export function WorkspaceAgentAvatar({ size = 48, state = "idle" }: WorkspaceAgentAvatarProps) {
   const { look } = useBuddyLook()
   const color = useIslandAccent()
+  // A buried screen's buddy is off-screen but still drawing: the WebView is a
+  // constant CPU and GPU cost on iOS until it is told to hold one frame.
+  const still = useBuddyStill()
 
   return (
     <View
@@ -40,6 +44,7 @@ export function WorkspaceAgentAvatar({ size = 48, state = "idle" }: WorkspaceAge
         look={look}
         interactive
         followPointer
+        still={still}
         accessibilityLabel="Shogo workspace avatar"
       />
     </View>

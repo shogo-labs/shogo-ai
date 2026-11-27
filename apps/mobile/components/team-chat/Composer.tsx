@@ -6,7 +6,7 @@
  * emoji, typing signals, drafts synced across devices, "also send to
  * channel" for thread replies, send later, `/remind`, and file uploads.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
 import { AlarmClock, AudioLines, Check, Clock, Hash, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -102,7 +102,7 @@ function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; 
   return <Users size={14} className="text-muted-foreground" />
 }
 
-export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, ref) {
+const ComposerImpl = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, ref) {
   const { workspaceId, conversationId, threadRootId = null, mentionables, me, onSend, onEditLast, onSendLater } = props
   const inputRef = useRef<ChatInputHandle>(null)
   const phoneLayout = useComposerLayoutMode({ prominent: true }).useProminentComposer
@@ -527,6 +527,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     </View>
   )
 })
+
+/**
+ * A streamed delta re-renders the pane around it; nothing the composer owns
+ * changes for one, so it must not come along. Memoising it keeps ChatInput and
+ * its ~200 hooks out of every delta (SHO-600).
+ */
+export const Composer = memo(ComposerImpl)
 
 function formatWhen(iso: string): string {
   const d = new Date(iso)

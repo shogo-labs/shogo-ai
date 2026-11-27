@@ -13,6 +13,7 @@ import {
 } from "react"
 import { Platform } from "react-native"
 import {
+  AMBIENT_FRAME_MS,
   BUDDY_ASPECT,
   BUDDY_FINISHES,
   BuddyEngine,
@@ -201,9 +202,23 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     if (!ctx) return
 
     let raf = 0
+    let ambient: ReturnType<typeof setTimeout> | undefined
     let sleep: ReturnType<typeof setTimeout> | undefined
     let last = performance.now()
+    // An idle character only blinks and fidgets, so it is drawn at a low rate
+    // instead of 60 frames a second (SHO-600).
+    const schedule = () => {
+      if (engine.idleAmbient) {
+        ambient = setTimeout(() => {
+          ambient = undefined
+          raf = requestAnimationFrame(frame)
+        }, AMBIENT_FRAME_MS)
+      } else {
+        raf = requestAnimationFrame(frame)
+      }
+    }
     const frame = (now: number) => {
+      raf = 0
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
       engine.update(reducedMotion ? 0 : dt)
@@ -211,22 +226,25 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
       ctx.clearRect(0, 0, size, height)
       engine.draw(ctx, size, height)
       if (still || engine.resting) {
-        raf = 0
         const wait = still ? null : engine.msUntilWake()
         if (wait != null) sleep = setTimeout(start, wait)
         return
       }
-      raf = requestAnimationFrame(frame)
+      schedule()
     }
     const start = () => {
-      if (raf || document.visibilityState === "hidden") return
+      if (raf || ambient || document.visibilityState === "hidden") return
       clearTimeout(sleep)
+      sleep = undefined
       last = performance.now()
       raf = requestAnimationFrame(frame)
     }
     const stop = () => {
       cancelAnimationFrame(raf)
+      clearTimeout(ambient)
       clearTimeout(sleep)
+      ambient = undefined
+      sleep = undefined
       raf = 0
     }
     const onVisibility = () => (document.visibilityState === "hidden" ? stop() : start())

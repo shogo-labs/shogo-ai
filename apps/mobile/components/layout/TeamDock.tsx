@@ -6,6 +6,7 @@
  * the tab screens themselves (`TabScreen`): a button outside the dock's own
  * bounds would not receive touches on native.
  */
+import { useMemo } from 'react'
 import { Pressable, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
 import { Bell, Home, MessagesSquare, MoreHorizontal, Search } from 'lucide-react-native'
@@ -35,24 +36,29 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
   const chat = useTeamChatNav()
   const agents = useAgentActivity({ light: true })
   const active = dockTabForPathname(pathname, chat.list)
-  const badges: Record<string, number> = {
-    dms: chat.counts.dms,
-    activity: activityBadge(chat.counts.inbox, agents.tasks),
-  }
+  const dms = chat.counts.dms
+  const activity = activityBadge(chat.counts.inbox, agents.tasks)
   // Thread replies the user chose to keep out of the number show as a dot.
-  const dots: Record<string, boolean> = { activity: chat.counts.activityDot }
+  const activityDot = !!chat.counts.activityDot
   const tint = isDark ? 'rgba(28,28,30,0.2)' : 'rgba(255,255,255,0.1)'
 
   // The same glass pill as the personal tab bar (one drag-able selection
   // capsule, serialised navigation), plus a round search button beside it.
-  const items = ITEMS.map(({ id, label, Icon, href }) => ({
-    id,
-    label,
-    Icon,
-    badge: badges[id] ?? 0,
-    dot: !!dots[id],
-    onPress: () => router.replace(href as any),
-  }))
+  // Built from the badge values alone, so an unrelated chat event that leaves
+  // them where they were hands `GlassTabRow` the same array and it bails
+  // (SHO-600).
+  const items = useMemo(
+    () =>
+      ITEMS.map(({ id, label, Icon, href }) => ({
+        id,
+        label,
+        Icon,
+        badge: id === 'dms' ? dms : id === 'activity' ? activity : 0,
+        dot: id === 'activity' && activityDot,
+        onPress: () => router.replace(href as any),
+      })),
+    [activity, activityDot, dms, router],
+  )
 
   return (
     <View className="w-full flex-row items-center gap-2" style={{ maxWidth, alignSelf: 'center' }} testID="team-dock">
