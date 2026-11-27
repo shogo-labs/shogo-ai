@@ -58,12 +58,15 @@ mock.module('@/components/ui/spinner', () => ({ Spinner: () => null }))
 
 const { MessageList } = await import('../MessageList')
 
+/** Derived from the clock the row labels read, so the seed cannot go stale. */
+const seededAt = Date.now() - 30 * 60_000
+
 const message = (id: string, text: string, seq: number) => ({
   id,
   conversationId: 'c1',
   seq,
   text,
-  createdAt: new Date(2026, 10, 27, 10, seq).toISOString(),
+  createdAt: new Date(seededAt + seq * 60_000).toISOString(),
   authorType: 'agent',
   authorUserId: null,
   authorName: 'Shogo Dev 1',
