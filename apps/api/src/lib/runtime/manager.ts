@@ -46,6 +46,7 @@ import {
   PortPool,
 } from '@shogo-ai/worker/port-pool'
 import { sampleHostMemory } from './host-memory'
+import { resolveWorkspacePreviewCap, resolveWorkspacePreviewMax } from './preview-cap'
 import { inflightCallCount } from './inflight-calls'
 import type {
   IRuntimeManager,
@@ -284,21 +285,16 @@ export function projectWorkspaceRuntimeKey(anchorProjectId: string): string {
 }
 
 /**
- * How many workspace/project previews this host is allowed to keep warm.
- *
- * The single source of truth for the warm-preview cap: the manager evicts
- * down to it, and the desktop startup prewarm must warm no more than it
- * (SHO-107 — boot used to warm `WORKSPACE_PREVIEW_MAX || 3` while the manager
- * kept 1 on a low-tier host, so an eviction right after boot was guaranteed).
- * A `low` tier host is ≤8 GB RAM / ≤4 cores (see
- * `apps/desktop/src/runtime-memory.ts`) — a normal laptop, where one warm
- * preview is all the machine can carry.
+ * How many workspace/project previews this host is allowed to keep warm: the
+ * manager evicts down to it, and the desktop startup prewarm must warm no more
+ * than it (SHO-107 — boot used to warm `WORKSPACE_PREVIEW_MAX || 3` while the
+ * manager kept 1 on a low-tier host, so an eviction right after boot was
+ * guaranteed). The policy table itself lives in `./preview-cap` so the cloud
+ * keep-warm controller can read the same number without loading this module;
+ * the intrinsic memory bound on top of it is the free-memory pass in
+ * {@link RuntimeManager.enforceWorkspacePreviewCap} (SHO-606).
  */
-export function resolveWorkspacePreviewMax(): number {
-  const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
-  const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
-  return Number.isFinite(n) && n > 0 ? n : defaultMax
-}
+export { resolveWorkspacePreviewMax }
 
 /**
  * How many BACKGROUND (heartbeat/schedule) runtimes this host keeps warm.
@@ -643,6 +639,14 @@ export class RuntimeManager implements IRuntimeManager {
       // app was restarted.
       onRuntimeGone: (key, info) => this.handleAgentRuntimeGone(key, info),
     })
+    // One line so the number in effect can be read off `main.log` (SHO-606):
+    // a desktop that keeps too few previews warm shows it here, next to the
+    // tier that decided it.
+    const previewCap = resolveWorkspacePreviewCap()
+    console.log(
+      `[RuntimeManager] warm-preview cap=${previewCap.max} (` +
+        `${previewCap.source === 'tier' ? `tier=${previewCap.tier}` : previewCap.source})`,
+    )
   }
 
   /**
@@ -3288,6 +3292,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * same project folder is never served by stale duplicates and vite watchers
    * don't pile up across many open/close cycles. Idempotent and best-effort.
    *
+   * The cap is a POLICY number (how many may stay warm), so free host memory is
+   * the second, harder bound: while the host is low, idle previews give way one
+   * at a time even under the cap (SHO-606). See
+   * {@link evictPreviewsForHostMemory}.
+   *
    * Operates strictly on the foreground preview set (the MRU). Background
    * heartbeat runtimes are a completely separate system: they are never in the
    * MRU, so they neither count toward the cap nor get evicted here, and — just
@@ -3303,11 +3312,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const cap = this.workspacePreviewMax
     if (cap <= 0) return
     // MRU is most-recent-first; keep only entries with a live runtime.
-    const livePreviews = this.workspacePreviewMru.filter((k) => {
+    const livePreviews = this.livePreviewKeys()
+    if (livePreviews.length > cap) await this.evictPreviewsOverCap(livePreviews, cap)
+    await this.evictPreviewsForHostMemory(cap)
+  }
+
+  /** The preview MRU filtered to keys whose runtime is live. */
+  private livePreviewKeys(): string[] {
+    return this.workspacePreviewMru.filter((k) => {
       const st = this.runtimes.get(k)?.status
       return !!st && st !== 'stopped'
     })
-    if (livePreviews.length <= cap) return
+  }
+
+  /** Stop the previews beyond the cap, oldest first. */
+  private async evictPreviewsOverCap(livePreviews: string[], cap: number): Promise<void> {
     // Evict the tail (oldest opens) beyond the cap.
     const evictable = livePreviews.slice(cap).reverse()
     await this.refreshActivityFor(evictable)
@@ -3334,7 +3353,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
       console.log(
         `[RuntimeManager] Workspace preview LRU: evicting ${key}: ` +
-          `${describeBusyReason(verdict, this.idleMs(key))} (cap=${cap})`,
+          `over cap — ${describeBusyReason(verdict, this.idleMs(key))} (cap=${cap})`,
       )
       try {
         await this.stop(key, 'preview-lru')
@@ -3349,6 +3368,55 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           `${overBy} kept busy, on screen or unverifiable`,
       )
     }
+  }
+
+  /**
+   * Free host memory has the last word, even under the cap (SHO-606).
+   *
+   * A 128 GB desktop with a board of ~8 agents used to evict an idle preview on
+   * almost every chat switch — the cap was the only bound, and it was 3. Now the
+   * cap is a policy number per host tier and this pass is the real memory bound
+   * (the same `host-memory.ts` floor the background pool uses). While the host
+   * is low, stop one idle preview at a time, oldest first, and re-sample after
+   * each stop: the one that crosses the floor is the last one we take.
+   *
+   * Never touched: the preview that was just opened (MRU head — the user asked
+   * for it, so the open is never refused or delayed), one on screen, or one with
+   * work in flight. Busy previews are skipped, never killed to make room.
+   */
+  private async evictPreviewsForHostMemory(cap: number): Promise<void> {
+    let memory = sampleHostMemory()
+    if (!memory.low) return
+    // `slice(1)` drops the MRU head; `reverse()` walks the rest oldest first.
+    const candidates = this.livePreviewKeys().slice(1).reverse()
+    if (candidates.length === 0) return
+    await this.refreshActivityFor(candidates)
+    for (const key of candidates) {
+      if (this.isPreviewOnScreen(key)) continue
+      const verdict = await this.isBusy(key)
+      if (verdict.dead) {
+        await this.reapDeadRuntime(key, 'preview memory', verdict)
+        continue
+      }
+      if (verdict.busy) continue
+      console.log(
+        `[RuntimeManager] Workspace preview LRU: evicting ${key}: ` +
+          `host memory low (${memory.freeMb}MB free < ${memory.floorMb}MB floor) — ` +
+          `${describeBusyReason(verdict, this.idleMs(key))} (cap=${cap})`,
+      )
+      try {
+        await this.stop(key, 'preview-memory')
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] memory evict stop(${key}) failed: ${err?.message ?? err}`)
+      }
+      memory = sampleHostMemory()
+      if (!memory.low) return
+    }
+    console.log(
+      `[RuntimeManager] Workspace preview LRU: host memory low ` +
+        `(${memory.freeMb}MB free < ${memory.floorMb}MB floor), keeping ` +
+        `${this.livePreviewKeys().length} previews: busy, on screen or just opened`,
+    )
   }
 
   /** Has the UI pinged this key as on screen within the view TTL? */

@@ -34,7 +34,22 @@ import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manag
  * the attached project ids returned by resolveAnchorSpawnOpts.
  */
 function newManager(attachments: Record<string, string[]> = {}) {
-  const rm = new RuntimeManager({ healthCheckInterval: 50 }) as any
+  // Hermetic host env: the warm cap is read once, from SHOGO_HOST_TIER, and the
+  // desktop exports a real tier to its children — these cases pin the untiered
+  // cap of 3, so they must not inherit it (SHO-606).
+  const prevTier = process.env.SHOGO_HOST_TIER
+  const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+  delete process.env.SHOGO_HOST_TIER
+  delete process.env.WORKSPACE_PREVIEW_MAX
+  let rm: any
+  try {
+    rm = new RuntimeManager({ healthCheckInterval: 50 }) as any
+  } finally {
+    if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+    else process.env.SHOGO_HOST_TIER = prevTier
+    if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+    else process.env.WORKSPACE_PREVIEW_MAX = prevMax
+  }
   // The embedded worker's two LRU seams: liveness of the cached port, and the
   // cached busy verdict (SHO-143, real `decideBusy`). Seeded runtimes are
   // settled and provably idle, so the cap is the only thing that evicts them.

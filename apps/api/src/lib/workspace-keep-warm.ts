@@ -4,7 +4,7 @@
  * Cloud (k8s) "keep the last N workspace runtimes warm" controller.
  *
  * The host keeps the last N project previews warm by NOT stopping their
- * agent-runtime child processes until a 4th is opened (see
+ * agent-runtime child processes until the warm cap is exceeded (see
  * RuntimeManager.enforceWorkspacePreviewCap). Cloud can't keep processes
  * resident the same way — Knative owns scale-to-zero. The equivalent there is
  * to periodically ping the top-N most-recently-opened workspace runtimes'
@@ -20,6 +20,8 @@
  * tested without real timers or network.
  */
 
+import { resolveWorkspacePreviewMax } from './runtime/preview-cap'
+
 export interface WorkspaceKeepWarmEntry {
   /** Stable key (anchor `proj:<id>` or workspaceId) — MRU identity. */
   key: string
@@ -30,7 +32,7 @@ export interface WorkspaceKeepWarmEntry {
 }
 
 export interface WorkspaceKeepWarmDeps {
-  /** Max runtimes to keep warm (default WORKSPACE_PREVIEW_MAX or 3). */
+  /** Max runtimes to keep warm (default: the shared warm-preview cap, 3 on an untiered host). */
   max?: number
   fetchFn?: (url: string, init?: any) => Promise<{ ok: boolean; status: number }>
   now?: () => number
@@ -53,8 +55,9 @@ export class WorkspaceKeepWarm {
   private readonly log: (msg: string) => void
 
   constructor(deps: WorkspaceKeepWarmDeps = {}) {
-    const envMax = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
-    this.max = deps.max ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : 3)
+    // One source of truth with the desktop manager (SHO-606): k8s has no host
+    // tier, so this resolves to the same 3 it always has there.
+    this.max = deps.max ?? resolveWorkspacePreviewMax()
     this.fetchFn =
       deps.fetchFn ??
       ((url, init) => fetch(url, init) as unknown as Promise<{ ok: boolean; status: number }>)

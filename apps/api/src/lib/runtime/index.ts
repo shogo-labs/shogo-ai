@@ -14,8 +14,14 @@ export {
   __resetRuntimeManagerInternalsForTests,
   resolveRuntimeMaxCount,
   resolveWorkspaceBackgroundMax,
-  resolveWorkspacePreviewMax,
 } from './manager'
+export {
+  PREVIEW_MAX_BY_TIER,
+  DEFAULT_PREVIEW_MAX,
+  resolveWorkspacePreviewCap,
+  resolveWorkspacePreviewMax,
+} from './preview-cap'
+export type { HostTier, PreviewCapDecision } from './preview-cap'
 export type {
   IRuntimeManager,
   IProjectRuntime,

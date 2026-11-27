@@ -12,6 +12,7 @@ import {
   resolveWorkspacePreviewMax,
   workspaceRuntimeKey,
 } from '../lib/runtime/manager'
+import { PREVIEW_MAX_BY_TIER, resolveWorkspacePreviewCap } from '../lib/runtime/preview-cap'
 import { countTerminalSession } from '../lib/terminal-session-pin'
 import { decideBusy } from '@shogo-ai/worker/runtime-activity'
 
@@ -60,8 +61,16 @@ function markBusy(key: string) {
  * (the cached busy verdict, SHO-143). The verdict comes from the REAL
  * `decideBusy`, so terminal pins, in-flight calls and unknown-is-busy behave as
  * they do in production.
+ *
+ * Hermetic about the host: the env is cleared, so the cap is the untiered 3 even
+ * when the machine running the suite exports a real `SHOGO_HOST_TIER`.
  */
 function newManager(): PrivateRM {
+  return newTieredManager({})
+}
+
+/** The constructor itself — no host env of its own. */
+function buildManager(): PrivateRM {
   const rm = new RuntimeManager({ healthCheckInterval: 50 }) as PrivateRM
   busyKeys.clear()
   const startedAt = Date.now() - 10 * 60_000
@@ -110,20 +119,43 @@ function newManager(): PrivateRM {
 /**
  * A manager built as if it were running on a `low`-tier host (≤8 GB RAM /
  * ≤4 cores — the normal Windows laptop from SHO-107), where the warm-preview
- * cap is 1. `workspacePreviewMax` is read once at construction, so the env has
- * to be set around the constructor and restored afterwards.
+ * cap is 1.
  */
 function newLowTierManager(): PrivateRM {
+  return newTieredManager({ tier: 'low' })
+}
+
+/**
+ * A manager built as if it were running on a `high`-tier host (≥32 GB RAM /
+ * ≥8 cores — the 128 GB desktop from SHO-606), where the warm-preview cap is
+ * 10 rather than 3.
+ */
+function newHighTierManager(): PrivateRM {
+  return newTieredManager({ tier: 'high' })
+}
+
+/**
+ * Build a manager with an explicit host env, so a test never inherits whatever
+ * `SHOGO_HOST_TIER` / `WORKSPACE_PREVIEW_MAX` the machine running it happens to
+ * export (the desktop exports a real tier to its children — WITHOUT this the
+ * "warm 3" cases resolve to 10 on a high-tier dev box and on a low-tier one to
+ * 1). `workspacePreviewMax` is read once at construction, so the env has to be
+ * set around the constructor and restored afterwards.
+ */
+function newTieredManager(hostEnv: { tier?: 'low' | 'standard' | 'high'; max?: string }): PrivateRM {
   const prevTier = process.env.SHOGO_HOST_TIER
   const prevMax = process.env.WORKSPACE_PREVIEW_MAX
-  delete process.env.WORKSPACE_PREVIEW_MAX
-  process.env.SHOGO_HOST_TIER = 'low'
+  if (hostEnv.tier === undefined) delete process.env.SHOGO_HOST_TIER
+  else process.env.SHOGO_HOST_TIER = hostEnv.tier
+  if (hostEnv.max === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+  else process.env.WORKSPACE_PREVIEW_MAX = hostEnv.max
   try {
-    return newManager()
+    return buildManager()
   } finally {
     if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
     else process.env.SHOGO_HOST_TIER = prevTier
-    if (prevMax !== undefined) process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+    else process.env.WORKSPACE_PREVIEW_MAX = prevMax
   }
 }
 
@@ -852,6 +884,72 @@ describe('RuntimeManager — one cap, one place', () => {
       expect(resolveWorkspacePreviewMax()).toBe(3)
     } finally {
       if (prevTier !== undefined) process.env.SHOGO_HOST_TIER = prevTier
+      if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+      else process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    }
+  })
+
+  test('a high-tier host keeps 10 — the 128 GB desktop from SHO-606', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+    delete process.env.WORKSPACE_PREVIEW_MAX
+    process.env.SHOGO_HOST_TIER = 'high'
+    try {
+      expect(resolveWorkspacePreviewMax()).toBe(10)
+      expect(newHighTierManager().workspacePreviewMax).toBe(10)
+      // The worker ceiling follows the cap: preview + background + a workspace
+      // session has to fit or the global LRU starts taking open previews.
+      expect(resolveRuntimeMaxCount()).toBeGreaterThanOrEqual(
+        resolveWorkspacePreviewMax() + resolveWorkspaceBackgroundMax(),
+      )
+    } finally {
+      if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+      else process.env.SHOGO_HOST_TIER = prevTier
+      if (prevMax !== undefined) process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    }
+  })
+
+  test('the tier table is low 1 / standard 3 / high 10, and an env override wins for every tier', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+    try {
+      delete process.env.WORKSPACE_PREVIEW_MAX
+      expect(PREVIEW_MAX_BY_TIER).toEqual({ low: 1, standard: 3, high: 10 })
+      for (const [tier, expected] of Object.entries(PREVIEW_MAX_BY_TIER)) {
+        process.env.SHOGO_HOST_TIER = tier
+        expect(resolveWorkspacePreviewMax()).toBe(expected)
+        process.env.WORKSPACE_PREVIEW_MAX = '5'
+        expect(resolveWorkspacePreviewMax()).toBe(5)
+        // Junk never disables the cap — it falls through to the tier's number.
+        process.env.WORKSPACE_PREVIEW_MAX = '0'
+        expect(resolveWorkspacePreviewMax()).toBe(expected)
+        process.env.WORKSPACE_PREVIEW_MAX = 'not-a-number'
+        expect(resolveWorkspacePreviewMax()).toBe(expected)
+        delete process.env.WORKSPACE_PREVIEW_MAX
+      }
+      expect(resolveWorkspacePreviewMax()).toBe(10) // last tier set: high
+    } finally {
+      if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+      else process.env.SHOGO_HOST_TIER = prevTier
+      if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+      else process.env.WORKSPACE_PREVIEW_MAX = prevMax
+    }
+  })
+
+  test('the resolver reports where its number came from, for the boot log', () => {
+    const prevTier = process.env.SHOGO_HOST_TIER
+    const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+    try {
+      delete process.env.SHOGO_HOST_TIER
+      delete process.env.WORKSPACE_PREVIEW_MAX
+      expect(resolveWorkspacePreviewCap().source).toBe('default')
+      process.env.SHOGO_HOST_TIER = 'high'
+      expect(resolveWorkspacePreviewCap()).toEqual({ max: 10, source: 'tier', tier: 'high' })
+      process.env.WORKSPACE_PREVIEW_MAX = '7'
+      expect(resolveWorkspacePreviewCap()).toEqual({ max: 7, source: 'env' })
+    } finally {
+      if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+      else process.env.SHOGO_HOST_TIER = prevTier
       if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
       else process.env.WORKSPACE_PREVIEW_MAX = prevMax
     }

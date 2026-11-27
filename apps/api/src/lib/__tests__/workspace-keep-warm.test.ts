@@ -81,3 +81,65 @@ describe('WorkspaceKeepWarm', () => {
     expect(kw.topN()).toEqual([])
   })
 })
+
+/**
+ * SHO-606: the cloud keep-warm controller used to parse
+ * `WORKSPACE_PREVIEW_MAX || '3'` itself, so a desktop whose cap moved with the
+ * host tier could keep a different number warm than the manager kept alive.
+ * Both read `resolveWorkspacePreviewMax()` now.
+ */
+describe('WorkspaceKeepWarm — default cap is the shared warm-preview cap', () => {
+  function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
+    const prev = new Map<string, string | undefined>()
+    for (const key of Object.keys(vars)) prev.set(key, process.env[key])
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    try {
+      return fn()
+    } finally {
+      for (const [key, value] of prev) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  }
+
+  function keepOf(kw: WorkspaceKeepWarm): number {
+    for (const k of ['a', 'b', 'c', 'd', 'e']) kw.recordOpened(k, `http://${k}`)
+    return kw.topN().length
+  }
+
+  it('keeps the top 4 when WORKSPACE_PREVIEW_MAX=4', () => {
+    const kept = withEnv(
+      { WORKSPACE_PREVIEW_MAX: '4', SHOGO_HOST_TIER: undefined },
+      () => keepOf(new WorkspaceKeepWarm({ now: fixedClock() })),
+    )
+    expect(kept).toBe(4)
+  })
+
+  it('keeps 3 with no env and no host tier (cloud, metal, docker)', () => {
+    const kept = withEnv(
+      { WORKSPACE_PREVIEW_MAX: undefined, SHOGO_HOST_TIER: undefined },
+      () => keepOf(new WorkspaceKeepWarm({ now: fixedClock() })),
+    )
+    expect(kept).toBe(3)
+  })
+
+  it('follows the host tier when one is set', () => {
+    const kept = withEnv(
+      { WORKSPACE_PREVIEW_MAX: undefined, SHOGO_HOST_TIER: 'high' },
+      () => keepOf(new WorkspaceKeepWarm({ now: fixedClock() })),
+    )
+    expect(kept).toBe(5) // only five entries were recorded, so all five are kept
+  })
+
+  it('an explicit `max` still wins', () => {
+    const kept = withEnv(
+      { WORKSPACE_PREVIEW_MAX: '4' },
+      () => keepOf(new WorkspaceKeepWarm({ max: 2, now: fixedClock() })),
+    )
+    expect(kept).toBe(2)
+  })
+})

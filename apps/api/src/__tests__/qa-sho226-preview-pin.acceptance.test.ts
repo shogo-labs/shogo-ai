@@ -115,7 +115,22 @@ const IDLE = { turns: 0, tasks: 0, streams: 0, children: 0 }
  * production code.
  */
 function newManager(): PrivateRM {
-  const rm = new RuntimeManager({ healthCheckInterval: 50 }) as PrivateRM
+  // Hermetic host env: the warm cap is read once, from SHOGO_HOST_TIER, and the
+  // desktop exports a real tier to its children — without this the cap silently
+  // becomes 10 on a high-tier dev box and these LRU expectations change meaning.
+  const prevTier = process.env.SHOGO_HOST_TIER
+  const prevMax = process.env.WORKSPACE_PREVIEW_MAX
+  delete process.env.SHOGO_HOST_TIER
+  delete process.env.WORKSPACE_PREVIEW_MAX
+  let rm: PrivateRM
+  try {
+    rm = new RuntimeManager({ healthCheckInterval: 50 }) as PrivateRM
+  } finally {
+    if (prevTier === undefined) delete process.env.SHOGO_HOST_TIER
+    else process.env.SHOGO_HOST_TIER = prevTier
+    if (prevMax === undefined) delete process.env.WORKSPACE_PREVIEW_MAX
+    else process.env.WORKSPACE_PREVIEW_MAX = prevMax
+  }
   const startedAt = Date.now() - 10 * 60_000
   rm.agentManager = {
     touch: mock(() => {}),
