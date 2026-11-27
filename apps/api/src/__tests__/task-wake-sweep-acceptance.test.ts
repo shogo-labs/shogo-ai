@@ -143,7 +143,7 @@ describe('SHO-30 acceptance: the wake is delivered exactly once', () => {
     expect(await queueRows(session)).toHaveLength(0)
   })
 
-  test('a failed wake releases only its own task, not the rest of the burst', async () => {
+  test('a failed merged wake releases every task it carried, and the retry arrives merged (SHO-604)', async () => {
     const session = await newSession()
     await notifyShellTask(session, 't_own0001')
     await notifyShellTask(session, 't_own0002')
@@ -152,23 +152,22 @@ describe('SHO-30 acceptance: the wake is delivered exactly once', () => {
     expect(await queueRows(session)).toHaveLength(2)
 
     runtimeDown = true
-    await runChatQueueDrain()                     // the first row fails and is handed back
+    await runChatQueueDrain()                     // the merged wake fails and is handed back
     expect(dispatched).toHaveLength(0)
-    const failed = await db.backgroundTask.findUnique({ where: { id: 't_own0001' } })
-    const untouched = await db.backgroundTask.findUnique({ where: { id: 't_own0002' } })
-    expect(failed.notifiedAt).toBeNull()
-    expect(failed.attempts).toBe(1)
-    expect(untouched.notifiedAt).not.toBeNull()   // its own row still owns it
-    expect(untouched.attempts).toBe(0)
+    const first = await db.backgroundTask.findUnique({ where: { id: 't_own0001' } })
+    const second = await db.backgroundTask.findUnique({ where: { id: 't_own0002' } })
+    expect(first.notifiedAt).toBeNull()
+    expect(second.notifiedAt).toBeNull()
+    expect(first.attempts).toBe(1)
+    expect(second.attempts).toBe(1)
 
     runtimeDown = false
-    await runChatQueueDrain()                     // the second row runs; the first is swept back
+    await runChatQueueDrain()                     // both are swept back and arrive in one turn
     await waitFor(async () => dispatched.length > 0)
-    expect(dispatched[0].taskNotification).toEqual({ taskIds: ['t_own0002'] })
-
-    await runChatQueueDrain()
-    await waitFor(async () => dispatched.length > 1)
-    expect(dispatched[1].taskNotification).toEqual({ taskIds: ['t_own0001'] })
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].taskNotification.taskIds.sort()).toEqual(['t_own0001', 't_own0002'])
+    // The failed first attempt keeps its row as history; nothing is left to run.
+    expect((await queueRows(session)).filter((row: any) => row.status === 'pending')).toHaveLength(0)
   })
 
   test('a wake that keeps failing backs off instead of hot-looping, then lands once', async () => {

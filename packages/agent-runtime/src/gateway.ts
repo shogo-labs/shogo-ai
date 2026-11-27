@@ -3303,6 +3303,7 @@ export class AgentGateway {
       title: n.title,
       status: n.status,
       text: formatTaskNotification(n),
+      ...(n.wakeAlone ? { wakeAlone: true } : {}),
     })))
     if (res.ok) {
       reg.markReported(notes.map((n) => n.taskId))

@@ -76,6 +76,29 @@ describe('Workforce', () => {
     expect(item(w, 'BIL-2').history.some((e) => e.author === 'Docs Agent' && e.text === 'On it.')).toBe(true)
   })
 
+  test('two runs that stop at the same instant both stop before the wake is taken', () => {
+    const w = new CompanyWorld(seed({
+      items: [
+        { key: 'BIL-1', board: 'bil', column: 'In progress', title: 'Copilot price' },
+        { key: 'BIL-2', board: 'bil', column: 'In progress', title: 'Copilot price, teams' },
+      ],
+      workforce: {
+        workers: WORKERS,
+        runs: [
+          { item: 'BIL-1', agent: 'billing-agent', script: 'price', status: 'running', next: 2, hoursAgo: 0 },
+          { item: 'BIL-2', agent: 'billing-agent', script: 'price', status: 'running', next: 2, hoursAgo: 0 },
+        ],
+      },
+      wakes: { horizonHours: 24 },
+    }))
+    const wake = w.nextWake()!
+    expect(wake.kind).toBe('task')
+    expect(wake.runs).toHaveLength(2)
+    expect(wake.text.match(/\[Task update\]/g)).toHaveLength(2)
+    expect(run(w, 'BIL-1')?.status).toBe('done')
+    expect(run(w, 'BIL-2')?.status).toBe('done')
+  })
+
   test('board default agents and agent columns hand cards off', () => {
     const w = new CompanyWorld(seed())
     w.handle('work_item_create', { board: 'Engineering', title: 'Load test at 5x' })

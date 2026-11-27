@@ -101,10 +101,21 @@ interface TrackOptions {
   until?: string
   /** Where the task's work is happening, so the dock can open it. */
   link?: TaskLink
+  /** `wake: "alone"`: this task's update gets its own turn, not a shared one. */
+  wakeAlone?: boolean
 }
 
 function createInput(sessionId: string, id: string, opts: TrackOptions, until?: string) {
-  return { id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until, link: opts.link }
+  return {
+    id,
+    chatSessionId: sessionId,
+    source: opts.source,
+    targetRef: opts.targetRef,
+    title: opts.title,
+    until,
+    link: opts.link,
+    ...(opts.wakeAlone ? { wakeAlone: true } : {}),
+  }
 }
 
 /**

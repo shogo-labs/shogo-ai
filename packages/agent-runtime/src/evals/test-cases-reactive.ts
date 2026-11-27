@@ -214,6 +214,48 @@ export const MONITOR_CRITERIA: Criterion[] = [
 
 const monitor = (policy: WakeSeed['policy']) => seed(P01_FINISHED, { runs: [P01_DONE_RUN], wakes: { ...PHASE_WAKES, policy } })
 
+// ─── Three handoffs landing at once ─────────────────────────────────────────
+
+/**
+ * Three cards are with the engineer at the same time and all three finish at
+ * the same simulated instant, so the wake that carries them is one message with
+ * three `[Task update]` blocks (SHO-604). Reading only the first block leaves
+ * the other two sitting in Review, which is the mistake this grades.
+ */
+const BATCH_KEYS = ['P0-1', 'P0-2', 'P0-3']
+
+const BATCH_STAGE: Stage = {
+  column: (k) => (BATCH_KEYS.includes(k) ? 'In progress' : 'Backlog'),
+  assigned: BATCH_KEYS,
+}
+
+/** All three stop together: same clock, and each one's next beat is its finish. */
+const BATCH_RUNS: SimRunSeed[] = [
+  { item: 'P0-1', agent: ENGINEER.key, script: 'scaffold', status: 'running', next: 2, hoursAgo: 0 },
+  { item: 'P0-2', agent: ENGINEER.key, script: 'kernel', status: 'running', next: 2, hoursAgo: 0 },
+  { item: 'P0-3', agent: ENGINEER.key, script: 'assets', status: 'running', next: 2, hoursAgo: 0 },
+]
+
+const BATCH_AGENTS_MD = `# Samsara
+
+You run the Samsara project for Russell. The engineering work is done by the **${ENGINEER.name}** agent (project \`${ENGINEER.key}\`).
+
+- Phase 0 is on the **${BOARD}** board in #${CHANNEL}: ${PHASE0.map((c) => `${c.key} ${c.title}`).join(', ')}.
+- P0-1, P0-2 and P0-3 are all with ${ENGINEER.name} at once. Read every [Task update] you are given, not just the first: close each card as it lands in Review and hand the next piece of work on when the batch is closed.
+- Russell does not review Phase 0 cards himself.
+`
+
+/** When the wake that carried all three stopped runs arrived. */
+const batchWakeAt = (s: WorldSnapshot): string | undefined =>
+  (s.wakes ?? []).find((w) => w.kind === 'task' && BATCH_KEYS.every((k) => { const r = runOf(s, k); return !!r && w.runs.includes(r.id) }))?.at
+
+export const BATCH_CRITERIA: Criterion[] = [
+  { id: 'closed-any', description: 'Acted on at least one of the finished cards in the batch', points: 1, check: (s) => BATCH_KEYS.some((k) => closed(s, k)) },
+  { id: 'closed-all-three', description: 'Closed all three cards the one wake reported (not just the first block)', points: 3, check: (s) => BATCH_KEYS.every((k) => closed(s, k)) },
+  { id: 'handed-next-same-turn', description: 'Handed the next card to the engineer in that same turn', points: 3, check: (s) => { const at = batchWakeAt(s); const run = runOf(s, 'P0-4'); return !!at && run?.startedAt === at } },
+  { id: 'no-polling-timer', description: 'Set no schedule or heartbeat that fires every 6h or more often', points: 2, check: (s) => pollingTimers(s).length === 0 },
+]
+
 // ─── A worker that goes quiet ───────────────────────────────────────────────
 
 export const STALL_CRITERIA: Criterion[] = [
@@ -278,5 +320,14 @@ export const REACTIVE_EVALS: AgentEval[] = [
       { id: 'kept-card', description: 'P0-2 is still with the engineer', points: 1, check: (s) => item(s, 'P0-2')?.assigneeAgent === ENGINEER.key && runOf(s, 'P0-2')?.status === 'running' },
       { id: 'no-noise', description: 'Did not post check-in noise in the channel', points: 1, check: (s) => myMessages(s, CHANNEL).length <= 1 },
     ],
+  ),
+  build(
+    'batch-three-finishes',
+    'Three handoffs finish at once: act on every [Task update] in the one wake',
+    3,
+    'P0-1, P0-2 and P0-3 are all with the engineer. Close each one as it lands in Review, then hand P0-4 on.',
+    seed(BATCH_STAGE, { runs: BATCH_RUNS, wakes: { ...PHASE_WAKES, policy: 'auto' } }),
+    BATCH_CRITERIA,
+    { workspaceFiles: { 'AGENTS.md': BATCH_AGENTS_MD } },
   ),
 ]

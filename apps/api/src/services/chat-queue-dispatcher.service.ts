@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { publishTurnState } from './chat-turn-state.service'
-import { MAX_WAKE_ATTEMPTS, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
+import { MAX_WAKE_ATTEMPTS, taskWakeBodyIsAlone, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -38,6 +38,19 @@ export const STALE_CLOSED_CARD_WAKE_MS = 30 * 60 * 1000
  */
 export const MAX_WAKES_PER_AGENT_PER_TICK = 2
 export const MAX_WAKES_PER_TICK = 8
+
+/**
+ * What one wake turn may carry when the drain merges the updates waiting behind
+ * the row it claimed: this many tasks, and this much of their text. Anything
+ * left over stays queued and runs in the next turn, which the turn-end drain
+ * starts as soon as this one ends.
+ *
+ * The point is cost, not throughput: each wake turn reloads the whole prompt and
+ * history, so three updates that were already waiting behind a wake must ride in
+ * the same turn instead of paying for three (SHO-604, measured 16% of wake turns).
+ */
+export const MAX_BATCHED_WAKE_TASKS = 10
+export const MAX_BATCHED_WAKE_CHARS = 20_000
 
 const WAKE_STALE = 'stale'
 
@@ -139,6 +152,22 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback
   }
+}
+
+/**
+ * Where a row sits in the queue the claim reads (`position asc, createdAt asc`,
+ * then id as a tie-break so two rows can never rank equal).
+ */
+function queueRank(row: { position?: number | null; createdAt?: Date | string | null; id: string }): [number, number, string] {
+  return [row.position ?? 0, row.createdAt ? new Date(row.createdAt).getTime() : 0, row.id]
+}
+
+function compareRank(a: [number, number, string], b: [number, number, string]): number {
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] === b[index]) continue
+    return (a[index] as number) < (b[index] as number) ? -1 : 1
+  }
+  return 0
 }
 
 async function consumeResponse(response: Response): Promise<void> {
@@ -413,6 +442,16 @@ function taskWakeIds(row: QueueRow): string[] {
   return taskWakeIdsFromBody(row.body)
 }
 
+/** The task rows a wake row is about: what `consumed` and the pause cap read. */
+async function taskRowsForWake(row: QueueRow): Promise<Array<{ consumed: boolean; source: string }>> {
+  const ids = taskWakeIds(row)
+  if (!ids.length) return []
+  return (prisma as any).backgroundTask.findMany({
+    where: { id: { in: ids } },
+    select: { consumed: true, source: true },
+  })
+}
+
 /**
  * Why a queued task wake should not run: every task in it was already seen
  * (`consumed`), or the session has auto-woken too many times in a row. Either
@@ -423,15 +462,9 @@ function taskWakeIds(row: QueueRow): string[] {
  */
 async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | null> {
   const ids = taskWakeIds(row)
-  let cardsOnly = false
-  if (ids.length) {
-    const tasks: Array<{ consumed: boolean; source: string }> = await (prisma as any).backgroundTask.findMany({
-      where: { id: { in: ids } },
-      select: { consumed: true, source: true },
-    })
-    if (!tasks.some((t) => !t.consumed)) return 'consumed'
-    cardsOnly = tasks.every((t) => t.source === 'work_item')
-  }
+  const tasks = await taskRowsForWake(row)
+  if (ids.length && !tasks.some((t) => !t.consumed)) return 'consumed'
+  const cardsOnly = ids.length > 0 && tasks.every((t) => t.source === 'work_item')
   if (taskWakeBodyResetsRun(row.body)) return null
   // A workspace-wide pause holds every automatic wake — task updates, schedules,
   // card hand-offs, team-chat tags. A person's own message is not a
@@ -625,7 +658,9 @@ async function settleSkippedWake(row: QueueRow, skip: string): Promise<string> {
 /**
  * The oldest row of a session that may actually run: wakes whose tasks the
  * agent already saw (a turn started in between) are dropped, and a paused one
- * is held so it survives the pause without being retried while it lasts.
+ * is held so it survives the pause without being retried while it lasts. The
+ * wake that survives then takes the wakes queued behind it into its turn
+ * (`absorbFollowingWakes`), so an idle session pays one turn for the batch.
  */
 async function claimNextDispatchableRow(chatSessionId: string): Promise<QueueRow | null> {
   let row = await claimNext(chatSessionId)
@@ -635,7 +670,7 @@ async function claimNextDispatchableRow(chatSessionId: string): Promise<QueueRow
     await settleSkippedWake(row, skip)
     row = await claimNext(chatSessionId)
   }
-  return row
+  return row ? await absorbFollowingWakes(row) : null
 }
 
 /**
@@ -654,6 +689,105 @@ async function claimRow(chatSessionId: string, rowId: string): Promise<QueueRow 
   })
   if (claimed.count !== 1) return null
   return candidate as QueueRow
+}
+
+/**
+ * Merge the wakes waiting behind a claimed one into its turn (SHO-604).
+ *
+ * Each finished task still queues its own row (retry, stale-drop, release and
+ * the UI chip all stay per task), but a session that has been idle since a wake
+ * no longer pays one full prompt + history reload per row: the rows sitting at
+ * the head of the queue ride in the turn the first one starts.
+ *
+ * The merge takes only `task_notification` rows, in queue order, and stops at:
+ * - anything a person queued (a wake must never swallow or overtake a message),
+ * - a row marked `wake: "alone"` (that task asked for a turn of its own), and
+ * - `MAX_BATCHED_WAKE_TASKS` / `MAX_BATCHED_WAKE_CHARS`; the rest runs next turn.
+ *
+ * A candidate the agent already saw (`consumed`) or that is too old to act on is
+ * dropped on the same path the head would have taken, so it is neither delivered
+ * nor left behind to be absorbed again.
+ */
+async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
+  if (head.kind !== 'task_notification') return head
+  if (taskWakeBodyIsAlone(head.body)) return head
+
+  const pending: QueueRow[] = await (prisma as any).chatQueuedMessage.findMany({
+    where: { sessionId: head.sessionId, status: 'pending' },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+    take: 100,
+  })
+  const headRank = queueRank(head)
+  const candidates = pending.filter((row) => compareRank(queueRank(row), headRank) > 0)
+
+  const taskIds = [...new Set(taskWakeIds(head))]
+  const proposals: QueueRow[] = []
+  let chars = head.content.length
+
+  for (const row of candidates) {
+    if (row.kind !== 'task_notification') break
+    if (taskWakeBodyIsAlone(row.body)) break
+    const ids = taskWakeIds(row)
+    if (ids.length) {
+      const tasks = await taskRowsForWake(row)
+      if (!tasks.some((t) => !t.consumed)) {
+        await settleSkippedWake(row, 'consumed')
+        continue
+      }
+    }
+    if (await isStaleWake(row)) {
+      await settleSkippedWake(row, WAKE_STALE)
+      continue
+    }
+    const merged = new Set([...taskIds, ...ids])
+    if (merged.size > MAX_BATCHED_WAKE_TASKS) break
+    if (chars + row.content.length + 2 > MAX_BATCHED_WAKE_CHARS) break
+    chars += row.content.length + 2
+    taskIds.splice(0, taskIds.length, ...merged)
+    proposals.push(row)
+  }
+  if (!proposals.length) return head
+
+  // Claiming the followers and rewriting the head is one transaction: a row that
+  // another starter took in the meantime is simply not part of this turn, and a
+  // head that stopped being ours rolls the claims back instead of leaving their
+  // updates in no row at all.
+  type Merged = { content: string; parts: string; body: string; count: number } | null
+  let merged: Merged = null
+  try {
+    merged = await (prisma as any).$transaction(async (tx: any): Promise<Merged> => {
+      const taken: QueueRow[] = []
+      for (const proposal of proposals) {
+        const deleted = await tx.chatQueuedMessage.deleteMany({
+          where: { id: proposal.id, sessionId: head.sessionId, status: 'pending' },
+        })
+        if (deleted?.count === 1) taken.push(proposal)
+      }
+      if (!taken.length) return null
+      // One [Task update] block per task, in finish order, and one row for the turn.
+      const content = [head.content, ...taken.map((row) => row.content)].join('\n\n')
+      const finalIds = [...new Set([...taskWakeIds(head), ...taken.flatMap((row) => taskWakeIds(row))])]
+      const resetsRun = taskWakeBodyResetsRun(head.body) || taken.some((row) => taskWakeBodyResetsRun(row.body))
+      const taskNotification = { taskIds: finalIds, ...(resetsRun ? { wakeRunReset: true } : {}) }
+      const parts = JSON.stringify([
+        { type: 'text', text: content },
+        { type: 'data-task-notification', data: taskNotification },
+      ])
+      const body = JSON.stringify({ ...parseJson<QueueBody>(head.body, {}), text: content, taskNotification })
+      const updated = await tx.chatQueuedMessage.updateMany({
+        where: { id: head.id, sessionId: head.sessionId, status: 'dispatching' },
+        data: { content, parts, body },
+      })
+      if (updated?.count !== 1) throw new Error('wake row is no longer dispatching')
+      return { content, parts, body, count: taken.length }
+    })
+  } catch (err: any) {
+    console.warn(`[ChatQueue] Could not merge wakes into ${head.id}:`, err?.message ?? err)
+    return head
+  }
+  if (!merged) return head
+  console.log(`[ChatQueue] Wake ${head.id} carries ${merged.count + 1} update rows in one turn for session ${head.sessionId}`)
+  return { ...head, content: merged.content, parts: merged.parts, body: merged.body }
 }
 
 /**
@@ -807,6 +941,9 @@ export async function dispatchQueuedRow(chatSessionId: string, rowId: string): P
     if (row.kind === 'task_notification') {
       const skip = await taskWakeSkipReason(row)
       if (skip) return { started: false, rowId, error: await settleSkippedWake(row, skip) }
+      // A person starting a wake now still gets one turn for everything that
+      // was already waiting behind it (SHO-604).
+      return startClaimedRow(await absorbFollowingWakes(row))
     }
     return startClaimedRow(row)
   }

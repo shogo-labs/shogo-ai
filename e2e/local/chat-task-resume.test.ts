@@ -241,13 +241,15 @@ test.describe("background task resume", () => {
     soft(await stopShown(page), "the wake turn finished instead of streaming forever").toBe(false)
   })
 
-  // SHO-33: one finished task is one [Task update] message, so two commands
-  // finishing in one burst wake the chat twice instead of once with both.
-  test("two finished background commands send one [Task update] each", async () => {
+  // SHO-604: an idle chat takes every update waiting behind the first one in a
+  // single wake, so two commands finishing in one burst cost one turn, and a
+  // command that asked for `wake: "alone"` still gets its own.
+  test("two finished background commands share one [Task update] message, and an `alone` one gets its own", async () => {
     const sid = await createChat("task resume two")
     const page = await newWindow(sid)
     const first = "sleep 10"
     const second = "sleep 8"
+    const alone = "sleep 9"
     // The fake model is shared with the test above, so count from here.
     const baseline = wakeRequests().length
 
@@ -259,10 +261,10 @@ test.describe("background task resume", () => {
 
     // No user input from here on: both wakes have to come from the API.
     const started = Date.now()
-    while (Date.now() - started < WAKE_MS && wakeRequests().length < baseline + 2) {
+    while (Date.now() - started < WAKE_MS && wakeRequests().length < baseline + 1) {
       await page.waitForTimeout(250)
     }
-    soft(wakeRequests().length - baseline, "each finished task woke the chat on its own").toBe(2)
+    soft(wakeRequests().length - baseline, "the two finished tasks woke the chat in one turn").toBe(1)
 
     // Read the transcript through the API: an already-open window does not
     // live-update a server-initiated turn (SHO-31).
@@ -272,15 +274,34 @@ test.describe("background task resume", () => {
       (m) => m?.role === "user" && String(m?.content ?? "").includes("[Task update]"),
     )
     const texts = updates.map((m) => String(m.content))
-    soft(texts.length, "two separate [Task update] user messages").toBe(2)
-    soft(texts.filter((t) => t.includes(first)).length, "one message names the first command").toBe(1)
-    soft(texts.filter((t) => t.includes(second)).length, "one message names the second command").toBe(1)
-    for (const text of texts) {
-      soft((text.match(/\[Task update\]/g) ?? []).length, "one task per message").toBe(1)
-    }
+    soft(texts.length, "one [Task update] user message carries both results").toBe(1)
+    const merged = texts[0] ?? ""
+    soft(merged.includes(first), "the message names the first command").toBe(true)
+    soft(merged.includes(second), "the message names the second command").toBe(true)
+    soft((merged.match(/\[Task update\]/g) ?? []).length, "one block per finished task").toBe(2)
 
     await page.waitForTimeout(16_000)
-    soft(wakeRequests().length - baseline, "the chat was woken twice, not once per drain tick").toBe(2)
-    soft(await stopShown(page), "both wake turns finished instead of streaming forever").toBe(false)
+    soft(wakeRequests().length - baseline, "the chat was woken once, not once per task").toBe(1)
+    soft(await stopShown(page), "the wake turn finished instead of streaming forever").toBe(false)
+
+    // The third command asked for a turn of its own, so it does not ride in a
+    // shared wake even if another update is waiting.
+    const beforeAlone = wakeRequests().length
+    await send(page, `${marker("bg", "bg2c", 20, { ms: 5, cmd: alone, alone: true })} and this one on its own`)
+
+    const aloneStarted = Date.now()
+    while (Date.now() - aloneStarted < WAKE_MS && wakeRequests().length < beforeAlone + 1) {
+      await page.waitForTimeout(250)
+    }
+    soft(wakeRequests().length - beforeAlone, "the alone task woke the chat on its own").toBe(1)
+
+    const after = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sid)}`)
+    const afterItems: any[] = after?.items ?? after?.data ?? after ?? []
+    const aloneUpdates = afterItems
+      .filter((m) => m?.role === "user" && String(m?.content ?? "").includes(alone))
+    soft(aloneUpdates.length, "the alone command has a [Task update] message of its own").toBe(1)
+    const aloneText = String(aloneUpdates[0]?.content ?? "")
+    soft((aloneText.match(/\[Task update\]/g) ?? []).length, "the alone message carries one block").toBe(1)
+    soft(await stopShown(page), "the alone wake turn finished instead of streaming forever").toBe(false)
   })
 })

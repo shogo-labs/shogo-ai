@@ -112,6 +112,27 @@ describe('createExecTool', () => {
     try { registry.get(result.run_id)?.handle.kill('SIGKILL') } catch { /* ignore */ }
   })
 
+  test('a background exec with wake: "alone" puts the mark on its task (SHO-604)', async () => {
+    const registry = new CommandRegistry()
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', { command: 'sleep 5', background: true, wake: 'alone' })
+    expect(result.status).toBe('running')
+    const entry = registry.get(result.task_id)!
+    expect(entry.wakeAlone).toBe(true)
+    expect(registry.buildNotification(entry).wakeAlone).toBe(true)
+    try { entry.handle.kill('SIGKILL') } catch { /* ignore */ }
+  })
+
+  test('a background exec without wake carries no mark, so its update is batched', async () => {
+    const registry = new CommandRegistry()
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', { command: 'sleep 5', background: true })
+    const entry = registry.get(result.task_id)!
+    expect(entry.wakeAlone).toBeUndefined()
+    expect(registry.buildNotification(entry).wakeAlone).toBeUndefined()
+    try { entry.handle.kill('SIGKILL') } catch { /* ignore */ }
+  })
+
   test('soft-timeout entry is registered so a subsequent exec_wait can find it', async () => {
     const registry = new CommandRegistry()
     const ctx = makeCtx({ commandRegistry: registry })

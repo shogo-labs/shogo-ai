@@ -12,8 +12,10 @@
  *
  * A settled task that the agent has not seen yet (`consumed`) wakes its
  * session: finished tasks are coalesced for a moment, then one queued message
- * of kind `task_notification` per task is dispatched through the normal chat
- * queue, so each result arrives as its own [Task update].
+ * of kind `task_notification` per task is written, so retry, stale-drop and the
+ * UI stay per task. The dispatcher merges the ones waiting at the head of the
+ * queue into one turn — several [Task update] blocks in a single wake — and a
+ * task created with `wake: "alone"` keeps a turn of its own (SHO-604).
  * The runtime also hands over its own finished tasks (`notifyLocalTasks`) when
  * the session is idle, so the queue is the one wake path.
  */
@@ -90,6 +92,8 @@ export interface BackgroundTaskRow {
   heldUntil?: Date | null
   /** Where the task's work is happening (channel thread, card, project session, log). */
   link?: unknown
+  /** `wake: "alone"`: its [Task update] gets a turn of its own, never a shared one. */
+  wakeAlone?: boolean
   finishedAt: Date | null
   expiresAt: Date
   createdAt: Date
@@ -316,6 +320,8 @@ export interface CreateTaskInput {
   until?: string | null
   /** Where the task's thread lives, so the dock can open it instead of an empty log. */
   link?: unknown
+  /** `wake: "alone"` — this task's [Task update] gets its own turn (SHO-604). */
+  wakeAlone?: boolean
 }
 
 const REMOTE_SOURCES = new Set(['project_call', 'agent_reply', 'work_item'])
@@ -338,6 +344,7 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
       title: String(input.title || input.source).slice(0, 300),
       until: input.until ?? null,
       ...(link ? { link: link as any } : {}),
+      ...(input.wakeAlone ? { wakeAlone: true } : {}),
       // A background project call has no time limit, so its task lives as long as a card's.
       expiresAt: new Date(
         Date.now() + (input.source === 'work_item' || input.source === 'project_call' ? CARD_TASK_TTL_MS : TASK_TTL_MS),
@@ -735,6 +742,8 @@ export interface LocalTaskNotice {
   title: string
   status: string
   text: string
+  /** The task was created with `wake: "alone"`: its update gets its own turn. */
+  wakeAlone?: boolean
 }
 
 /**
@@ -773,6 +782,7 @@ export async function notifyLocalTasks(chatSessionId: string, tasks: LocalTaskNo
     // row that was never delivered is still owed its wake, so it passes through.
     if (existing && existing.status === status && (existing.notifiedAt !== null || existing.consumed)) continue
     const now = new Date()
+    const wakeAlone = task.wakeAlone === true
     await db.backgroundTask.upsert({
       where: { id: task.id },
       create: {
@@ -784,10 +794,11 @@ export async function notifyLocalTasks(chatSessionId: string, tasks: LocalTaskNo
         status,
         summary: status,
         note: String(task.text || '').slice(0, 8_000),
+        ...(wakeAlone ? { wakeAlone: true } : {}),
         finishedAt: now,
         expiresAt: new Date(now.getTime() + TASK_TTL_MS),
       },
-      update: { status, note: String(task.text || '').slice(0, 8_000), finishedAt: now },
+      update: { status, note: String(task.text || '').slice(0, 8_000), finishedAt: now, ...(wakeAlone ? { wakeAlone: true } : {}) },
     })
     n++
   }
@@ -851,10 +862,14 @@ const isSessionWorkspacePaused = (session: {
 
 /**
  * Queue one wake message per finished, unseen task in the session, in finish
- * order: one [Task update] per message, so the agent acts on each result as it
- * lands instead of on a batch. The dispatcher re-checks `consumed` just before
- * sending a row, and the turn-end hook chains the rest, so a burst is delivered
- * one turn each. The coalesce timers upstream only delay the burst.
+ * order: one `[Task update]` per row, so retry, stale-drop, release and the UI
+ * chip all stay per task.
+ *
+ * Delivery is where the rows are merged: the dispatcher claims the oldest row
+ * and takes the wakes queued behind it into the same turn, so a burst that
+ * lands while the session is idle costs one turn instead of one per task
+ * (SHO-604). A task created with `wake: "alone"` is marked on its row's body and
+ * runs by itself. The coalesce timers upstream only delay the burst.
  */
 export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: boolean } = {}): Promise<boolean> {
   const session = await db.chatSession.findUnique({
@@ -910,7 +925,7 @@ export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: 
           { type: 'text', text },
           { type: 'data-task-notification', data: { taskIds } },
         ]),
-        body: JSON.stringify({ text, taskNotification: { taskIds } }),
+        body: JSON.stringify({ text, taskNotification: { taskIds, ...(fresh.wakeAlone ? { alone: true } : {}) } }),
       },
     })
     // The milestone is in the queue, so the watch can go back to watching the
@@ -1005,6 +1020,14 @@ export function taskWakeResetsRun(parts: string | null | undefined): boolean {
 /** Same mark, read off a queued wake row's body. */
 export function taskWakeBodyResetsRun(body: string | null | undefined): boolean {
   return parseJson<{ taskNotification?: { wakeRunReset?: unknown } }>(body, {}).taskNotification?.wakeRunReset === true
+}
+
+/**
+ * The task behind this wake was created with `wake: "alone"`: its update gets a
+ * turn of its own, never merged with the wakes waiting behind it (SHO-604).
+ */
+export function taskWakeBodyIsAlone(body: string | null | undefined): boolean {
+  return parseJson<{ taskNotification?: { alone?: unknown } }>(body, {}).taskNotification?.alone === true
 }
 
 /**

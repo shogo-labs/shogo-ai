@@ -114,6 +114,19 @@ mock.module('../internal-api', () => ({
   },
 }))
 
+// What `project_call` hands the background-task tracker, captured so the
+// `wake: "alone"` opt-out can be asserted without a live API.
+const trackCalls: any[] = []
+const realRemoteTasks = await import('../remote-tasks')
+mock.module('../remote-tasks', () => ({
+  ...realRemoteTasks,
+  trackRemoteTask: async (_registry: unknown, _sessionId: string, opts: any) => {
+    trackCalls.push(opts)
+    return { task_id: 't_tracked1', status: 'running' as const }
+  },
+}))
+const { CommandRegistry } = await import('../command-registry')
+
 const {
   createProjectListTool,
   createProjectCreateTool,
@@ -159,6 +172,7 @@ async function run(tool: { execute: (id: string, params: any) => Promise<any> },
 
 beforeEach(() => {
   calls.length = 0
+  trackCalls.length = 0
   internalApiCredentials = false
   workspaceDir = mkdtempSync(join(tmpdir(), 'project-tools-test-'))
   restarts = []
@@ -748,6 +762,30 @@ describe('project_call', () => {
     const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go', wait: false })
     expect(out.chatSessionId).toBe('run:abc')
     expect(out.wait).toBe(false)
+  })
+
+  test('wake: "alone" is handed to the background task so its update gets its own turn (SHO-604)', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc', chatSessionId: 'chat-123', tracked: true } }
+    const ctx = baseCtx({ commandRegistry: new CommandRegistry(), sessionId: 'chat-1' })
+    const out = await run(createProjectCallTool(ctx), { project: 'proj-2', message: 'go', wait: false, wake: 'alone' })
+    expect(out.task_id).toBe('t_tracked1')
+    expect(trackCalls).toHaveLength(1)
+    expect(trackCalls[0]).toMatchObject({ source: 'project_call', wakeAlone: true })
+  })
+
+  test('a background call with no wake mark is batched with the other updates', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc', chatSessionId: 'chat-123', tracked: true } }
+    const ctx = baseCtx({ commandRegistry: new CommandRegistry(), sessionId: 'chat-1' })
+    await run(createProjectCallTool(ctx), { project: 'proj-2', message: 'go', wait: false })
+    expect(trackCalls[0].wakeAlone).toBe(false)
   })
 
   test('names the target project on failure', async () => {

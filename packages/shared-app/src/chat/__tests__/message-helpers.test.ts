@@ -279,6 +279,33 @@ describe('parseTaskUpdates', () => {
     ])
   })
 
+  it('splits a batched wake into three entries, one per task (SHO-604)', () => {
+    const text = [
+      '[Task update] bun test (a) (t_aaa) completed.',
+      'Last output:',
+      'ok',
+      '',
+      '[Task update] @Ops reply (t_bbb) completed.',
+      '',
+      '[Task update] SHO-604 moved to QA & Review (t_ccc) completed.',
+    ].join('\n')
+    const updates = parseTaskUpdates(text)
+    expect(updates).toHaveLength(3)
+    expect(updates.map((u) => u.taskId)).toEqual(['t_aaa', 't_bbb', 't_ccc'])
+    expect(updates[0]!.detail).toBe('Last output:\nok')
+
+    // The same message still resolves to every task it carries, so the UI can
+    // render one chip per task.
+    const notification = taskNotificationOf({
+      parts: [
+        { type: 'text', text },
+        { type: 'data-task-notification', data: { taskIds: ['t_aaa', 't_bbb', 't_ccc'] } },
+      ],
+    })
+    expect(notification?.taskIds).toHaveLength(3)
+    expect(notification?.updates).toHaveLength(3)
+  })
+
   it('ignores text without task updates', () => {
     expect(parseTaskUpdates('just a message')).toEqual([])
   })
