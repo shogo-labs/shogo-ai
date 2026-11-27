@@ -9,18 +9,29 @@
  * changes on the server, so the in-process event bus alone cannot tell us when
  * background work finishes). `light` skips the project and notification
  * loads for callers that only need the agent rows.
+ *
+ * The poll cadence follows what the screen can see (SHO-602): 5 s only for a
+ * caller that passes `watchRunning` and has a run to show, 60 s while a run is
+ * off screen, 30 s when nothing is running. A turn edge off the realtime
+ * connection is one uncached refresh, so the timer never has to be the thing
+ * that makes a run appear or clear — and because an edge only reports what
+ * happens while the screen is open, a newly mounted screen follows its shared
+ * first read with one confirm ask at the fast cadence.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 import { useDomainHttp, useNotificationCollection, useProjectCollection } from '../contexts/domain'
 import { api, type ActiveChatTurn, type AgentTask } from '../lib/api'
+import { activityPollMs, ACTIVITY_WATCHING_POLL_MS } from '../lib/activity-cadence'
 import { workspaceActivity } from '../lib/workspace-activity'
 import { agentTaskEvents } from '../lib/agent-task-events'
 import { notificationEvents } from '../lib/notification-events'
+import { useChatTurnEvents } from './useChatTurnEvents'
 import { useWorkspaceDataScope, useWorkspaceInView } from './useWorkspaceInView'
 
 const PROJECT_REFRESH_INTERVAL_MS = 30_000
-const POLL_MS = 5_000
+/** A realtime turn edge is worth one refresh, coalesced with a second edge. */
+const EDGE_REFRESH_MS = 150
 
 /** Same tasks, same order, nothing about them changed: keep the previous array. */
 function sameTasks(prev: AgentTask[], next: AgentTask[]): boolean {
@@ -50,6 +61,12 @@ export interface AgentActivityOptions {
   /** Poll while true; pass the screen's focus state. */
   polling?: boolean
   light?: boolean
+  /**
+   * This screen *is* the running list (the Activity feed): while something it
+   * shows is running, keep the 5 s cadence. Everywhere else a running turn is
+   * off screen, and 60 s plus the realtime edge is enough (SHO-602).
+   */
+  watchRunning?: boolean
 }
 
 export interface AgentActivity {
@@ -73,7 +90,7 @@ export function isTaskFailed(task: Pick<AgentTask, 'status'>): boolean {
   return task.status === 'failed' || task.status === 'cancelled'
 }
 
-export function useAgentActivity({ polling = false, light = false }: AgentActivityOptions = {}): AgentActivity {
+export function useAgentActivity({ polling = false, light = false, watchRunning = false }: AgentActivityOptions = {}): AgentActivity {
   // The domain client, so the task list and the workspace's activity follow the
   // workspace in view — including a paired computer's own workspace (SHO-108).
   const http = useDomainHttp()
@@ -89,6 +106,16 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
   const inFlight = useRef<Promise<void> | null>(null)
   const projectLoadAt = useRef(0)
   const projectLoadScope = useRef<string | null>(null)
+  // The delay the poll loop should use next. Written from the answer the poll
+  // just got, not from render state: the loop re-arms immediately after a load,
+  // before React has committed the new rows (SHO-602).
+  const cadenceRef = useRef<number>(activityPollMs({ watchingRunning: false, anyRunning: false }))
+  // `watchRunning` is read inside `load`, which must not be rebuilt when it
+  // changes: the poll loop's identity depends on `load`.
+  const watchRunningRef = useRef(watchRunning)
+  watchRunningRef.current = watchRunning
+  // A turn edge off the realtime connection, wired by the poll effect.
+  const refreshNowRef = useRef<(() => void) | null>(null)
 
   const load = useCallback(
     async (refreshProjects = false, fresh = false) => {
@@ -126,6 +153,13 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
           const scoped = everyWorkspace || !workspace?.id
             ? next.filter((task: { workspaceId?: string | null }) => !workspace?.id || task.workspaceId === workspace.id)
             : next
+          // 5 s only while this screen is showing a run; a run elsewhere keeps
+          // the 60 s safety net, nothing running asks every 30 s (SHO-602).
+          const anyRunning = scoped.some(isTaskRunning) || (chats?.length ?? 0) > 0
+          cadenceRef.current = activityPollMs({
+            watchingRunning: watchRunningRef.current && anyRunning,
+            anyRunning,
+          })
           setTasks((prev) => (sameTasks(prev, scoped) ? prev : scoped))
           if (chats) setActiveChats((prev) => (sameActiveChats(prev, chats) ? prev : chats))
         } catch (cause) {
@@ -145,13 +179,25 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
     [http, everyWorkspace, light, notifications, projects, workspace?.id],
   )
 
+  const running = useMemo(() => tasks.filter(isTaskRunning), [tasks])
+  const failed = useMemo(() => tasks.filter(isTaskFailed), [tasks])
+
   useEffect(() => {
     let live = true
     let appState = AppState.currentState
     let pollTimer: ReturnType<typeof setTimeout> | null = null
+    // A screen that has just mounted knows nothing, and its first read is
+    // allowed to be the answer another screen fetched moments ago (SHO-277: six
+    // consumers, one request). That answer can be older than the turn — a
+    // cache write from just before it started, or a read taken while the
+    // server was still registering it — and on the slow cadence it would stand
+    // for 30 s, long enough for a short turn to start and finish unseen. So one
+    // confirm ask follows the mount read, at the fast cadence, before the
+    // cadence takes over (SHO-602).
+    let confirmArmed = true
+    let confirming = false
     // React Native can report null briefly during launch; treat that as foreground.
     const foreground = () => appState === 'active' || appState === null
-
     const clearPoll = () => {
       if (pollTimer) clearTimeout(pollTimer)
       pollTimer = null
@@ -159,15 +205,34 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
     const schedulePoll = () => {
       clearPoll()
       if (!live || !polling || !foreground()) return
+      // 5 s only while what this screen shows is running; a run elsewhere is a
+      // 60 s safety net because its edges arrive on the socket, and an idle
+      // screen asks every 30 s — after the one confirm ask below (SHO-602).
+      const confirm = confirming
+      confirming = false
       pollTimer = setTimeout(async () => {
-        await load()
+        await load(false, confirm)
         schedulePoll()
-      }, POLL_MS)
+      }, confirm ? ACTIVITY_WATCHING_POLL_MS : cadenceRef.current)
     }
     const refreshAndSchedule = async () => {
       if (!live || !foreground()) return
       await load(true)
+      if (confirmArmed) {
+        confirmArmed = false
+        confirming = true
+      }
       schedulePoll()
+    }
+    // A turn started or ended somewhere else: one uncached read, coalesced with
+    // any second edge, then back to the slow cadence.
+    refreshNowRef.current = () => {
+      if (!live || !polling || !foreground()) return
+      clearPoll()
+      pollTimer = setTimeout(async () => {
+        await load(false, true)
+        schedulePoll()
+      }, EDGE_REFRESH_MS)
     }
 
     void refreshAndSchedule()
@@ -185,11 +250,16 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
     return () => {
       live = false
       clearPoll()
+      refreshNowRef.current = null
       unsubscribeTasks()
       unsubscribeNotifications()
       appStateSubscription.remove()
     }
   }, [load, light, notifications, polling])
+
+  // A turn edge off the realtime connection is what makes a run appear and
+  // clear on this screen between two slow polls (SHO-602).
+  useChatTurnEvents(polling ? workspace?.id : null, () => refreshNowRef.current?.())
 
   const refresh = useCallback(
     async ({ projects: withProjects = true, manual = false }: { projects?: boolean; manual?: boolean } = {}) => {
@@ -201,8 +271,6 @@ export function useAgentActivity({ polling = false, light = false }: AgentActivi
     [load],
   )
   const clearError = useCallback(() => setError(null), [])
-  const running = useMemo(() => tasks.filter(isTaskRunning), [tasks])
-  const failed = useMemo(() => tasks.filter(isTaskFailed), [tasks])
 
   return { tasks, activeChats, running, failed, loading, refreshing, error, clearError, refresh }
 }

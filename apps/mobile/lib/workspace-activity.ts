@@ -58,7 +58,16 @@ export class WorkspaceActivityCache {
     const now = Date.now()
     const entry = this.entries.get(key)
 
-    if (entry?.inFlight) return entry.inFlight as Promise<T>
+    if (entry?.inFlight) {
+      if (!opts.fresh) return entry.inFlight as Promise<T>
+      // A caller that asked *now* cannot be answered by a request that started
+      // before it asked — that is the answer to an older question. Queue behind
+      // it and ask again rather than joining (SHO-602: two turn edges a moment
+      // apart must not read the first edge's answer).
+      return (entry.inFlight as Promise<unknown>)
+        .catch(() => undefined)
+        .then(() => this.read(key, load, { ...opts, ttlMs }))
+    }
 
     // Hidden window: never fetch. Answer from the last known value, or with
     // nothing — no screen is showing it, and the app is about to be throttled

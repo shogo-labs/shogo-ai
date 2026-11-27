@@ -78,6 +78,9 @@ function prismaDate(date: Date): string {
 
 type Turn = { chatSessionId: string; startedAt: string };
 
+/** One `chat-session.turn` frame: the push the app paints a start or an end from. */
+type TurnEdge = { chatSessionId: string; turnId: string; state: "started" | "ended" };
+
 /** chatsPanel — the sidebar's workspace chat list. */
 function chatsPanel(page: Page) {
   return page.getByTestId("workspace-chats-panel");
@@ -182,6 +185,57 @@ async function mockActiveChats(page: Page, running: Turn[]): Promise<void> {
       body: JSON.stringify({ chats: running }),
     });
   });
+}
+
+/**
+ * Hold the app's realtime *stream* leg open and hand the spec a way to send a
+ * `chat-session.turn` frame down it (SHO-299).
+ *
+ * A row learns "that turn ended" from its realtime stream and treats the poll
+ * as the net behind it, so a spec that only flips the mocked poll answer tests
+ * the net: at SHO-602's 60 s off-screen cadence it would sit on the spinner for
+ * a minute, where the app gets the edge in one frame.
+ *
+ * The WebSocket leg is the wrong one to stage this on. `TeamChatConnection`
+ * tries `…/rt` first and falls back to the `…/conversations/events` stream
+ * (`lib/team-chat-realtime.ts`), and in the local harness `…/rt` answers 403 —
+ * so a socket Playwright proxies is one the app has already given up on, and
+ * frames written to it reach nothing. The stream is the leg that is live here,
+ * so the edges go down it. `EventSource` reconnects by itself, so each
+ * fulfilled body carries whatever was pushed since the last connection, a
+ * `retry` later.
+ */
+const STREAM_PATH = /\/api\/workspaces\/[^/]+\/conversations\/events/;
+
+async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => Promise<void>> {
+  const pending: TurnEdge[] = [];
+  let connections = 0;
+  await page.route(STREAM_PATH, async (route: Route) => {
+    connections += 1;
+    const frames = pending.splice(0);
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      body:
+        "retry: 1000\n\n" +
+        frames
+          .map((edge) => `data: ${JSON.stringify({ type: "chat-session.turn", ...edge })}\n\n`)
+          .join(""),
+    });
+  });
+  // The app only reaches the stream leg after two socket failures, so a caller
+  // that pushes its first edge early waits for the connection rather than
+  // racing it.
+  return async (edge) => {
+    const deadline = Date.now() + 30_000;
+    while (connections === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (connections === 0) {
+      throw new Error("the realtime stream never opened, so no turn edge could be pushed");
+    }
+    pending.push(edge);
+  };
 }
 
 /** Hold the next workspace chat turn open until `release()` is called. */
@@ -375,6 +429,7 @@ test.describe("workspace chat row state (local)", () => {
     const running: Turn[] = [];
     await mockActiveChats(page, running);
     await holdNextTurn(page);
+    const pushEdge = await pushTurnEdges(page);
     await page.goto("/");
     await expect(chatsPanel(page)).toBeVisible({ timeout: 90_000 });
 
@@ -409,8 +464,13 @@ test.describe("workspace chat row state (local)", () => {
       `A's spinner blinked out ${kept.samples - kept.seen}/${kept.samples} samples after leaving it`,
     ).toBe(kept.samples);
 
-    // The server stops reporting it: that is the turn ending.
+    // The turn ends. The app is told so by the socket, at the turn-state insert
+    // point — the poll is only the net behind it, and while a turn runs on a
+    // chat that is not on screen that net is 60 s (SHO-602's off-screen
+    // cadence). A row may not sit on a spinner for a minute after the reply
+    // landed, so the edge is pushed here and the mocked answer follows it.
     running.length = 0;
+    await pushEdge({ chatSessionId: chatA.id, turnId: `turn_${chatA.id}`, state: "ended" });
     await expect(chatRow(page, chatA.name).getByLabel("Chat has new activity").first()).toBeVisible({
       timeout: 30_000,
     });

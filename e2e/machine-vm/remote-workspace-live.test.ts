@@ -267,8 +267,10 @@ async function awaitTurnOrSkip(page: Page, what: string): Promise<void> {
   }
 }
 
-// The activity feed polls every 5 s (`useAgentActivity`), so a row can be a few
-// seconds behind the turn; the budget covers one poll plus a cold snapshot.
+// The activity feed's poll follows what the screen can see (`useAgentActivity`:
+// 5 s while it shows a run, 30 s idle) and a freshly mounted screen makes one
+// confirm ask 5 s after it mounts, so a row can be a few seconds behind the
+// turn; the budget covers that confirm ask plus a cold snapshot.
 test("the activity row appears while a machine turn runs, and clears when it ends", async ({ page }, testInfo) => {
   await openMachineChat(page, testInfo.project.name === "phone")
   // ~24 s of tokens: long enough that the feed has to report it still running.

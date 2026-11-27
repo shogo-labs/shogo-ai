@@ -177,7 +177,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
     error,
     clearError,
     refresh,
-  } = useAgentActivity({ polling: focused })
+  } = useAgentActivity({ polling: focused, watchRunning: true })
   const runningCount = active.length + activeChats.length
   // One agent's runs next to each other, newest first — the same order the
   // Activity feed's strip uses.

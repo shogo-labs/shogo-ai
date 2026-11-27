@@ -180,6 +180,10 @@ mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
 mock.module(resolve(import.meta.dir, "../../../../hooks/useActiveWorkspace"), () => ({
   useActiveWorkspace: () => ({ id: "w1", kind: "personal" }),
 }));
+// The panel's list reacts to realtime turn edges (SHO-602); no socket here.
+mock.module(resolve(import.meta.dir, "../../../../hooks/useChatTurnEvents"), () => ({
+  useChatTurnEvents: () => {},
+}));
 
 const { WorkspaceChatsPanel } = await import("../WorkspaceChatsPanel");
 const { SidebarScrollProvider, createSidebarScrollSignal } = await import(
