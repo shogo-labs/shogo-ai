@@ -371,6 +371,9 @@ export type QueuedMessage = {
    * distinct "waiting for connection" style so it's obvious nothing was
    * lost and it'll retry automatically. */
   offline?: boolean;
+  /** Queued because the project's runtime was still booting (SHO-605). The row
+   * says so and the panel sends it the moment the runtime is ready. */
+  waitingForRuntime?: boolean;
 };
 
 export interface ChatInputProps {
