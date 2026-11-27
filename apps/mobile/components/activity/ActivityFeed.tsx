@@ -78,7 +78,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
    */
   const inbox = useInbox(workspaceId, unreadOnly)
   const sent = useSentMessages(workspaceId, filter === 'sent')
-  const agents = useAgentActivity({ polling: focused, light: true })
+  const agents = useAgentActivity({ polling: focused, light: true, watchRunning: true })
   const experience = useWorkspaceExperience()
   const waitingOnYou = useOpenQuestionCount(experience.kind === 'team' ? workspaceId : null)
 

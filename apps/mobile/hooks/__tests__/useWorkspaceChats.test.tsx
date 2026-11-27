@@ -95,6 +95,17 @@ mock.module(resolve(import.meta.dir, "../../contexts/domain"), () => ({
   useDomainActions: () => stableActions,
   useChatSessionCollection: () => stableChatSessions,
 }));
+// The realtime turn edges a real socket pushes (SHO-602). Recorded here so a
+// test can push one and check what the list does with it.
+let turnEdgeListener: ((edge: { chatSessionId: string; turnId: string; state: "started" | "ended" }) => void) | null = null;
+mock.module(resolve(import.meta.dir, "../useChatTurnEvents"), () => ({
+  useChatTurnEvents: (
+    _workspaceId: string | null | undefined,
+    onEdge: (edge: { chatSessionId: string; turnId: string; state: "started" | "ended" }) => void,
+  ) => {
+    turnEdgeListener = onEdge;
+  },
+}));
 
 const { useWorkspaceChats } = await import("../useWorkspaceChats");
 const { chatActivityEvents, chatSessionEvents } = await import(
@@ -137,6 +148,11 @@ async function mount() {
   });
   await flush();
   return rendered;
+}
+
+/** A turn edge off the realtime connection, as the socket delivers it. */
+function emitTurn(chatSessionId: string, state: "started" | "ended") {
+  act(() => turnEdgeListener?.({ chatSessionId, turnId: `turn-${chatSessionId}`, state }));
 }
 
 function advance(ms: number) {
@@ -338,17 +354,17 @@ describe("useWorkspaceChats running state", () => {
     expect(result.current.streamingIds.has("chat-1")).toBe(true);
     const afterSend = listWorkspaceActiveChats.mock.calls.length;
 
-    // It is over 3s later. No finished event arrives (that chat's screen is not
-    // on screen), and the server never reports the turn. The local start alone
-    // keeps the fast cadence, so a poll comes at 5s rather than 15s.
-    advance(5_000);
+    // No finished event arrives (that chat's screen is not on screen) and the
+    // server never reports the turn. A local start never waits for the 60 s
+    // safety net either: it asks again at the end of its grace window.
+    advance(9_000);
     await flush();
-    expect(listWorkspaceActiveChats.mock.calls.length).toBe(afterSend + 1);
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(afterSend);
     expect(result.current.completedIds.has("chat-1")).toBe(false);
 
     // Past the grace window the missing turn reads as an ending: spinner off,
     // dot on — the quick reply that finished while you were elsewhere.
-    advance(5_000);
+    advance(1_000);
     await flush();
 
     expect(result.current.streamingIds.has("chat-1")).toBe(false);
@@ -374,9 +390,13 @@ describe("useWorkspaceChats running state", () => {
 
     expect(result.current.streamingIds.has("chat-2")).toBe(true);
 
-    // A failure must not drop the fast cadence: the next poll is 5s out, not 15.
+    // A failure must not read as "nothing is running": the turn is still known,
+    // so the next ask stays on the running cadence.
     const failedAt = listWorkspaceActiveChats.mock.calls.length;
-    advance(5_000);
+    advance(30_000);
+    await flush();
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(failedAt);
+    advance(30_000);
     await flush();
     expect(listWorkspaceActiveChats.mock.calls.length).toBe(failedAt + 1);
   });
@@ -423,34 +443,131 @@ describe("useWorkspaceChats row time", () => {
 });
 
 describe("useWorkspaceChats poll cadence", () => {
-  test("5s while a chat of mine is running, 15s once nothing is", async () => {
+  test("5s only while the chat on screen is running, 30s once nothing is", async () => {
     jest.useFakeTimers();
     activeChatsResult = async () => [turn("chat-2")];
 
-    await mount();
-    const afterMount = listWorkspaceActiveChats.mock.calls.length;
+    const { result } = await mount();
+    act(() => result.current.markSeen("chat-2"));
+    const watchingFrom = listWorkspaceActiveChats.mock.calls.length;
 
+    // The chat on screen is the running one: unchanged 5 s live indicator.
     advance(5_000);
     await flush();
-    expect(listWorkspaceActiveChats.mock.calls.length).toBe(afterMount + 1);
-    expect(listWorkspaceActiveChats.mock.calls.length).toBe(afterMount + 1);
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(watchingFrom + 1);
 
-    // The turn ended elsewhere: the next poll sees nothing running.
+    // The turn ended: an idle screen asks every 30 s, not every 15.
     activeChatsResult = async () => [];
     advance(5_000);
     await flush();
     const idleFrom = listWorkspaceActiveChats.mock.calls.length;
 
-    // Now the slow cadence: not at 5s, not at 14s, yes at 15s.
-    advance(5_000);
-    await flush();
-    expect(listWorkspaceActiveChats.mock.calls.length).toBe(idleFrom);
-    advance(9_000);
+    advance(29_000);
     await flush();
     expect(listWorkspaceActiveChats.mock.calls.length).toBe(idleFrom);
     advance(1_000);
     await flush();
     expect(listWorkspaceActiveChats.mock.calls.length).toBe(idleFrom + 1);
+  });
+
+  test("a turn running in a chat the person is not looking at polls every 60s", async () => {
+    jest.useFakeTimers();
+    activeChatsResult = async () => [turn("chat-2")];
+
+    const { result } = await mount();
+    // Reading chat-1 while chat-2 works: the badge comes off the socket, so the
+    // poll is a safety net, not the way the indicator stays fresh (SHO-602).
+    act(() => result.current.markSeen("chat-1"));
+    advance(5_000);
+    await flush();
+    const offscreenFrom = listWorkspaceActiveChats.mock.calls.length;
+    expect(result.current.streamingIds.has("chat-2")).toBe(true);
+
+    advance(30_000);
+    await flush();
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(offscreenFrom);
+    advance(30_000);
+    await flush();
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(offscreenFrom + 1);
+  });
+
+  test("a 5-minute off-screen run costs 6 requests, not 60", async () => {
+    jest.useFakeTimers();
+    activeChatsResult = async () => [turn("chat-2")];
+
+    const { result } = await mount();
+    act(() => result.current.markSeen("chat-1"));
+    const from = listWorkspaceActiveChats.mock.calls.length;
+    // The screen stays on chat-1 for five minutes while chat-2 works.
+    for (let i = 0; i < 30; i += 1) {
+      advance(10_000);
+      await flush();
+    }
+
+    expect(listWorkspaceActiveChats.mock.calls.length - from).toBeLessThanOrEqual(6);
+  });
+
+  test("a 5-minute idle screen costs one request a minute, not sixty", async () => {
+    jest.useFakeTimers();
+    await mount();
+    const from = listWorkspaceActiveChats.mock.calls.length;
+
+    for (let i = 0; i < 30; i += 1) {
+      advance(10_000);
+      await flush();
+    }
+
+    // 300 s at 30 s: ten asks, and never two in the same second.
+    expect(listWorkspaceActiveChats.mock.calls.length - from).toBe(10);
+  });
+
+  test("a turn edge off the socket paints both ends with no poll in between", async () => {
+    jest.useFakeTimers();
+    const { result } = await mount();
+    const settled = listWorkspaceActiveChats.mock.calls.length;
+
+    // Nothing running: the pending poll is 30 s away.
+    expect(result.current.streamingIds.size).toBe(0);
+
+    // Somewhere else, a turn starts. The list learns it from the push, not
+    // from the timer.
+    activeChatsResult = async () => [turn("chat-2")];
+    emitTurn("chat-2", "started");
+    advance(150);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.streamingIds.has("chat-2")).toBe(true);
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(settled + 1);
+
+    // It ends: same path, and an unopened chat gets its dot.
+    activeChatsResult = async () => [];
+    emitTurn("chat-2", "ended");
+    advance(150);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.streamingIds.has("chat-2")).toBe(false);
+    expect(result.current.completedIds.has("chat-2")).toBe(true);
+  });
+
+  test("an edge refresh is not answered from the shared 5s window", async () => {
+    jest.useFakeTimers();
+    activeChatsResult = async () => [turn("chat-2")];
+    await mount();
+    const settled = listWorkspaceActiveChats.mock.calls.length;
+
+    // A second edge inside the same poll window still asks the server.
+    emitTurn("chat-2", "ended");
+    advance(150);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(listWorkspaceActiveChats.mock.calls.length).toBe(settled + 1);
   });
 
   test("no polling while the app is in the background, and a poll on return", async () => {

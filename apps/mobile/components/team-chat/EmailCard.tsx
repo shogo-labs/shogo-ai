@@ -60,12 +60,16 @@ function formatSize(bytes: number): string {
 function useSecondsUntil(iso: string | null | undefined): number {
   const target = iso ? new Date(iso).getTime() : 0
   const [now, setNow] = useState(() => Date.now())
+  const left = target ? Math.max(0, Math.ceil((target - now) / 1000)) : 0
+  const counting = left > 0
   useEffect(() => {
-    if (!target || target <= Date.now()) return
+    // Nothing to count down to, or it has already arrived: the label is final,
+    // and a 1 s timer here is a React commit every second forever (SHO-602).
+    if (!counting) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [target])
-  return target ? Math.max(0, Math.ceil((target - now) / 1000)) : 0
+  }, [counting])
+  return left
 }
 
 function formatWait(seconds: number): string {

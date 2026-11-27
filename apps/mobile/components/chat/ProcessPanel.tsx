@@ -81,9 +81,13 @@ export function ProcessPanel({
   const pendingKills = useRef<Set<string>>(new Set())
 
   useEffect(() => {
+    // Only while there is something to time: an empty panel renders nothing, so
+    // a timer here would be a React commit every second with nothing on screen
+    // (SHO-602).
+    if (processes.length === 0) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [])
+  }, [processes.length])
 
   function handleKill(runId: string) {
     if (pendingKills.current.has(runId)) return
