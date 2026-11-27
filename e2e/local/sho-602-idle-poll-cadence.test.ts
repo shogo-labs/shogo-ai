@@ -22,16 +22,22 @@ import { signIn } from './team-nav-seed'
 
 test.setTimeout(240_000)
 
-/** The one turn this spec reports: a chat of the person's that is not on screen. */
-const RUNNING_CHAT = {
-  chatSessionId: 'chat-elsewhere',
-  turnId: 'turn-elsewhere',
-  sessionName: 'Elsewhere',
-  isPrimary: false,
-  projectId: null,
-  projectName: null,
-  projectHidden: false,
-  startedAt: new Date('2026-11-27T08:00:00.000Z').toISOString(),
+/**
+ * The one turn this spec reports: a chat of the person's that is not on screen.
+ * It is always "started a minute ago", derived from the clock the page reads, so
+ * the answer cannot go stale the way a fixed date does (SHO-505).
+ */
+function runningChat() {
+  return {
+    chatSessionId: 'chat-elsewhere',
+    turnId: 'turn-elsewhere',
+    sessionName: 'Elsewhere',
+    isPrimary: false,
+    projectId: null,
+    projectName: null,
+    projectHidden: false,
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+  }
 }
 
 interface Calls {
@@ -50,7 +56,7 @@ async function countActivity(page: Page, running: boolean): Promise<Calls> {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ chats: running ? [RUNNING_CHAT] : [] }),
+      body: JSON.stringify({ chats: running ? [runningChat()] : [] }),
     })
   })
   await page.route('**/api/agent-tasks*', async (route: Route) => {
