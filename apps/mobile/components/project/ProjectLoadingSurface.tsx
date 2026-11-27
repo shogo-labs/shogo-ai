@@ -10,14 +10,13 @@
  * the surface it is about to become: the header with the project's name, the
  * tab strip and the chat panel's shape, with one line saying what is happening.
  *
- * The runtime gate stays: a project whose runtime is still booting draws this
- * same frame and says "Starting your project…". A load that failed draws an
- * error with a retry instead of an endless spinner. Whatever the caller passes
- * as `children` (the capacity card, the stalled-runtime warning) takes the
- * place of the status line, so the recovery UI still owns the body when there
- * is something to recover from.
+ * Only the project row is waited on here (SHO-605): a runtime that is still
+ * booting no longer holds the page back, so this frame never says "Starting
+ * your project…" — the right panel shows `RuntimeStartingPane` for that while
+ * the chat draws as usual. A load that failed draws an error with a retry
+ * instead of an endless spinner.
  */
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { RefreshCw } from "lucide-react-native";
 import { Spinner } from "@/components/ui/spinner";
@@ -25,20 +24,14 @@ import { isPhoneLayout } from "../../lib/native-phone-layout";
 import { ProjectSurfaceHeader } from "./ProjectSurfaceHeader";
 import { usePhoneScreenHeaderPadding } from "../layout/PhoneScreenHeader";
 
-export type ProjectLoadingPhase = "project" | "runtime";
-
 export interface ProjectLoadingSurfaceProps {
   projectId: string | undefined;
   /** The name from the row the screen already holds, when it has one. */
   title?: string | null;
-  /** `project`: the row is in flight. `runtime`: the row is in, the runtime boots. */
-  phase: ProjectLoadingPhase;
   /** A failed load: draw it with a retry instead of the status line. */
   loadError?: string | null;
   onRetryLoad?: () => void;
   onBack: () => void;
-  /** Recovery UI (capacity card, stalled warning) in place of the status line. */
-  children?: ReactNode;
 }
 
 /** Message-shaped placeholders, so the frame reads as the chat it becomes. */
@@ -56,11 +49,9 @@ function PanelSkeleton() {
 export function ProjectLoadingSurface({
   projectId,
   title,
-  phase,
   loadError,
   onRetryLoad,
   onBack,
-  children,
 }: ProjectLoadingSurfaceProps) {
   const { width, height } = useWindowDimensions();
   const phone = isPhoneLayout(width, height);
@@ -71,8 +62,6 @@ export function ProjectLoadingSurface({
   // event-shaped `usePhoneScreenHeaderInset` handler.
   const unmeasuredHeader = usePhoneScreenHeaderPadding();
   const [measuredHeader, setMeasuredHeader] = useState(0);
-  const status =
-    phase === "runtime" ? "Starting your project…" : "Loading project...";
 
   return (
     <View className="flex-1 bg-background" testID="project-loading-surface">
@@ -142,13 +131,13 @@ export function ProjectLoadingSurface({
                 </Pressable>
               </View>
             </View>
-          ) : children ? (
-            <View className="flex-1">{children}</View>
           ) : (
             <View className="flex-1" testID="project-loading-status">
               <View className="flex-row items-center gap-2 pb-4">
                 <Spinner size="small" />
-                <Text className="text-sm text-muted-foreground">{status}</Text>
+                <Text className="text-sm text-muted-foreground">
+                  Loading project...
+                </Text>
               </View>
               <PanelSkeleton />
             </View>
