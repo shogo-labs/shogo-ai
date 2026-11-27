@@ -32,6 +32,7 @@ import { GuestIsolation } from './guest-isolation'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
+import { memProbe } from './mem-probe'
 import { M, metrics } from './metrics'
 import {
   ForeignMemberError,
@@ -480,6 +481,10 @@ console.log(
   `[metal-agent] control auth: ${authMode}` +
     (config.registerToken ? '' : ' (NO TOKEN CONFIGURED — enforce would refuse every non-loopback caller)'),
 )
+// The agent's own memory, attributed: `[mem]` lines whenever RSS is over
+// METAL_MEM_LOG_MIB, plus the metal_agent_* gauges published on every status
+// tick (SHO-593).
+memProbe.start()
 console.log('[metal-agent] warming pool...')
 pool.start().then(
   async (adoption) => {

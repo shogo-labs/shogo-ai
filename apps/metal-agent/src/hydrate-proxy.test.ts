@@ -15,7 +15,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { HYDRATE_STREAM_PREFIX, HydrateProxy } from './hydrate-proxy'
 
-const OPTS = { partBytes: 100, concurrency: 4, maxConcurrent: 2, ttlSec: 60, port: 9900 }
+const OPTS = { partBytes: 100, concurrency: 4, maxConcurrent: 2, maxInFlightBytes: 0, ttlSec: 60, port: 9900 }
 
 const object = (size: number) => Uint8Array.from({ length: size }, (_, i) => i % 251)
 
@@ -221,5 +221,63 @@ describe('HydrateProxy.serve', () => {
       })(),
     ).rejects.toThrow('object store said no')
     expect(got).toBeLessThan(1000)
+  })
+})
+
+/**
+ * The byte ceiling (SHO-593).
+ *
+ * What the host carries is `partBytes * concurrency * maxConcurrent`, and only
+ * the last factor was ever checked. The window is not ours alone — `concurrency`
+ * is `s3GetConcurrency`, shared with the snapshot pull — so an operator raising
+ * it silently raised the hydrate ceiling too. These pin the clamp that makes the
+ * exposure a stated number instead of a product of three knobs.
+ */
+describe('HydrateProxy byte ceiling', () => {
+  test('clamps concurrent transfers so the product fits the ceiling', () => {
+    // 100 B part x 4-wide = a 400 B window; a 1200 B ceiling fits three.
+    const p = proxyOf({ maxConcurrent: 12, maxInFlightBytes: 1200 })
+    expect(p.maxConcurrent).toBe(3)
+    expect(p.maxInFlightBytes).toBe(1200)
+    expect(grantFor(p, 1000).url).not.toBeNull()
+    expect(grantFor(p, 1000).url).not.toBeNull()
+    expect(grantFor(p, 1000).url).not.toBeNull()
+    // Fourth falls back to the presigned URL rather than queueing.
+    expect(grantFor(p, 1000).url).toBeNull()
+  })
+
+  test('a transfer window larger than the ceiling turns the proxy off', () => {
+    const p = proxyOf({ maxConcurrent: 12, maxInFlightBytes: 300 })
+    expect(p.maxConcurrent).toBe(0)
+    expect(p.maxInFlightBytes).toBe(0)
+    expect(grantFor(p, 1000).url).toBeNull()
+  })
+
+  test('the ceiling does not grow with archive size', () => {
+    // A 4 GiB archive over a 64 MiB window still holds one window, not 4 GiB —
+    // parts are fetched only as slots free, so size costs time, not memory.
+    const window = 8 * 1024 * 1024 * 8
+    const p = proxyOf({ partBytes: 8 * 1024 * 1024, concurrency: 8, maxConcurrent: 12, maxInFlightBytes: window })
+    expect(p.maxConcurrent).toBe(1)
+    expect(p.maxInFlightBytes).toBe(window)
+    // Minted, never served: materialising a 4 GiB fixture would be the test
+    // itself holding the archive, which is the thing being ruled out.
+    const url = p.mint({
+      hostIp: '172.16.0.1',
+      guestIp: '172.16.0.2',
+      size: 4 * 1024 * 1024 * 1024,
+      label: 'p source',
+      range: async (s, e) => new Uint8Array(e - s),
+    })
+    expect(url).not.toBeNull()
+    expect(p.maxInFlightBytes).toBeLessThan(4 * 1024 * 1024 * 1024)
+  })
+
+  test('says the applied ceiling at construction, since nothing else does', () => {
+    const lines: string[] = []
+    const p = proxyOf({ maxConcurrent: 12, maxInFlightBytes: 1200 }, () => 0, (m) => lines.push(m))
+    expect(lines[0]).toContain('ceiling 0 MiB in flight')
+    expect(lines[0]).toContain('x 3 concurrent (asked for 12)')
+    expect(p.inFlight).toBe(0)
   })
 })

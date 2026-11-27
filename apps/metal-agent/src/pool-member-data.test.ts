@@ -21,6 +21,7 @@ import { join } from 'path'
 import { config } from './config'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { ArchiveRef } from './archive-ref'
+import type { ArchiveBody } from './archive-body'
 import type { DataLineage, DataWriteOutcome } from './project-data-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -37,10 +38,15 @@ class TestPool extends MetalWarmPool {
 
   protected override async uploadDataGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
   ): Promise<DataWriteOutcome> {
-    this.uploads.push({ projectId, bytes, lineage: opts.lineage })
+    this.uploads.push({
+      projectId,
+      // Read the spool while the upload still owns it.
+      bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(await bytes.arrayBuffer()),
+      lineage: opts.lineage,
+    })
     return this.outcomes[projectId] ?? { status: 'written', etag: `"${projectId}-new"` }
   }
 

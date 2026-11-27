@@ -26,6 +26,7 @@ import { mkdir, copyFile, readFile, writeFile, rm, stat, open, rename, readdir }
 import { existsSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import type { MetalConfig } from './config'
+import { memProbe } from './mem-probe'
 import type { VmNet } from './net'
 
 /** The three on-disk artifacts that make a restorable snapshot. */
@@ -232,6 +233,49 @@ class NoneStore implements SnapshotStore {
 async function writeGzip(srcPath: string, destPath: string): Promise<void> {
   await mkdir(dirname(destPath), { recursive: true })
   await bash('if command -v pigz >/dev/null 2>&1; then Z=pigz; else Z=gzip; fi; $Z -c "$0" > "$1"', [srcPath, destPath])
+}
+
+/**
+ * Where an artifact is uploaded to. `putFile` MUST stream the body from disk
+ * instead of buffering it — that is the whole reason the interface exists, and
+ * every large artifact in a snapshot goes through it (see pushFileObject).
+ */
+export interface ObjectSink {
+  putFile(key: string, srcPath: string): Promise<void>
+}
+
+/** Upload a local file as one object, streaming from disk. */
+export async function pushFileObject(sink: ObjectSink, key: string, srcPath: string): Promise<void> {
+  await sink.putFile(key, srcPath)
+}
+
+/**
+ * Gzip `srcPath` into a temp file, upload that file, delete it.
+ *
+ * Holes are compressed, not skipped, which costs a suspend real time. Measured
+ * on the host for the real shape (a 16 GiB CoW diff holding 10 MiB of data):
+ * gzipping the device takes 39.6 s, while `packSparseFile` (80 ms) plus gzipping
+ * its 10.5 MB output (50 ms) takes 130 ms. That is the shape this should move
+ * to, but it changes the artifact — a tar.gz of the sparse file, not a gzip of
+ * the device — so the pull side needs a matching codec. It is its own card;
+ * do not fold it into a memory fix, and do not "optimise" it without the pull
+ * side in the same change.
+ *
+ * The compressed body must never be assembled in memory. Handing S3 a Response
+ * wrapped around `CompressionStream` buffered the entire input — measured on the
+ * host's Bun 1.3.14: 2 GiB in → 2492 MiB RSS, and the same shape on a live
+ * suspend is the multi-gigabyte hold that got the agent OOM-killed (SHO-593).
+ * pigz compresses out of process and the finished file is streamed up at
+ * 142 MiB peak for a 2.1 GiB body.
+ */
+export async function pushGzippedObject(sink: ObjectSink, key: string, srcPath: string): Promise<void> {
+  const tmp = `${srcPath}.push.${process.pid}.${Date.now().toString(36)}.gz`
+  try {
+    await writeGzip(srcPath, tmp)
+    await sink.putFile(key, tmp)
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {})
+  }
 }
 /**
  * Inflate a local .gz file to a local dest path.
@@ -498,7 +542,7 @@ class FsStore implements SnapshotStore {
  * same S3_ENDPOINT / S3_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env
  * the runtime's s3-sync already consumes. Path-style + custom endpoint (OCI).
  */
-class S3Store implements SnapshotStore {
+class S3Store implements SnapshotStore, ObjectSink {
   readonly kind = 's3' as const
   private client: import('bun').S3Client
   constructor(
@@ -526,33 +570,55 @@ class S3Store implements SnapshotStore {
     return `${this.basePrefix}${identity}.ext4`
   }
 
+  /**
+   * The one upload shape for large artifacts: a file body Bun streams from disk.
+   * Measured on the host's Bun 1.3.14 at 142 MiB peak RSS for a 2.1 GiB body,
+   * against 4.3 GiB for a multipart writer and 2492 MiB for a gzip stream.
+   */
+  async putFile(key: string, srcPath: string): Promise<void> {
+    await Bun.write(this.client.file(key), Bun.file(srcPath))
+  }
+
   async push(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
     // Never publish a torn snapshot (see FsStore.push). A missing/empty source
     // aborts the push before any object is written to S3.
     await assertArtifacts(files)
+    // Tracked as one hold for the whole push: the artifacts stream from disk, so
+    // a bounded push shows a steady double-digit MiB and an unbounded one shows
+    // RSS climbing with the artifact size (SHO-593).
+    const mem = memProbe.begin('snapshot:push', meta.projectId)
+    try {
+      await this.pushObjects(files, meta)
+    } finally {
+      memProbe.end(mem)
+    }
+  }
+
+  private async pushObjects(files: SnapshotFiles, meta: SnapshotMeta): Promise<void> {
     const pid = meta.projectId
     const rootfsMode = meta.rootfsMode ?? 'full'
     // Slim + a CoW diff → gzip the sparse (mostly-zero) store so a cold pull
     // transfers the few MiB of real divergence, not the whole ~8 GiB device.
     const rootfsCodec: 'none' | 'gzip' = this.slim && rootfsMode === 'diff' ? 'gzip' : 'none'
     const rootfsName = (rootfsMode === 'diff' ? 'rootfs.diff' : 'rootfs.ext4') + (rootfsCodec === 'gzip' ? '.gz' : '')
-    // Large artifacts stream from disk; Bun.file → S3Client.write handles it.
+    // Large artifacts stream from disk — never as an in-memory or stream-bodied
+    // PUT (see pushGzippedObject).
     if (this.slim) {
-      await Bun.write(this.client.file(this.key(pid, 'mem.gz')), new Response(Bun.file(files.mem).stream().pipeThrough(new CompressionStream('gzip'))))
+      await pushGzippedObject(this, this.key(pid, 'mem.gz'), files.mem)
     } else {
-      await this.client.write(this.key(pid, 'mem'), Bun.file(files.mem))
+      await pushFileObject(this, this.key(pid, 'mem'), files.mem)
     }
     if (rootfsCodec === 'gzip') {
-      await Bun.write(this.client.file(this.key(pid, rootfsName)), new Response(Bun.file(files.rootfs).stream().pipeThrough(new CompressionStream('gzip'))))
+      await pushGzippedObject(this, this.key(pid, rootfsName), files.rootfs)
     } else {
-      await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
+      await pushFileObject(this, this.key(pid, rootfsName), files.rootfs)
     }
-    await this.client.write(this.key(pid, 'vmstate'), Bun.file(files.vmstate))
+    await pushFileObject(this, this.key(pid, 'vmstate'), files.vmstate)
     if (files.workspaceDrive) {
       const tgz = `${files.workspaceDrive}.push.tgz`
       try {
         await packSparseFile(files.workspaceDrive, tgz)
-        await this.client.write(this.key(pid, WORKSPACE_DRIVE_ARTIFACT), Bun.file(tgz))
+        await pushFileObject(this, this.key(pid, WORKSPACE_DRIVE_ARTIFACT), tgz)
       } finally {
         await rm(tgz, { force: true }).catch(() => {})
       }
@@ -627,31 +693,38 @@ class S3Store implements SnapshotStore {
   }
 
   private async download(key: string, dest: string): Promise<void> {
-    await mkdir(dirname(dest), { recursive: true })
-    const partBytes = this.cfg.s3GetPartBytes
-    const concurrency = this.cfg.s3GetConcurrency
-    // Large objects: parallel ranged GET to saturate the link. Small objects
-    // (vmstate, or anything <= one part) go single-stream — the overhead of a
-    // stat + range split isn't worth it.
-    if (concurrency > 1 && partBytes > 0) {
-      let size = 0
-      try {
-        size = (await this.client.file(key).stat()).size
-      } catch {
-        size = 0
+    const mem = memProbe.begin('snapshot:pull', key)
+    let fetched = 0
+    try {
+      await mkdir(dirname(dest), { recursive: true })
+      const partBytes = this.cfg.s3GetPartBytes
+      const concurrency = this.cfg.s3GetConcurrency
+      // Large objects: parallel ranged GET to saturate the link. Small objects
+      // (vmstate, or anything <= one part) go single-stream — the overhead of a
+      // stat + range split isn't worth it.
+      if (concurrency > 1 && partBytes > 0) {
+        let size = 0
+        try {
+          size = (await this.client.file(key).stat()).size
+        } catch {
+          size = 0
+        }
+        if (size > partBytes) {
+          fetched = size
+          await downloadRanged(
+            dest,
+            size,
+            async (start, end) => new Uint8Array(await this.client.file(key).slice(start, end).arrayBuffer()),
+            { partBytes, concurrency },
+          )
+          return
+        }
       }
-      if (size > partBytes) {
-        await downloadRanged(
-          dest,
-          size,
-          async (start, end) => new Uint8Array(await this.client.file(key).slice(start, end).arrayBuffer()),
-          { partBytes, concurrency },
-        )
-        return
-      }
+      // S3 → disk via the client's file handle (Bun buffers/streams internally).
+      await Bun.write(dest, this.client.file(key))
+    } finally {
+      memProbe.end(mem, fetched)
     }
-    // S3 → disk via the client's file handle (Bun buffers/streams internally).
-    await Bun.write(dest, this.client.file(key))
   }
 
   /**
@@ -697,7 +770,7 @@ class S3Store implements SnapshotStore {
     } catch {
       /* absent → upload */
     }
-    await this.client.write(key, Bun.file(baseRootfsPath))
+    await pushFileObject(this, key, baseRootfsPath)
   }
 
   async pullBase(identity: string, destPath: string): Promise<boolean> {

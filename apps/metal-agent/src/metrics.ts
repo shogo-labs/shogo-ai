@@ -272,6 +272,19 @@ export const M = {
   // with KSM off, which is every prod host until Russell signs off on it.
   hostMemUsedMiB: 'metal_host_mem_used_mib',
   hostMemAvailableMiB: 'metal_host_mem_available_mib',
+  // The agent's OWN memory (SHO-593), which `metal_host_mem_*` cannot show: it
+  // describes the host, so a control-plane process that reached 53 GiB and got
+  // OOM-killed left no trace here. `arrayBuffers` is the one that names the
+  // culprit — when it tracks `rss`, a whole export or S3 object is being held.
+  agentRssBytes: 'metal_agent_rss_bytes',
+  agentExternalBytes: 'metal_agent_external_bytes',
+  agentArrayBuffersBytes: 'metal_agent_array_buffers_bytes',
+  // Guest exports are spooled to disk rather than buffered (SHO-593), so there
+  // is no in-memory budget any more: `inflight` is the bytes currently crossing
+  // the spool (disk, not memory) and `tooLarge` counts the bodies the runaway
+  // ceiling cut off mid-transfer, whose durable backup was left as it was.
+  exportInflightBytes: 'metal_export_inflight_bytes',
+  exportTooLarge: 'metal_export_too_large_total',
   ksmPagesSharing: 'metal_ksm_pages_sharing',
   ksmPagesShared: 'metal_ksm_pages_shared',
   ksmFullScans: 'metal_ksm_full_scans',

@@ -44,7 +44,8 @@
 
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
-import { memoryBody, quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
+import { archiveBodySha256, archiveBodySize, type ArchiveBody } from './archive-body'
+import { quarantinedCopy, quarantineDailyCap, type QuarantineBookkeeping } from './quarantine'
 import { conditionalPutObject, type S3Target } from './s3-conditional'
 
 /** A durable source archive plus the S3 ETag that anchors its lineage. */
@@ -362,7 +363,7 @@ export async function describeWorkspaceArchive(
  */
 export async function uploadWorkspaceArchiveGuarded(
   projectId: string,
-  bytes: Uint8Array,
+  bytes: ArchiveBody,
   opts: {
     parentEtag?: string | null
     adoptWhenUnknown?: boolean
@@ -380,11 +381,11 @@ export async function uploadWorkspaceArchiveGuarded(
   // Every refused byte lands through the shared helper: identical copies are
   // not re-uploaded and a project over its daily cap writes nothing (SHO-584).
   // `null` back means NOT SAVED, which every caller already treats as `lost`.
-  const park = (body: Uint8Array, qkey: string): Promise<string | null> =>
+  const park = (body: ArchiveBody, qkey: string): Promise<string | null> =>
     quarantinedCopy({
       projectId,
       kind: 'source',
-      body: memoryBody(body),
+      body: { size: archiveBodySize(body), sha256: () => archiveBodySha256(body) },
       key: qkey,
       write: (k) => s3.client.write(k, body, { type: 'application/gzip' }).then(() => {}),
       state: opts.quarantine?.state,
@@ -412,7 +413,7 @@ export async function uploadWorkspaceArchiveGuarded(
     parentEtag: opts.parentEtag,
     adoptWhenUnknown: opts.adoptWhenUnknown,
     currentSize: cur.size,
-    incomingSize: bytes.byteLength,
+    incomingSize: archiveBodySize(bytes),
   })
 
   // Compare-and-swap against the object the decision was made on: a writer that
@@ -471,7 +472,7 @@ export async function uploadWorkspaceArchiveGuarded(
       // + investigable. `reason` distinguishes the two so ops can tell a benign
       // lineage race from the backstop catching a real clobber attempt.
       const qkey = await park(bytes, quarantineKey(projectId))
-      const reason: 'lineage' | 'size-regression' = isTemplateRegression(cur.size, bytes.byteLength)
+      const reason: 'lineage' | 'size-regression' = isTemplateRegression(cur.size, archiveBodySize(bytes))
         ? 'size-regression'
         : 'lineage'
       return { status: 'conflict', quarantineKey: qkey, currentEtag, reason }

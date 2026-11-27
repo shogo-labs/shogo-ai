@@ -283,8 +283,8 @@ describe('retire on a superseded image', () => {
     /** p1 running on the old image, which has just been replaced under it. */
     async function onReplacedImage(opts: { alwaysOn?: boolean } = {}) {
       const r = rig()
-      r.cfg.rolloutIdleMs = 15 * MIN
-      r.cfg.rolloutDeadlineMs = 24 * 60 * MIN
+      ;(r.cfg as any).rolloutIdleMs = 15 * MIN
+      ;(r.cfg as any).rolloutDeadlineMs = 24 * 60 * MIN
       r.s3.put(SRC, tarOf({ 'src/App.tsx': 'v1\n' }))
       const pool = await r.agent()
       const a = await pool.open('p1', opts.alwaysOn ? { ...ENV, SHOGO_ALWAYS_ON: '1' } : ENV)
@@ -616,7 +616,7 @@ describe('retire on a superseded image', () => {
 
     test('a VM on the current image is left alone', async () => {
       const r = rig()
-      r.cfg.rolloutIdleMs = 15 * MIN
+      ;(r.cfg as any).rolloutIdleMs = 15 * MIN
       const pool = await r.agent()
       await pool.open('p1', ENV)
       pool.getAssigned('p1')!.lastRealActivityAt = Date.now() - 60 * MIN

@@ -26,11 +26,17 @@ import { join } from 'path'
 import { config } from './config'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import { M, metrics } from './metrics'
+import type { ArchiveBody } from './archive-body'
 import type { DataLineage, DataWriteOutcome } from './project-data-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
+
+/** The bytes a seam handed back — a spooled file, or memory for a legacy caller. */
+async function bytesOf(body: ArchiveBody): Promise<Uint8Array> {
+  return body instanceof Uint8Array ? body : new Uint8Array(await body.arrayBuffer())
+}
 
 interface RecordedUpload {
   projectId: string
@@ -45,10 +51,12 @@ class TestPool extends MetalWarmPool {
 
   protected override async uploadDataGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
   ): Promise<DataWriteOutcome> {
-    this.uploads.push({ projectId, bytes, opts })
+    // Read the spool while it is still on disk: the upload caller unlinks it as
+    // soon as this returns.
+    this.uploads.push({ projectId, bytes: await bytesOf(bytes), opts })
     if (this.uploadDelayMs) await Bun.sleep(this.uploadDelayMs)
     return this.outcome
   }
@@ -133,7 +141,9 @@ describe('pool writable-state durability', () => {
       expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/export-data')
       expect(calls[0].init.method).toBe('POST')
       expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
-      expect(out).toEqual({ bytes: new Uint8Array([1, 2, 3]), tag: 'tag-1' })
+      const exported = out as { body: ArchiveBody; tag: string | null }
+      expect(await bytesOf(exported.body)).toEqual(new Uint8Array([1, 2, 3]))
+      expect(exported.tag).toBe('tag-1')
     })
 
     test('echoes a known tag back so the guest can answer 304', async () => {

@@ -84,7 +84,7 @@ describe('VM classes — warm pool fill', () => {
   test('a standard-only host (no docker rootfs configured) only ever fills the standard pool', async () => {
     const guest = makeGuest()
     const cfg = makeCfg({ poolSize: 2 })
-    const mgr = fakeMgr(guest.port)
+    const mgr = fakeMgr(guest.port!)
     const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
 
     await pool.start()
@@ -103,7 +103,7 @@ describe('VM classes — warm pool fill', () => {
       poolSize: 1,
       dockerClass: { ...config.dockerClass, baseRootfs: '/opt/docker-rootfs.ext4', poolSize: 2 },
     })
-    const mgr = fakeMgr(guest.port)
+    const mgr = fakeMgr(guest.port!)
     const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
 
     await pool.start()
@@ -134,7 +134,7 @@ describe('VM classes — claim / assign routing', () => {
       poolSize: 1,
       dockerClass: { ...config.dockerClass, baseRootfs: '/opt/docker-rootfs.ext4', poolSize: 1 },
     })
-    const mgr = fakeMgr(guest.port)
+    const mgr = fakeMgr(guest.port!)
     const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
 
@@ -148,7 +148,7 @@ describe('VM classes — claim / assign routing', () => {
   test('a docker-class request falls back to standard on a host that does not support it (fail closed, not silent)', async () => {
     const guest = makeGuest()
     const cfg = makeCfg({ poolSize: 1 }) // no dockerClass.baseRootfs configured
-    const mgr = fakeMgr(guest.port)
+    const mgr = fakeMgr(guest.port!)
     const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
 
@@ -170,7 +170,7 @@ describe('VM classes — claim / assign routing', () => {
       poolSize: 0,
       dockerClass: { ...config.dockerClass, baseRootfs: '/opt/docker-rootfs.ext4', poolSize: 0 },
     })
-    const mgr = fakeMgr(guest.port)
+    const mgr = fakeMgr(guest.port!)
     const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
 
@@ -192,7 +192,7 @@ describe('VM classes — per-class rootfs identity (suspend/resume freshness)', 
     const dockerRootfsPath = join(cfg.work, 'docker-rootfs.ext4')
     writeFileSync(dockerRootfsPath, Buffer.alloc(4096))
     ;(cfg as any).dockerClass = { ...config.dockerClass, baseRootfs: dockerRootfsPath, poolSize: 0 }
-    const mgr = fakeMgr(guest.port) as any
+    const mgr = fakeMgr(guest.port!) as any
     // snapshotVM is exercised elsewhere against a real FC socket; here we only
     // need it to hand back a well-shaped FcSnapshot carrying the VM's class.
     mgr.snapshotVM = async (handle: FcVmHandle) => ({

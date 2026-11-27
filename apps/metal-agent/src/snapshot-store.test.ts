@@ -11,10 +11,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createSnapshotStore, downloadRanged, type RangeFetcher } from './snapshot-store'
+import {
+  createSnapshotStore,
+  downloadRanged,
+  pushFileObject,
+  pushGzippedObject,
+  type RangeFetcher,
+} from './snapshot-store'
 import { mkdirSync, writeFileSync } from 'fs'
 
 let dir: string
@@ -58,7 +64,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'even.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 4 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(4)
   })
 
@@ -67,7 +73,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'odd.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 3 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(5)
     // Full, gapless, non-overlapping coverage with end-exclusive spans.
     const sorted = [...calls].sort((a, b) => a[0] - b[0])
@@ -81,7 +87,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'small.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 16, concurrency: 8 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls).toEqual([[0, 10]])
   })
 
@@ -99,7 +105,7 @@ describe('downloadRanged', () => {
     const track = { inFlight: 0, max: 0 }
     const dest = join(dir, 'cap.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls, track), { partBytes: 16, concurrency: 5 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(20)
     expect(track.max).toBeLessThanOrEqual(5)
     expect(track.max).toBe(5) // lanes should actually saturate
@@ -111,7 +117,7 @@ describe('downloadRanged', () => {
     const track = { inFlight: 0, max: 0 }
     const dest = join(dir, 'fewparts.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls, track), { partBytes: 16, concurrency: 8 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(track.max).toBeLessThanOrEqual(2)
   })
 
@@ -129,7 +135,7 @@ describe('downloadRanged', () => {
     const calls: Array<[number, number]> = []
     const dest = join(dir, 'floor.bin')
     await downloadRanged(dest, src.length, fetcherFor(src, calls), { partBytes: 0, concurrency: 2 })
-    expect(new Uint8Array(readFileSync(dest))).toEqual(src)
+    expect(Buffer.from(readFileSync(dest)).equals(Buffer.from(src))).toBe(true)
     expect(calls.length).toBe(3) // one part per byte
   })
 })
@@ -168,5 +174,65 @@ describe('missReason', () => {
   test('absent (not rootfs) when the identity matches but the pull still missed', async () => {
     writeMeta('p1', { rootfsIdentity: 'sz1-mt2' })
     expect(await store().missReason!('p1', 'sz1-mt2')).toBe('absent')
+  })
+})
+
+/**
+ * The snapshot push must never build a multi-gigabyte body in memory: that hold
+ * is what got the agent OOM-killed during concurrent suspends (SHO-593). Both
+ * uploads therefore take a local FILE, and the compressed one is produced on
+ * disk by pigz rather than by a CompressionStream piped into the PUT.
+ */
+describe('snapshot push uploads files, not buffers', () => {
+  test('pushFileObject hands the source file straight to the sink', async () => {
+    const src = join(dir, 'vmstate')
+    writeFileSync(src, 'vmstate-bytes')
+    const seen: Array<[string, string]> = []
+    await pushFileObject({ putFile: async (k, p) => void seen.push([k, p]) }, 'proj/snapshot/vmstate', src)
+    expect(seen).toEqual([['proj/snapshot/vmstate', src]])
+  })
+
+  test('pushGzippedObject uploads a gzip of the source, then removes it', async () => {
+    const src = join(dir, 'mem')
+    const body = makeSource(4096)
+    writeFileSync(src, body)
+    let key = ''
+    let path = ''
+    let gz = new Uint8Array()
+    await pushGzippedObject(
+      {
+        putFile: async (k, p) => {
+          key = k
+          path = p
+          gz = new Uint8Array(readFileSync(p))
+        },
+      },
+      'proj/snapshot/mem.gz',
+      src,
+    )
+    expect(key).toBe('proj/snapshot/mem.gz')
+    expect(path).not.toBe(src)
+    // The uploaded object is a gzip stream that inflates back to the source.
+    expect(Buffer.from(Bun.gunzipSync(gz)).equals(Buffer.from(body))).toBe(true)
+    // The temp artifact does not outlive the push — a leaked multi-GiB .gz next
+    // to every VM's mem file would fill the host's NVMe.
+    expect(existsSync(path)).toBe(false)
+    expect(readdirSync(dir).sort()).toEqual(['mem'])
+  })
+
+  test('a failed upload still removes the temp artifact and surfaces the error', async () => {
+    const src = join(dir, 'mem')
+    writeFileSync(src, makeSource(1024))
+    const err = await pushGzippedObject(
+      {
+        putFile: async () => {
+          throw new Error('S3 503')
+        },
+      },
+      'proj/snapshot/mem.gz',
+      src,
+    ).catch((e: Error) => e)
+    expect((err as Error).message).toContain('S3 503')
+    expect(readdirSync(dir).sort()).toEqual(['mem'])
   })
 })

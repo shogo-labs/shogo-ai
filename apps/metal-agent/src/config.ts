@@ -526,6 +526,37 @@ export const config = {
   s3GetConcurrency: parseInt(env('METAL_S3_GET_CONCURRENCY', '8'), 10),
 
   /**
+   * Ceiling on ONE guest export body (SHO-593).
+   *
+   * Exports are spooled to disk rather than buffered, so this is not a memory
+   * bound — it is the runaway guard. The number is the writable-state store's
+   * own 4 GiB limit, so a writable-state or home export is never rejected for a
+   * size the store would have taken; source exports use `exportSourceMaxBytes`,
+   * because they go to workspace storage instead and are legitimately larger.
+   * A body past either ceiling is cut off mid-transfer and counted in
+   * `metal_export_too_large_total`; what was written is discarded and the
+   * durable backup is left as it was.
+   */
+  exportMaxBytes: parseInt(env('METAL_EXPORT_MAX_MIB', '4096'), 10) * 1024 * 1024,
+  /**
+   * Runaway ceiling for a workspace SOURCE export — a different number from
+   * `exportMaxBytes` on purpose.
+   *
+   * 4 GiB is the writable-state store's own limit, which is why `exportMaxBytes`
+   * is that: a larger writable-state archive would be refused by the store
+   * anyway. A source archive never goes there — it lands in workspace storage,
+   * which has no such limit — and the largest real workspace source export on
+   * staging measures 4.33 GiB. Sharing the 4 GiB number therefore refused the
+   * biggest workspace's backup on every single suspend, which is worse than the
+   * memory bug it replaced.
+   *
+   * Still a ceiling (16 GiB) because the spool writes to disk, and an unbounded
+   * stream from a broken guest would fill it. Past this the transfer is cut off
+   * and counted in `metal_export_too_large_total`.
+   */
+  exportSourceMaxBytes: parseInt(env('METAL_SOURCE_EXPORT_MAX_MIB', '16384'), 10) * 1024 * 1024,
+
+  /**
    * The same trick applied to cold-boot hydrate, with the host fetching on the
    * guest's behalf (see `hydrate-proxy`).
    *
@@ -536,12 +567,19 @@ export const config = {
    * 1.5-10.6 MB/s — against a ~100 s budget before the edge gives up.
    *
    * `maxConcurrent` bounds the host's exposure: each transfer holds at most
-   * `partBytes * s3GetConcurrency` (8 MB * 8 = 64 MB), so twelve of them is
-   * ~768 MB. Past that, hydrates take the presigned URL as they do today rather
-   * than wait for a slot. Set to 0 to turn the proxy off entirely.
+   * `partBytes * s3GetConcurrency` in flight, and `hydrateProxyMaxInFlightBytes`
+   * is the ceiling on the product across every transfer — `maxConcurrent` is
+   * clamped down to fit it, so raising the shared `s3GetConcurrency` cannot
+   * quietly raise the hydrate ceiling with it. Exposure does NOT grow with
+   * archive size: a part is only fetched as a slot frees, so a GiB-scale archive
+   * costs the same memory as a 100 MB one. Past the limit, hydrates take the
+   * presigned URL as they do today rather than queue. Set to 0 to turn the proxy
+   * off entirely.
    */
   hydrateProxyPartBytes: parseInt(env('METAL_HYDRATE_PROXY_PART_MB', '8'), 10) * 1024 * 1024,
   hydrateProxyMaxConcurrent: parseInt(env('METAL_HYDRATE_PROXY_MAX', '12'), 10),
+  /** Hard ceiling, in bytes, on hydrate bytes in flight across all transfers. */
+  hydrateProxyMaxInFlightBytes: parseInt(env('METAL_HYDRATE_PROXY_MAX_MIB', '256'), 10) * 1024 * 1024,
 
   /**
    * Slim durable snapshots. The naive push is ~10 GB/project (full rootfs +

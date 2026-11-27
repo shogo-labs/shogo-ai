@@ -803,7 +803,7 @@ describe('pool host-mediated repo persist', () => {
 
     test('the guest LFS refusal is told apart from other export failures', async () => {
       let answer = Response.json({ error: 'lfs push failed; repo bundle not exported' }, { status: 503 })
-      const guest = Bun.serve({ port: 0, fetch: () => answer.clone() })
+      const guest = Bun.serve({ port: 0, fetch: () => answer.clone() } as any)
       try {
         const pool = makePool(dir)
         const a = pool.add('p1', { handle: { ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}` } })
@@ -940,7 +940,7 @@ describe('pool host-mediated repo persist', () => {
         port: 0,
         fetch: async (req) => {
           const path = new URL(req.url).pathname
-          const body = req.method === 'POST' ? await req.json().catch(() => null) : null
+          const body: any = req.method === 'POST' ? await req.json().catch(() => null) : null
           seen.push({ path, body })
           if (path === '/pool/repo-hydrated' && body?.probe) {
             return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: opts.ifIdle ?? true })

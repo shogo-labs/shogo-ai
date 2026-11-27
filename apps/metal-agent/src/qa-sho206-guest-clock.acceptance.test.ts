@@ -66,7 +66,7 @@ function makeClockGuest(opts: { appliesHostClock?: boolean } = {}) {
         const body = req.body ? await req.json().catch(() => null) : null
         calls.push({ path, body })
         if (path === '/pool/rehydrate' && appliesHostClock) {
-          const hostNowMs = Number(body?.hostNowMs)
+          const hostNowMs = Number((body as any)?.hostNowMs)
           if (Number.isFinite(hostNowMs) && hostNowMs > 0) {
             const skewMs = Date.now() + offsetMs - hostNowMs
             if (Math.abs(skewMs) > 2000) {

@@ -75,6 +75,14 @@ export interface SoakOptions {
   harnessDir?: string
   /** Re-derive the report of an already-recorded run instead of soaking. */
   fromResults?: string
+  /**
+   * Idle-suspend window the agent runs with, in ms. Absent (the default) means
+   * 0 — no suspends — because the density soak measures how many VMs the host
+   * carries, and suspending them would measure the snapshot path instead. Set
+   * it (e.g. `--idle-suspend-ms 15s`) to soak THAT path: every VM goes idle,
+   * suspends and pushes a durable snapshot while the host is full.
+   */
+  idleSuspendMs?: number
 }
 
 const num = (v: string | undefined, d: number) => {
@@ -137,6 +145,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
     revision: get('revision') ?? env.DENSITY_SOAK_REVISION,
     harnessDir: get('harness-dir') ?? env.DENSITY_SOAK_HARNESS_DIR,
     fromResults: get('from-results'),
+    idleSuspendMs: get('idle-suspend-ms') ? parseDuration(get('idle-suspend-ms'), 0) : undefined,
   }
 }
 
@@ -489,9 +498,14 @@ export class DensitySoak {
     const env = { ...this.originalEnv! }
     const top = Math.max(...this.opts.steps, 0)
     env.METAL_MAX_VMS_PER_HOST = String(Math.max(top + 20, 200))
-    env.METAL_IDLE_SUSPEND_MS = '0'
+    const idleSuspendMs = this.opts.idleSuspendMs ?? 0
+    env.METAL_IDLE_SUSPEND_MS = String(idleSuspendMs)
     writeFileSync(this.opts.envFile, renderEnvFile(env))
-    log('env', `raised METAL_MAX_VMS_PER_HOST to ${env.METAL_MAX_VMS_PER_HOST}, METAL_IDLE_SUSPEND_MS=0`)
+    log(
+      'env',
+      `raised METAL_MAX_VMS_PER_HOST to ${env.METAL_MAX_VMS_PER_HOST}, METAL_IDLE_SUSPEND_MS=${idleSuspendMs}` +
+        (idleSuspendMs > 0 ? ' (suspends on: this soak exercises the snapshot push)' : ''),
+    )
     if (this.opts.restartAgent) await this.restartAgent()
   }
 

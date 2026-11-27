@@ -28,25 +28,34 @@ import { join } from 'path'
 import { config } from './config'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import { M, metrics } from './metrics'
+import type { BunFile } from 'bun'
+import type { ArchiveBody } from './archive-body'
 import type { BackupWriteOutcome } from './workspace-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
 
+/** The bytes a seam handed back — a spooled file, or memory for a legacy caller. */
+async function bytesOf(body: ArchiveBody): Promise<Uint8Array> {
+  return body instanceof Uint8Array ? body : new Uint8Array(await body.arrayBuffer())
+}
+
 class TestPool extends MetalWarmPool {
   uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean } }> = []
   outcome: BackupWriteOutcome = { status: 'written', etag: '"new"' }
-  protected override uploadBackupGuarded(
+  protected override async uploadBackupGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: ArchiveBody,
     opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean },
   ): Promise<BackupWriteOutcome> {
-    this.uploads.push({ projectId, bytes, opts })
-    return Promise.resolve(this.outcome)
+    // Read the spool while it is still on disk: `saveBackupToStore` unlinks it
+    // as soon as this returns.
+    this.uploads.push({ projectId, bytes: await bytesOf(bytes), opts })
+    return this.outcome
   }
   export(token?: string) {
-    return (this as any).fetchExport(HANDLE, token) as Promise<Uint8Array | null>
+    return (this as any).fetchExport(HANDLE, token) as Promise<ArchiveBody | null>
   }
   save(projectId: string, runtimeToken?: string, extra: Partial<AssignedVm> = {}) {
     ;(this as any).assigned.set(projectId, {
@@ -101,7 +110,11 @@ describe('pool write-side backup (save on stop)', () => {
     expect(calls[0].url).toBe('http://10.0.0.9:8080/pool/export')
     expect(calls[0].init.method).toBe('POST')
     expect(calls[0].init.headers.Authorization).toBe('Bearer secret-token')
-    expect(bytes).toEqual(new Uint8Array([1, 2, 3]))
+    // Spooled, not buffered (SHO-593): the seam hands back a file on the host's
+    // export spool, and its bytes are the guest's. Nothing here is a Uint8Array.
+    expect(bytes).not.toBeInstanceOf(Uint8Array)
+    expect((bytes as unknown as BunFile).name).toContain('/exports/')
+    expect(await bytesOf(bytes!)).toEqual(new Uint8Array([1, 2, 3]))
   })
 
   test('fetchExport returns null on 204 (empty/new workspace)', async () => {

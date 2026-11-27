@@ -91,7 +91,7 @@ function standardAvailable(pool: MetalWarmPool): number {
 describe('warm pool refill', () => {
   test('a claim that finds the pool empty refills it', async () => {
     const guest = makeGuest()
-    const pool = new MetalWarmPool(flakyMgr(guest.port, 2) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
+    const pool = new MetalWarmPool(flakyMgr(guest.port!, 2) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
     expect(standardAvailable(pool)).toBe(0)
 
@@ -102,7 +102,7 @@ describe('warm pool refill', () => {
 
   test('reconcile retries a fill whose boots failed', async () => {
     const guest = makeGuest()
-    const pool = new MetalWarmPool(flakyMgr(guest.port, 2) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
+    const pool = new MetalWarmPool(flakyMgr(guest.port!, 2) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
     expect(standardAvailable(pool)).toBe(0)
 
@@ -112,7 +112,7 @@ describe('warm pool refill', () => {
 
   test('a claim that takes a VM replaces it', async () => {
     const guest = makeGuest()
-    const pool = new MetalWarmPool(flakyMgr(guest.port, 0) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
+    const pool = new MetalWarmPool(flakyMgr(guest.port!, 0) as any, makeCfg(2), { kind: 'none' } as unknown as SnapshotStore)
     await pool.start()
     expect(standardAvailable(pool)).toBe(2)
 
