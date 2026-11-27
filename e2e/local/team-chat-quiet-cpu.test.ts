@@ -8,7 +8,7 @@
  * report, measured at a Pixel 7 viewport with the CPU throttled 4× — roughly
  * how the phone feels after a few minutes of heat:
  *
- *  - **Home, idle (30 s)** — the buddy asks for ≤ 5 frames a second, and CPU
+ *  - **Home, idle (60 s)** — the buddy asks for ≤ 5 frames a second, and CPU
  *    busy stays ≤ 10 % of the wall clock. Used to be 120 rAF/s and 19.7 %; the
  *    rAF bound is the real signal, CPU carries headroom for a loaded runner.
  *  - **a channel, scrolling (30 s)** — no mounted message row and no markdown
@@ -31,7 +31,9 @@
  * version of this gate passed (QA round 1).
  *
  * CDP is Chromium-only, so this runs on the `pixel-7` project and skips on
- * WebKit. The per-delta budget is not here, because CI cannot stage a message
+ * WebKit — decided at `describe` level, before any hook runs, because a
+ * skipped run must leave the SQLite stack every local spec shares untouched.
+ * The per-delta budget is not here, because CI cannot stage a message
  * that is streaming right now; it is asserted deterministically in
  * apps/mobile/components/team-chat/__tests__/sho600-delta-renders.rtl.test.tsx.
  *
@@ -58,7 +60,11 @@ const IDLE_CPU_BUSY_MAX = 10
 const IDLE_RAF_PER_SECOND_MAX = 5
 const SCROLL_FIBRES_PER_SECOND_MAX = 2_000
 
-const IDLE_WINDOW_MS = 30_000
+// A minute, not thirty seconds: the buddy's motion arrives in bursts (a 0.3 s
+// blink every 4-8 s), so a short window samples that burstiness and reads 3.5
+// or 4.6 frames/s on heads that are the same. Doubling the window halves the
+// variance without loosening the per-second bound.
+const IDLE_WINDOW_MS = 60_000
 const SCROLL_STEPS = 300
 const SCROLL_STEP_MS = 100
 const SEEDED_MESSAGES = 60
@@ -220,10 +226,18 @@ async function findScroller(page: Page): Promise<ElementHandle<Element>> {
   return scroller as ElementHandle<Element>
 }
 
-/** A channel of our own with enough messages to scroll for 30 seconds. */
+/**
+ * A channel of our own with enough messages to scroll for 30 seconds.
+ *
+ * Every write is checked: `api()` returns the status rather than throwing, and
+ * a refused insert used to surface later as "someone else's channel is empty".
+ */
 async function seedChannel(page: Page): Promise<Seed> {
   const suffix = Date.now().toString(36)
   const workspaces = await api(page, "GET", "/api/workspaces")
+  if (workspaces.status >= 300) {
+    throw new Error(`workspace list failed (${workspaces.status}): ${JSON.stringify(workspaces.json)}`)
+  }
   const items = (workspaces.json?.items ?? workspaces.json?.data?.items ?? []) as Array<{ id: string; kind?: string }>
   const workspaceId = items.find((item) => item.kind !== "personal")?.id
   if (!workspaceId) throw new Error(`local stack has no team workspace: ${JSON.stringify(workspaces.json)}`)
@@ -233,22 +247,38 @@ async function seedChannel(page: Page): Promise<Seed> {
     kind: "public",
   })
   const channelId = created.json?.conversation?.id
-  if (!channelId) throw new Error(`channel create failed: ${JSON.stringify(created.json)}`)
+  if (created.status >= 300 || !channelId) {
+    throw new Error(`channel create failed (${created.status}): ${JSON.stringify(created.json)}`)
+  }
 
   const marker = `quiet-cpu ${suffix}`
   for (let i = 0; i < SEEDED_MESSAGES; i += 1) {
-    await api(page, "POST", `/api/conversations/${channelId}/messages`, { text: `${marker} message ${i}` })
+    const posted = await api(page, "POST", `/api/conversations/${channelId}/messages`, { text: `${marker} message ${i}` })
+    if (posted.status >= 300) {
+      throw new Error(`seed message ${i} failed (${posted.status}): ${JSON.stringify(posted.json)}`)
+    }
   }
   return { workspaceId, channelId, marker }
 }
 
 test.describe("SHO-600: the phone bundle stays quiet", () => {
   test.describe.configure({ mode: "serial" })
+  // Decided before any hook runs, so a WebKit run skips without seeding
+  // anything into the stack the next spec shares.
+  test.skip(
+    ({ browserName }) => browserName !== "chromium",
+    "the CPU/GPU profiler needs CDP, which WebKit does not expose",
+  )
 
   let seed: Seed
   let seeder: Page
 
   test.beforeAll(async ({ browser }) => {
+    // Both tests are Chromium-only (below), so this hook must not run on
+    // WebKit: seeding a channel and cascade-deleting it here put 60 writes
+    // plus a cascade through the shared SQLite stack seconds before the next
+    // spec seeded through the same stack, which is what turned the WebKit
+    // phone job red while these tests were skipping.
     test.setTimeout(600_000)
     const context = await browser.newContext()
     seeder = await context.newPage()
@@ -270,8 +300,7 @@ test.describe("SHO-600: the phone bundle stays quiet", () => {
     await signInByApi(page)
   })
 
-  test("Home draws almost nothing while it sits idle", async ({ page, context, browserName }) => {
-    test.skip(browserName !== "chromium", "the CPU/GPU profiler below needs CDP, which WebKit does not expose")
+  test("Home draws almost nothing while it sits idle", async ({ page, context }) => {
     test.setTimeout(300_000)
 
     await openHome(page)
@@ -291,8 +320,7 @@ test.describe("SHO-600: the phone bundle stays quiet", () => {
     expect(perSecond, `Home idle ${perSecond.toFixed(1)} frames/s`).toBeLessThanOrEqual(IDLE_RAF_PER_SECOND_MAX)
   })
 
-  test("scrolling a channel does not re-render what is already on screen", async ({ page, context, browserName }) => {
-    test.skip(browserName !== "chromium", "the CPU/GPU profiler below needs CDP, which WebKit does not expose")
+  test("scrolling a channel does not re-render what is already on screen", async ({ page, context }) => {
     test.setTimeout(300_000)
 
     await activateTeamWorkspace(page, seed.workspaceId)
