@@ -4194,5 +4194,22 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return c.json({ ok: true })
   })
 
+  /**
+   * GET /api/internal/workspaces/:workspaceId/work-items/branches
+   *
+   * Every card's branch and PR refs, split open / closed, for the runtime's
+   * `.tmp` hygiene sweep (SHO-607). A worktree is matched to a card by branch
+   * or PR head SHA; the closed set's head SHAs are how a squash-merged branch
+   * proves its work landed after `fetch --prune` dropped `origin/<branch>`.
+   */
+  app.get('/workspaces/:workspaceId/work-items/branches', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+      return scopeDenied(c)
+    }
+    const { listWorkItemBranches } = await import('../services/work-item-branches.service')
+    return c.json(await listWorkItemBranches(workspaceId))
+  })
+
   return app
 }

@@ -1469,6 +1469,24 @@ async function personalFetch<T>(
   }
 }
 
+/**
+ * Every card's branch and PR refs in the workspace (SHO-607).
+ *
+ * `.tmp` hygiene matches a worktree to a card by branch or PR head SHA — a
+ * squash merge leaves the branch's commits out of `origin/main`, so the PR's
+ * last head is the only durable proof the work landed. A failure here means
+ * the sweep leaves worktrees alone and only clears loose scratch.
+ */
+export async function fetchWorkItemBranches(workspaceId: string): Promise<CheckpointCallResult<{
+  open: Array<{ key: string; number: number; branch: string | null; prs: Array<{ number: number; headRef: string | null; headSha: string | null }> }>
+  closed: Array<{ key: string; number: number; branch: string | null; prs: Array<{ number: number; headRef: string | null; headSha: string | null; state?: 'open' | 'closed'; merged?: boolean }> }>
+}>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/work-items/branches`, {
+    method: 'GET',
+    timeoutMs: 30_000,
+  })
+}
+
 export async function getAgentProfile(workspaceId: string): Promise<CheckpointCallResult<PersonalProfile>> {
   return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`, {
     method: 'GET',

@@ -151,6 +151,33 @@ describe('repairCheckpointRepo', () => {
     }
   })
 
+  // SHO-607: the startup path used to walk the LFS dir and run
+  // `git lfs ls-files -a` over all history *before* reading the marker, so
+  // every boot after the first repair paid that cost on a blocked event loop.
+  test('a repaired repo is not measured again', async () => {
+    const dir = initRepo()
+    try {
+      writeFileSync(join(dir, 'index.ts'), 'export {}\n')
+      git(dir, 'add', '-A')
+      execFileSync('git', ['commit', '-q', '-m', 'clean', '--no-verify'], { cwd: dir, stdio: 'pipe' })
+      const first = await repairCheckpointRepo(dir, { logger: quiet })
+      expect(first.reason).toBe('clean-history')
+
+      // Put real bytes back under `.git/lfs` — measuring it would show up in
+      // `bytesBefore` if the marker were read after the measurement.
+      const lfsObject = join(dir, '.git', 'lfs', 'objects', 'aa', 'bb')
+      mkdirSync(lfsObject, { recursive: true })
+      writeFileSync(join(lfsObject, 'big'), 'x'.repeat(2 * 1024 * 1024))
+
+      const second = await repairCheckpointRepo(dir, { logger: quiet })
+      expect(second.reason).toBe('already-repaired')
+      expect(second.bytesBefore).toBe(0)
+      expect(second.lfsVersionsBefore).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('dry run reports what it would drop and changes nothing', async () => {
     const dir = initRepo()
     try {
