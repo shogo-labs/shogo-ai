@@ -366,7 +366,6 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
           localRunningAtRef.current.set(id, Date.now())
           fresh = true
         }
-        // A turn just started here: get a poll in before it can finish unseen.
         // A turn just started here: get a poll in inside the grace window, so a
         // reply that already finished is read as finished instead of spinning
         // until the next safety-net poll.

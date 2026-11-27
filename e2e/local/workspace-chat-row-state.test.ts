@@ -78,6 +78,9 @@ function prismaDate(date: Date): string {
 
 type Turn = { chatSessionId: string; startedAt: string };
 
+/** One `chat-session.turn` frame: the push the app paints a start or an end from. */
+type TurnEdge = { chatSessionId: string; turnId: string; state: "started" | "ended" };
+
 /** chatsPanel — the sidebar's workspace chat list. */
 function chatsPanel(page: Page) {
   return page.getByTestId("workspace-chats-panel");
@@ -182,6 +185,32 @@ async function mockActiveChats(page: Page, running: Turn[]): Promise<void> {
       body: JSON.stringify({ chats: running }),
     });
   });
+}
+
+/**
+ * Hold the real realtime connection open and hand the spec a way to send a
+ * `chat-session.turn` frame down it (SHO-299).
+ *
+ * A row learns "that turn ended" from the socket and treats the poll as the net
+ * behind it, so a spec that only flips the mocked poll answer tests the net: at
+ * SHO-602's 60 s off-screen cadence it would sit on the spinner for a minute,
+ * where the app gets the edge in one frame. The route is forwarded to the real
+ * server, so presence and every other frame still flow; only the edges below
+ * are injected.
+ */
+async function pushTurnEdges(page: Page): Promise<(edge: TurnEdge) => void> {
+  const sockets: Array<(frame: string) => void> = [];
+  await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/rt/, (ws) => {
+    ws.connectToServer();
+    sockets.push((frame) => ws.send(frame));
+  });
+  return (edge) => {
+    if (sockets.length === 0) {
+      throw new Error("the realtime connection never opened, so no turn edge could be pushed");
+    }
+    const frame = JSON.stringify({ type: "chat-session.turn", ...edge });
+    for (const send of sockets) send(frame);
+  };
 }
 
 /** Hold the next workspace chat turn open until `release()` is called. */
@@ -375,6 +404,7 @@ test.describe("workspace chat row state (local)", () => {
     const running: Turn[] = [];
     await mockActiveChats(page, running);
     await holdNextTurn(page);
+    const pushEdge = await pushTurnEdges(page);
     await page.goto("/");
     await expect(chatsPanel(page)).toBeVisible({ timeout: 90_000 });
 
@@ -409,8 +439,13 @@ test.describe("workspace chat row state (local)", () => {
       `A's spinner blinked out ${kept.samples - kept.seen}/${kept.samples} samples after leaving it`,
     ).toBe(kept.samples);
 
-    // The server stops reporting it: that is the turn ending.
+    // The turn ends. The app is told so by the socket, at the turn-state insert
+    // point — the poll is only the net behind it, and while a turn runs on a
+    // chat that is not on screen that net is 60 s (SHO-602's off-screen
+    // cadence). A row may not sit on a spinner for a minute after the reply
+    // landed, so the edge is pushed here and the mocked answer follows it.
     running.length = 0;
+    pushEdge({ chatSessionId: chatA.id, turnId: `turn_${chatA.id}`, state: "ended" });
     await expect(chatRow(page, chatA.name).getByLabel("Chat has new activity").first()).toBeVisible({
       timeout: 30_000,
     });
