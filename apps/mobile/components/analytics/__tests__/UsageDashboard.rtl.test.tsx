@@ -21,29 +21,39 @@ mock.module('../../../contexts/domain', () => ({ useDomainHttp: () => http }))
 
 const getMyAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
 const getWorkspaceAnalytics = mock(async (..._args: any[]): Promise<any> => ({}))
-mock.module('../../../lib/api', () => ({ api: { getMyAnalytics, getWorkspaceAnalytics } }))
+const realApiModule = await import('../../../lib/api')
+mock.module('../../../lib/api', () => ({
+  ...realApiModule,
+  api: { ...realApiModule.api, getMyAnalytics, getWorkspaceAnalytics },
+}))
 
-mock.module('../../../lib/native-phone-layout', () => ({ useIsNativePhoneLayout: () => false }))
+const realNativePhoneLayout = await import('../../../lib/native-phone-layout')
+mock.module('../../../lib/native-phone-layout', () => ({
+  ...realNativePhoneLayout,
+  useIsNativePhoneLayout: () => false,
+}))
 mock.module('../../../lib/native-active-shadow', () => ({
   nativeActivePill: () => ({ className: '', style: undefined }),
 }))
+const realAccountSheetChrome = await import('../../settings/account-sheet-chrome')
 mock.module('../../settings/account-sheet-chrome', () => ({
+  ...realAccountSheetChrome,
   Text: ({ children, ...props }: any) => createElement('span', props, children),
 }))
-// The real module drags in the model catalog; the dashboard only needs these two exports.
+mock.module('../../lib/visible-models', () => ({
+  resolveShortName: (id: string) => id,
+  resolveFamily: () => 'other',
+}))
+// Keep the real helpers (the Spend card reads `splitTotalUsd`) and stub only
+// the card itself, which is what the assertions read.
+const realSharedAnalytics = await import('../SharedAnalytics')
 mock.module('../SharedAnalytics', () => ({
-  StatCard: ({ label, value, subtitle, footer }: any) =>
+  ...realSharedAnalytics,
+  StatCard: ({ label, value, subtitle }: any) =>
     createElement('div', { 'data-testid': `stat-${label}` }, [
       createElement('span', { key: 'l' }, label),
       createElement('span', { key: 'v', 'data-testid': `value-${label}` }, String(value)),
       subtitle ? createElement('span', { key: 's' }, subtitle) : null,
-      footer ? createElement('span', { key: 'f' }, footer) : null,
-    ]),
-  formatDollarCost: (n: number) => `$${n.toFixed(2)}`,
-  CostSplitLines: ({ entry }: any) =>
-    createElement('span', { 'data-testid': 'cost-split' }, [
-      createElement('span', { key: 'm' }, `Model $${Number(entry.modelCostUsd ?? 0).toFixed(2)}`),
-      createElement('span', { key: 'f' }, ` · Shogo fee $${Number(entry.shogoFeeUsd ?? 0).toFixed(2)}`),
     ]),
 }))
 mock.module('../StackedAreaChart', () => ({
@@ -154,9 +164,8 @@ describe('UsageDashboard', () => {
     expect(screen.getByText(/edit_file/)).toBeTruthy()
   })
 
-  // SHO-288: the Spend card shows the provider's model cost and the Shogo fee
-  // as two lines, and they add up to the total.
-  test('the Spend card shows the model cost and the Shogo fee', async () => {
+  // SHO-597: one cost figure, no model/fee breakdown underneath it.
+  test('the Spend card shows one total and no model/fee split', async () => {
     getMyAnalytics.mockImplementation(async () => ({
       ...stats(),
       totals: totals({ spendUsd: 1.2, modelCostUsd: 1, shogoFeeUsd: 0.2, unitemizedUsd: 0 }),
@@ -165,9 +174,22 @@ describe('UsageDashboard', () => {
 
     expect(await screen.findByText('Work activity')).toBeTruthy()
     expect(screen.getByTestId('value-Spend').textContent).toBe('$1.20')
-    const split = screen.getByTestId('cost-split')
-    expect(split.textContent).toContain('Model $1.00')
-    expect(split.textContent).toContain('Shogo fee $0.20')
+    expect(screen.queryByTestId('cost-split')).toBeNull()
+    expect(screen.queryByText(/Shogo fee/i)).toBeNull()
+    expect(screen.queryByText(/Model \$/)).toBeNull()
+  })
+
+  // SHO-597: local usage is recorded billed 0 (spendUsd 0) with the cost in
+  // the split; the Spend card must show that cost, not $0.00.
+  test('the Spend card shows the cost a locally-billed payload carries', async () => {
+    getMyAnalytics.mockImplementation(async () => ({
+      ...stats(),
+      totals: totals({ spendUsd: 0, modelCostUsd: 1, shogoFeeUsd: 0, unitemizedUsd: 0 }),
+    }))
+    render(<UsageDashboard source={{ kind: 'me' }} />)
+
+    expect(await screen.findByText('Work activity')).toBeTruthy()
+    expect(screen.getByTestId('value-Spend').textContent).toBe('$1.00')
   })
 
   test('a workspace source requests that workspace, and one member when given', async () => {

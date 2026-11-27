@@ -10,7 +10,7 @@
  */
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
@@ -93,10 +93,9 @@ mock.module('../WorkspaceActivitySection', () => ({ WorkspaceActivitySection: ()
 const realSharedAnalytics = await import('../SharedAnalytics')
 mock.module('../SharedAnalytics', () => ({
   ...realSharedAnalytics,
-  StatCard: ({ label, value, footer }: any) =>
+  StatCard: ({ label, value }: any) =>
     createElement('div', { 'data-testid': `stat-${label}` }, [
       createElement('span', { key: 'v', 'data-testid': `stat-value-${label}` }, String(value)),
-      footer ? createElement('div', { key: 'f', 'data-testid': `stat-footer-${label}` }, footer) : null,
     ]),
   UsageTableSection: ({ onLogPageChange, logPage, onSummaryPageChange, summaryPage }: any) =>
     createElement('div', { 'data-testid': 'usage-table' }, [
@@ -186,15 +185,15 @@ describe('WorkspaceUsagePanel', () => {
     expect(params.limit).toBe('50')
   })
 
-  test('the Spend section shows Model cost + Shogo fee under Total spend, adding up to it', async () => {
+  // SHO-597: the Spend card shows the one billed figure, with no split under it.
+  test('the Spend section shows one Total spend figure and no model/fee split', async () => {
     render(<WorkspaceUsagePanel />)
     await waitFor(() => expect(getWorkspaceAnalytics).toHaveBeenCalledTimes(2))
 
     expect(screen.getByTestId('stat-value-Total spend').textContent).toBe('$0.50')
-    const footer = await screen.findByTestId('stat-footer-Total spend')
-    expect(
-      within(footer).getByText(/Model \$0\.40 · Shogo fee \$0\.10 \(20%\)/),
-    ).toBeTruthy()
+    expect(screen.queryByTestId('stat-footer-Total spend')).toBeNull()
+    expect(screen.queryByText(/Shogo fee/i)).toBeNull()
+    expect(screen.queryByText(/Model \$/)).toBeNull()
   })
 
   test('a chart group-by toggle issues exactly one request', async () => {

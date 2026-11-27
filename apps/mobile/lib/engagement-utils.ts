@@ -42,9 +42,9 @@ export interface WorkTotals {
   sessions: number
   tokens: number
   spendUsd: number
-  /** Provider price across the window (the "Model cost" line). */
+  /** Provider price across the window. */
   modelCostUsd?: number
-  /** What we add on top of the provider price (the "Shogo fee" line). */
+  /** What we add on top of the provider price. */
   shogoFeeUsd?: number
   /** Billed with no recorded provider cost (pre-2026-04-24). */
   unitemizedUsd?: number

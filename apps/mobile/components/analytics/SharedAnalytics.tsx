@@ -101,9 +101,9 @@ export interface UsageSummaryEntry {
   totalTokens: number
   totalBilledUsd: number
   totalRawUsd: number
-  /** Provider price for this user × model (the "Model cost" line). */
+  /** Provider price for this user × model. */
   modelCostUsd?: number
-  /** What we add on top of the provider price (the "Shogo fee" line). */
+  /** What we add on top of the provider price. */
   shogoFeeUsd?: number
   /** Billed rows with no recorded provider cost (pre-2026-04-24). */
   unitemizedUsd?: number
@@ -152,9 +152,9 @@ export interface UsageLogEntry {
   totalTokens: number
   billedUsd: number
   rawUsd: number
-  /** Provider price for this request (the "Model cost" line). */
+  /** Provider price for this request. */
   modelCostUsd?: number
-  /** What we add on top of the provider price (the "Shogo fee" line). */
+  /** What we add on top of the provider price. */
   shogoFeeUsd?: number
   /** Billed with no recorded provider cost (pre-2026-04-24). */
   unitemizedUsd?: number
@@ -220,9 +220,9 @@ export function formatPartialCost(cost: number | null | undefined, unpriced = 0,
 }
 
 /**
- * The two lines every spend figure shows: the provider's model cost, then the
- * Shogo fee on top of it. The server computes the split per row (so the clamp
- * is applied before summing); the client only renders it.
+ * The server computes cost per row as provider price + Shogo fee (+ anything
+ * billed before itemized billing existed, so the clamp is applied before
+ * summing). The client only sums these into the single figure it shows.
  */
 export interface CostSplitFields {
   modelCostUsd?: number
@@ -251,35 +251,6 @@ export function splitTotalUsd(
     return billed && billed > 0 ? billed : raw ?? 0
   }
   return (entry.modelCostUsd ?? 0) + (entry.shogoFeeUsd ?? 0) + (entry.unitemizedUsd ?? 0)
-}
-
-/** "Model $X · Shogo fee $Y (20%)", plus the pre-itemized note when it applies. */
-export function CostSplitLines({
-  entry,
-  className,
-  textClassName,
-}: {
-  entry: CostSplitFields
-  className?: string
-  textClassName?: string
-}) {
-  const model = entry.modelCostUsd ?? 0
-  const fee = entry.shogoFeeUsd ?? 0
-  const unitemized = entry.unitemizedUsd ?? 0
-  const percent = entry.shogoFeePercent
-  return (
-    <View className={className}>
-      <Text className={cn('text-[10px] text-muted-foreground', textClassName)} numberOfLines={1}>
-        Model {formatDollarCost(model)} · Shogo fee {formatDollarCost(fee)}
-        {percent != null ? ` (${percent}%)` : ''}
-      </Text>
-      {unitemized > 0 ? (
-        <Text className={cn('text-[10px] text-muted-foreground', textClassName)} numberOfLines={1}>
-          · {formatDollarCost(unitemized)} before itemized billing (Apr 24 2026)
-        </Text>
-      ) : null}
-    </View>
-  )
 }
 
 type AnalyticsModelFamily = ModelFamily | 'o-series'
@@ -380,15 +351,12 @@ export function StatCard({
   value,
   icon: Icon,
   subtitle,
-  footer,
   comfortable = false,
 }: {
   label: string
   value: number | string | undefined
   icon: React.ComponentType<{ size?: number; className?: string }>
   subtitle?: string
-  /** Extra line under the value (e.g. the model-cost / Shogo-fee split). */
-  footer?: React.ReactNode
   comfortable?: boolean
 }) {
   const { density } = useAnalyticsDensity(comfortable)
@@ -407,7 +375,6 @@ export function StatCard({
       {subtitle && (
         <Text className={cn("text-muted-foreground mt-0.5", density.text.caption)}>{subtitle}</Text>
       )}
-      {footer}
     </View>
   )
 }
@@ -513,7 +480,13 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 // =============================================================================
 
 type SortKey =
-  | 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'modelCostUsd' | 'shogoFeeUsd'
+  | 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'cost'
+
+/** The number a summary row shows — provider cost + Shogo fee + pre-itemized. */
+function summarySortValue(entry: UsageSummaryEntry, key: SortKey): number | string {
+  if (key === 'cost') return splitTotalUsd(entry)
+  return entry[key] ?? ''
+}
 
 export function UsageSummaryView({
   data,
@@ -539,8 +512,8 @@ export function UsageSummaryView({
 
   const sorted = useMemo(() => {
     return [...(data.summaries ?? [])].sort((a, b) => {
-      const va = a[sortKey] ?? ''
-      const vb = b[sortKey] ?? ''
+      const va = summarySortValue(a, sortKey)
+      const vb = summarySortValue(b, sortKey)
       const cmp = typeof va === 'number' ? (va as number) - (vb as number) : String(va).localeCompare(String(vb))
       return sortDir === 'asc' ? cmp : -cmp
     })
@@ -551,8 +524,8 @@ export function UsageSummaryView({
     else { setSortKey(key); setSortDir('desc') }
   }
 
-  const costKey: SortKey = 'modelCostUsd'
-  const costLabel = 'Model $'
+  const costKey: SortKey = 'cost'
+  const costLabel = 'Cost'
 
   const pagination = onPageChange && data.total != null && data.limit != null && data.total > data.limit ? (() => {
     const page = currentPage ?? data.page ?? 1
@@ -589,7 +562,6 @@ export function UsageSummaryView({
       { key: 'requestCount', label: 'Reqs' },
       { key: 'totalTokens', label: 'Tokens' },
       { key: costKey, label: costLabel },
-      { key: 'shogoFeeUsd', label: 'Fee $' },
     ]
 
     return (
@@ -618,7 +590,6 @@ export function UsageSummaryView({
             <Text className="text-xl font-bold text-foreground" numberOfLines={1}>
               {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
             </Text>
-            <CostSplitLines entry={data.totals ?? {}} className="mt-1" textClassName="text-xs" />
           </View>
         </View>
 
@@ -702,7 +673,6 @@ export function UsageSummaryView({
                     <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
                       {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
                     </Text>
-                    <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
                   </View>
                 </View>
               </View>
@@ -741,7 +711,6 @@ export function UsageSummaryView({
           <Text className="text-base font-bold text-foreground">
             {formatPartialCost(splitTotalUsd(data.totals ?? {}), data.totals?.unpricedRequests, data.totals?.totalRequests)}
           </Text>
-          <CostSplitLines entry={data.totals ?? {}} className="mt-0.5" />
         </View>
       </View>
 
@@ -816,7 +785,6 @@ export function UsageSummaryView({
                 <Text className="text-right text-[10px] font-mono text-foreground">
                   {formatPartialCost(splitTotalUsd(entry), entry.unpricedRequests, entry.requestCount)}
                 </Text>
-                <CostSplitLines entry={entry} className="items-end" />
               </View>
             </View>
           ))}
@@ -953,7 +921,6 @@ export function UsageEventLogView({
                     <Text className="font-mono text-base font-medium text-foreground" numberOfLines={1}>
                       {formatDollarCost(splitTotalUsd(entry))}
                     </Text>
-                    <CostSplitLines entry={entry} className="items-end" textClassName="text-xs" />
                   </View>
                 </View>
               </View>
@@ -1032,7 +999,6 @@ export function UsageEventLogView({
                 <Text className="text-right text-[10px] font-mono text-foreground">
                   {formatDollarCost(splitTotalUsd(entry))}
                 </Text>
-                <CostSplitLines entry={entry} className="items-end" />
               </View>
               <Text className="w-10 text-right text-[9px] text-muted-foreground">
                 {formatDuration(entry.durationMs)}
@@ -1650,9 +1616,9 @@ export interface SpendTimeseriesData {
     totalSpendUsd: number
     totalIncludedUsd: number
     totalOnDemandUsd: number
-    /** Provider price across the window (the "Model cost" line). */
+    /** Provider price across the window. */
     modelCostUsd?: number
-    /** What we add on top of the provider price (the "Shogo fee" line). */
+    /** What we add on top of the provider price. */
     shogoFeeUsd?: number
     /** Billed rows with no recorded provider cost (pre-2026-04-24). */
     unitemizedUsd?: number
@@ -1936,8 +1902,7 @@ export function UsageTimeseriesChart({
         <View className="flex-row flex-wrap gap-2">
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
             <Text className="text-[10px] text-muted-foreground mb-0.5">Total spend</Text>
-            <Text className="text-base font-bold text-foreground">{chartUsd(data.totals.totalSpendUsd)}</Text>
-            <CostSplitLines entry={data.totals} className="mt-0.5" />
+            <Text className="text-base font-bold text-foreground">{chartUsd(splitTotalUsd(data.totals))}</Text>
           </View>
           <View className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/40 border border-border/50">
             <Text className="text-[10px] text-muted-foreground mb-0.5">Included</Text>

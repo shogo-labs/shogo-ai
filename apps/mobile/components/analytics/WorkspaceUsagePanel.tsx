@@ -41,7 +41,6 @@ import {
   type SpendGroupBy,
   type SpendMetric,
   StatCard,
-  CostSplitLines,
   UsageTableSection,
   ChatAnalyticsSection,
   UsageBreakdownSection,
@@ -70,11 +69,6 @@ interface SpendTimeseriesPayload {
     totalSpendUsd: number;
     totalIncludedUsd: number;
     totalOnDemandUsd: number;
-    /** The provider price and the Shogo fee the Spend card breaks the total into. */
-    modelCostUsd?: number;
-    shogoFeeUsd?: number;
-    unitemizedUsd?: number;
-    shogoFeePercent?: number;
     uniqueModels: number;
   };
   models: string[];
@@ -401,11 +395,6 @@ export function WorkspaceUsagePanel() {
             label="Total spend"
             value={fmtUsd(totalSpend)}
             icon={Coins}
-            footer={
-              spend.data?.totals ? (
-                <CostSplitLines entry={spend.data.totals} className="mt-0.5" />
-              ) : undefined
-            }
           />
           <StatCard
             label="Included"
