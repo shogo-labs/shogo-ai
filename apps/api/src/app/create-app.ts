@@ -85,15 +85,25 @@ export function createApp(options: CreateAppOptions): Hono {
     }, 500)
   })
 
-  app.use('/api/auth/*', rateLimiter('auth', {
-    max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60,
-    windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000,
-  }))
-  app.use('/api/*', rateLimiter('global', {
-    max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
-    windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
-    skipPrefixes: ['/api/ai/', '/api/health', '/api/local/'],
-  }))
+  // The IP limiters guard a shared, internet-facing server from abuse. The
+  // desktop API is single-user on loopback ("Local mode is unlimited", SHO-43)
+  // and nothing on it sets x-forwarded-for, so `getClientIp` keys every request
+  // on the machine as 'unknown': the UI, the agent runtimes and the
+  // runtime→API internal calls would share one 600/min bucket and the API would
+  // answer its own user and agents 429 (SHO-603). The local profile therefore
+  // mounts neither limiter. Per-user/per-agent limits in `lib/chat-limits.ts`
+  // (keyed by user, not IP) still guard loops.
+  if (options.profile !== 'local') {
+    app.use('/api/auth/*', rateLimiter('auth', {
+      max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60,
+      windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000,
+    }))
+    app.use('/api/*', rateLimiter('global', {
+      max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
+      windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
+      skipPrefixes: ['/api/ai/', '/api/health', '/api/local/'],
+    }))
+  }
   app.use('/api/*', authMiddleware)
   app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
   app.use('/api/*', async (c, next) => {

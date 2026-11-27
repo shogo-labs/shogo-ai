@@ -35,10 +35,6 @@ const { dir } = setupChannelsTestDb()
 const workspacesDir = mkdtempSync(join(tmpdir(), 'shogo-load-ws-'))
 process.env.WORKSPACES_DIR = workspacesDir
 process.env.SHOGO_LOCAL_MODE = 'true'
-// The probe loop issues far more requests than a person navigates; the route
-// limiter would answer 429 and the test would measure errors instead of
-// latency. This is a latency test, not a rate-limit test.
-process.env.RATE_LIMIT_GLOBAL_MAX = '10000000'
 
 const { prisma } = await import('../../lib/prisma')
 const { createLocalApp } = await import('../../app/create-local-app')
