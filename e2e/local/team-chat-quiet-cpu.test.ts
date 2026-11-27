@@ -8,7 +8,7 @@
  * report, measured at a Pixel 7 viewport with the CPU throttled 4× — roughly
  * how the phone feels after a few minutes of heat:
  *
- *  - **Home, idle (60 s)** — the buddy asks for ≤ 5 frames a second, and CPU
+ *  - **Home, idle (60 s)** — the buddy asks for ≤ 8 frames a second, and CPU
  *    busy stays ≤ 10 % of the wall clock. Used to be 120 rAF/s and 19.7 %; the
  *    rAF bound is the real signal, CPU carries headroom for a loaded runner.
  *  - **a channel, scrolling (30 s)** — no mounted message row and no markdown
@@ -57,13 +57,17 @@ import { activateTeamWorkspace, api, signInByApi } from "./team-nav-seed"
  * without turning a busy runner into a red gate.
  */
 const IDLE_CPU_BUSY_MAX = 10
-const IDLE_RAF_PER_SECOND_MAX = 5
+/**
+ * Ten runs of the fixed bundle on one idle machine read 3.6, 3.7, 3.7, 3.9,
+ * 4.0, 4.1, 4.2, 4.3, 4.7 and 5.0 frames/s. The spread is between runs, not
+ * inside one — a longer window does not shrink it (CI read 2.9 on the same
+ * head, the idle Mac 4.1 on average) — so at 5 the slower half of that spread
+ * is one sample from red on correct code. 8 clears every run and stays an
+ * order of magnitude under the 120.1 the unfixed buddy asked for.
+ */
+const IDLE_RAF_PER_SECOND_MAX = 8
 const SCROLL_FIBRES_PER_SECOND_MAX = 2_000
 
-// A minute, not thirty seconds: the buddy's motion arrives in bursts (a 0.3 s
-// blink every 4-8 s), so a short window samples that burstiness and reads 3.5
-// or 4.6 frames/s on heads that are the same. Doubling the window halves the
-// variance without loosening the per-second bound.
 const IDLE_WINDOW_MS = 60_000
 const SCROLL_STEPS = 300
 const SCROLL_STEP_MS = 100
