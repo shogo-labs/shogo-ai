@@ -259,29 +259,29 @@ test.describe("background task resume", () => {
     const first = "sleep 10"
     const second = "sleep 12"
     const alone = "sleep 9"
-    // The fake model is shared with the test above, so count from here.
-    const baseline = wakeRequests().length
-
     await send(page, `${marker("bg", "bg2a", 20, { ms: 5, cmd: first })} start the first build in the background`)
     await waitForTurnStart(page)
     await waitForIdle(page)
     await send(page, `${marker("bg", "bg2b", 20, { ms: 5, cmd: second })} and the second one too`)
     await waitForTurnStart(page)
 
-    // No user input from here on: both wakes have to come from the API.
+    // No user input from here on: both wakes have to come from the API. Poll
+    // the transcript through the API (an already-open window does not
+    // live-update a server-initiated turn — SHO-31) until BOTH commands are
+    // reported, not just the first: the two finish ~2 s apart, so reading on
+    // the first wake catches the second command still running and the
+    // exactly-once assertions below would fail on timing rather than behavior.
     const started = Date.now()
-    while (Date.now() - started < WAKE_MS && wakeRequests().length < baseline + 1) {
+    let texts: string[] = []
+    while (Date.now() - started < WAKE_MS) {
+      const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sid)}`)
+      const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
+      texts = items
+        .filter((m) => m?.role === "user" && String(m?.content ?? "").includes("[Task update]"))
+        .map((m) => String(m.content))
+      if (texts.some((t) => t.includes(first)) && texts.some((t) => t.includes(second))) break
       await page.waitForTimeout(250)
     }
-
-    // Read the transcript through the API: an already-open window does not
-    // live-update a server-initiated turn (SHO-31).
-    const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sid)}`)
-    const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
-    const updates = items.filter(
-      (m) => m?.role === "user" && String(m?.content ?? "").includes("[Task update]"),
-    )
-    const texts = updates.map((m) => String(m.content))
     const all = texts.join("\n\n")
     soft(texts.length, "the finished tasks woke the chat with [Task update] user messages").toBeGreaterThan(0)
     soft(texts.filter((t) => t.includes(first)).length, "the first command is reported once").toBe(1)
