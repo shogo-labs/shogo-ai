@@ -153,22 +153,46 @@ export async function resolveInstanceIdentity(
     // Adopt only a row nobody has claimed yet: a row that already names another
     // device is another machine that happens to share this hostname.
     const adopted = Boolean(deviceId) && !existing.deviceId
-    await tx.instance.update({
-      where: { id: existing.id },
-      data: {
+    const patch = {
+      hostname,
+      name,
+      os,
+      arch,
+      kind,
+      ...(adopted ? { deviceId } : {}),
+      ...(metadata !== undefined ? { metadata } : {}),
+      ...(touch ? { lastSeenAt: new Date(), status: 'online' } : {}),
+    }
+    // A rename can land on a hostname another row already holds. That used to
+    // throw P2002 straight out of the heartbeat, so the machine 500'd on every
+    // beat and never went online (PERF-21: 752 a day). Retire the other row when
+    // it is this same machine, and otherwise keep the hostname we already have.
+    let appliedHostname = hostname
+    try {
+      await tx.instance.update({ where: { id: existing.id }, data: patch })
+    } catch (err) {
+      if ((err as any)?.code !== 'P2002') throw err
+      const retired = await retireDuplicateHostnameRow(tx, {
+        instanceId: existing.id,
+        workspaceId,
+        userId,
         hostname,
-        name,
-        os,
-        arch,
-        kind,
-        ...(adopted ? { deviceId } : {}),
-        ...(metadata !== undefined ? { metadata } : {}),
-        ...(touch ? { lastSeenAt: new Date(), status: 'online' } : {}),
-      },
-    })
+        deviceId,
+        metadata,
+      })
+      if (retired) {
+        await tx.instance.update({ where: { id: existing.id }, data: patch })
+      } else {
+        appliedHostname = existing.hostname
+        await tx.instance.update({
+          where: { id: existing.id },
+          data: { ...patch, hostname: existing.hostname },
+        })
+      }
+    }
     return {
       ...existing,
-      hostname,
+      hostname: appliedHostname,
       name,
       os,
       arch,
@@ -257,4 +281,52 @@ export async function duplicateMachineRowIds(params: {
   }
 
   return [...ids]
+}
+
+/**
+ * Free a hostname held by a stale duplicate of this same machine.
+ *
+ * Called after a rename hits the `(workspaceId, userId, hostname)` unique key.
+ * Returns true when the other row was a leftover of this machine (same device
+ * id, or the same `metadata.machine.id` on a row that predates device ids) and
+ * has been deleted, so the caller may retry the rename.
+ *
+ * Another machine that genuinely owns the name is left alone — a MacBook does
+ * not get to take a name from the MacBook next to it — and the caller keeps the
+ * hostname it already had.
+ */
+async function retireDuplicateHostnameRow(
+  tx: any,
+  params: {
+    instanceId: string
+    workspaceId: string
+    userId: string
+    hostname: string
+    deviceId: string | null
+    metadata?: unknown
+  },
+): Promise<boolean> {
+  const conflict = (await tx.instance.findFirst({
+    where: {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      hostname: params.hostname,
+      id: { not: params.instanceId },
+    },
+    select: { id: true, deviceId: true, metadata: true },
+  })) as { id: string; deviceId: string | null; metadata: unknown } | null
+  if (!conflict) return false
+
+  // Device id first; the machine snapshot's own id catches a row created before
+  // device ids existed. Hostname is never the test — that is what forked it.
+  const conflictMachineId = storedMachineId(conflict.metadata)
+  const machineId = params.deviceId ?? storedMachineId(params.metadata)
+  const sameMachine =
+    (Boolean(params.deviceId) && conflict.deviceId === params.deviceId) ||
+    (Boolean(machineId) && conflictMachineId === machineId) ||
+    (Boolean(params.deviceId) && conflictMachineId === params.deviceId)
+  if (!sameMachine) return false
+
+  await tx.instance.deleteMany({ where: { id: conflict.id } })
+  return true
 }
