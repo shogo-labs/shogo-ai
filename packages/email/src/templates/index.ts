@@ -13,6 +13,7 @@ export { wrapInLayout, EMAIL_CONSTANTS, DARK_STYLE_OVERRIDES } from './_layout.j
 export { welcomeTemplate } from './auth/welcome.js'
 export { passwordResetTemplate } from './auth/password-reset.js'
 export { emailVerificationTemplate } from './auth/email-verification.js'
+export { emailOtpTemplate } from './auth/email-otp.js'
 
 // Invitations
 export { workspaceInviteTemplate } from './invitation/workspace-invite.js'
@@ -65,6 +66,7 @@ import { EmailTemplateRegistry } from '../templates.js'
 import { welcomeTemplate } from './auth/welcome.js'
 import { passwordResetTemplate } from './auth/password-reset.js'
 import { emailVerificationTemplate } from './auth/email-verification.js'
+import { emailOtpTemplate } from './auth/email-otp.js'
 import { workspaceInviteTemplate } from './invitation/workspace-invite.js'
 import { projectInviteTemplate } from './invitation/project-invite.js'
 import { inviteAcceptedTemplate } from './invitation/invite-accepted.js'
@@ -101,6 +103,7 @@ export const allTemplates: EmailTemplate[] = [
   welcomeTemplate,
   passwordResetTemplate,
   emailVerificationTemplate,
+  emailOtpTemplate,
   workspaceInviteTemplate,
   projectInviteTemplate,
   inviteAcceptedTemplate,

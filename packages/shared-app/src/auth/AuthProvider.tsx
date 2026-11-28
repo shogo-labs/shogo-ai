@@ -69,6 +69,15 @@ export interface AuthContextValue {
   updateUser: (fields: { name?: string; image?: string }) => Promise<void>
   refreshSession: () => Promise<void>
   sendVerificationEmail: (email: string, callbackURL?: string) => Promise<void>
+  /**
+   * Mail a 6-digit sign-in code to `email` (SHO-613). Creates nothing on its
+   * own: the account is made when the code is verified, so the same pair of
+   * calls serves sign-up and sign-in, and works inside an in-app browser where
+   * Google's OAuth is refused.
+   */
+  sendEmailCode: (email: string) => Promise<void>
+  /** Exchange a mailed code for a session (creating the account if the email is new). */
+  signInWithEmailCode: (email: string, code: string) => Promise<void>
   clearError: () => void
 }
 
@@ -525,6 +534,42 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
     })
   }, [authClient])
 
+  const handleSendEmailCode = useCallback(async (email: string) => {
+    setError(null)
+    try {
+      // `sign-in` is the type that both sends the code and allows the account to
+      // be created on verification; better-auth's `email-verification` type
+      // silently declines to mail an address with no account.
+      const { error: err } = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' })
+      if (err) throw toAuthRequestError(err, 'Could not send the code')
+    } catch (e: any) {
+      setError(e.message || 'Could not send the code')
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_up' })
+      }
+      throw e
+    }
+  }, [authClient, onAuthError])
+
+  const handleSignInWithEmailCode = useCallback(async (email: string, code: string) => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const { data, error: err } = await authClient.signIn.emailOtp({ email, otp: code })
+      if (err) throw toAuthRequestError(err, 'That code did not work')
+      if (data?.user) setUser(data.user as AuthUser)
+    } catch (e: any) {
+      const msg = e.message || 'That code did not work'
+      setError(msg)
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_in' })
+      }
+      throw e
+    } finally {
+      setIsLoading(false)
+    }
+  }, [authClient, onAuthError])
+
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
@@ -532,6 +577,8 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       updateUser: handleUpdateUser,
       refreshSession: handleRefreshSession,
       sendVerificationEmail: handleSendVerificationEmail,
+      sendEmailCode: handleSendEmailCode,
+      signInWithEmailCode: handleSignInWithEmailCode,
       clearError: () => setError(null),
     }}>
       {children}

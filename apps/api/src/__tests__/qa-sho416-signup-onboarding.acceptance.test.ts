@@ -43,6 +43,11 @@ mock.module('better-auth/api', () => ({
   createAuthMiddleware: (handler: (ctx: any) => unknown) => handler,
 }))
 
+// `auth.ts` imports `emailOTP` from here while building its plugin list; under
+// a mocked `better-auth` that subpath resolves to a module Bun cannot load
+// (`getEndpoints` is not exported by 1.4.18's api/index.mjs).
+mock.module('better-auth/plugins', () => ({ emailOTP: () => ({ id: 'email-otp' }) }))
+
 mock.module('@better-auth/expo', () => ({ expo: () => ({ id: 'expo-plugin' }) }))
 
 // ─── Mutable state the tests drive ────────────────────────────────────────
@@ -81,6 +86,10 @@ mock.module('../services/auth-integrations', () => ({
     state.track.push(event)
   },
   resolveAttributionForUser: async () => {},
+  // `auth.ts` builds its plugin list, which imports this at module scope
+  // (SHO-613). A stub that omits it makes Bun throw `Export named ... not
+  // found` before a single test runs.
+  sendVerificationCodeEmail: async () => ({ success: true }),
 }))
 
 mock.module('../services/project-auth-config.service', () => ({

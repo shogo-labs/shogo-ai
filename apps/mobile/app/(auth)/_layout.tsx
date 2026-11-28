@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect, useMemo } from 'react'
-import { Stack, Redirect, useSegments } from 'expo-router'
+import { Stack, Redirect, useGlobalSearchParams, useSegments } from 'expo-router'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { loadCometlyPixel } from '../../lib/cometly'
 import { captureLearnReturn } from '../../lib/learn-return'
+import { captureSignupIntent } from '../../lib/signup-intent'
 
 export default function AuthLayout() {
   const { isAuthenticated, isLoading } = useAuth()
@@ -16,6 +17,11 @@ export default function AuthLayout() {
   // Read `?learn_return=` during render, before any redirect below rewrites the
   // URL; the root gate sends the user back to learn.shogo.ai once signed in.
   useMemo(() => captureLearnReturn(), [])
+  // Same for the marketing intent (`plan`, `trial`, `prompt`, `utm_*`): it is
+  // taken from the URL of the page the visitor actually landed on, and the
+  // OAuth/verify round trip then lands back on a URL without it (SHO-613).
+  const authParams = useGlobalSearchParams()
+  useMemo(() => captureSignupIntent(authParams), [])
 
   // Cometly (SHO-441): the auth pages are the only place the app loads the
   // pixel — it reads the email/password form itself, and its token is what a
