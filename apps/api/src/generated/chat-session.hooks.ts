@@ -396,8 +396,18 @@ async function cleanupDeletedSession(id: string, ctx: HookContext): Promise<void
  * keeps its transcript in the local `sessions.db`. Local mode has no cloud
  * authz to apply here, so `beforeDelete` only records the scope the purge
  * needs; authorization stays exactly what it was before this hook existed.
+ *
+ * `beforeList` carries the cloud set's default order (`updatedAt: 'desc'`) for
+ * the same reason the message hooks do (SHO-610): without it a paged chat list
+ * comes back in primary-key order, so the sidebar changes order between reads.
+ * The where clause is left to the query params; this only fixes the ordering.
  */
 export const localChatSessionHooks: ChatSessionHooks = {
+  beforeList: async (ctx) => ({
+    ok: true,
+    // A caller that states an order keeps it; otherwise most recently active first.
+    data: ctx.query.orderBy ? {} : { orderBy: { updatedAt: 'desc' } },
+  }),
   beforeDelete: async (id, ctx) => {
     const session = (await ctx.prisma.chatSession.findUnique({
       where: { id },
