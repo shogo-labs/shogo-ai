@@ -1296,6 +1296,14 @@ model SignupAttribution {
   landingPage  String?
   signupMethod String?
   sourceTag    String?
+  // Ad-platform click ids and Meta's browser cookies (SHO-611). Mirrors
+  // `prisma/schema.prisma`; nothing here is dialect-specific.
+  fbclid             String?
+  gclid              String?
+  fbc                String?
+  fbp                String?
+  // The website's PostHog anonymous id, carried to studio links as `ph_did`.
+  posthogDistinctId  String?
   createdAt    DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -113,7 +113,10 @@ export default function SignInScreen() {
           ? `${window.location.origin}/sign-in?next=${encodeURIComponent(nextPath)}`
           : undefined
       const result = await signUp(name, email, password, verifyCallback ? { callbackURL: verifyCallback } : undefined)
-      trackSignUp('email')
+      // `signup_<userId>`, the same id the server's CompleteRegistration uses.
+      // No id in the response (an older API) means no browser pixel event rather
+      // than a duplicate conversion Meta cannot dedupe.
+      if (result.userId) trackSignUp('email', result.userId)
       // The first authenticated page reports Cometly's `custom_event_2`.
       markNewSignup()
       sendEmailAttribution()

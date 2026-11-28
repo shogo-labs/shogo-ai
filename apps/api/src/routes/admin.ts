@@ -1904,6 +1904,12 @@ type AttributionFields = {
   landingPage?: string | null
   signupMethod?: string | null
   sourceTag?: string | null
+  /** Click ids and Meta's cookies, stored by the server since SHO-611. */
+  fbclid?: string | null
+  gclid?: string | null
+  fbc?: string | null
+  fbp?: string | null
+  posthogDistinctId?: string | null
 }
 
 /**
@@ -1927,6 +1933,11 @@ export function enrichOnlyPatch(
     'referrer',
     'landingPage',
     'signupMethod',
+    'fbclid',
+    'gclid',
+    'fbc',
+    'fbp',
+    'posthogDistinctId',
   ]
   for (const field of fields) {
     const value = incoming[field]
@@ -1980,6 +1991,11 @@ export function userAttributionRoute(): Hono {
           landingPage: body.landingPage || null,
           signupMethod: body.method || null,
           sourceTag,
+          fbclid: body.fbclid || null,
+          gclid: body.gclid || null,
+          fbc: body.fbc || null,
+          fbp: body.fbp || null,
+          posthogDistinctId: body.phDid || body.posthogDistinctId || null,
         },
         // Enrich only (SHO-258 §7): the server writes the row at signup, so this
         // endpoint fills in whatever the cookie did not carry and never clobbers
@@ -1997,6 +2013,11 @@ export function userAttributionRoute(): Hono {
             landingPage: true,
             signupMethod: true,
             sourceTag: true,
+            fbclid: true,
+            gclid: true,
+            fbc: true,
+            fbp: true,
+            posthogDistinctId: true,
           },
         }), {
           utmSource: body.utmSource,
@@ -2008,6 +2029,11 @@ export function userAttributionRoute(): Hono {
           landingPage: body.landingPage,
           signupMethod: body.method,
           sourceTag,
+          fbclid: body.fbclid,
+          gclid: body.gclid,
+          fbc: body.fbc,
+          fbp: body.fbp,
+          posthogDistinctId: body.phDid || body.posthogDistinctId,
         }),
       })
 

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import { PLAN_PRICING } from './billing-config'
+import { signupEventId } from '@shogo/shared-app/conversion-events'
 
 declare global {
   interface Window {
@@ -29,19 +30,29 @@ function gtag(...args: unknown[]) {
   window.gtag?.(...args)
 }
 
-export function trackSignUp(method: 'email' | 'google' | 'apple') {
-  const eventId = generateEventId('signup')
-
+/**
+ * A new account was created. The id is `signup_<userId>` so the server's
+ * CompleteRegistration (Conversions API, sent from `user.create.after`) and
+ * this pixel event are one conversion to Meta, not two (SHO-611). The caller
+ * passes the id it just got — `signUp`'s result, or the signed-in `user.id`
+ * after an OAuth round trip.
+ */
+export function trackSignUp(method: 'email' | 'google' | 'apple', userId: string) {
   fbq('track', 'CompleteRegistration', {
     content_name: method,
     status: true,
-  }, { eventID: eventId })
+  }, { eventID: signupEventId(userId) })
 
   gtag('event', 'sign_up', { method })
 }
 
+/**
+ * A sign-in, not a sign-up. This used to report `Lead`, which made every
+ * returning user look like a new ad lead and trained Meta on the wrong event
+ * (SHO-611). It is a custom event now; nothing in the app fires `Lead`.
+ */
 export function trackLogin(method: 'email' | 'google' | 'apple') {
-  fbq('track', 'Lead', {
+  fbq('trackCustom', 'Login', {
     content_name: method,
   })
 
@@ -99,6 +110,14 @@ export function trackInitiateCheckout(params: {
   })
 }
 
+/**
+ * A checkout was paid. `sessionId` is the Stripe checkout session id, which is
+ * also the server's event id (`Purchase` = the id, `Subscribe` = the id +
+ * `_sub`), so Stripe's webhook and this pixel event dedupe to one conversion.
+ *
+ * With no session id there is no id to dedupe on, so the pixel events are
+ * skipped entirely — the server event still counts the purchase.
+ */
 export function trackPurchase(params: {
   planId?: string
   billingInterval?: string
@@ -114,26 +133,28 @@ export function trackPurchase(params: {
       ? lookupPlanValue(params.planId, params.billingInterval, params.seats)
       : undefined)
   const currency = hasChargedValue && params.currency ? params.currency.toUpperCase() : 'USD'
-  const eventId = params.sessionId ?? generateEventId('purchase')
+  const eventId = params.sessionId
 
-  // Primary conversion event for ad optimization
-  fbq('track', 'Purchase', {
-    content_ids: params.planId ? [params.planId] : undefined,
-    content_name: params.planId,
-    content_category: 'subscription',
-    content_type: 'product',
-    currency,
-    value,
-    num_items: 1,
-  }, { eventID: eventId })
+  if (eventId) {
+    // Primary conversion event for ad optimization
+    fbq('track', 'Purchase', {
+      content_ids: params.planId ? [params.planId] : undefined,
+      content_name: params.planId,
+      content_category: 'subscription',
+      content_type: 'product',
+      currency,
+      value,
+      num_items: 1,
+    }, { eventID: eventId })
 
-  // Subscription-specific event for Meta reporting
-  fbq('track', 'Subscribe', {
-    content_name: params.planId,
-    currency,
-    value,
-    predicted_ltv: value != null ? value * 12 : undefined,
-  }, { eventID: `${eventId}_sub` })
+    // Subscription-specific event for Meta reporting
+    fbq('track', 'Subscribe', {
+      content_name: params.planId,
+      currency,
+      value,
+      predicted_ltv: value != null ? value * 12 : undefined,
+    }, { eventID: `${eventId}_sub` })
+  }
 
   gtag('event', 'purchase', {
     currency,
