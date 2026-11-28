@@ -390,6 +390,13 @@ jobs:
       - name: Storage-health deploy gate (SHO-514)
         run: bash .github/scripts/test/verify_storage_health_test.sh
 
+      - name: API revision GC restarts the activator (WO-5)
+        # The revision GC runs only inside a real region deploy, where a bad
+        # edit costs a whole release — and the leak it fixes (per-revision
+        # activator reporters outliving their Revision) was 99.8% of the
+        # plane's ERROR volume for weeks. Cover it on every PR.
+        run: bash .github/scripts/test/gc_api_revisions_test.sh
+
       # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
       - name: Shogo Code extension (typecheck, phase checks)
         run: |
