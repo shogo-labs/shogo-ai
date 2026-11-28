@@ -12,7 +12,12 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { lastTurnStartedBackgroundWork, watchForNotifyWake } from '../notify-task-watch'
+import {
+  NOTIFY_TASK_BACKOFF,
+  lastTurnStartedBackgroundWork,
+  listedTaskPollInterval,
+  watchForNotifyWake,
+} from '../notify-task-watch'
 import type { ChatTurnStatus } from '../probe-turn-status'
 
 function harness(script: {
@@ -208,5 +213,86 @@ describe('lastTurnStartedBackgroundWork', () => {
   test('no assistant turn yet', () => {
     expect(lastTurnStartedBackgroundWork([user])).toBe(false)
     expect(lastTurnStartedBackgroundWork([])).toBe(false)
+  })
+})
+
+describe('watchForNotifyWake — PERF-35 back-off', () => {
+  /** A clock that advances by exactly what the watch asks to sleep. */
+  function timed(script: {
+    tasksAt: (ms: number) => readonly string[] | null
+    hiddenAt?: (ms: number) => boolean
+    untilMs: number
+  }) {
+    let clock = 0
+    const sleeps: number[] = []
+    const probesAt: number[] = []
+    const run = watchForNotifyWake({
+      probeTasks: async () => {
+        probesAt.push(clock)
+        return script.tasksAt(clock)
+      },
+      probeTurn: async () => 'unknown',
+      attach: () => {},
+      reload: async () => {},
+      isCancelled: () => clock >= script.untilMs,
+      isHidden: script.hiddenAt ? () => script.hiddenAt!(clock) : undefined,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+        clock += ms
+      },
+      now: () => clock,
+      intervalMs: 5_000,
+      maxWaitMs: 5 * 60_000,
+    })
+    return { run, sleeps, probesAt }
+  }
+
+  test('the interval steps 5 s → 30 s → 60 s', () => {
+    expect(listedTaskPollInterval(0)).toBe(5_000)
+    expect(listedTaskPollInterval(59_999)).toBe(5_000)
+    expect(listedTaskPollInterval(60_000)).toBe(30_000)
+    expect(listedTaskPollInterval(10 * 60_000 - 1)).toBe(30_000)
+    expect(listedTaskPollInterval(10 * 60_000)).toBe(60_000)
+    expect(NOTIFY_TASK_BACKOFF.length).toBeGreaterThan(0)
+  })
+
+  test('a task listed for an hour is probed ~80 times, not 720', async () => {
+    const { run, probesAt } = timed({ tasksAt: () => ['t1'], untilMs: 60 * 60_000 })
+    await run
+    // 12 in the first minute, 18 to minute ten, 50 to the hour.
+    expect(probesAt.length).toBeLessThanOrEqual(82)
+    expect(probesAt.length).toBeGreaterThanOrEqual(78)
+  })
+
+  test('a new task resets the back-off to the fast interval', async () => {
+    const { run, sleeps, probesAt } = timed({
+      tasksAt: (ms) => (ms < 20 * 60_000 ? ['t1'] : ['t1', 't2']),
+      untilMs: 21 * 60_000,
+    })
+    await run
+    const firstAfterSwitch = probesAt.findIndex((at) => at >= 20 * 60_000)
+    expect(sleeps[firstAfterSwitch - 1]).toBe(60_000)
+    expect(sleeps[firstAfterSwitch]).toBe(5_000)
+  })
+
+  test('the wake wait after the list empties is still fast', async () => {
+    const { run, sleeps, probesAt } = timed({
+      tasksAt: (ms) => (ms < 30 * 60_000 ? ['t1'] : []),
+      untilMs: 31 * 60_000,
+    })
+    await run
+    const firstEmpty = probesAt.findIndex((at) => at >= 30 * 60_000)
+    expect(sleeps.slice(firstEmpty)).toEqual(sleeps.slice(firstEmpty).map(() => 5_000))
+  })
+
+  test('a hidden tab asks nothing, and resumes at once when shown', async () => {
+    const { run, probesAt } = timed({
+      tasksAt: () => ['t1'],
+      hiddenAt: (ms) => ms >= 10_000 && ms < 30 * 60_000,
+      untilMs: 30 * 60_000 + 10_000,
+    })
+    await run
+    expect(probesAt.filter((at) => at >= 10_000 && at < 30 * 60_000)).toHaveLength(0)
+    expect(probesAt.some((at) => at >= 30 * 60_000 && at <= 30 * 60_000 + 5_000)).toBe(true)
   })
 })

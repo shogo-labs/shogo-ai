@@ -5534,6 +5534,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       reload: () => reloadPersistedResponse({ requireReply: false }),
       isSettled: settled,
       isCancelled: () => cancelled || isStreamingRef.current,
+      isHidden: () =>
+        typeof document !== "undefined" && document.visibilityState === "hidden",
       intervalMs: NOTIFY_WAKE_POLL_INTERVAL_MS,
       maxWaitMs: NOTIFY_WAKE_MAX_WAIT_MS,
       onError: (error) => {
