@@ -74,6 +74,46 @@ export async function toggleSaved(messageId: string, on: boolean): Promise<void>
   }
 }
 
+/**
+ * How many messages are saved in this workspace, for a nav badge.
+ *
+ * `savedIds` above is a union across workspaces (message ids are unique, so the
+ * per-row bookmark stays correct), which makes it the wrong source for a count.
+ * This reads `/saved` for the workspace and follows `saved.changed`. An event
+ * wins over the in-flight load, so a save made while the list is loading is not
+ * overwritten by the older response.
+ */
+export function useSavedCount(workspaceId: string | null | undefined): number {
+  const [count, setCount] = useState(0)
+  const changedSinceLoad = useRef(false)
+
+  useEffect(() => {
+    changedSinceLoad.current = false
+    if (!workspaceId) {
+      setCount(0)
+      return
+    }
+    let cancelled = false
+    api
+      .saved(workspaceId)
+      .then((items) => {
+        if (!cancelled && !changedSinceLoad.current) setCount(items.length)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  useTeamChatEvents(workspaceId, (event) => {
+    if (event.type !== 'saved.changed') return
+    changedSinceLoad.current = true
+    setCount((n) => Math.max(0, n + (event.saved ? 1 : -1)))
+  })
+
+  return count
+}
+
 // ─── Drafts ──────────────────────────────────────────────────────────────────
 
 const drafts = createStore<Map<string, string>>(new Map())

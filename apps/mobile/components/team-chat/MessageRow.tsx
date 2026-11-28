@@ -12,6 +12,7 @@ import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, ClipboardCopy, CornerDownRight, FileText, Headphones, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, NotebookPen, Pencil, Pin, SmilePlus, Trash2, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Toast, ToastTitle, useToast } from '../ui/toast'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import type { MentionTarget } from '../chat/file-links'
 import { SidebarContextMenu, type SidebarMenuEntry, type SidebarMenuItem } from '../layout/SidebarContextMenu'
@@ -829,6 +830,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const active = hovered || !!menu || pickerOpen
   const [editing, setEditing] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const toast = useToast()
   const saved = useIsSaved(message.id)
   const customEmoji = useCustomEmoji()
   const jumboSize = Math.round(bodyTextSize(useMobileWorkspaceChrome()) * JUMBO_EMOJI_SCALE)
@@ -923,7 +925,37 @@ function MessageRowImpl(props: MessageRowProps) {
   }
   const markUnread = props.onMarkUnread && !inThread && !message.threadRootId ? () => props.onMarkUnread!(message) : null
   const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
-  const save = () => void toggleSaved(message.id, !saved).catch(() => {})
+  /**
+   * Saving left only a badge on the message, so a save looked like it went
+   * nowhere. Say where it went, and let the toast open the list.
+   */
+  const save = () => {
+    const next = !saved
+    void toggleSaved(message.id, next)
+      .then(() => {
+        if (!next) return
+        toast.show({
+          id: 'saved-to-later',
+          placement: 'top',
+          duration: 6000,
+          render: ({ id }: { id: string }) => (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="View saved messages"
+              onPress={() => {
+                toast.close(id)
+                router.push('/(app)/c/later' as any)
+              }}
+            >
+              <Toast nativeID={id} variant="solid" action="success">
+                <ToastTitle>Saved · View Later</ToastTitle>
+              </Toast>
+            </Pressable>
+          ),
+        })
+      })
+      .catch(() => {})
+  }
   const remind = (at: Date) => {
     if (!props.workspaceId) return
     void api.createReminder(props.workspaceId, { messageId: message.id, remindAt: at.toISOString() }).catch(() => {})

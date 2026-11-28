@@ -229,6 +229,13 @@ mock.module('../../../hooks/useChatItems', () => ({
   useIsSaved: () => false,
   toggleSaved: async () => {},
 }))
+// The save toast pulls in motion + safe-area modules this suite does not mock;
+// what matters here is that saving calls `toggleSaved`, which the mock above records.
+mock.module('../../ui/toast', () => ({
+  useToast: () => ({ show: () => {}, close: () => {} }),
+  Toast: ({ children }: { children?: unknown }) => children,
+  ToastTitle: ({ children }: { children?: unknown }) => children,
+}))
 mock.module('../../../hooks/useChatPrefs', () => ({
   useUserStatus: () => null,
 }))

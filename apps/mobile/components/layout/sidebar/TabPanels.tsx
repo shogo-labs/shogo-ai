@@ -13,6 +13,7 @@ import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { useDomainHttp } from '../../../contexts/domain'
+import { useSavedCount } from '../../../hooks/useChatItems'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
@@ -45,7 +46,9 @@ export function HomePanel({ onNavPress }: HomePanelProps) {
   const router = useRouter()
   const chat = useTeamChatNav()
   const experience = useWorkspaceExperience()
+  const workspace = useActiveWorkspace()
   const { features } = usePlatformConfig()
+  const savedCount = useSavedCount(experience.kind === 'team' ? workspace?.id : null)
 
   return (
     <View testID="home-panel">
@@ -56,6 +59,8 @@ export function HomePanel({ onNavPress }: HomePanelProps) {
           <PanelLink
             icon={Bookmark}
             label="Later"
+            count={savedCount}
+            countNoun="saved"
             onPress={() => {
               router.push('/(app)/c/later' as any)
               onNavPress?.()

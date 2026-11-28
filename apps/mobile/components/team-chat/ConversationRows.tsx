@@ -331,17 +331,19 @@ export interface PanelLinkProps {
   icon: React.ElementType
   label: string
   count?: number
+  /** What the count counts, for screen readers. Unread unless the row says otherwise. */
+  countNoun?: string
   onPress: () => void
 }
 
 /** A plain action row: an icon, a label and an optional count. */
-export function PanelLink({ icon: Icon, label, count = 0, onPress }: PanelLinkProps) {
+export function PanelLink({ icon: Icon, label, count = 0, countNoun = 'unread', onPress }: PanelLinkProps) {
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={count ? `${label}, ${count} unread` : label}
+      accessibilityLabel={count ? `${label}, ${count} ${countNoun}` : label}
       onPress={onPress}
       className={cn(
         'flex-row items-center',
