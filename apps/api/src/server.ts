@@ -24,14 +24,21 @@ import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/inst
 import { diskAddonMonthlyUsd } from './config/disk-pricing'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
-import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
+import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer, RAW_REGION_ID } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { slidesViewerRoutes } from './routes/slides-viewer'
 import { documentViewerRoutes } from './routes/document-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
-import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
+import {
+  RuntimeNotInHomeRegionError,
+  getWorkspaceHomeRegion,
+  isNotInHomeRegion,
+  runtimeOriginFor,
+  runtimeNotInHomeRegionResponse,
+  runtimeNotInHomeRegionUpgradeResponse,
+} from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceRootRoutes } from './routes/workspace-root'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
@@ -80,6 +87,7 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
 import { projectBucketPublicRoutes, projectBucketRoutes } from './routes/project-bucket'
+import { bucketApiOrigin } from './services/project-bucket.service'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
@@ -937,6 +945,26 @@ app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isPro
 // HOME_REGION_ROUTING=shadow|enforce. Registered after requireProjectAccess so
 // project routes have already cached c.get('workspaceId').
 app.use('/api/*', homeRegionWriteProxy)
+
+// The origin a workspace's runtime — and the terminal/port/preview WebSocket
+// bridges in front of it — is actually reachable on.
+//
+// Those bridges are upgraded before Hono, so they cannot be proxied to the home
+// region: a client that connected to the wrong region gets a typed 409 and has
+// to reconnect elsewhere, and it can only learn "elsewhere" over a path that CAN
+// be pinned. This route is under the blanket project pin above, so the request
+// is served by the home region and that region's own origin is the answer (the
+// explicit peer branch covers a pin that was skipped).
+app.get('/api/projects/:projectId/runtime-origin', async (c) => {
+  const workspaceId = c.get('workspaceId') as string | undefined
+  const homeRegion = workspaceId ? await getWorkspaceHomeRegion(workspaceId).catch(() => null) : null
+  const origin = runtimeOriginFor(homeRegion, {
+    region: RAW_REGION_ID,
+    selfOrigin: bucketApiOrigin(),
+    peerUrl: (id) => getPeer(id)?.url,
+  })
+  return c.json({ origin })
+})
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -11534,6 +11562,13 @@ export default {
           if (upgraded) return undefined
           return new Response('PTY WebSocket upgrade failed', { status: 500 })
         } catch (err: any) {
+          // A workspace homed in another region is a typed refusal, not an
+          // outage: answer 409 {homeRegion} so the client reconnects there
+          // instead of retrying this region forever.
+          if (isNotInHomeRegion(err)) {
+            console.warn(`[TerminalProxy] WS refused: workspace is homed in ${err.homeRegion}, not ${err.region}`)
+            return runtimeNotInHomeRegionUpgradeResponse(err)
+          }
           console.error('[TerminalProxy] WS runtime-resolve failed:', err?.message ?? err)
           return new Response('Runtime unavailable', { status: 503 })
         }
@@ -11577,6 +11612,10 @@ export default {
           if (upgraded) return undefined
           return new Response('Port tunnel WebSocket upgrade failed', { status: 500 })
         } catch (err: any) {
+          if (isNotInHomeRegion(err)) {
+            console.warn(`[PortTunnel] WS refused: workspace is homed in ${err.homeRegion}, not ${err.region}`)
+            return runtimeNotInHomeRegionUpgradeResponse(err)
+          }
           console.error('[PortTunnel] WS runtime-resolve failed:', err?.message ?? err)
           return new Response('Runtime unavailable', { status: 503 })
         }
@@ -11617,6 +11656,10 @@ export default {
           if (upgraded) return undefined
           return new Response('Preview WebSocket upgrade failed', { status: 500 })
         } catch (err: any) {
+          if (isNotInHomeRegion(err)) {
+            console.warn(`[preview/port-ws] WS refused: workspace is homed in ${err.homeRegion}, not ${err.region}`)
+            return runtimeNotInHomeRegionUpgradeResponse(err)
+          }
           console.error('[preview/port-ws] runtime-resolve failed:', err?.message ?? err)
           return new Response('Runtime unavailable', { status: 503 })
         }
