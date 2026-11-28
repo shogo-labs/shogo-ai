@@ -81,7 +81,7 @@
   "services/chat-providers/outbound.ts": 1,
   "services/chat-providers/question-actions.ts": 1,
   "services/chat-providers/slack-adopt.ts": 1,
-  "services/chat-queue-dispatcher.service.ts": 36,
+  "services/chat-queue-dispatcher.service.ts": 35,
   "services/chat-sent.ts": 1,
   "services/chat-session-label.ts": 1,
   "services/chat-settings.ts": 1,

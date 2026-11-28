@@ -118,6 +118,11 @@ function pausedRows(sessionId: string) {
   return db.chatQueuedMessage.findMany({ where: { sessionId, status: 'failed' } })
 }
 
+/** Every task id the runtime has actually been woken with, across turns. */
+function deliveredIds(): string[] {
+  return dispatched.flatMap((body) => (body.taskNotification?.taskIds ?? []) as string[])
+}
+
 beforeAll(async () => {
   seed = await seedWorkspace(db)
 })
@@ -169,14 +174,16 @@ describe('SHO-92 · a paused wake is held, not retried', () => {
     expect(rows[0]!.createdAt.getTime()).toBe(rowCreatedAt)
     expect(dispatched).toHaveLength(0)
 
-    // A person writes: the pause lifts and both owed updates arrive.
+    // A person writes: the pause lifts and both owed updates arrive. SHO-604
+    // merges the queued wakes, so how many turns that takes depends on the
+    // batch — both tasks must simply arrive, each exactly once.
     await personWrites(session)
     await tasks.sweepUnnotifiedWakes()
     await dispatchNext(session)
     await dispatchNext(session)
-    await waitFor(async () => (dispatched.length >= 2 ? true : null), 5_000)
+    await waitFor(async () => (deliveredIds().length >= 2 ? true : null), 5_000)
 
-    const woken = dispatched.flatMap((body) => body.taskNotification.taskIds as string[]).sort()
+    const woken = deliveredIds().sort()
     expect(woken).toEqual([first.id, second.id].sort())
     for (const task of [first, second]) {
       expect((await db.backgroundTask.findUnique({ where: { id: task.id } })).consumed).toBe(true)
@@ -187,7 +194,7 @@ describe('SHO-92 · a paused wake is held, not retried', () => {
     // Nothing is delivered a second time on later ticks.
     await tasks.sweepUnnotifiedWakes()
     await dispatchNext(session)
-    expect(dispatched).toHaveLength(2)
+    expect(deliveredIds()).toHaveLength(2)
   }, 30_000)
 
   test('a wake that gave up after five attempts is never revived, even when a person writes', async () => {

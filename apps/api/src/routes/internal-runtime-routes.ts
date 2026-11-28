@@ -3955,7 +3955,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     throw err
   }
 
-  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until?, link? } */
+  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until?, link?, wakeAlone? } */
   app.post('/tasks', async (c) => {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
@@ -3971,6 +3971,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         title: String(body!.title ?? ''),
         until: typeof body!.until === 'string' ? body!.until : null,
         link: body!.link,
+        // `wake: "alone"` from the runtime: this task's update gets its own turn.
+        wakeAlone: body!.wakeAlone === true,
       })
       return c.json({ task: viewOf(row) }, 201)
     } catch (err) {
@@ -4007,7 +4009,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return c.json({ consumed: await consumeTasks(allowed) })
   })
 
-  /** POST /api/internal/tasks/notify  body: { chatSessionId, tasks: [{ id, source, title, status, text }] } */
+  /** POST /api/internal/tasks/notify  body: { chatSessionId, tasks: [{ id, source, title, status, text, wakeAlone? }] } */
   app.post('/tasks/notify', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { chatSessionId?: unknown; tasks?: unknown } | null
     const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''

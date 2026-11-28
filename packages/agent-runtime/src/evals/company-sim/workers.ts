@@ -312,22 +312,36 @@ export class Workforce {
       const next = this.nextEvent()
       if (!next || next.at.getTime() > target.getTime()) break
       this.host.setNow(next.at)
-      next.fire()
+      // Runs that stop at the same instant stop together, so one wake carries
+      // them all: production coalesces a burst into one [Task update] message
+      // (one block per task, SHO-604), and stopping only the first here would
+      // make the sim pretend the others arrived a turn later.
+      const at = next.at.getTime()
+      if (next.kind !== 'run') {
+        next.fire()
+        continue
+      }
+      for (let same = 0; same < 100; same++) {
+        const due = this.nextEvent()
+        if (!due || due.kind !== 'run' || due.at.getTime() !== at) break
+        this.host.setNow(due.at)
+        due.fire()
+      }
     }
     if (!stop?.()) this.host.setNow(target)
   }
 
-  private nextEvent(): { at: Date; fire: () => void } | null {
-    let best: { at: Date; fire: () => void } | null = null
-    const consider = (at: Date, fire: () => void) => { if (!best || at.getTime() < best.at.getTime()) best = { at, fire } }
+  private nextEvent(): { at: Date; fire: () => void; kind: 'run' | 'reply' } | null {
+    let best: { at: Date; fire: () => void; kind: 'run' | 'reply' } | null = null
+    const consider = (kind: 'run' | 'reply', at: Date, fire: () => void) => { if (!best || at.getTime() < best.at.getTime()) best = { at, fire, kind } }
     for (const run of this.runs) {
       if (run.status !== 'running') continue
       const beat = this.beatsOf(run)[run.next]
       const after = run.kind === 'reply' ? 1 : beat?.afterHours
       if (after === undefined) continue
-      consider(new Date(Date.parse(run.clock) + after * HOUR), () => this.play(run))
+      consider('run', new Date(Date.parse(run.clock) + after * HOUR), () => this.play(run))
     }
-    for (const p of this.pending) consider(new Date(p.due), () => this.deliver(p))
+    for (const p of this.pending) consider('reply', new Date(p.due), () => this.deliver(p))
     return best
   }
 

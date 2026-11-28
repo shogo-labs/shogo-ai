@@ -97,6 +97,8 @@ interface Marker {
   gap: number
   /** `bg`: the shell command, `_` standing in for a space. */
   cmd?: string
+  /** `bg`: the exec asked for its task's update in a turn of its own. */
+  wake?: 'alone'
   /** `tool`: the file the fake model reads (a path the agent can resolve). */
   path?: string
   /** `tool`: send the same read_file args every round instead of varying them. */
@@ -144,6 +146,8 @@ export function marker(
     empty?: boolean
     /** `tool`: fire this many failing calls in the first round, in one turn. */
     parallel?: number
+    /** `bg`: send `wake: "alone"` with the background exec (its own wake turn). */
+    alone?: boolean
   } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
@@ -155,6 +159,7 @@ export function marker(
   if (options.same) parts.push('same=1')
   if (options.empty) parts.push('empty=1')
   if (options.parallel !== undefined) parts.push(`parallel=${options.parallel}`)
+  if (options.alone) parts.push('wake=alone')
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -190,6 +195,7 @@ function parseMarker(text: string): Marker | null {
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
     ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
+    ...(script === 'bg' && params.wake === 'alone' ? { wake: 'alone' as const } : {}),
     ...(script === 'permission'
       ? {
           cmd: (params.cmd ?? 'chmod_0644_e2e-approval-probe.txt').replace(/_/g, ' '),
@@ -516,7 +522,7 @@ export class FakeLlmServer {
                   id: `call_${parsed.tag}_${round}`,
                   args: JSON.stringify(
                     background
-                      ? { command: parsed.cmd, background: true }
+                      ? { command: parsed.cmd, background: true, ...(parsed.wake ? { wake: parsed.wake } : {}) }
                       : gated
                         ? { command: parsed.cmd, background: false }
                         : toolArgs(parsed.tag, round, parsed.path, mode),

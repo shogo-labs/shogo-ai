@@ -2295,6 +2295,9 @@ model BackgroundTask {
   /// Where the task's work is happening, so the chat dock can open that thread
   /// instead of an empty log: channel thread, card, project session, subagent.
   link          Json?
+  /// `wake: "alone"`: this task's wake runs in its own turn instead of being
+  /// merged with the other updates waiting in the queue.
+  wakeAlone     Boolean   @default(false)
   finishedAt    DateTime?
   expiresAt     DateTime
   createdAt     DateTime  @default(now())

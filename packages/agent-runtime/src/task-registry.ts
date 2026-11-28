@@ -255,6 +255,11 @@ export interface TaskEntry {
   ref?: string
   /** Where this task's work is happening, for the dock's "open the thread" action. */
   link?: TaskLink
+  /**
+   * `wake: "alone"`: this task's [Task update] gets a turn of its own instead of
+   * riding in a wake with the other updates waiting in the queue (SHO-604).
+   */
+  wakeAlone?: boolean
   /** Wake text the API formatted for this task, when it finished. */
   remoteNote?: string
   /** Absolute path of the output file, when output files are enabled. */
@@ -393,6 +398,8 @@ export interface TaskNotification {
    */
   apiTracked?: boolean
   reported?: boolean
+  /** Its wake gets a turn of its own (`wake: "alone"`), never a shared one. */
+  wakeAlone?: boolean
   /** When the task settled; a turn only injects notes that finished after it started. */
   finishedAt?: number
 }
@@ -540,7 +547,7 @@ export class TaskRegistry {
   // ---------------------------------------------------------------------------
 
   /** Register a freshly spawned shell command. */
-  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink; service?: boolean; name?: string } = {}): CommandEntry {
+  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink; service?: boolean; name?: string; wakeAlone?: boolean } = {}): CommandEntry {
     const id = newTaskId()
     let resolveDone!: () => void
     const done = new Promise<void>((r) => { resolveDone = r })
@@ -556,6 +563,7 @@ export class TaskRegistry {
       consumed: false,
       handle,
       link: opts.link,
+      wakeAlone: opts.wakeAlone || undefined,
       service: opts.service || undefined,
       serviceName: opts.name,
       done,
@@ -618,6 +626,8 @@ export class TaskRegistry {
     id?: string
     dormant?: boolean
     link?: TaskLink
+    /** Its [Task update] gets its own turn: `wake: "alone"` (SHO-604). */
+    wakeAlone?: boolean
   }): TaskHandle {
     const id = opts.id ?? newTaskId()
     let resolveDone!: () => void
@@ -635,6 +645,7 @@ export class TaskRegistry {
       backgrounded: opts.backgrounded,
       ref: opts.ref,
       link: opts.link,
+      wakeAlone: opts.wakeAlone || undefined,
       dormant: opts.dormant || undefined,
       done,
     }
@@ -883,6 +894,7 @@ export class TaskRegistry {
       remote: entry.remote,
       apiTracked: entry.apiTracked || undefined,
       reported: entry.reported || undefined,
+      wakeAlone: entry.wakeAlone || undefined,
       finishedAt: entry.finishedAt,
     }
   }

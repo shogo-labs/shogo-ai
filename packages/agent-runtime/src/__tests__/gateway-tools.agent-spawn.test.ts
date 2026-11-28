@@ -257,6 +257,31 @@ describe('agent_spawn normal mode (type specified)', () => {
     expect(String(r.hint)).toContain('wait({ task_ids: [task_id] })')
   })
 
+  test('a background spawn with wake: "alone" marks its task so the update gets its own turn (SHO-604)', async () => {
+    const am = makeAgentManager({ instanceId: 'bg-inst-alone' })
+    const registry = new TaskRegistry()
+    const ctx = makeCtx({ agentManager: am, uiWriter: makeWriter(), commandRegistry: registry })
+    const r = await exec(ctx, 'agent_spawn', {
+      type: 'general-purpose',
+      prompt: 'long running task',
+      background: true,
+      wake: 'alone',
+    })
+    const entry = registry.get('bg-inst-alone')!
+    expect(entry.wakeAlone).toBe(true)
+    expect(registry.buildNotification(entry).wakeAlone).toBe(true)
+  })
+
+  test('a background spawn without wake marks no task alone', async () => {
+    const am = makeAgentManager({ instanceId: 'bg-inst-batch' })
+    const registry = new TaskRegistry()
+    const ctx = makeCtx({ agentManager: am, uiWriter: makeWriter(), commandRegistry: registry })
+    await exec(ctx, 'agent_spawn', { type: 'general-purpose', prompt: 'long running task', background: true })
+    const entry = registry.get('bg-inst-batch')!
+    expect(entry.wakeAlone).toBeUndefined()
+    expect(registry.buildNotification(entry).wakeAlone).toBeUndefined()
+  })
+
   test('instance lost after spawn returns error', async () => {
     const am = makeAgentManager({ noInstance: true })
     const ctx = makeCtx({ agentManager: am })

@@ -6,6 +6,7 @@ setupChannelsTestDb()
 const dispatched: any[] = []
 mock.module('../lib/runtime', () => ({ getRuntimeManager: () => ({}) }))
 mock.module('../routes/project-chat', () => ({
+  trackUsageFromStream: async () => undefined,
   projectChatRoutes: () => ({
     fetch: async (request: Request) => {
       dispatched.push(JSON.parse(await request.text()))
@@ -16,6 +17,7 @@ mock.module('../routes/project-chat', () => ({
 
 const { prisma } = await import('../lib/prisma')
 const tasks = await import('../services/background-tasks.service')
+const { dispatchNext } = await import('../services/chat-queue-dispatcher.service')
 const db = prisma as any
 let seed: SeededWorkspace
 
@@ -48,7 +50,7 @@ describe('one message per finished task', () => {
     }
     tasks._testing.clearTimers()
 
-    await tasks.enqueueTaskWake(session)
+    await tasks.enqueueTaskWake(session, { dispatch: false })
 
     const rows = await db.chatQueuedMessage.findMany({
       where: { sessionId: session },
@@ -60,6 +62,13 @@ describe('one message per finished task', () => {
     for (const row of rows) {
       expect((row.content.match(/\[Task update\]/g) ?? []).length).toBe(1)
     }
+
+    // The rows stay per task, but the drain delivers them as one turn (SHO-604).
+    await dispatchNext(session)
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].taskNotification.taskIds).toHaveLength(3)
+    expect((dispatched[0].text.match(/\[Task update\]/g) ?? []).length).toBe(3)
+    expect(await db.chatQueuedMessage.count({ where: { sessionId: session } })).toBe(0)
   })
 
   test('a burst is queued in finish order, not in the order the tasks were created', async () => {

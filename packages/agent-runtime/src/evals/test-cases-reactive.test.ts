@@ -177,4 +177,36 @@ describe('reactive cases', () => {
     expect(grade(e, s, 'You do not need one: I hear the moment P0-2 lands in Review or the engineer stops, and act right away.')['explains-reactive']).toBe(true)
     expect(grade(e, s, 'Done, hourly check set.')['explains-reactive']).toBe(false)
   })
+
+  test('batch-three-finishes: the three stops arrive in one wake, one block each', () => {
+    const w = new CompanyWorld(byId('react-batch-three-finishes').sim!)
+    const wake = w.nextWake()!
+    expect(wake.kind).toBe('task')
+    expect(wake.runs).toHaveLength(3)
+    expect(wake.text.match(/\[Task update\]/g)).toHaveLength(3)
+    expect(wake.at).toBe('2026-10-14T18:00:00.000Z')
+  })
+
+  test('batch-three-finishes: reading every block passes, reading the first one fails', () => {
+    const e = byId('react-batch-three-finishes')
+    /** Acting on the wake: close every card it names, then hand the next one on. */
+    const allBlocks = (w: CompanyWorld, wake: SimWake | null) => {
+      if (!wake || wake.kind !== 'task') return
+      for (const i of w.snapshot().items.filter((x) => x.column === 'Review')) w.handle('work_item_move', { item: i.key, column: 'Done' })
+      const next = nextOpen(w.snapshot())
+      if (next) w.handle('work_item_update', { item: next.key, assignee_agent: 'Samsara Engineer' })
+    }
+    /** The failure this grades: the first block only, and nothing handed on. */
+    const firstBlock = (w: CompanyWorld, wake: SimWake | null) => {
+      if (!wake || wake.kind !== 'task') return
+      const first = w.snapshot().items.find((x) => x.column === 'Review')
+      if (first) w.handle('work_item_move', { item: first.key, column: 'Done' })
+    }
+
+    expect(grade(e, play(e, allBlocks), '')).toEqual(Object.fromEntries(e.validationCriteria.map((c) => [c.id, true])))
+    const partial = grade(e, play(e, firstBlock), '')
+    expect(partial['closed-any']).toBe(true)
+    expect(partial['closed-all-three']).toBe(false)
+    expect(partial['handed-next-same-turn']).toBe(false)
+  })
 })

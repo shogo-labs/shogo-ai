@@ -1897,7 +1897,7 @@ function withPatternSelfMatchSteering(tool: AgentTool): AgentTool {
 function createExecTool(ctx: ToolContext): AgentTool {
   return withPatternSelfMatchSteering(withSleepPollSteering({
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running. A background task is stopped after 6 h (env \`SHOGO_EXEC_BACKGROUND_MAX_MS\`); if the command is a long-running service rather than a job with an end, declare it with \`service: true\` — it is exempt from the cap and is restarted after a runtime restart or a VM recycle.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running. A background task is stopped after 6 h (env \`SHOGO_EXEC_BACKGROUND_MAX_MS\`); if the command is a long-running service rather than a job with an end, declare it with \`service: true\` — it is exempt from the cap and is restarted after a runtime restart or a VM recycle. \`wake: "alone"\` delivers this task\'s [Task update] in its own turn instead of with other pending updates.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1924,14 +1924,20 @@ function createExecTool(ctx: ToolContext): AgentTool {
       name: Type.Optional(
         Type.String({ description: 'Service name (with `service: true`), used to match it across a restart. Defaults to the command.' }),
       ),
+      wake: Type.Optional(
+        Type.Literal('alone', {
+          description: "Deliver this task's [Task update] in its own turn instead of with the other updates that are waiting.",
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false, service = false, name } = params as {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false, service = false, name, wake } = params as {
         command: string
         timeout?: number
         background?: boolean
         service?: boolean
         name?: string
+        wake?: 'alone'
       }
 
       if (service && !background) {
@@ -2186,6 +2192,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         cwd: currentCwd,
         service: !!serviceMeta,
         name: serviceMeta?.name,
+        wakeAlone: wake === 'alone',
       })
       // A shell task's thread is its own output file — the log the dock shows.
       entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
@@ -9528,7 +9535,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
   return {
     name: 'agent_spawn',
     description:
-      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks). `wake: "alone"` delivers this task\'s [Task update] in its own turn instead of with other pending updates.',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(
@@ -9562,6 +9569,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
           description: 'Instance ID to resume (sends follow-up to existing agent). type may be omitted; the instance keeps its own type.',
         }),
       ),
+      wake: Type.Optional(
+        Type.Literal('alone', {
+          description: "Deliver this task's [Task update] in its own turn instead of with the other updates that are waiting.",
+        }),
+      ),
     }),
     execute: async (toolCallId, params, signal) => {
       const {
@@ -9571,6 +9583,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         readonly: readonlyMode,
         background,
         resume,
+        wake,
       } = params as {
         type?: string
         prompt: string
@@ -9579,6 +9592,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         readonly?: boolean
         background?: boolean
         resume?: string
+        wake?: 'alone'
       }
       let type = (params as { type?: string }).type
 
@@ -9698,6 +9712,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             source: 'subagent',
             title: `${type}: ${prompt.replace(/\s+/g, ' ').trim().slice(0, 80)}`,
             backgrounded: true,
+            wakeAlone: wake === 'alone',
             cancel: () => { if (instanceRef) am.cancel(instanceRef) },
             // While it streams, the dock opens the agent's live view; after that
             // it falls back to this task's log.

@@ -3018,6 +3018,8 @@ export interface TaskNotificationPayload {
   title: string
   status: string
   text: string
+  /** `wake: "alone"`: deliver this update in its own turn, not with the others. */
+  wakeAlone?: boolean
 }
 
 const tasksPath = '/api/internal/tasks'
@@ -3030,6 +3032,8 @@ export async function createBackgroundTask(input: {
   title: string
   until?: string
   link?: TaskLink
+  /** `wake: "alone"`: this task's update gets its own turn, not a shared one. */
+  wakeAlone?: boolean
 }): Promise<CheckpointCallResult<BackgroundTaskState>> {
   return lifecycleFetch(tasksPath, {
     method: 'POST',

@@ -104,6 +104,28 @@ const deliverableNotes = () =>
   registry.peekNotifications().filter((n) => !registry.get(n.taskId)?.apiTracked && !registry.get(n.taskId)?.reported)
 
 describe('trackRemoteTask', () => {
+  test('wake: "alone" reaches the API row, so its update gets its own turn (SHO-604)', async () => {
+    const task = await trackRemoteTask(registry, 'chat-alone', {
+      source: 'project_call',
+      targetRef: 'proj-2:run-9',
+      title: 'Worker: long job',
+      wakeAlone: true,
+    })
+    expect(task).toBeDefined()
+    expect(createPosts()).toHaveLength(1)
+    expect(createPosts()[0]!.body).toMatchObject({ wakeAlone: true, source: 'project_call' })
+    expect(rows.get(task!.task_id)?.wakeAlone).toBe(true)
+  })
+
+  test('a background task with no wake mark sends no wakeAlone', async () => {
+    await trackRemoteTask(registry, 'chat-batch', {
+      source: 'project_call',
+      targetRef: 'proj-2:run-10',
+      title: 'Worker: other job',
+    })
+    expect(createPosts()[0]!.body.wakeAlone).toBeUndefined()
+  })
+
   test('a create the API refuses twice is retried and leaves exactly one row, so the finish wakes once', async () => {
     createFailures = 2
 

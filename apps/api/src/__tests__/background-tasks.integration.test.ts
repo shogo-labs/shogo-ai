@@ -529,7 +529,7 @@ describe('wake', () => {
     expect(dispatched[0].taskNotification).toEqual({ taskIds: [row.id] })
   })
 
-  test('a burst is dispatched one turn per task, in finish order', async () => {
+  test('a burst is dispatched as one turn carrying every task, in finish order (SHO-604)', async () => {
     const chatSessionId = await newSession()
     const ids: Record<string, string> = {}
     for (const name of ['a', 'b', 'c']) {
@@ -544,10 +544,12 @@ describe('wake', () => {
     tasks._testing.clearTimers()
     await tasks.enqueueTaskWake(chatSessionId, { dispatch: false })
 
-    for (let i = 0; i < 3; i++) await dispatchNext(chatSessionId)
+    await dispatchNext(chatSessionId)
+    await waitFor(async () => dispatched.length > 0)
 
-    expect(dispatched.map((body) => body.taskNotification.taskIds)).toEqual([[ids.c], [ids.a], [ids.b]])
-    expect(dispatched.map((body) => body.text.match(/@Ops (\w)/)[1])).toEqual(['c', 'a', 'b'])
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].taskNotification.taskIds).toEqual([ids.c, ids.a, ids.b])
+    expect(dispatched[0].text.match(/@Ops (\w)/g)).toEqual(['@Ops c', '@Ops a', '@Ops b'])
   })
 
   test('wakes that only report cards keep going past the general cap', async () => {
