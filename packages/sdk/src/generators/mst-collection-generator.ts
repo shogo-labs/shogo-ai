@@ -73,6 +73,10 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     .filter(f => f.kind === 'scalar' && f.type === 'DateTime' && !f.isList)
     .map(f => f.name)
 
+  // A collection whose model carries `sessionId` can be asked for one chat's
+  // page, and must not let that page clear the rows of any other chat (SHO-328).
+  const sessionScoped = model.fields.some(f => f.name === 'sessionId')
+
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
     '/**',
@@ -339,8 +343,27 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     '              // A refresh is not authoritative for a row a write owns: a',
     '              // delete or an update in flight has to survive it, the same',
     '              // way `loadAll` makes it survive a stale response.',
+    ...(sessionScoped
+      ? [
+          '              //',
+          '              // A session-filtered page is authoritative for that session',
+          '              // only: one collection holds the rows of several chats (the',
+          '              // root store, the `/chat-messages?limit=1` tail probe), and',
+          '              // clearing the whole map deleted another chat\'s rows between',
+          '              // a load and the paint that reads them (SHO-328).',
+          '              const scopedSessionId =',
+          '                typeof filter?.sessionId === "string" ? filter.sessionId : null',
+        ]
+      : []),
     '              for (const id of Array.from(self.items.keys())) {',
     '                if (ownedByWrite(id, requestSeq)) continue',
+    ...(sessionScoped
+      ? [
+          '                if (scopedSessionId && self.items.get(id)?.sessionId !== scopedSessionId) {',
+          '                  continue',
+          '                }',
+        ]
+      : []),
     '                self.items.delete(id)',
     '              }',
     '            }',
