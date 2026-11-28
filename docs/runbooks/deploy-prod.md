@@ -198,6 +198,88 @@ per-environment values (`SHOGO_APP_ENV`, `SHOGO_APP_VERSION`, GA4 and
 Facebook Pixel IDs) are ksvc env vars, rendered into `index.html` at
 container start by `apps/mobile/docker/shogo-runtime-env.sh`.
 
+## Standalone runtime image (GHCR)
+
+The public image partners pull is `ghcr.io/shogo-labs/shogo-runtime:<tag>`,
+published by `runtime-multiarch.yml`'s `publish` job from the same per-arch
+digests our own fleet runs. Two things about it are not automatic, and both
+have gone wrong on a real release (v2.6.7 / v2.6.8, SHO-608).
+
+### Package visibility is a one-time org setting
+
+Only an org admin can make the package public; no workflow or API call can.
+One-time step, on the first release that publishes a new package name:
+
+1. GitHub → the `shogo-labs` org → **Packages** → `shogo-runtime` →
+   **Package settings** → **Change visibility** → **Public** (confirm the
+   package name, and that it is not linked to a private repository).
+2. Re-run the tag's `runtime-multiarch` `publish` job to get a green check.
+
+### What each tag proves, and what it does not
+
+- **"Verify anonymous pull"** (after the notes step in
+  `publish`) mints an anonymous token from `https://ghcr.io/token` — no
+  `docker login`, no `GITHUB_TOKEN` — and HEADs the multi-arch manifest. A
+  non-200 fails the tag with `GHCR package is not public: <status>` and the
+  exact setting to change. It runs *after* the notes write on purpose: the
+  digest table still lands when the check fails.
+- It does **not** replace a real `docker pull`: it proves the registry answers
+  an anonymous manifest request, not that a 6.7 GB layer set downloads.
+- The `smoke` job still logs in to GHCR, so it passes on a private package.
+  That login is for the smoke test, never for the visibility check.
+- **A red check does not hold the release.** `finalize-release.yml` waits for
+  the four *asset* workflows (desktop macos/windows, agent-runtime, worker) and
+  does not watch `runtime-multiarch.yml`, so the tag still publishes — with the
+  digest table, but with an image partners cannot pull. Treat a red
+  "Verify anonymous pull" as a release blocker by hand. Adding
+  `runtime-multiarch.yml` to that `WORKFLOWS` array would gate it automatically
+  (one line) and is a release-policy call for Russell: while the package is
+  still private it would hold every release as a draft.
+
+Run the check by hand against any tag:
+
+```bash
+.github/scripts/check-ghcr-anonymous-pull.sh ghcr.io/shogo-labs/shogo-runtime v2.6.8
+# exit 0 + "anonymous pull OK: … (sha256:…)" when public
+# exit 1 + "::error::GHCR package is not public: …" when not
+```
+
+Point `GHCR_BASE_URL` elsewhere to run it against a stub.
+
+### Release notes: the digest table must be in the final body
+
+The body is shared by four workflows. Each owns a marked block instead of the
+whole body (`<!-- shogo:section <id> -->` … `<!-- /shogo:section <id> -->`, via
+`.github/scripts/release-notes-section.sh`):
+
+| Writer | How | Section |
+| --- | --- | --- |
+| `desktop-release-macos.yml` (stable headline, and the beta notes) | `rewrite` — new head, every marked block kept below it | — |
+| `runtime-multiarch.yml` `publish` | `upsert` | `runtime-image` |
+| `publish-agent-runtime.yml` | `upsert` | `agent-runtime` |
+| `publish-shogo-worker.yml` | `upsert` | `worker-binaries` |
+
+No workflow passes a release `body:` to softprops any more: on an existing
+release that **replaces** the body (`body = workflowBody || existingReleaseBody`
+in the action's `updateRelease` path), which is what emptied v2.5.6, v2.5.7 and
+v2.6.3 down to the agent-runtime paragraph. softprops is for `files:` only.
+
+Every writer re-reads the body after writing and retries (3 attempts, 15 s
+apart) if another job clobbered it, so the order they finish in does not matter.
+On a tag with no release yet the helper creates one as a draft (a dispatched
+beta: as a prerelease), so a notes step can safely run before its asset upload.
+
+Check the body of a tag after it ships:
+
+```bash
+gh release view <tag> --json body -q .body | grep -A6 'Standalone agent runtime image'
+```
+
+Both digests, or the release is incomplete: re-run the tag's `publish` job
+(idempotent — it replaces its own block, never duplicates it). A body written
+before the markers existed keeps its unmarked section; the helper wraps it on
+the next write rather than dropping it.
+
 ## Rolling back
 
 Run **Rollback Production** (`.github/workflows/rollback-production.yml`)
