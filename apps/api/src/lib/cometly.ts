@@ -51,6 +51,14 @@ export function splitName(name: string | null | undefined): {
   return { firstName: parts[0], lastName: parts.slice(1).join(' ') }
 }
 
+/**
+ * Whether this stack can reach Cometly at all. Silent — it is a config check,
+ * and the answer is "no" on desktop, in CI and on any stack without the secret.
+ */
+export function isCometlyConfigured(): boolean {
+  return !!process.env.COMETLY_API_KEY?.trim()
+}
+
 /** One Create Event call. Never throws; a failure is a warning, not an error. */
 export async function sendCometlyEvent(input: CometlyEventInput): Promise<boolean> {
   const apiKey = process.env.COMETLY_API_KEY?.trim()

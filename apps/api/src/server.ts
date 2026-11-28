@@ -217,8 +217,8 @@ import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
 import { readSignupRequestInfo } from './services/signup-risk.service'
 import { buildCheckoutConversionEvents, metaBrowserCookies } from './lib/checkout-conversions'
-import { sendMetaEvents } from './lib/meta-capi'
-import { sendCometlyEvent } from './lib/cometly'
+import { isMetaCapiConfigured, sendMetaEvents } from './lib/meta-capi'
+import { isCometlyConfigured, sendCometlyEvent } from './lib/cometly'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
 import { isDevOriginAllowed } from './lib/dev-origins'
@@ -10211,34 +10211,38 @@ app.post('/api/webhooks/stripe', async (c) => {
             // redirect) and Meta trains on what it sees. The ids match the
             // pixel's, so whatever did reach Meta is deduped, not counted twice.
             // Fire-and-forget, and inside its own try: a conversion must never
-            // stop a plan from being provisioned.
-            try {
-              const buyerUserId = session.metadata?.userId
-                || (await prisma.member.findFirst({
-                  where: { workspaceId, projectId: null, role: 'owner' },
-                  select: { userId: true },
-                }))?.userId
-                || null
-              const attribution = buyerUserId
-                ? await prisma.signupAttribution.findUnique({
-                  where: { userId: buyerUserId },
-                  select: { fbclid: true, fbc: true, fbp: true },
+            // stop a plan from being provisioned. With neither vendor configured
+            // — desktop, CI, a stack with no secret — this does nothing at all,
+            // not even the two lookups (QA round 1, AC6).
+            if (isMetaCapiConfigured() || isCometlyConfigured()) {
+              try {
+                const buyerUserId = session.metadata?.userId
+                  || (await prisma.member.findFirst({
+                    where: { workspaceId, projectId: null, role: 'owner' },
+                    select: { userId: true },
+                  }))?.userId
+                  || null
+                const attribution = buyerUserId
+                  ? await prisma.signupAttribution.findUnique({
+                    where: { userId: buyerUserId },
+                    select: { fbclid: true, fbc: true, fbp: true },
+                  })
+                  : null
+                const conversions = buildCheckoutConversionEvents(session, {
+                  userId: buyerUserId,
+                  fbclid: attribution?.fbclid ?? null,
+                  fbc: attribution?.fbc ?? null,
+                  fbp: attribution?.fbp ?? null,
                 })
-                : null
-              const conversions = buildCheckoutConversionEvents(session, {
-                userId: buyerUserId,
-                fbclid: attribution?.fbclid ?? null,
-                fbc: attribution?.fbc ?? null,
-                fbp: attribution?.fbp ?? null,
-              })
-              if (conversions.meta.length > 0) {
-                void sendMetaEvents(conversions.meta).catch(() => {})
+                if (conversions.meta.length > 0) {
+                  void sendMetaEvents(conversions.meta).catch(() => {})
+                }
+                if (conversions.cometly) {
+                  void sendCometlyEvent(conversions.cometly).catch(() => {})
+                }
+              } catch (conversionErr: any) {
+                console.warn('[Webhook] ad conversion lookup failed:', conversionErr?.message ?? conversionErr)
               }
-              if (conversions.cometly) {
-                void sendCometlyEvent(conversions.cometly).catch(() => {})
-              }
-            } catch (conversionErr: any) {
-              console.warn('[Webhook] ad conversion lookup failed:', conversionErr?.message ?? conversionErr)
             }
 
             // Solo Founder fulfilment (SHO-428): the plan is provisioned above,

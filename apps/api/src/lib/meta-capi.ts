@@ -19,7 +19,14 @@
 import { createHash } from 'node:crypto'
 import { buildFbcFromFbclid } from '../../../../packages/shared-app/src/lib/conversion-events'
 
-const META_GRAPH_VERSION = 'v21.0'
+/**
+ * The Graph API version the CAPI endpoint is called on. Meta removes a version
+ * about two years after it ships and then rejects every call on it, so this has
+ * to be bumped on Meta's schedule, not ours: v21.0 is removed 21 Jan 2027 and
+ * v22.0 on 20 May 2027, which is why this is not v21.0 (QA round 1, SHO-611).
+ * Latest as of Nov 2026: v27.0.
+ */
+const META_GRAPH_VERSION = 'v27.0'
 const META_TIMEOUT_MS = 5_000
 
 /** One conversion, built and ready to POST. */

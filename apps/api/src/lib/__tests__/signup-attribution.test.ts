@@ -369,7 +369,7 @@ describe('recordSignupAttribution → Meta CAPI', () => {
       })
 
       expect(metaCalls).toHaveLength(1)
-      expect(metaCalls[0]!.url).toBe('https://graph.facebook.com/v21.0/pixel-test/events')
+      expect(metaCalls[0]!.url).toBe('https://graph.facebook.com/v27.0/pixel-test/events')
       const data = metaCalls[0]!.body.data
       expect(data).toHaveLength(1)
       expect(data[0].event_name).toBe('CompleteRegistration')

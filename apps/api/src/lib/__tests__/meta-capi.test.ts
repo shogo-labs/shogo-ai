@@ -136,6 +136,15 @@ describe('sendMetaEvents', () => {
     expect(fetchCalls).toHaveLength(0)
   })
 
+  test('is configured only when both halves of the credential are present', () => {
+    // The webhook gates on this, so an incomplete secret must not look configured.
+    expect(isMetaCapiConfigured()).toBe(false)
+    process.env.FB_PIXEL_ID = 'pixel-1'
+    expect(isMetaCapiConfigured()).toBe(false)
+    process.env.META_CAPI_ACCESS_TOKEN = 'token'
+    expect(isMetaCapiConfigured()).toBe(true)
+  })
+
   test('posts every event to the pinned pixel endpoint with the token and the test code', async () => {
     process.env.META_CAPI_ACCESS_TOKEN = 'token-abc'
     process.env.FB_PIXEL_ID = 'pixel-1'
@@ -149,7 +158,7 @@ describe('sendMetaEvents', () => {
 
     expect(sent).toBe(true)
     expect(fetchCalls).toHaveLength(1)
-    expect(fetchCalls[0]!.url).toBe('https://graph.facebook.com/v21.0/pixel-1/events')
+    expect(fetchCalls[0]!.url).toBe('https://graph.facebook.com/v27.0/pixel-1/events')
     const body = JSON.parse(String(fetchCalls[0]!.init.body))
     expect(body.access_token).toBe('token-abc')
     expect(body.test_event_code).toBe('TEST123')
