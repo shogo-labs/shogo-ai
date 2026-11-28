@@ -246,3 +246,87 @@ describe('theme colour guard (SHO-544)', () => {
     }
   })
 })
+
+/**
+ * `className` on a bare `Animated.*` node is silently dropped unless that exact
+ * component is registered with `cssInterop` (SHO-609).
+ *
+ * NativeWind only maps the class for components it knows: `react-native-css-interop`
+ * registers `Text`, `View`, `Pressable`, … and `Animated.Text` / `Animated.View`
+ * are different component objects, so the JSX runtime finds no entry for them and
+ * the class never becomes a style. That is how "Planning next moves" went black
+ * on the dark theme: SHO-544 removed the grey literal because `text-muted-foreground`
+ * was assumed to colour the row, and nothing was rendering the label to notice.
+ *
+ * `apps/mobile/lib/animated-interop.ts` registers the primitives; this rule keeps
+ * the next `Animated.*` + `className` site from relying on a class nobody applies.
+ */
+describe('animated component interop guard (SHO-609)', () => {
+  const interopModule = resolve(root, 'lib/animated-interop.ts')
+  const interopSource = readFileSync(interopModule, 'utf8')
+  const appRoot = readFileSync(resolve(root, 'app/_layout.tsx'), 'utf8')
+
+  /** `Animated.Text` → registered components, read off the registration module. */
+  const registered = new Set(
+    Array.from(interopSource.matchAll(/cssInterop\(\s*Animated\.(\w+)\s*,\s*\{\s*className/g)).map(
+      (match) => match[1],
+    ),
+  )
+
+  /**
+   * Every `<Animated.X …>` tag in a file, with balanced braces and string
+   * literals skipped so a `style={{ … }}` or an arrow prop cannot end the tag.
+   */
+  function animatedTags(source: string): { name: string; hasClassName: boolean }[] {
+    const tags: { name: string; hasClassName: boolean }[] = []
+    const opener = /<Animated\.(\w+)/g
+    for (let match = opener.exec(source); match; match = opener.exec(source)) {
+      let depth = 0
+      let quote: string | null = null
+      let end = match.index + match[0].length
+      for (; end < source.length; end++) {
+        const char = source[end]
+        if (quote) {
+          if (char === quote && source[end - 1] !== '\\') quote = null
+          continue
+        }
+        if (char === '"' || char === "'" || char === '`') quote = char
+        else if (char === '{') depth++
+        else if (char === '}') depth--
+        else if (char === '>' && depth === 0) break
+      }
+      const tag = source.slice(match.index, end)
+      tags.push({ name: match[1], hasClassName: /\bclassName\s*=/.test(tag) })
+    }
+    return tags
+  }
+
+  test('the interop module is loaded by the app root', () => {
+    expect(appRoot).toContain('import "../lib/animated-interop"')
+  })
+
+  test('the primitives the app animates with are the ones registered', () => {
+    expect(registered.has('Text')).toBe(true)
+    expect(registered.has('View')).toBe(true)
+  })
+
+  test('no Animated node carries a className its component never applies', () => {
+    const offenders: string[] = []
+    for (const { repoPath, source } of guardedFiles) {
+      for (const tag of animatedTags(source)) {
+        if (tag.hasClassName && !registered.has(tag.name)) {
+          offenders.push(`${repoPath}: <Animated.${tag.name} className=…>`)
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  test('the shimmer label keeps the token class and a token colour for web', () => {
+    const label = readFileSync(resolve(root, 'components/chat/turns/ShimmerLabel.tsx'), 'utf8')
+    expect(label).toContain('text-muted-foreground')
+    expect(label).toContain('rgb(var(--color-muted-foreground))')
+    // A literal here is what SHO-544 removed; it must not come back.
+    expect(label).not.toMatch(/#[0-9a-fA-F]{3,8}/)
+  })
+})
