@@ -358,10 +358,28 @@ export async function bumpChatSessionActivity(
 }
 
 /**
- * Hooks the desktop route set installs (`local-routes.ts`). Only the side
- * effects the local database needs: the ownership checks the cloud set adds are
- * meaningless when the SQLite file is the signed-in user's own.
+ * Hooks the desktop route set installs (`local-routes.ts`). The ownership
+ * checks the cloud set adds are meaningless when the SQLite file is the
+ * signed-in user's own, but the *ordering* is not: without it every paged read
+ * comes back in primary-key order, so `limit=50&offset=0` is an arbitrary slice
+ * that never contains the current day (SHO-610). The desktop transcript then
+ * paints history-behind at turn end and a reopen paints stale rows.
+ *
+ * The where clause is left alone: local mode takes `sessionId`/`agent` as plain
+ * columns from the query params, and the cloud agent scoping (which folds
+ * `project_call` prompts into `technical`) needs its own decision.
  */
 export const localChatMessageHooks: ChatMessageHooks = {
+  beforeList: async (ctx) => ({
+    ok: true,
+    data: ctx.query.orderBy
+      ? // An explicit `orderBy` param (e.g. a delta read asking for `createdAt:asc`)
+        // wins: a default must not shadow a caller that stated its order.
+        {}
+      : {
+          include: undefined,
+          orderBy: { createdAt: 'desc' },
+        },
+  }),
   afterCreate: bumpChatSessionActivity,
 }
