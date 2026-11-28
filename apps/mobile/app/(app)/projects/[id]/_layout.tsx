@@ -76,7 +76,12 @@ import {
   writeCachedProject,
 } from "../../../../lib/projects-cache";
 import { lifecycleNotificationKind } from "../../../../lib/notifications/lifecycle-click";
-import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
+import {
+  canvasDisabledRedirect,
+  forgetLandingTab,
+  rememberLandingTab,
+  rememberedLandingTab,
+} from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
 import {
   isProjectWorkspaceRuntimeEnabled,
@@ -2169,6 +2174,7 @@ export default observer(function ProjectLayout() {
         nonce: openIdeFileNonceRef.current,
       });
     }
+    rememberLandingTab(projectId, requested);
     setPreviewTab(requested);
     if (phoneLayout) {
       setActiveTab(requested === "chat-fullscreen" ? "chat" : "canvas");
@@ -2184,6 +2190,16 @@ export default observer(function ProjectLayout() {
       AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
         () => {}
       );
+      return;
+    }
+    // A `?tab=` deep link this page session outlives a remount that dropped
+    // the param from the URL; it beats the saved last tab.
+    const remembered = rememberedLandingTab(projectId);
+    if (remembered) {
+      previewTabUserPickedRef.current.add(projectId);
+      setPreviewTab(remembered);
+      setPreviewTabRestoredFor(projectId);
+      setPreviewTabUserPickLoadedFor(projectId);
       return;
     }
     // Read the persisted "user chose this project's tab" flag alongside the
@@ -2459,6 +2475,7 @@ export default observer(function ProjectLayout() {
         }
       }
       setPreviewTab(tabId);
+      if (projectId) forgetLandingTab(projectId);
       // An explicit tab choice disables the folder-project Preview auto-open
       // for this project — this session and every later one (SHO-200).
       if (projectId) {
@@ -4304,6 +4321,7 @@ export default observer(function ProjectLayout() {
                   // Explicit user navigation — drop any in-flight attention override.
                   setAttentionTab(null);
                   setActiveTab(tab);
+                  if (projectId) forgetLandingTab(projectId);
                   if (tab === "canvas") {
                     userRequestedCanvasRef.current = true;
                     if (!canvasEnabled || activeMode !== "canvas") {
