@@ -116,7 +116,10 @@ function listSessions(query: string): Promise<Response> {
 
 const SESSION_ID = 'chat-1'
 const TOTAL = 120
-const BASE = Date.UTC(2026, 10, 1, 9, 0, 0)
+// Derived from the clock rather than a fixed date: nothing here compares a seed
+// against "now", and a hard-coded one is what `check:test-clock` exists to stop
+// (SHO-505) — the ordering assertions only care about relative times.
+const BASE = Date.now() - TOTAL * 60_000
 
 /**
  * `ids` are a permutation of `createdAt` order (×53 mod 120 is a coprime walk),
