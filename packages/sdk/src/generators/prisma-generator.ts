@@ -288,7 +288,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate routes (requires models)
       if (hasModels && output.generate.includes('routes')) {
         if (perModel) {
-          const { routes, hooks } = generateRoutes(models, { fileExtension: ext })
+          const { routes, hooks } = generateRoutes(models, { fileExtension: ext, enums })
           
           // Route files
           for (const route of routes) {

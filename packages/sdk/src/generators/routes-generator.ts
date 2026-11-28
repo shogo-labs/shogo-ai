@@ -19,6 +19,15 @@ export interface RouteGeneratorConfig {
   basePath?: string
   /** File extension: 'ts' or 'tsx' (default: 'tsx') */
   fileExtension?: 'ts' | 'tsx'
+  /**
+   * Prisma enum values by enum name (DMMF `datamodel.enums`).
+   *
+   * A field of `kind: 'enum'` carries only the enum's NAME, so without this the
+   * generator cannot tell a valid member from a typo and emits the field as a
+   * pass-through string. With it, the generated route rejects a value that is
+   * not a member with a 400 instead of letting Prisma answer 500.
+   */
+  enums?: { name: string; values: { name: string }[] }[]
 }
 
 export interface GeneratedRouteFile {
@@ -86,6 +95,84 @@ function tsStringArrayLiteral(names: readonly string[]): string {
   return `[${inner}] as const`
 }
 
+/**
+ * A plain `string[]` literal. Used where the emitted code calls a *runtime*
+ * membership test with a non-literal key (`MODEL_FIELDS.includes(key)`), which
+ * `as const` refuses to type-check against a plain `string`.
+ */
+function tsStringArray(names: readonly string[]): string {
+  return `[${names.map(n => `"${n}"`).join(', ')}]`
+}
+
+/** The scalar kinds the emitted `coerceWritableValue` knows how to handle. */
+type WritableFieldKind =
+  | 'string'
+  | 'date'
+  | 'int'
+  | 'float'
+  | 'bigint'
+  | 'boolean'
+  | 'decimal'
+  | 'json'
+  | 'bytes'
+  | 'enum'
+  | 'any'
+
+/**
+ * Which coercion a writable field needs, from the Prisma field metadata.
+ *
+ * The allowlist of field NAMES was all the generated routes had, and it says
+ * nothing about types: `{ readAt: 1795789274445 }` (what `Date.getTime()` and
+ * every JSON client produce) reached Prisma as an Int for a DateTime column and
+ * came back a 500. `enum` carries the member list when the DMMF supplied it
+ * (`config.enums`), and is otherwise a pass-through string.
+ */
+function fieldKindFor(field: PrismaField, enums: Map<string, string[]>): { kind: WritableFieldKind; values?: string[] } {
+  if (field.kind === 'enum') {
+    const values = enums.get(field.type)
+    return values && values.length > 0 ? { kind: 'enum', values } : { kind: 'string' }
+  }
+  switch (field.type) {
+    case 'String':
+      return { kind: 'string' }
+    case 'DateTime':
+      return { kind: 'date' }
+    case 'Int':
+      return { kind: 'int' }
+    case 'Float':
+      return { kind: 'float' }
+    case 'BigInt':
+      return { kind: 'bigint' }
+    case 'Boolean':
+      return { kind: 'boolean' }
+    case 'Decimal':
+      return { kind: 'decimal' }
+    case 'Json':
+      return { kind: 'json' }
+    case 'Bytes':
+      return { kind: 'bytes' }
+    default:
+      return { kind: 'any' }
+  }
+}
+
+/** Emit the per-field spec object the generated routes coerce against. */
+function tsFieldSpecsObject(fields: PrismaField[], enums: Map<string, string[]>): string[] {
+  if (fields.length === 0) return ['const WRITABLE_FIELD_SPECS: Record<string, WritableFieldSpec> = {}']
+  const entries = fields.map(f => {
+    const spec = fieldKindFor(f, enums)
+    const body = spec.values
+      ? `{ kind: "enum", values: [${spec.values.map(v => `"${v}"`).join(', ')}] }`
+      : `{ kind: "${spec.kind}" }`
+    return `  "${f.name}": ${body},`
+  })
+  return [
+    'const WRITABLE_FIELD_SPECS: Record<string, WritableFieldSpec> = {',
+    ...entries,
+    '}',
+  ]
+}
+
 // ============================================================================
 // Route Generator (Per-Model)
 // ============================================================================
@@ -119,8 +206,17 @@ export function generateModelRoutes(
   //   2. Unknown-key passthrough. `data: body` would forward arbitrary keys
   //      the schema doesn't expose. Prisma fails on those, but the error
   //      message is hard to debug. We just drop unknown keys.
-  const writableScalarFieldNames = getWritableScalarFields(model).map(f => f.name)
+  const writableScalarFields = getWritableScalarFields(model)
+  const writableScalarFieldNames = writableScalarFields.map(f => f.name)
   const relationFieldNames = getRelationFields(model).map(f => f.name)
+  // Every field a caller may name in a filter: scalars, enums and relations
+  // (a relation is filterable, just not as a raw scalar). Anything else in the
+  // query string is a typo, and used to reach Prisma as a `where` clause it
+  // rejects — a 500 for what is a client mistake.
+  const modelFieldNames = model.fields.map(f => f.name)
+  const enumValues = new Map<string, string[]>(
+    (config.enums ?? []).map(e => [e.name, e.values.map(v => v.name)]),
+  )
   const hasRelations = relationFieldNames.length > 0
 
   const lines: string[] = [
@@ -235,6 +331,111 @@ export function generateModelRoutes(
     '// by `pickWritableFields` to keep the create/update payload Prisma-safe.',
     `const WRITABLE_SCALAR_FIELDS = ${tsStringArrayLiteral(writableScalarFieldNames)}`,
     `const RELATION_FIELDS = ${tsStringArrayLiteral(relationFieldNames)}`,
+    `const MODEL_FIELDS: readonly string[] = ${tsStringArray(modelFieldNames)}`,
+    '',
+    'type WritableFieldKind =',
+    '  | "string" | "date" | "int" | "float" | "bigint" | "boolean"',
+    '  | "decimal" | "json" | "bytes" | "enum" | "any"',
+    'type WritableFieldSpec = { kind: WritableFieldKind; values?: readonly string[] }',
+    'type Coerced = { ok: true; value: unknown } | { ok: false; message: string }',
+    '',
+    '// What each writable field IS, not just its name. The names above stop a body',
+    '// from reaching fields the schema does not expose; this stops a value of the',
+    '// wrong type from reaching a field it does.',
+    ...tsFieldSpecsObject(writableScalarFields, enumValues),
+    '',
+    '/**',
+    ' * Coerce one create/update value to the type the schema declares.',
+    ' *',
+    ' * Why: the allowlist above is a list of names, so `{ readAt: 1795789274445 }`',
+    ' * — epoch millis, which is what `Date.getTime()` and any JSON client send —',
+    ' * reached a DateTime column as an Int and Prisma answered 500. Date/Int/',
+    ' * Float/BigInt/Boolean values are now coerced and an enum is checked against',
+    ' * its members; a value that cannot be coerced is rejected here so the route',
+    ' * can answer 400 and name the field.',
+    ' *',
+    ' * Anything already valid keeps working, including the Prisma field-operation',
+    ' * shapes an update may carry (`{ increment: 1 }`, `{ set: [...] }`): a plain',
+    ' * object is passed through untouched.',
+    ' */',
+    'function coerceWritableValue(key: string, value: unknown): Coerced {',
+    '  const spec = WRITABLE_FIELD_SPECS[key]',
+    '  if (!spec || spec.kind === "any" || value === null) return { ok: true, value }',
+    '  if (Array.isArray(value)) {',
+    '    const out: unknown[] = []',
+    '    for (const item of value) {',
+    '      const each = coerceScalar(spec, item)',
+    '      if (!each.ok) return { ok: false, message: `Field "${key}" ${each.message}` }',
+    '      out.push(each.value)',
+    '    }',
+    '    return { ok: true, value: out }',
+    '  }',
+    '  if (typeof value === "object" && !(value instanceof Date)) {',
+    '    return { ok: true, value }',
+    '  }',
+    '  const coerced = coerceScalar(spec, value)',
+    '  if (!coerced.ok) return { ok: false, message: `Field "${key}" ${coerced.message}` }',
+    '  return { ok: true, value: coerced.value }',
+    '}',
+    '',
+    'function coerceScalar(spec: WritableFieldSpec, value: unknown): Coerced {',
+    '  switch (spec.kind) {',
+    '    case "date": {',
+    '      if (value instanceof Date) return { ok: true, value }',
+    '      if (typeof value === "number" && Number.isFinite(value)) return { ok: true, value: new Date(value) }',
+    '      if (typeof value === "string" && value.trim() !== "") {',
+    '        const raw = value.trim()',
+    '        const date = /^-?[0-9]+$/.test(raw) ? new Date(Number(raw)) : new Date(raw)',
+    '        if (!Number.isNaN(date.getTime())) return { ok: true, value: date }',
+    '      }',
+    '      return { ok: false, message: "must be an ISO string, epoch millis, or a Date" }',
+    '    }',
+    '    case "int": {',
+    '      const n = typeof value === "number"',
+    '        ? value',
+    '        : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN',
+    '      if (Number.isInteger(n)) return { ok: true, value: n }',
+    '      return { ok: false, message: "must be an integer" }',
+    '    }',
+    '    case "float": {',
+    '      const n = typeof value === "number"',
+    '        ? value',
+    '        : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN',
+    '      if (Number.isFinite(n)) return { ok: true, value: n }',
+    '      return { ok: false, message: "must be a number" }',
+    '    }',
+    '    case "boolean": {',
+    '      if (typeof value === "boolean") return { ok: true, value }',
+    '      if (value === "true" || value === 1) return { ok: true, value: true }',
+    '      if (value === "false" || value === 0) return { ok: true, value: false }',
+    '      return { ok: false, message: "must be a boolean" }',
+    '    }',
+    '    case "bigint": {',
+    '      if (typeof value === "bigint") return { ok: true, value }',
+    '      if (typeof value === "number" && Number.isInteger(value)) return { ok: true, value: BigInt(value) }',
+    '      if (typeof value === "string" && /^[+-]?[0-9]+$/.test(value.trim())) {',
+    '        return { ok: true, value: BigInt(value.trim()) }',
+    '      }',
+    '      return { ok: false, message: "must be an integer" }',
+    '    }',
+    '    case "string":',
+    '      if (typeof value === "string") return { ok: true, value }',
+    '      return { ok: false, message: "must be a string" }',
+    '    case "enum":',
+    '      if (typeof value === "string" && (!spec.values || spec.values.length === 0 || spec.values.includes(value))) {',
+    '        return { ok: true, value }',
+    '      }',
+    '      return {',
+    '        ok: false,',
+    '        message:',
+    '          spec.values && spec.values.length > 0',
+    '            ? `must be one of: ${spec.values.join(", ")}`',
+    '            : "must be a string",',
+    '      }',
+    '    default:',
+    '      return { ok: true, value }',
+    '  }',
+    '}',
     '',
     'type WriteBodyResult<T> =',
     '  | { ok: true; data: T }',
@@ -248,6 +449,8 @@ export function generateModelRoutes(
     ' *   or array. The common bug `{ scorecards: 1 }` would otherwise crash with',
     ' *   "Argument `scorecards`: Invalid value provided. Expected',
     ' *    XCreateNestedManyWithoutYInput, provided Int." We surface it as a 400.',
+    ' * - Scalar values are coerced to the field type (see coerceWritableValue); a',
+    ' *   value that cannot be is a 400 naming the field, not a Prisma 500.',
     " * - Unknown keys are silently dropped to prevent injection of fields the",
     ' *   schema does not expose.',
     ' */',
@@ -257,7 +460,12 @@ export function generateModelRoutes(
     '  }',
     '  const data: Record<string, unknown> = {}',
     '  for (const key of WRITABLE_SCALAR_FIELDS) {',
-    '    if (body[key] !== undefined) data[key] = body[key]',
+    '    if (body[key] === undefined) continue',
+    '    const coerced = coerceWritableValue(key, body[key])',
+    '    if (!coerced.ok) {',
+    '      return { ok: false, error: { code: "invalid_field_value", message: coerced.message } }',
+    '    }',
+    '    data[key] = coerced.value',
     '  }',
     '  for (const key of RELATION_FIELDS) {',
     '    const value = body[key]',
@@ -298,7 +506,16 @@ export function generateModelRoutes(
       lines.push('      ')
       lines.push('      for (const [key, value] of Object.entries(query)) {')
       lines.push('        if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {')
-  lines.push('          // Try to parse as number or boolean')
+      lines.push('          // A field the model does not have cannot be a filter. It used to')
+      lines.push('          // be handed to Prisma as a `where` clause it rejects, so a typo')
+      lines.push('          // came back a 500 "Unknown argument". Skip it — do not 400 it:')
+      lines.push('          // generated list routes share their query string with the')
+      lines.push('          // `beforeList` hook, and hooks legitimately read params that are')
+      lines.push('          // not columns (chat-session.hooks.ts maps ?projectId= onto')
+      lines.push('          // contextId). Rejecting those would break the caller before the')
+      lines.push('          // hook ever ran, with a 400 it cannot recover from.')
+      lines.push('          if (!MODEL_FIELDS.includes(key)) continue')
+      lines.push('          // Try to parse as number or boolean')
   lines.push('          let parsedValue: any = value')
   lines.push('          if (value === "true") parsedValue = true')
   lines.push('          else if (value === "false") parsedValue = false')

@@ -52,6 +52,48 @@ const mockProjectWithRelationModel: PrismaModel = {
 // Tests
 // ============================================================================
 
+function extractPickWritableFields(source: string): (body: unknown) => any {
+  const matchHelper = source.match(/function pickWritableFields<T>\(body: any\): WriteBodyResult<T> \{[\s\S]*?\n\}/)
+  if (!matchHelper) throw new Error('pickWritableFields not found in generated source')
+  const matchScalars = source.match(/const WRITABLE_SCALAR_FIELDS = (\[[^\]]*\] as const)/)
+  const matchRelations = source.match(/const RELATION_FIELDS = (\[[^\]]*\] as const)/)
+  if (!matchScalars || !matchRelations) throw new Error('field allowlists not found in generated source')
+  const matchSpecs = source.match(/const WRITABLE_FIELD_SPECS: Record<string, WritableFieldSpec> = \{[\s\S]*?\n\}/)
+  const matchCoerceValue = source.match(/function coerceWritableValue\(key: string, value: unknown\): Coerced \{[\s\S]*?\n\}/)
+  const matchCoerceScalar = source.match(/function coerceScalar\(spec: WritableFieldSpec, value: unknown\): Coerced \{[\s\S]*?\n\}/)
+  if (!matchSpecs || !matchCoerceValue || !matchCoerceScalar) {
+    throw new Error('type-coercion helpers not found in generated source')
+  }
+
+  // Strip the few TS annotations we know the helper uses so plain JS eval
+  // works. Order matters: strip `: any` LAST so `: any[]` doesn't get
+  // mangled (it isn't used today, but defensive).
+  const helperJs = matchHelper[0]
+    .replace(/function pickWritableFields<T>/g, 'function pickWritableFields')
+    .replace(/: WriteBodyResult<T>/g, '')
+    .replace(/data as T/g, 'data')
+    .replace(/: Record<string, unknown>/g, '')
+    .replace(/\(body: any\)/g, '(body)')
+  const coerceJs = [matchCoerceValue[0], matchCoerceScalar[0]]
+    .join('\n')
+    .replace(/function coerceWritableValue\(key: string, value: unknown\): Coerced/g, 'function coerceWritableValue(key, value)')
+    .replace(/function coerceScalar\(spec: WritableFieldSpec, value: unknown\): Coerced/g, 'function coerceScalar(spec, value)')
+    .replace(/const out: unknown\[\] = \[\]/g, 'const out = []')
+  const specsJs = matchSpecs[0].replace(/: Record<string, WritableFieldSpec>/, '')
+  const scalarsJs = matchScalars[1].replace(' as const', '')
+  const relationsJs = matchRelations[1].replace(' as const', '')
+
+  const factory = new Function(
+    `const WRITABLE_SCALAR_FIELDS = ${scalarsJs};
+     const RELATION_FIELDS = ${relationsJs};
+     ${specsJs};
+     ${coerceJs}
+     ${helperJs}
+     return pickWritableFields;`,
+  )
+  return factory()
+}
+
 describe('Routes Generator', () => {
   describe('generateModelRoutes', () => {
     it('should generate route file with correct structure', () => {
@@ -710,33 +752,6 @@ describe('Routes Generator', () => {
     // in a sandbox so we can assert behavior against real bodies. The function
     // is dependency-free (only references its own constants) so this is safe.
 
-    function extractPickWritableFields(source: string): (body: unknown) => any {
-      const matchHelper = source.match(/function pickWritableFields<T>\(body: any\): WriteBodyResult<T> \{[\s\S]*?\n\}/)
-      if (!matchHelper) throw new Error('pickWritableFields not found in generated source')
-      const matchScalars = source.match(/const WRITABLE_SCALAR_FIELDS = (\[[^\]]*\] as const)/)
-      const matchRelations = source.match(/const RELATION_FIELDS = (\[[^\]]*\] as const)/)
-      if (!matchScalars || !matchRelations) throw new Error('field allowlists not found in generated source')
-
-      // Strip the few TS annotations we know the helper uses so plain JS eval
-      // works. Order matters: strip `: any` LAST so `: any[]` doesn't get
-      // mangled (it isn't used today, but defensive).
-      const helperJs = matchHelper[0]
-        .replace(/function pickWritableFields<T>/g, 'function pickWritableFields')
-        .replace(/: WriteBodyResult<T>/g, '')
-        .replace(/data as T/g, 'data')
-        .replace(/: Record<string, unknown>/g, '')
-        .replace(/\(body: any\)/g, '(body)')
-      const scalarsJs = matchScalars[1].replace(' as const', '')
-      const relationsJs = matchRelations[1].replace(' as const', '')
-
-      const factory = new Function(
-        `const WRITABLE_SCALAR_FIELDS = ${scalarsJs};
-         const RELATION_FIELDS = ${relationsJs};
-         ${helperJs}
-         return pickWritableFields;`,
-      )
-      return factory()
-    }
 
     it('runtime: returns 400 on non-object bodies', () => {
       const pick = extractPickWritableFields(generateModelRoutes(HireModel)!.code)
@@ -827,4 +842,131 @@ describe('Routes Generator', () => {
       expect(r).toEqual({ ok: true, data: { name: 'Alice', role: 'Eng', departmentId: 'dept-42' } })
     })
   })
+
+  // ---- Field TYPES, not just names -------------------------------------------
+  // `WRITABLE_SCALAR_FIELDS` is a list of names: it kept a body off fields the
+  // schema does not expose, and said nothing about what may go IN a field it
+  // does. `{ readAt: 1795789274445 }` — epoch millis, i.e. what Date.getTime()
+  // and any JSON client send — reached a DateTime column as an Int and Prisma
+  // answered 500. These tests pin the coercion, and that anything already
+  // valid keeps working.
+  describe('generated field-type coercion', () => {
+    const scalarField = (
+      name: string,
+      type: string,
+      extra: Partial<PrismaModel['fields'][number]> = {},
+    ): PrismaModel['fields'][number] => ({
+      name,
+      kind: 'scalar',
+      type,
+      isRequired: true,
+      isList: false,
+      isId: false,
+      isUnique: false,
+      hasDefaultValue: false,
+      ...extra,
+    })
+
+    const noteModel: PrismaModel = {
+      name: 'Note',
+      dbName: null,
+      fields: [
+        scalarField('id', 'String', { isId: true, isUnique: true, hasDefaultValue: true }),
+        scalarField('title', 'String'),
+        scalarField('readAt', 'DateTime'),
+        scalarField('priority', 'Int'),
+        scalarField('rating', 'Float'),
+        scalarField('bigCount', 'BigInt'),
+        scalarField('archived', 'Boolean'),
+        scalarField('tags', 'String', { isList: true }),
+        { ...scalarField('status', 'NoteStatus'), kind: 'enum' },
+      ],
+    }
+    const noteEnums = [{ name: 'NoteStatus', values: [{ name: 'draft' }, { name: 'live' }] }]
+
+    const extract = () => extractPickWritableFields(generateModelRoutes(noteModel, { enums: noteEnums })!.code)
+
+    it('emits a per-field type map beside the name allowlist', () => {
+      const code = generateModelRoutes(noteModel, { enums: noteEnums })!.code
+      expect(code).toContain('const WRITABLE_FIELD_SPECS: Record<string, WritableFieldSpec> = {')
+      expect(code).toContain('"readAt": { kind: "date" },')
+      expect(code).toContain('"priority": { kind: "int" },')
+      expect(code).toContain('"rating": { kind: "float" },')
+      expect(code).toContain('"bigCount": { kind: "bigint" },')
+      expect(code).toContain('"archived": { kind: "boolean" },')
+      expect(code).toContain('"title": { kind: "string" },')
+      expect(code).toContain('"status": { kind: "enum", values: ["draft", "live"] },')
+    })
+
+    it('without enum metadata an enum field stays a plain string (additive)', () => {
+      const code = generateModelRoutes(noteModel)!.code
+      expect(code).toContain('"status": { kind: "string" },')
+    })
+
+    it('runtime: epoch-millis DateTime is coerced to a Date', () => {
+      const pick = extract()
+      const r = pick({ title: 'n', readAt: 1795789274445 })
+      expect(r.ok).toBe(true)
+      expect(r.data.readAt).toBeInstanceOf(Date)
+      expect((r.data.readAt as Date).getTime()).toBe(1795789274445)
+    })
+
+    it('runtime: ISO-string DateTime is coerced to a Date', () => {
+      const pick = extract()
+      const r = pick({ readAt: '2026-11-28T12:00:00.000Z' })
+      expect(r.ok).toBe(true)
+      expect(r.data.readAt).toBeInstanceOf(Date)
+      expect((r.data.readAt as Date).toISOString()).toBe('2026-11-28T12:00:00.000Z')
+    })
+
+    it('runtime: Int/Float/BigInt/Boolean coerce from their query-string forms', () => {
+      const pick = extract()
+      const r = pick({ priority: '3', rating: '4.5', bigCount: '9007199254740993', archived: 'false' })
+      expect(r).toEqual({
+        ok: true,
+        data: { priority: 3, rating: 4.5, bigCount: 9007199254740993n, archived: false },
+      })
+    })
+
+    it('runtime: an enum outside its member list is a 400 naming the field and the members', () => {
+      const pick = extract()
+      const bad = pick({ status: 'published' })
+      expect(bad).toMatchObject({ ok: false, error: { code: 'invalid_field_value' } })
+      expect(bad.error.message).toContain('"status"')
+      expect(bad.error.message).toContain('draft, live')
+      expect(pick({ status: 'live' })).toEqual({ ok: true, data: { status: 'live' } })
+    })
+
+    it('runtime: a value that cannot be coerced is a 400, not a Prisma 500', () => {
+      const pick = extract()
+      for (const body of [{ readAt: 'yesterday' }, { priority: 'high' }, { archived: 'yes' }, { bigCount: 'lots' }]) {
+        const r = pick(body)
+        expect(r).toMatchObject({ ok: false, error: { code: 'invalid_field_value' } })
+        expect(r.error.message).toMatch(/^Field "/)
+      }
+    })
+
+    it('runtime: an update field operation still passes through untouched', () => {
+      // `{ increment: 1 }` / `{ set: [...] }` are valid Prisma update values —
+      // coerced as if they were scalars they would 400 a working call.
+      const pick = extract()
+      expect(pick({ priority: { increment: 1 } })).toEqual({ ok: true, data: { priority: { increment: 1 } } })
+      expect(pick({ tags: { set: ['a', 'b'] } })).toEqual({ ok: true, data: { tags: { set: ['a', 'b'] } } })
+      expect(pick({ tags: ['a', 'b'] })).toEqual({ ok: true, data: { tags: ['a', 'b'] } })
+    })
+
+    it('LIST skips a query key the model does not have instead of 500ing or 400ing on it', () => {
+      const code = generateModelRoutes(noteModel, { enums: noteEnums })!.code
+      expect(code).toContain('const MODEL_FIELDS: readonly string[] = ["id", "title", "readAt", "priority", "rating", "bigCount", "archived", "tags", "status"]')
+      expect(code).toContain('if (!MODEL_FIELDS.includes(key)) continue')
+      // Deliberately not a 400: the generated list route shares its query string
+      // with the `beforeList` hook, and hooks read params that are not columns
+      // (chat-session.hooks.ts maps ?projectId= onto contextId and checks
+      // project:read). A 400 here rejects the caller before the hook runs —
+      // apps/api/src/__tests__/rbac/project-visibility.integration.test.ts
+      // caught exactly that.
+      expect(code).not.toContain('unknown_query_field')
+    })
+  })
 })
+
