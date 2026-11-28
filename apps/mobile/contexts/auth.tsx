@@ -10,8 +10,9 @@
 import type { ReactNode } from 'react'
 import { Platform } from 'react-native'
 import * as Sentry from '@sentry/react-native'
-import { AuthProvider as SharedAuthProvider, useAuth, AuthRequestError, type AuthErrorContext } from '@shogo/shared-app/auth'
+import { AuthProvider as SharedAuthProvider, useAuth, AuthRequestError, type AuthErrorContext, type AuthUser } from '@shogo/shared-app/auth'
 import { authClient } from '../lib/auth-client'
+import { markHadSession } from '../lib/auth-device-history'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
 import { clearChatHistory } from '../lib/chat-history-store'
@@ -58,6 +59,20 @@ function reportAuthError(error: unknown, context: AuthErrorContext): void {
   Sentry.captureException(error, { tags })
 }
 
+/**
+ * Every path that ends with a session passes through here — email, emailed
+ * code, Google, Apple, a restored one — so this is where the device records
+ * that it has been signed in (SHO-613). That flag is what puts a returning
+ * visitor on the Sign In tab and a first-time ad click on Sign Up.
+ *
+ * Native keeps its cached-user mirror on the same hook (SHO-580); the browser's
+ * cookie jar answers synchronously, so web passes no `cachedUser` at all.
+ */
+function handleUserChanged(user: AuthUser | null): void {
+  if (user) markHadSession()
+  if (Platform.OS !== 'web') rememberAuthUser(user)
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     // `shogo:active-workspace-id` is a bare, unscoped-by-user cache key.
@@ -78,7 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // always had.
       {...(Platform.OS === 'web'
         ? {}
-        : { cachedUser: readCachedAuthUser, onUserChanged: rememberAuthUser })}
+        : { cachedUser: readCachedAuthUser })}
+      onUserChanged={handleUserChanged}
       // In the browser the auth client resolves `signIn.social` after setting
       // `window.location.href`, so the session it reports is read before the
       // provider is even contacted. On native the Expo plugin awaits the OAuth

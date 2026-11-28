@@ -169,6 +169,22 @@ export async function sendEmailVerificationEmail(params: {
 }
 
 /**
+ * Send a 6-digit sign-in code (SHO-613). The passwordless path for in-app
+ * browsers, where Google's OAuth is refused and a magic link would land in a
+ * different browser from the one the visitor is in.
+ */
+export async function sendVerificationCodeEmail(params: {
+  to: string
+  otp: string
+  expiresIn?: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail('email-otp', params.to, {
+    otp: params.otp,
+    expiresIn: params.expiresIn || '10 minutes',
+  })
+}
+
+/**
  * Send a project invitation email
  */
 export async function sendProjectInviteEmail(params: {

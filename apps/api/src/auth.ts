@@ -15,11 +15,12 @@
  */
 
 import { betterAuth, type BetterAuthPlugin } from "better-auth"
+import { emailOTP } from "better-auth/plugins"
 import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
 import { expoAuthorizationProxyGuard, nativeTrustedOrigins } from "./lib/native-oauth-trust"
 import { createDefaultTeamWorkspace, createPersonalWorkspace } from "./services/workspace.service"
-import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
+import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, sendVerificationCodeEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
 import { getFrontendUrl } from "./lib/cloud-urls"
@@ -173,6 +174,11 @@ const PROJECT_ID_HEADER = "x-shogo-project-id"
 const PROJECT_AUTH_ALLOWLIST_PATHS: readonly string[] = [
   "/sign-up/email",
   "/sign-in/email",
+  // Passwordless email sign-in (SHO-613). Both legs are sign-in attempts, so a
+  // published project's allow-list has to cover them: without these entries an
+  // excluded email could get a session by asking for a code instead.
+  "/email-otp/send-verification-otp",
+  "/sign-in/email-otp",
 ]
 
 function projectAuthHeader(ctx: any): string | null {
@@ -300,6 +306,33 @@ const signupRateLimitPlugin: BetterAuthPlugin = {
           )
         }),
       },
+      {
+        // Passwordless sign-in codes (SHO-613). This endpoint mails an arbitrary
+        // address — an account is created when the code is verified — so it has
+        // exactly the SHO-416 farm shape: the same per-address and per-IP-prefix
+        // limits as a sign-up.
+        matcher(ctx) {
+          return ctx.path === "/email-otp/send-verification-otp"
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const request = ctx.request as Request | undefined
+          const email = (ctx.body as { email?: unknown })?.email
+          const verdict = await checkVerificationEmailRateLimit(
+            ctx.headers ?? request?.headers ?? null,
+            typeof email === "string" ? email : "",
+            { bypass: request ? isLoadTestBypass(request) : false },
+          )
+          if (verdict.allowed) return
+          throw new APIError(
+            "TOO_MANY_REQUESTS",
+            {
+              code: "SIGNUP_RATE_LIMITED",
+              message: "Too many sign-in codes requested. Please try again later.",
+            },
+            { "Retry-After": String(verdict.retryAfterSeconds) },
+          )
+        }),
+      },
     ],
   },
 }
@@ -398,6 +431,55 @@ async function sendDeferredSignupOnboarding(userId: string): Promise<void> {
     console.error('[Loops] signup event failed:', err),
   )
 }
+
+/**
+ * Passwordless email sign-in (SHO-613).
+ *
+ * A 6-digit code typed back into the same page, not a magic link: Instagram and
+ * Facebook's in-app browsers cannot complete Google's OAuth
+ * (`disallowed_useragent`), and a link would open in the mail app's browser —
+ * a different browser from the one the visitor is in — so the session (and the
+ * ad's `plan`/`utm_*` intent) would land somewhere they are not looking. The
+ * code keeps both on the page the ad opened.
+ *
+ * Verifying a code for an address with no account creates one with
+ * `emailVerified: true` — the person proved the inbox — so the signup-trust
+ * hold (`risk.band === 'high' && !emailVerified`) never holds it. Risk scoring,
+ * attribution and the welcome email still run from `user.create`.
+ *
+ * `storeOTP: 'hashed'` is not cosmetic: the plugin also registers a public
+ * `GET /email-otp/get-verification-otp`, which returns the stored code
+ * verbatim when it is stored in plain text. With plain storage, anyone could
+ * request a code for an address and read it straight back — an account
+ * takeover. Hashing makes that endpoint refuse, and costs nothing at verify
+ * time.
+ */
+const emailOtpPlugin = emailOTP({
+  otpLength: 6,
+  expiresIn: 10 * 60,
+  allowedAttempts: 5,
+  storeOTP: "hashed",
+  sendVerificationOTP: async ({ email, otp }: { email: string; otp: string }) => {
+    const result = (await sendVerificationCodeEmail({
+      to: email,
+      otp,
+      expiresIn: "10 minutes",
+    })) ?? { success: false, error: "email integration unavailable" }
+    // Same escape hatch as the password-reset link: with no SMTP configured
+    // (local mode, dev) the code is printed once so a developer can finish the
+    // flow. Production never logs it unless explicitly asked to.
+    const logCodeInConsole =
+      !result.success &&
+      (process.env.NODE_ENV !== "production" || process.env.SHOGO_LOG_PASSWORD_RESET_URL === "true")
+    if (logCodeInConsole) {
+      console.warn(
+        `[Auth] Sign-in code email was not sent (${result.error ?? "unknown"}). ` +
+          "Configure email in .env (see EMAIL_PROVIDER / SMTP_* or SES). Dev-only code:\n" +
+          otp,
+      )
+    }
+  },
+})
 
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
@@ -665,7 +747,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), expoAuthorizationProxyGuard, projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
+  plugins: [expo(), expoAuthorizationProxyGuard, projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin, emailOtpPlugin],
 
   rateLimit: {
     window: 60,

@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/react-native'
 import { createAuthClient } from '@shogo/shared-app/auth'
 import { createAuthClient as createBetterAuthClient } from 'better-auth/react'
 import type { BetterFetch } from 'better-auth/react'
+import { emailOTPClient } from 'better-auth/client/plugins'
 import { expoClient, getSetCookie, normalizeCookieName } from '@better-auth/expo/client'
 import * as SecureStore from 'expo-secure-store'
 import {
@@ -78,6 +79,9 @@ function createMobileAuthClient() {
         cookiePrefix,
         storage,
       }),
+      // Passwordless email sign-in (SHO-613), same plugin as the web client in
+      // `@shogo/shared-app/auth` — the API's `emailOTP` plugin serves both.
+      emailOTPClient(),
     ],
   })
 

@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
 import { API_URL } from '../lib/api'
 import { autoSignInLocally } from '../lib/auth-client'
-import { appRedirectHref } from '../lib/root-redirect'
+import { appRedirectHref, onboardingRedirectHref } from '../lib/root-redirect'
 import { peekLearnReturn, resumeLearnReturn } from '../lib/learn-return'
 import { readCachedOnboardingCompleted, rememberOnboardingCompleted } from '../lib/auth-session-cache'
 import { Spinner } from '@/components/ui/spinner'
@@ -17,7 +17,9 @@ export default function RootIndex() {
   const platformConfig = usePlatformConfig()
   // `/` is the front door for every full page load, and the query string is
   // part of the destination: `?chatSessionId=X` is how the workspace agent chat
-  // makes a reload, a second tab or Back reopen the running chat (SHO-300).
+  // makes a reload, a second tab or Back reopen the running chat (SHO-300), and
+  // the sign-up intent (`plan`, `trial`, `prompt`, `utm_*`) has to survive the
+  // same hop into onboarding and into the app (SHO-613).
   const rootParams = useLocalSearchParams()
   // The `/api/me` answer this device last saw. With one, the app routes on the
   // first frame; without, the screen waits for the fetch as it always did
@@ -94,7 +96,7 @@ export default function RootIndex() {
   }
 
   if (platformConfig.localMode && platformConfig.needsSetup && !isAuthenticated) {
-    return <Redirect href="/(onboarding)" />
+    return <Redirect href={onboardingRedirectHref(rootParams)} />
   }
 
   if (isAuthenticated) {
@@ -106,7 +108,7 @@ export default function RootIndex() {
       )
     }
     if (!isIdeEmbed && onboardingCompleted === false) {
-      return <Redirect href="/(onboarding)" />
+      return <Redirect href={onboardingRedirectHref(rootParams)} />
     }
     if (!isIdeEmbed && platformConfig.localMode && platformConfig.needsSetup) {
       return <Redirect href="/(admin)" />
@@ -115,7 +117,7 @@ export default function RootIndex() {
   }
 
   if (platformConfig.localMode) {
-    return <Redirect href="/(onboarding)" />
+    return <Redirect href={onboardingRedirectHref(rootParams)} />
   }
 
   return <Redirect href="/(auth)/sign-in" />

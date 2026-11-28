@@ -16,7 +16,7 @@ import type * as AffiliateModule from './affiliate.service'
 
 type AuthIntegrations = Pick<
   typeof EmailModule,
-  'sendWelcomeEmail' | 'sendPasswordResetEmail' | 'sendEmailVerificationEmail'
+  'sendWelcomeEmail' | 'sendPasswordResetEmail' | 'sendEmailVerificationEmail' | 'sendVerificationCodeEmail'
 > &
   Pick<typeof LoopsModule, 'identifyUser' | 'trackEvent'> &
   Pick<typeof AffiliateModule, 'resolveAttributionForUser'>
@@ -38,6 +38,7 @@ export const localAuthIntegrations: AuthIntegrations = {
   sendWelcomeEmail: emailDisabled,
   sendPasswordResetEmail: emailDisabled,
   sendEmailVerificationEmail: emailDisabled,
+  sendVerificationCodeEmail: emailDisabled,
   identifyUser: async () => {},
   trackEvent: async () => {},
   resolveAttributionForUser: async () => null,
@@ -50,6 +51,8 @@ export const sendPasswordResetEmail: AuthIntegrations['sendPasswordResetEmail'] 
   (email ?? localAuthIntegrations).sendPasswordResetEmail(...args)
 export const sendEmailVerificationEmail: AuthIntegrations['sendEmailVerificationEmail'] = (...args) =>
   (email ?? localAuthIntegrations).sendEmailVerificationEmail(...args)
+export const sendVerificationCodeEmail: AuthIntegrations['sendVerificationCodeEmail'] = (...args) =>
+  (email ?? localAuthIntegrations).sendVerificationCodeEmail(...args)
 export const identifyUser: AuthIntegrations['identifyUser'] = (...args) =>
   (loops ?? localAuthIntegrations).identifyUser(...args)
 export const trackEvent: AuthIntegrations['trackEvent'] = (...args) =>

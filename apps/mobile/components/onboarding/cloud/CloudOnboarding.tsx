@@ -112,7 +112,13 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const [retryingLoad, setRetryingLoad] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   // Fixed at mount so the step list doesn't shift once the name is saved.
-  const [askName] = useState(() => localMode && isPlaceholder(PLACEHOLDER_USER_NAMES, user?.name))
+  //
+  // Not gated on local mode (SHO-613): the sign-up form has no name field, so an
+  // email/password or emailed-code sign-up reaches onboarding with an empty
+  // `user.name`. Google and Apple accounts always carry one, so they skip this
+  // step. (`''` is in the placeholder set, which is what makes the same check
+  // serve both a local seed's "Local User" and a cloud sign-up's empty name.)
+  const [askName] = useState(() => isPlaceholder(PLACEHOLDER_USER_NAMES, user?.name))
   const [nameDraft, setNameDraft] = useState('')
   const [nameError, setNameError] = useState<string | null>(null)
   const [savingName, setSavingName] = useState(false)
@@ -418,8 +424,12 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     if (askName) {
       list.push({
         id: 'name',
-        title: 'Welcome to Shogo. What should we call you?',
-        subtitle: 'Shogo runs entirely on this machine. Your name is only used here.',
+        title: localMode
+          ? 'Welcome to Shogo. What should we call you?'
+          : 'What should we call you?',
+        subtitle: localMode
+          ? 'Shogo runs entirely on this machine. Your name is only used here.'
+          : 'This is how your teammates will see you. You can change it later.',
         busy: savingName,
         canContinue: nameDraft.trim().length > 0,
         body: (

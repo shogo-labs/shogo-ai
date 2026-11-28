@@ -267,6 +267,19 @@ describe('Template System', () => {
   describe('Shogo Templates (production registry)', () => {
     const registry = createShogoTemplateRegistry()
 
+    // SHO-613: the passwordless sign-in code. The number is the whole point of
+    // the email, so it has to appear in both the subject and the body, and the
+    // expiry the API passes has to reach the reader.
+    test('email-otp template renders the code, its expiry and the app name', () => {
+      const { subject, html } = registry.render('email-otp', {
+        otp: '123456',
+        expiresIn: '10 minutes',
+      })
+      expect(subject).toBe('Your Shogo code: 123456')
+      expect(html).toContain('123456')
+      expect(html).toContain('10 minutes')
+    })
+
     test('welcome template escapes a malicious name', () => {
       const { html } = registry.render('welcome', {
         name: '<script>alert(1)</script>',

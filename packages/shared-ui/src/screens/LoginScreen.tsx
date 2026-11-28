@@ -239,6 +239,7 @@ const MOBILE_HERO_SCRIM_LIGHT = 'rgba(255, 255, 255, 0.1)'
 const MOBILE_HERO_SCRIM_DARK = 'rgba(9, 9, 11, 0.28)'
 
 type Tab = 'signin' | 'signup'
+export type { Tab as AuthTab }
 
 /**
  * Passive privacy/terms notice shown on every sign-in and sign-up surface
@@ -328,9 +329,41 @@ function ConsentNotice({
   )
 }
 
+export interface InAppBrowserPrompt {
+  /** Which app's webview this is. */
+  app: 'instagram' | 'facebook'
+  /** Android `intent://` link that reopens this page in Chrome. */
+  androidIntentUrl: string
+  /** This page's URL, for iOS's Copy link. */
+  copyUrl: string
+}
+
 export interface LoginScreenProps {
   onSignIn: (email: string, password: string) => Promise<void>
-  onSignUp: (name: string, email: string, password: string) => Promise<void>
+  /**
+   * Email + password sign-up. No name: the account is created with an empty
+   * name and onboarding asks for it, where the person is already answering
+   * questions (SHO-613).
+   */
+  onSignUp: (email: string, password: string) => Promise<void>
+  /**
+   * Passwordless email sign-in (SHO-613). Both must be provided for the
+   * "Email me a code" path to appear; without them the screen is exactly the
+   * email+password / Google / Apple screen it was.
+   */
+  onSendEmailCode?: (email: string) => Promise<void>
+  onVerifyEmailCode?: (email: string, code: string) => Promise<void>
+  /**
+   * Set when the page is running inside Instagram/Facebook's webview. Google's
+   * OAuth is refused there (`disallowed_useragent`), so the Google button is
+   * replaced by an "open in your browser" prompt and the email-code path is
+   * promoted to the primary call to action.
+   */
+  inAppBrowser?: InAppBrowserPrompt | null
+  /** The tab to open on. Defaults to Sign In. */
+  initialTab?: Tab
+  /** Called when the person switches tabs (the host writes it back to the URL). */
+  onTabChange?: (tab: Tab) => void
   onGoogleSignIn?: () => void
   /**
    * Optional Apple "Continue with Apple" handler. When provided, the screen
@@ -555,7 +588,6 @@ function SignUpForm({
   onScrollToBottom?: () => void
   darkSurface?: boolean
 }) {
-  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [emailTouched, setEmailTouched] = useState(false)
@@ -571,7 +603,10 @@ function SignUpForm({
   const isEmailValid = useMemo(() => isValidEmail(email), [email])
   const showEmailError = emailTouched && email.length > 0 && !isEmailValid
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password])
-  const isFormValid = name.length > 0 && isEmailValid && password.length >= 8
+  // No name field (SHO-613): asking for it here was the second thing between an
+  // ad click and an account, and it is not needed to create one. Onboarding
+  // asks for it once the session exists.
+  const isFormValid = isEmailValid && password.length >= 8
 
   const focusPassword = () => {
     passwordRef.current?.focus()
@@ -580,27 +615,11 @@ function SignUpForm({
 
   const handleSubmit = async () => {
     if (!isFormValid) return
-    await onSignUp(name, email, password)
+    await onSignUp(email, password)
   }
 
   return (
     <View className="gap-4">
-      <View className="gap-1.5">
-        <Text className={labelClassName}>Name</Text>
-        <Input
-          placeholder="Enter your name"
-          autoCapitalize="words"
-          value={name}
-          onChangeText={(t) => { setName(t); onClearError?.() }}
-          disabled={isLoading}
-          returnKeyType="next"
-          blurOnSubmit={false}
-          onSubmitEditing={() => emailRef.current?.focus()}
-          className={inputClassName}
-          placeholderTextColor={placeholderTextColor}
-        />
-      </View>
-
       <View className="gap-1.5">
         <Text className={labelClassName}>Email</Text>
         <View className="relative">
@@ -694,6 +713,412 @@ function SignUpForm({
   )
 }
 
+/** How long the resend link stays disabled, in seconds. */
+const EMAIL_CODE_RESEND_SECONDS = 30
+const EMAIL_CODE_LENGTH = 6
+
+/**
+ * Passwordless email sign-in (SHO-613).
+ *
+ * Two steps, both on this page: an address, then the 6-digit code mailed to it.
+ * This is the path that works inside Instagram/Facebook's in-app browser —
+ * Google's OAuth is refused there, and a magic *link* would open in a different
+ * browser from the one the visitor is in, so the session would land somewhere
+ * they are not. A code keeps the session, and the ad's intent params, on the
+ * page the ad opened.
+ *
+ * The server creates the account on a correct code when the address is new, so
+ * the same form serves Sign Up and Sign In; the tab only changes the wording.
+ */
+function EmailCodeForm({
+  onSendCode,
+  onVerifyCode,
+  isLoading,
+  error,
+  onClearError,
+  onScrollToBottom,
+  darkSurface = false,
+  activeTab,
+}: {
+  onSendCode: (email: string) => Promise<void>
+  onVerifyCode: (email: string, code: string) => Promise<void>
+  isLoading?: boolean
+  error?: string | null
+  onClearError?: () => void
+  onScrollToBottom?: () => void
+  darkSurface?: boolean
+  activeTab: Tab
+}) {
+  const [step, setStep] = useState<'email' | 'code'>('email')
+  const [email, setEmail] = useState('')
+  const [sentTo, setSentTo] = useState('')
+  const [code, setCode] = useState('')
+  const [sending, setSending] = useState(false)
+  const [cooldown, setCooldown] = useState(0)
+  const codeRef = useRef<TextInput>(null)
+  const {
+    labelClassName,
+    inputClassName,
+    placeholderTextColor,
+  } = authFieldStyles(darkSurface)
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = setTimeout(() => setCooldown((seconds) => seconds - 1), 1000)
+    return () => clearTimeout(timer)
+  }, [cooldown])
+
+  const isEmailValid = useMemo(() => isValidEmail(email), [email])
+  const codeComplete = code.length === EMAIL_CODE_LENGTH
+
+  const send = async (address: string) => {
+    if (sending || isLoading) return
+    setSending(true)
+    try {
+      await onSendCode(address)
+      setSentTo(address)
+      setStep('code')
+      setCode('')
+      setCooldown(EMAIL_CODE_RESEND_SECONDS)
+      setTimeout(() => codeRef.current?.focus(), 150)
+      setTimeout(() => onScrollToBottom?.(), 150)
+    } catch {
+      // The host puts the reason on `error`; staying on the address step lets
+      // the person fix a typo and retry.
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const verify = async () => {
+    if (!codeComplete || isLoading) return
+    try {
+      await onVerifyCode(sentTo, code)
+    } catch {
+      setCode('')
+      codeRef.current?.focus()
+    }
+  }
+
+  const useDifferentEmail = () => {
+    onClearError?.()
+    setStep('email')
+    setCode('')
+    setCooldown(0)
+  }
+
+  if (step === 'email') {
+    return (
+      <View className="gap-4">
+        <View className="gap-1.5">
+          <Text className={labelClassName}>Email</Text>
+          <Input
+            placeholder="you@example.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={email}
+            onChangeText={(value) => { setEmail(value); onClearError?.() }}
+            disabled={isLoading || sending}
+            returnKeyType="send"
+            onSubmitEditing={() => isEmailValid && void send(email.trim())}
+            className={inputClassName}
+            placeholderTextColor={placeholderTextColor}
+          />
+          <Text className="text-xs text-muted-foreground">
+            We&apos;ll email you a 6-digit code. No password to remember.
+          </Text>
+        </View>
+
+        {error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <Button
+          variant="brand"
+          onPress={() => void send(email.trim())}
+          disabled={isLoading || sending || !isEmailValid}
+          className="mt-1"
+        >
+          {sending ? <Spinner tone="onBrand" size="small" /> : 'Email me a code'}
+        </Button>
+      </View>
+    )
+  }
+
+  return (
+    <View className="gap-4">
+      <View className="gap-1.5">
+        <Text className={labelClassName}>Code</Text>
+        <Input
+          ref={codeRef}
+          placeholder="123456"
+          keyboardType="number-pad"
+          autoCapitalize="none"
+          autoCorrect={false}
+          maxLength={EMAIL_CODE_LENGTH}
+          value={code}
+          onChangeText={(value) => { setCode(value.replace(/\D/g, '')); onClearError?.() }}
+          disabled={isLoading}
+          returnKeyType="go"
+          onSubmitEditing={() => void verify()}
+          className={inputClassName}
+          placeholderTextColor={placeholderTextColor}
+        />
+        <Text className="text-xs text-muted-foreground">
+          {`Sent to ${sentTo}. It expires in 10 minutes.`}
+        </Text>
+      </View>
+
+      {error ? (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <Button
+        variant="brand"
+        onPress={() => void verify()}
+        disabled={isLoading || !codeComplete}
+        className="mt-1"
+      >
+        {isLoading ? <Spinner tone="onBrand" size="small" /> : activeTab === 'signup' ? 'Create account' : 'Sign In'}
+      </Button>
+
+      <View className="flex-row items-center justify-center gap-3">
+        <Pressable
+          onPress={() => void send(sentTo)}
+          disabled={cooldown > 0 || sending || isLoading}
+          role="button"
+          accessibilityLabel={cooldown > 0 ? `Resend available in ${cooldown} seconds` : 'Resend code'}
+          aria-disabled={cooldown > 0 || sending || isLoading}
+        >
+          <Text
+            className={cn(
+              'text-sm text-brand-landing',
+              (cooldown > 0 || sending || isLoading) && 'opacity-50',
+            )}
+          >
+            {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend code'}
+          </Text>
+        </Pressable>
+        <Text className="text-muted-foreground">·</Text>
+        <Pressable onPress={useDifferentEmail} role="button" accessibilityLabel="Use a different email">
+          <Text className="text-sm text-brand-landing">Use a different email</Text>
+        </Pressable>
+      </View>
+    </View>
+  )
+}
+
+/**
+ * What replaces the Google button inside Instagram/Facebook's webview.
+ *
+ * Google refuses its OAuth flow in an embedded webview (`disallowed_useragent`),
+ * so offering the button there is a dead end that looks like the site is broken.
+ * The two ways out that actually work, per platform:
+ *
+ *   - Android has `intent://`, which hands the current page to Chrome. If
+ *     Chrome is not installed, `S.browser_fallback_url` opens whatever browser
+ *     is there instead of an "app not found" error.
+ *   - iOS has no equivalent — the person is told to use ••• → "Open in external
+ *     browser", with a Copy link button for the case where they would rather
+ *     paste it. The email paths sit right above, so leaving is a choice and not
+ *     the only way to continue.
+ */
+function InAppBrowserNotice({
+  prompt,
+  isLoading,
+  dark = false,
+}: {
+  prompt: InAppBrowserPrompt
+  isLoading?: boolean
+  /** The always-dark native landing card (its surface is inline-styled, not themed). */
+  dark?: boolean
+}) {
+  const [copied, setCopied] = useState(false)
+  const isAndroid =
+    typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent ?? '')
+  const titleStyle = dark ? { color: '#FFFFFF' } : undefined
+  const bodyStyle = dark ? { color: '#98989D' } : undefined
+  const buttonStyle = dark ? { backgroundColor: '#3A3A3C' } : undefined
+  const buttonTextStyle = dark ? { color: '#FFFFFF' } : undefined
+
+  const openInBrowser = () => {
+    if (typeof window === 'undefined') return
+    window.location.href = prompt.androidIntentUrl
+  }
+
+  const copyLink = () => {
+    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+    if (!clipboard?.writeText) return
+    clipboard
+      .writeText(prompt.copyUrl)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      })
+      .catch(() => {})
+  }
+
+  return (
+    <View
+      className={cn('gap-2 rounded-xl border p-4', dark ? 'border-zinc-700' : 'border-border bg-card')}
+      accessibilityLabel="Google sign-in needs your browser"
+    >
+      <Text
+        className={cn('text-sm font-semibold', !dark && 'text-foreground')}
+        style={titleStyle}
+      >
+        Open in your browser to continue with Google
+      </Text>
+      {isAndroid ? (
+        <>
+          <Pressable
+            onPress={openInBrowser}
+            disabled={isLoading}
+            role="button"
+            accessibilityLabel="Open in browser"
+            style={buttonStyle}
+            className={cn('items-center rounded-lg py-3', !dark && 'bg-secondary', isLoading && 'opacity-50')}
+          >
+            <Text
+              className={cn('text-sm font-medium', !dark && 'text-foreground')}
+              style={buttonTextStyle}
+            >
+              Open in browser
+            </Text>
+          </Pressable>
+          <Text className={cn('text-xs', !dark && 'text-muted-foreground')} style={bodyStyle}>
+            {`Google blocks sign-in inside the ${prompt.app === 'instagram' ? 'Instagram' : 'Facebook'} app. `}
+            Or use email below — no need to switch apps.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text className={cn('text-xs', !dark && 'text-muted-foreground')} style={bodyStyle}>
+            Tap ••• at the top of the page, then “Open in external browser”.
+          </Text>
+          <Pressable
+            onPress={copyLink}
+            disabled={isLoading}
+            role="button"
+            accessibilityLabel="Copy link"
+            style={buttonStyle}
+            className={cn('items-center rounded-lg py-3', !dark && 'bg-secondary', isLoading && 'opacity-50')}
+          >
+            <Text
+              className={cn('text-sm font-medium', !dark && 'text-foreground')}
+              style={buttonTextStyle}
+            >
+              {copied ? 'Link copied' : 'Copy link'}
+            </Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  )
+}
+
+/**
+ * The form area every layout renders: password form or email-code form, plus
+ * the link that switches between them when the host wired the code path.
+ *
+ * `codePrimary` promotes the code to the default (Sign Up inside an in-app
+ * browser, where the password form is still available but Google is not). The
+ * layouts key this on the active tab so switching tabs starts fresh.
+ */
+function AuthFormBody({
+  activeTab,
+  onSignIn,
+  onSignUp,
+  onForgotPassword,
+  onSendEmailCode,
+  onVerifyEmailCode,
+  isLoading,
+  error,
+  onClearError,
+  onScrollToBottom,
+  darkSurface = false,
+  codePrimary = false,
+}: Pick<
+  LoginScreenProps,
+  | 'onSignIn'
+  | 'onSignUp'
+  | 'onForgotPassword'
+  | 'onSendEmailCode'
+  | 'onVerifyEmailCode'
+  | 'isLoading'
+  | 'error'
+  | 'onClearError'
+> & {
+  activeTab: Tab
+  onScrollToBottom?: () => void
+  darkSurface?: boolean
+  codePrimary?: boolean
+}) {
+  const canUseCode = !!onSendEmailCode && !!onVerifyEmailCode
+  const [useCode, setUseCode] = useState(codePrimary && canUseCode)
+
+  const showCode = canUseCode && useCode
+
+  return (
+    <View className="gap-4">
+      {showCode ? (
+        <EmailCodeForm
+          onSendCode={onSendEmailCode}
+          onVerifyCode={onVerifyEmailCode}
+          isLoading={isLoading}
+          error={error}
+          onClearError={onClearError}
+          onScrollToBottom={onScrollToBottom}
+          darkSurface={darkSurface}
+          activeTab={activeTab}
+        />
+      ) : activeTab === 'signin' ? (
+        <SignInForm
+          onSignIn={onSignIn}
+          onForgotPassword={onForgotPassword}
+          isLoading={isLoading}
+          error={error}
+          onClearError={onClearError}
+          onScrollToBottom={onScrollToBottom}
+          darkSurface={darkSurface}
+        />
+      ) : (
+        <SignUpForm
+          onSignUp={onSignUp}
+          isLoading={isLoading}
+          error={error}
+          onClearError={onClearError}
+          onScrollToBottom={onScrollToBottom}
+          darkSurface={darkSurface}
+        />
+      )}
+
+      {canUseCode ? (
+        <Pressable
+          onPress={() => {
+            onClearError?.()
+            setUseCode((current) => !current)
+          }}
+          disabled={isLoading}
+          role="link"
+          accessibilityLabel={showCode ? 'Use a password instead' : 'Email me a code instead'}
+          aria-disabled={isLoading}
+          className="items-center py-1"
+        >
+          <Text className={cn('text-sm text-brand-landing', isLoading && 'opacity-50')}>
+            {showCode ? 'Use a password instead' : 'Email me a code instead'}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  )
+}
+
 function NativeLoginBackdrop({ source }: { source: ImageSourcePropType }) {
   return (
     <>
@@ -735,6 +1160,11 @@ function NativeMobileLoginPanel({
   onGoogleSignIn,
   onAppleSignIn,
   onForgotPassword,
+  onSendEmailCode,
+  onVerifyEmailCode,
+  inAppBrowser,
+  initialTab,
+  onTabChange,
   isLoading,
   error,
   onClearError,
@@ -743,7 +1173,9 @@ function NativeMobileLoginPanel({
   heroSource,
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
   const openLink = resolveOpenExternalLink(onOpenExternalLink)
-  const [activeTab, setActiveTab] = useState<Tab>('signin')
+  // The tab the URL asked for (SHO-613). A link that opens this screen inside
+  // an in-app browser starts here too — that is the ad traffic this exists for.
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'signin')
   const [showEmailForm, setShowEmailForm] = useState(false)
   const [dismissed, setDismissed] = useState(false)
   const [typedHeroText, setTypedHeroText] = useState('')
@@ -837,7 +1269,7 @@ function NativeMobileLoginPanel({
 
   const displayError = dismissed ? null : error
   const dismissError = () => setDismissed(true)
-  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const switchTab = (tab: Tab) => { setActiveTab(tab); onTabChange?.(tab); setDismissed(true) }
   const scrollToBottom = () => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
@@ -919,7 +1351,11 @@ function NativeMobileLoginPanel({
               <AppleContinueButton onPress={onAppleSignIn} colorScheme="dark" disabled={isLoading} />
             </View>
           ) : null}
-          {onGoogleSignIn ? (
+          {inAppBrowser ? (
+            <View style={{ marginBottom: 12 }}>
+              <InAppBrowserNotice prompt={inAppBrowser} isLoading={isLoading} dark />
+            </View>
+          ) : onGoogleSignIn ? (
             <View style={{ marginBottom: 12 }}>
               <GoogleContinueButton onPress={onGoogleSignIn} colorScheme="dark" nativeLanding disabled={isLoading} />
             </View>
@@ -1113,26 +1549,21 @@ function NativeMobileLoginPanel({
             ))}
           </View>
 
-          {activeTab === 'signin' ? (
-            <SignInForm
-              onSignIn={onSignIn}
-              onForgotPassword={onForgotPassword}
-              isLoading={isLoading}
-              error={displayError}
-              onClearError={dismissError}
-              onScrollToBottom={scrollToBottom}
-              darkSurface
-            />
-          ) : (
-            <SignUpForm
-              onSignUp={onSignUp}
-              isLoading={isLoading}
-              error={displayError}
-              onClearError={dismissError}
-              onScrollToBottom={scrollToBottom}
-              darkSurface
-            />
-          )}
+          <AuthFormBody
+            key={activeTab}
+            activeTab={activeTab}
+            onSignIn={onSignIn}
+            onSignUp={onSignUp}
+            onForgotPassword={onForgotPassword}
+            onSendEmailCode={onSendEmailCode}
+            onVerifyEmailCode={onVerifyEmailCode}
+            isLoading={isLoading}
+            error={displayError}
+            onClearError={dismissError}
+            onScrollToBottom={scrollToBottom}
+            darkSurface
+            codePrimary={!!inAppBrowser}
+          />
 
           <View className="mt-5">
             <ConsentNotice singleLine onOpenExternalLink={openLink} />
@@ -1150,13 +1581,19 @@ function CompactWebLoginPanel({
   onGoogleSignIn,
   onAppleSignIn,
   onForgotPassword,
+  onSendEmailCode,
+  onVerifyEmailCode,
+  inAppBrowser,
+  initialTab,
+  onTabChange,
   isLoading,
   error,
+  onClearError,
   onOpenExternalLink,
   colorScheme,
   heroSource,
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
-  const [activeTab, setActiveTab] = useState<Tab>('signin')
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'signin')
   const [dismissed, setDismissed] = useState(false)
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
@@ -1167,7 +1604,7 @@ function CompactWebLoginPanel({
 
   const displayError = dismissed ? null : error
   const dismissError = () => setDismissed(true)
-  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const switchTab = (tab: Tab) => { setActiveTab(tab); onTabChange?.(tab); setDismissed(true) }
   const scrollToBottom = () => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
@@ -1225,28 +1662,24 @@ function CompactWebLoginPanel({
                 ))}
               </View>
 
-              {activeTab === 'signin' ? (
-                <SignInForm
-                  onSignIn={onSignIn}
-                  onForgotPassword={onForgotPassword}
-                  isLoading={isLoading}
-                  error={displayError}
-                  onClearError={dismissError}
-                  onScrollToBottom={scrollToBottom}
-                />
-              ) : (
-                <SignUpForm
-                  onSignUp={onSignUp}
-                  isLoading={isLoading}
-                  error={displayError}
-                  onClearError={dismissError}
-                  onScrollToBottom={scrollToBottom}
-                />
-              )}
+              <AuthFormBody
+                key={activeTab}
+                activeTab={activeTab}
+                onSignIn={onSignIn}
+                onSignUp={onSignUp}
+                onForgotPassword={onForgotPassword}
+                onSendEmailCode={onSendEmailCode}
+                onVerifyEmailCode={onVerifyEmailCode}
+                isLoading={isLoading}
+                error={displayError}
+                onClearError={dismissError}
+                onScrollToBottom={scrollToBottom}
+                codePrimary={!!inAppBrowser}
+              />
 
               <View className="mt-4"><ConsentNotice onOpenExternalLink={onOpenExternalLink} /></View>
 
-              {(onGoogleSignIn || onAppleSignIn) ? (
+              {(inAppBrowser || onGoogleSignIn || onAppleSignIn) ? (
                 <>
                   <View className="flex-row items-center my-5">
                     <View className="flex-1"><Separator /></View>
@@ -1258,7 +1691,11 @@ function CompactWebLoginPanel({
                       <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
                     </View>
                   ) : null}
-                  {onGoogleSignIn ? <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} disabled={isLoading} /> : null}
+                  {inAppBrowser ? (
+                    <InAppBrowserNotice prompt={inAppBrowser} isLoading={isLoading} />
+                  ) : onGoogleSignIn ? (
+                    <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} disabled={isLoading} />
+                  ) : null}
                 </>
               ) : null}
             </CardContent>
@@ -1275,8 +1712,8 @@ const shogoRadialCursor = require('../../../../apps/mobile/assets/ic_playstore_l
 const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 
-function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, onOpenExternalLink, colorScheme }: LoginScreenProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('signin')
+function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, onSendEmailCode, onVerifyEmailCode, inAppBrowser, initialTab, onTabChange, isLoading, error, onClearError, onOpenExternalLink, colorScheme }: LoginScreenProps) {
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'signin')
   const [dismissed, setDismissed] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
 
@@ -1284,7 +1721,7 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
 
   const displayError = dismissed ? null : error
   const dismissError = () => setDismissed(true)
-  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const switchTab = (tab: Tab) => { setActiveTab(tab); onTabChange?.(tab); setDismissed(true) }
   const scrollToBottom = () => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
@@ -1345,25 +1782,25 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
             ))}
           </View>
 
-          {activeTab === 'signin'
-            ? (
-              <SignInForm
-                onSignIn={onSignIn}
-                onForgotPassword={onForgotPassword}
-                isLoading={isLoading}
-                error={displayError}
-                onClearError={dismissError}
-                onScrollToBottom={scrollToBottom}
-              />
-            )
-            : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
-          }
+          <AuthFormBody
+            key={activeTab}
+            activeTab={activeTab}
+            onSignIn={onSignIn}
+            onSignUp={onSignUp}
+            onForgotPassword={onForgotPassword}
+            onSendEmailCode={onSendEmailCode}
+            onVerifyEmailCode={onVerifyEmailCode}
+            isLoading={isLoading}
+            error={displayError}
+            onClearError={dismissError}
+            onScrollToBottom={scrollToBottom}
+          />
 
           <View className="mt-4">
             <ConsentNotice onOpenExternalLink={onOpenExternalLink} />
           </View>
 
-          {(onGoogleSignIn || onAppleSignIn) ? (
+          {(inAppBrowser || onGoogleSignIn || onAppleSignIn) ? (
             <>
               <View className="flex-row items-center my-5">
                 <View className="flex-1"><Separator /></View>
@@ -1377,6 +1814,8 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
               ) : null}
               {onGoogleSignIn ? (
                 <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} disabled={isLoading} />
+              ) : inAppBrowser ? (
+                <InAppBrowserNotice prompt={inAppBrowser} isLoading={isLoading} />
               ) : null}
             </>
           ) : null}

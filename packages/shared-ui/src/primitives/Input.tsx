@@ -23,6 +23,8 @@ export interface InputProps {
   onBlur?: () => void
   onFocus?: () => void
   blurOnSubmit?: boolean
+  /** Caps the input length — the 6-digit sign-in code uses it (SHO-613). */
+  maxLength?: number
 }
 
 export const Input = forwardRef<TextInput, InputProps>(function Input({
@@ -44,6 +46,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input({
   onBlur,
   onFocus,
   blurOnSubmit,
+  maxLength,
 }, ref) {
   return (
     <TextInput
@@ -71,6 +74,7 @@ export const Input = forwardRef<TextInput, InputProps>(function Input({
       onBlur={onBlur}
       onFocus={onFocus}
       blurOnSubmit={blurOnSubmit}
+      maxLength={maxLength}
     />
   )
 })

@@ -8,7 +8,7 @@
  */
 
 import { expect, test } from "bun:test"
-import { appRedirectHref } from "../root-redirect"
+import { appRedirectHref, onboardingRedirectHref } from "../root-redirect"
 
 test("a chat session in the URL survives the redirect", () => {
   expect(appRedirectHref({ chatSessionId: "sess_123" })).toEqual({
@@ -52,4 +52,51 @@ test("an empty value is not forwarded", () => {
 test("a plain arrival redirects with no params", () => {
   expect(appRedirectHref({})).toBe("/(app)")
   expect(appRedirectHref(undefined)).toBe("/(app)")
+})
+
+// SHO-613: the sign-up intent keys (`plan`, `trial`, `prompt`, `utm_*`) are part
+// of the destination too — an Instagram ad is followed through `/` into
+// onboarding, and losing them there is what made an ad unfollowable end to end.
+test("the sign-up intent survives the redirect into the app", () => {
+  expect(
+    appRedirectHref({ plan: "pro", trial: "14", prompt: "hi", utm_source: "ig" }),
+  ).toEqual({
+    pathname: "/(app)",
+    params: { plan: "pro", trial: "14", prompt: "hi", utm_source: "ig" },
+  })
+})
+
+test("the sign-up intent survives the redirect into onboarding", () => {
+  expect(
+    onboardingRedirectHref({
+      utm_source: "ig",
+      utm_medium: "paid",
+      utm_campaign: "launch",
+      utm_content: "story",
+      utm_term: "build",
+      plan: "pro",
+    }),
+  ).toEqual({
+    pathname: "/(onboarding)",
+    params: {
+      utm_source: "ig",
+      utm_medium: "paid",
+      utm_campaign: "launch",
+      utm_content: "story",
+      utm_term: "build",
+      plan: "pro",
+    },
+  })
+})
+
+test("the intent keys are not the ones the arrival flow guards", () => {
+  // `workspace` and `file` still must not ride along (SHO-284).
+  expect(
+    onboardingRedirectHref({ plan: "pro", workspace: "11111111-2222-3333-4444-555555555555" }),
+  ).toEqual({ pathname: "/(onboarding)", params: { plan: "pro" } })
+})
+
+test("a plain onboarding arrival has no params", () => {
+  expect(onboardingRedirectHref({})).toBe("/(onboarding)")
+  expect(onboardingRedirectHref(undefined)).toBe("/(onboarding)")
 })
