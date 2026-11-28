@@ -20,6 +20,10 @@ import { isPublicPath, requireAuth } from './auth'
 
 export const GATE_PUBLIC_PREFIXES = [
   '/api/billing/ios/notifications',
+  // One-click lifecycle-email unsubscribe (SHO-615). A mail client's RFC 8058
+  // POST carries no session; the HMAC-signed `u`/`t` params are the credential
+  // (verified in routes/email-unsubscribe.ts).
+  '/api/email/unsubscribe',
   // Shared-file downloads: the signed token in the path is the credential
   // (verified in routes/shared-files.ts).
   '/api/f/',

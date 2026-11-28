@@ -13,7 +13,7 @@ export const creditsResetTemplate: EmailTemplate<{
   projectName: string
   resetAt: string
   continueUrl: string
-  preferencesUrl: string
+  unsubscribeUrl: string
   appName: string
 }> = {
   name: 'credits-reset',
@@ -28,7 +28,7 @@ export const creditsResetTemplate: EmailTemplate<{
     <hr class="email-divider">
     <p class="email-muted">
       You're getting this once because you hit a limit and left.
-      <a href="{{preferencesUrl}}">Turn these emails off</a>.
+      <a href="{{unsubscribeUrl}}">Unsubscribe from these emails</a>.
     </p>
   `),
   defaults: {

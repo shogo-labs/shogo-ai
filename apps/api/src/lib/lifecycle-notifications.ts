@@ -19,6 +19,7 @@ import { prisma } from './prisma'
 import { sendPushToUser } from './push-notifications'
 import { createNotification } from '../services/notification.service'
 import { sendBuildReadyEmail, sendCreditsResetEmail } from '../services/email.service'
+import { lifecycleEmailAllowed, unsubscribeUrl } from './lifecycle-email'
 
 /** Where the app lives, for links inside email. */
 function appBaseUrl(): string {
@@ -28,10 +29,6 @@ function appBaseUrl(): string {
 /** Deep link to a project's chat, and to the notification preferences. */
 function projectChatUrl(projectId: string): string {
   return `${appBaseUrl()}/chat?project=${encodeURIComponent(projectId)}`
-}
-
-function preferencesUrl(): string {
-  return `${appBaseUrl()}/settings/account`
 }
 
 export interface BuildReadyInput {
@@ -91,14 +88,14 @@ export async function notifyBuildReady(input: BuildReadyInput): Promise<{ pushed
   if (!row) return result
 
   try {
-    const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { email: true } })
-    if (user?.email) {
+    const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { email: true, lifecycleEmailOptOutAt: true } })
+    if (user?.email && lifecycleEmailAllowed(user)) {
       const sent = await sendBuildReadyEmail({
         to: user.email,
         projectName: input.projectName,
         summary: body,
         projectUrl: url,
-        preferencesUrl: preferencesUrl(),
+        unsubscribeUrl: unsubscribeUrl(input.userId),
       })
       result.emailed = sent.success
     }
@@ -159,14 +156,14 @@ export async function notifyCreditsReset(input: CreditsResetInput): Promise<void
   })
 
   try {
-    const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { email: true } })
-    if (user?.email) {
+    const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { email: true, lifecycleEmailOptOutAt: true } })
+    if (user?.email && lifecycleEmailAllowed(user)) {
       await sendCreditsResetEmail({
         to: user.email,
         projectName: input.projectName,
         resetAt: label,
         continueUrl: url,
-        preferencesUrl: preferencesUrl(),
+        unsubscribeUrl: unsubscribeUrl(input.userId),
       })
     }
   } catch (error: any) {

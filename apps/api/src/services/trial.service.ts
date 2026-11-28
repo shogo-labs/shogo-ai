@@ -267,6 +267,12 @@ export async function trialEligibility(params: {
  *
  * Cards only: the one-trial-per-card rule keys on the card fingerprint, which
  * wallets such as Link or bank debits don't expose.
+ *
+ * A PAID checkout (trialDays 0) deliberately returns `{}` — no
+ * `payment_method_types` — so Stripe uses dynamic payment methods: Link, Apple
+ * Pay and Google Pay appear there once enabled in the Dashboard (growth plan §0
+ * G10). Only the trial narrows the list to `['card']`; do not "fix" the missing
+ * `payment_method_types` on a paid checkout by setting it.
  */
 export function trialCheckoutParams(
   trialDays: number,

@@ -49,6 +49,11 @@ export {
 // Lifecycle — Activation
 export { buildReadyTemplate } from './lifecycle/build-ready.js'
 export { creditsResetTemplate } from './lifecycle/credits-reset.js'
+export { abandonedCheckoutTemplate } from './lifecycle/abandoned-checkout.js'
+export {
+  firstBuildNudgeTemplate,
+  firstBuildNudgeExamplesTemplate,
+} from './lifecycle/first-build-nudge.js'
 
 // Lifecycle — Conversion
 export {
@@ -91,6 +96,11 @@ import {
 } from './lifecycle/drip.js'
 import { buildReadyTemplate } from './lifecycle/build-ready.js'
 import { creditsResetTemplate } from './lifecycle/credits-reset.js'
+import { abandonedCheckoutTemplate } from './lifecycle/abandoned-checkout.js'
+import {
+  firstBuildNudgeTemplate,
+  firstBuildNudgeExamplesTemplate,
+} from './lifecycle/first-build-nudge.js'
 import {
   conversionUsageLimitTemplate,
   conversionPowerUserTemplate,
@@ -127,6 +137,9 @@ export const allTemplates: EmailTemplate[] = [
   // Lifecycle — Activation
   buildReadyTemplate,
   creditsResetTemplate,
+  abandonedCheckoutTemplate,
+  firstBuildNudgeTemplate,
+  firstBuildNudgeExamplesTemplate,
   // Lifecycle — Conversion
   conversionUsageLimitTemplate,
   conversionPowerUserTemplate,

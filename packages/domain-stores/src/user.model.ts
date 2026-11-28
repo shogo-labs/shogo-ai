@@ -34,6 +34,7 @@ export const UserModel = types
     emailCanonical: types.optional(types.string, ""),
     firstCapHitAt: types.optional(types.number, 0),
     firstPreviewSeenAt: types.optional(types.number, 0),
+    lifecycleEmailOptOutAt: types.optional(types.number, 0),
     bannedAt: types.optional(types.number, 0),
     banReason: types.optional(types.string, ""),
     bannedByUserId: types.optional(types.string, ""),

@@ -231,6 +231,9 @@ export function buildSoloFounderCheckoutParams(
     // webhook, before anything is provisioned.
     payment_method_types: ['card'],
     payment_method_options: { card: { request_three_d_secure: 'any' } },
+    // Keep Stripe's recovery link on the expired session so an abandoned Solo
+    // Founder checkout can be followed up with a working resume URL (SHO-615).
+    after_expiration: { recovery: { enabled: true } },
     metadata,
     subscription_data: { metadata: { ...metadata } },
     custom_text: {

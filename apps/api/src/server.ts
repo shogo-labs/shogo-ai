@@ -91,6 +91,7 @@ import { bucketApiOrigin } from './services/project-bucket.service'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
+import { emailUnsubscribeRoutes } from './routes/email-unsubscribe'
 import { githubRoutes } from './routes/github'
 import { integrationCredentialRoutes } from './routes/integration-credentials'
 import { aiProxyRoutes } from './routes/ai-proxy'
@@ -2879,6 +2880,9 @@ app.all('/api/published/:subdomain/api/*', publishedApiHandler)
 
 app.route('/api', chatAttachmentRoutes())
 app.route('/', sharedFileRoutes())
+// One-click lifecycle-email unsubscribe (SHO-615). Public; the HMAC-signed
+// params are the credential (see middleware/api-auth-gate.ts).
+app.route('/api/email', emailUnsubscribeRoutes())
 
 app.post('/api/projects/:projectId/thumbnail', async (c) => {
   const router = thumbnailRoutes()
@@ -8344,6 +8348,10 @@ app.post('/api/billing/checkout', async (c) => {
       planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
+      // Lets `checkout.session.expired` resolve the person without a lookup by
+      // email (SHO-615). Absent on an unauthenticated attempt; the webhook falls
+      // back to `customer_details.email` then.
+      ...(userId ? { userId } : {}),
       ...(isSoloFounder ? { offer: soloFounderService.SOLO_FOUNDER_OFFER } : {}),
     }
 
@@ -8428,6 +8436,9 @@ app.post('/api/billing/checkout', async (c) => {
       // Session metadata, subscription_data (affiliate + trial) and, for a
       // trial, card-only payment collection.
       ...trialFields,
+      // Keep the abandoned-checkout recovery link on the expired session so
+      // `checkout.session.expired` can offer a working resume URL (SHO-615).
+      after_expiration: { recovery: { enabled: true } },
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -8697,6 +8708,10 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
+      // The workspace is created before Stripe pays, so an expired session leaves
+      // it paid-free. `userId` lets `checkout.session.expired` still resolve the
+      // owner (SHO-615).
+      userId,
     }
 
     // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
@@ -8731,6 +8746,9 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       // Session metadata, subscription_data (affiliate + trial) and, for a
       // trial, card-only payment collection.
       ...trialFields,
+      // Keep the abandoned-checkout recovery link on the expired session so
+      // `checkout.session.expired` can offer a working resume URL (SHO-615).
+      after_expiration: { recovery: { enabled: true } },
     })
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
@@ -10262,6 +10280,21 @@ app.post('/api/webhooks/stripe', async (c) => {
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
           }
+        }
+        break
+      }
+      case 'checkout.session.expired': {
+        // The person opened Checkout and never paid (SHO-615). Send one recovery
+        // email with Stripe's resume link — once per user per plan, ever. The
+        // service enforces the gates and the ledger; wrap it so a failed send
+        // never 500s the webhook (Stripe would retry forever).
+        const session = event.data.object as StripeTypes.Checkout.Session
+        try {
+          const { handleCheckoutSessionExpired } = await import('./services/abandoned-checkout.service')
+          const result = await handleCheckoutSessionExpired(session)
+          console.log('[Webhook] Abandoned checkout processed:', { sessionId: session.id, ...result })
+        } catch (err: any) {
+          console.error('[Webhook] abandoned-checkout handling failed:', err.message)
         }
         break
       }
@@ -12023,6 +12056,15 @@ setTimeout(async () => {
       startCreditsResetNotifyCron()
     } catch (err: any) {
       console.error('[CreditsReset] failed to schedule reset-notify cron (non-fatal):', err?.message ?? err)
+    }
+    // "Your idea is still waiting": once-only nudge for a signup with no project
+    // 24h after signup (SHO-615). Returns immediately when email is not
+    // configured, so local mode schedules it and it never runs a query.
+    try {
+      const { startLifecycleNurtureCron } = await import('./jobs/lifecycle-nurture')
+      startLifecycleNurtureCron()
+    } catch (err: any) {
+      console.error('[LifecycleNurture] failed to schedule cron (non-fatal):', err?.message ?? err)
     }
   })()
 }

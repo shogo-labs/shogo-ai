@@ -44,6 +44,9 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  // Lifecycle email opt-out (SHO-615). See prisma/schema.prisma for the
+  // canonical comment. Stored on both tracks for schema parity.
+  lifecycleEmailOptOutAt      DateTime?
   bannedAt                    DateTime?
   banReason                   String?
   bannedByUserId              String?
@@ -5738,4 +5741,18 @@ model ProjectBucketObject {
   @@index([projectId])
   @@index([createdAt])
   @@map("project_bucket_objects")
+}
+
+/// Exactly-once ledger for lifecycle email (SHO-615). Mirrors the PG model;
+/// `metadata` is a JSON-encoded TEXT (SQLite has no Json type). `id` is
+/// deterministic so dedupe rides the primary key — no secondary unique index.
+model LifecycleEmailSend {
+  id       String   @id
+  userId   String
+  kind     String
+  sentAt   DateTime @default(now())
+  metadata String?
+
+  @@index([userId])
+  @@map("lifecycle_email_sends")
 }

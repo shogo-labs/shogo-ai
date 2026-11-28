@@ -117,6 +117,16 @@ describe('trialCheckoutParams', () => {
     expect(trial.trialCheckoutParams(0, { workspaceId: 'ws-1' })).toEqual({})
   })
 
+  // G10 (SHO-615): a paid checkout must leave `payment_method_types` unset so
+  // Stripe's dynamic payment methods — Link, Apple Pay, Google Pay — stay on.
+  // Setting it would quietly reduce paid checkout to the listed methods.
+  test('a paid checkout sets no payment_method_types (dynamic methods, Link included, stay on)', () => {
+    const p = trial.trialCheckoutParams(0, { workspaceId: 'ws-1' })
+    expect('payment_method_types' in p).toBe(false)
+    expect(p.payment_method_types).toBeUndefined()
+    expect(p.payment_method_collection).toBeUndefined()
+  })
+
   test('7 days requires a card, cancels if the trial ends without one, and tags the subscription', () => {
     const p = trial.trialCheckoutParams(7, { workspaceId: 'ws-1', planId: 'business' })
     expect(p.payment_method_collection).toBe('always')

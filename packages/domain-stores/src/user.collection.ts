@@ -503,7 +503,7 @@ const relationFields = ["abuseFlagsAsSubject","abuseFlagsAsDecider","sessions","
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
-  const dateFields = ["firstCapHitAt","firstPreviewSeenAt","bannedAt","createdAt","updatedAt"]
+  const dateFields = ["firstCapHitAt","firstPreviewSeenAt","lifecycleEmailOptOutAt","bannedAt","createdAt","updatedAt"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {

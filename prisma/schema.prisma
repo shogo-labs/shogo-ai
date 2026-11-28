@@ -64,6 +64,12 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  // Lifecycle email opt-out (SHO-615). Set by the one-click / RFC 8058
+  // unsubscribe in a lifecycle email (build-ready, credits-reset,
+  // abandoned-checkout, first-build nudge). Transactional mail — receipts,
+  // payment failures, trial-ending — ignores it. Cloud-only in effect (desktop
+  // never sends lifecycle email), but stored on both tracks for schema parity.
+  lifecycleEmailOptOutAt      DateTime?
   // Abuse ban (SHO-459). Set by banUser(); checked by signup-trust and authMiddleware.
   // null = not banned. Cloud-only: desktop never runs the abuse job or enforces this.
   bannedAt                    DateTime?
@@ -7082,4 +7088,22 @@ model ProjectBucketObject {
   @@index([projectId])
   @@index([createdAt])
   @@map("project_bucket_objects")
+}
+
+/// Exactly-once ledger for lifecycle (non-transactional) email (SHO-615).
+///
+/// `id` is deterministic — `"<kind>:<userId>:<key>"` — so dedupe rides the
+/// PRIMARY KEY. There is deliberately no secondary unique index: a non-PK
+/// unique index poison-pills the US/EU logical replication apply worker (see
+/// scripts/check-multiregion-cron-locks.ts). `userId` is a plain column, not a
+/// FK, so a deleted user never cascades the audit trail away.
+model LifecycleEmailSend {
+  id       String   @id
+  userId   String
+  kind     String
+  sentAt   DateTime @default(now())
+  metadata Json?
+
+  @@index([userId])
+  @@map("lifecycle_email_sends")
 }

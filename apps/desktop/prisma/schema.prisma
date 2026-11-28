@@ -31,6 +31,7 @@ model User {
   lastSeenAnnouncementVersion String?
   onboardingIntent    String?
   buddyLook           String?
+  lifecycleEmailOptOutAt DateTime?
   bannedAt            DateTime?
   banReason           String?
   bannedByUserId      String?
@@ -1429,4 +1430,18 @@ model DeviceActiveDay {
   @@unique([region, deviceId, day])
   @@index([day])
   @@map("device_active_days")
+}
+
+/// Exactly-once lifecycle email ledger (SHO-615). Mirrors the PG model; the
+/// desktop never sends lifecycle email, but the model is kept for parity with
+/// prisma/schema.prisma and schema.local.prisma so a shared query compiles.
+model LifecycleEmailSend {
+  id       String   @id
+  userId   String
+  kind     String
+  sentAt   DateTime @default(now())
+  metadata String?
+
+  @@index([userId])
+  @@map("lifecycle_email_sends")
 }
