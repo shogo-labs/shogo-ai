@@ -256,6 +256,44 @@ describe('listRecentAgentChats — real DB (AC §1)', () => {
     expect(result).toHaveLength(2)
   })
 
+  test('PERF-34: reads only `limit` sessions unless perAgent needs the over-fetch', async () => {
+    const ws = await prisma.workspace.create({
+      data: { name: 'Take Test', slug: `take-test-${Date.now()}`, kind: 'team' },
+    })
+    const user = await prisma.user.create({
+      data: { name: 'takeuser', email: `takeuser-${Date.now()}@example.com` },
+    })
+    await prisma.member.create({ data: { userId: user.id, workspaceId: ws.id, role: 'owner' } })
+    const ids: string[] = []
+    for (let i = 0; i < 4; i++) {
+      const s = await mkSession(prisma, {
+        contextType: 'workspace',
+        workspaceId: ws.id,
+        createdByUserId: user.id,
+        lastActiveAt: new Date(Date.now() - i * 1000),
+      })
+      await addUserMsg(prisma, s.id, user.id)
+      ids.push(s.id)
+    }
+
+    const takes: Array<number | undefined> = []
+    const original = prisma.chatSession.findMany
+    ;(prisma.chatSession as any).findMany = (args: any) => {
+      takes.push(args?.take)
+      return original.call(prisma.chatSession, args)
+    }
+    try {
+      const flat = await listRecentAgentChats(ws.id, user.id, { limit: 2, includePinned: true })
+      const perAgent = await listRecentAgentChats(ws.id, user.id, { limit: 2, perAgent: true })
+      // Same rows as before the change: the two newest, newest first.
+      expect(flat.map((c) => c.chatSessionId)).toEqual(ids.slice(0, 2))
+      expect(perAgent).toHaveLength(1)
+    } finally {
+      ;(prisma.chatSession as any).findMany = original
+    }
+    expect(takes).toEqual([2, 20])
+  })
+
   test('isPinned and running describe the row', async () => {
     const ws = await prisma.workspace.create({
       data: { name: 'Tray', slug: `tray-${Date.now()}`, kind: 'team' },

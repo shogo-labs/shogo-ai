@@ -409,7 +409,10 @@ export async function listRecentAgentChats(
     orderBy: opts.includePinned
       ? [{ isPinned: 'desc' as const }, { lastActiveAt: 'desc' as const }]
       : { lastActiveAt: 'desc' as const },
-    take: limit * 10, // over-fetch so perAgent dedup doesn't under-shoot
+    // Over-fetch only for perAgent dedup. Without it the loop keeps the first
+    // `limit` rows, and every extra row costs its own latest-message query
+    // (PERF-34: the menu-bar poll read 250 sessions to show 25).
+    take: opts.perAgent ? limit * 10 : limit,
     select: {
       id: true,
       name: true,

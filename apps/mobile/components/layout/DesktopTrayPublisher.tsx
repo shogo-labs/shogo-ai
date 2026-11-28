@@ -25,10 +25,11 @@ import { workspaceActivity } from '../../lib/workspace-activity'
 import { chatSessionEvents } from '../../lib/chat-session-events'
 import { WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 
-/** How often the sources that push no event (recent chats, island statuses)
- * are re-read. Every poll shares `workspaceActivity`'s one-request-per-window
- * cache, so this is not a second poll of the same endpoint. */
-export const TRAY_POLL_MS = 10_000
+/** Backstop for changes no event reports (another device's chat). A chat this
+ * window creates, renames, deletes or sends in re-reads at once through
+ * `chatSessionEvents`, so the poll can be slow: at 10 s it was 7k requests a day
+ * for one person, 8.6k more per open window (PERF-34). */
+export const TRAY_POLL_MS = 60_000
 
 type TrayAction = { type: 'new-chat' } | { type: 'clear-notifications' }
 
@@ -72,19 +73,20 @@ export function DesktopTrayPublisher() {
   // The workspace agent's own name, from the same payload the rows come from.
   const workspaceAgentName = recentChats.find((chat) => chat.projectId === null)?.agentName ?? undefined
 
-  // Recent chats and the island's statuses only change on a poll, so ask for
-  // them on a timer rather than on every render.
+  // Recent chats: read on mount, whenever this window learns the list changed
+  // (a chat created, renamed, deleted or sent in), when the window comes back
+  // into view, and on a slow timer for what no event reports.
   useEffect(() => {
     if (!enabled || !workspaceId) return
     let live = true
-    const read = async (): Promise<void> => {
+    const read = async (fresh = false): Promise<void> => {
       // A hidden window must not fetch (the request cache answers with nothing)
       // and must not blank the rows it already published: the dropdown is most
       // likely to be open exactly when the window is hidden.
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
       if (!hidden) {
         const recent = await workspaceActivity
-          .recentAgentChats(http, workspaceId, { limit: 25, perAgent: false, includePinned: true })
+          .recentAgentChats(http, workspaceId, { limit: 25, perAgent: false, includePinned: true, fresh })
           .catch(() => null)
         if (!live) return
         if (recent) setRecentChats(recent)
@@ -96,9 +98,21 @@ export function DesktopTrayPublisher() {
     const timer = setInterval(() => {
       void read()
     }, TRAY_POLL_MS)
+    // A created/renamed/deleted chat bypasses the cache; a send only re-sorts,
+    // so it joins whatever request the window already has in flight.
+    const unsubscribe = chatSessionEvents.subscribe((event) => {
+      if (event.refresh) void read(true)
+      else if (event.touchedSessionId) void read()
+    })
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') void read()
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
     return () => {
       live = false
       clearInterval(timer)
+      unsubscribe()
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
     }
   }, [enabled, http, workspaceId])
 
@@ -115,7 +129,7 @@ export function DesktopTrayPublisher() {
 
   // "Clear All Notifications" has to reach the rows this window published, not
   // just the sidebar's: a project chat's blue dot lived here until the next
-  // 10 s poll. Dropped locally rather than by re-reading the island, so the
+  // poll. Dropped locally rather than by re-reading the island, so the
   // result does not depend on which clear listener ran first.
   useEffect(() => {
     if (!enabled) return
