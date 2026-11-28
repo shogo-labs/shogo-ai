@@ -132,6 +132,73 @@ describe('turn journal (SHO-274)', () => {
 })
 
 /**
+ * #2293: a P2003 means the session row was deleted mid-stream, which no retry
+ * can fix — so the writer must treat it as terminal. Before this guard it kept
+ * calling `appendTurnFrames` for every later batch and logged one
+ * `JOURNAL WRITE FAILED` per batch: 305 lines in 51 s for one staging session.
+ * The journal now dies once, says so once, and refuses every later batch.
+ */
+describe('a dead journal stays dead (#2293)', () => {
+  test('five appends after a P2003 cost one insert, one warn, all false', async () => {
+    const session = await newSession()
+    const turn = `turn-${crypto.randomUUID()}`
+    const originalCreate = db.chatTurnFrame.create
+    let inserts = 0
+    db.chatTurnFrame.create = async () => {
+      inserts++
+      throw Object.assign(
+        new Error('Foreign key constraint violated on the constraint: chat_turn_frames_sessionId_fkey'),
+        { code: 'P2003' },
+      )
+    }
+    const warns: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')) }
+    try {
+      const writer = new TurnJournalWriter(session, turn)
+      const results: boolean[] = []
+      for (let i = 0; i < 5; i++) results.push(await writer.append([`frame-${i}`]))
+
+      expect(results).toEqual([false, false, false, false, false])
+      expect(inserts).toBe(1)
+      expect(warns.filter((line) => line.includes('Journalling disabled for turn'))).toHaveLength(1)
+      expect(writer.dead).toBe(true)
+      expect(writer.deadAtSeq).toBe(0)
+      // The closing log line must not read as a healthy journal.
+      expect(writer.status).toBe('dead@seq0')
+      expect(await turnFrameCount(turn)).toBe(0)
+    } finally {
+      db.chatTurnFrame.create = originalCreate
+      console.warn = originalWarn
+    }
+  })
+
+  test('a transient failure keeps retrying and only the terminal one kills it', async () => {
+    const session = await newSession()
+    const turn = `turn-${crypto.randomUUID()}`
+    const originalCreate = db.chatTurnFrame.create
+    let inserts = 0
+    db.chatTurnFrame.create = async (args: any) => {
+      inserts++
+      // First attempt of the first batch is a dropped connection; the retry succeeds.
+      if (inserts === 1) throw Object.assign(new Error('connection closed'), { code: 'P1001' })
+      return originalCreate.call(db.chatTurnFrame, args)
+    }
+    try {
+      const writer = new TurnJournalWriter(session, turn)
+      expect(await writer.append(['retried'])).toBe(true)
+      expect(await writer.append(['second'])).toBe(true)
+      expect(writer.dead).toBe(false)
+      expect(writer.deadAtSeq).toBeNull()
+      expect(writer.status).toBe('2 batch(es)')
+      expect(await readTurnFrames(turn)).toEqual(['retried', 'second'])
+    } finally {
+      db.chatTurnFrame.create = originalCreate
+    }
+  })
+})
+
+/**
  * SHO-482: a single delete over millions of rows blocked the desktop's event
  * loop for ~71 s, past its 30 s health window, so the API was killed mid-sweep
  * on every launch. The sweep now deletes a bounded batch at a time.
