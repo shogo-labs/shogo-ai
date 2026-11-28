@@ -114,7 +114,7 @@ export const PROJECT_READ_ROUTES: readonly string[] = [
   // The handler limits the audit log to people who can edit credential policies.
   '/integrations/audit', '/integrations/policies',
   '/machine', '/members', '/permissions', '/ports', '/ports/listening', '/preferred-instance',
-  '/preview/metro', '/publish', '/runtime/status', '/s3/files', '/sandbox/url',
+  '/preview/metro', '/publish', '/runtime-origin', '/runtime/status', '/s3/files', '/sandbox/url',
   '/tests/list', '/tests/traces', '/tests/traces/*',
   '/thumbnail', '/thumbnail.png', '/workspace/manifest',
 ]

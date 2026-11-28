@@ -127,13 +127,18 @@ const EXPLICIT_EXCEPTIONS: Record<string, string> = {
   resolveRuntimeBaseUrl:
     'Helper for the terminal REST routes (under /api/projects/:projectId/terminal, blanket pin) and the pre-Hono ' +
     'terminal WebSocket bridge, which cannot be proxied and is backstopped by assertRuntimeInHomeRegion in ' +
-    'resolveWorkspaceRuntimeUrl.',
+    'resolveWorkspaceRuntimeUrl. That bridge now answers the refusal as a typed 409 {"code":' +
+    '"runtime_not_in_home_region", homeRegion} (isNotInHomeRegion -> runtimeNotInHomeRegionUpgradeResponse) ' +
+    'instead of a bare 503, and GET /api/projects/:projectId/runtime-origin (blanket pin) tells the client ' +
+    'which origin to reconnect to.',
   resolveAgentRuntimeUrl:
     'Helper for POST/DELETE /api/projects/:projectId/agent/tool-mocks (blanket pin); demo mode only, which is ' +
     'off whenever isKubernetes() is true.',
   'export default {':
-    'Pre-Hono WebSocket bridges (port tunnel, terminal): they cannot be proxied, so they rely on the ' +
-    'assertRuntimeInHomeRegion backstop inside resolveProjectPodUrl -> resolveWorkspaceRuntimeUrl.',
+    'Pre-Hono WebSocket bridges (port tunnel, terminal, preview): they cannot be proxied, so they rely on the ' +
+    'assertRuntimeInHomeRegion backstop inside resolveProjectPodUrl -> resolveWorkspaceRuntimeUrl, and answer ' +
+    'that refusal as a typed 409 (isNotInHomeRegion -> runtimeNotInHomeRegionUpgradeResponse) so a client ' +
+    'reconnects to its home region instead of retrying this one.',
   "if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {":
     'Local/desktop startup prewarm. Local mode has no regions.',
 }
