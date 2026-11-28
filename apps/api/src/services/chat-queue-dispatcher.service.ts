@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { publishTurnState } from './chat-turn-state.service'
-import { MAX_WAKE_ATTEMPTS, taskWakeBodyIsAlone, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
+import { formatTaskNote, getTask, MAX_WAKE_ATTEMPTS, taskWakeBodyIsAlone, taskWakeBodyResetsRun, taskWakeIdsFromBody, WAKE_PAUSED, WAKE_PAUSED_MARKERS, WAKE_WORKSPACE_PAUSED, type WakeRelease } from './background-tasks.service'
 
 /** Well above TURN_REATTACH_AFTER_MS, so the reattach job gets to a dead tracker's turn first. */
 const ACTIVE_TURN_STALE_AFTER_MS = 10 * 60 * 1000
@@ -639,9 +639,10 @@ async function settleSkippedWake(row: QueueRow, skip: string): Promise<string> {
   }
   if (skip === WAKE_STALE) {
     // Seen-by-expiry: the sweep must not queue it again, and a live card watch
-    // keeps listening for the next milestone (`consumeTasks` leaves it running).
-    const { consumeTasks } = await import('./background-tasks.service')
-    await consumeTasks(taskWakeIds(row)).catch(() => 0)
+    // goes back to listening for the next milestone (`deliveredTaskWake` consumes
+    // the update and re-arms the watch).
+    const { deliveredTaskWake } = await import('./background-tasks.service')
+    await deliveredTaskWake(taskWakeIds(row)).catch(() => 0)
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
     console.log(`[ChatQueue] Dropped stale task wake ${row.id} for session ${row.sessionId}`)
     return 'This update is too old to start a turn for'
@@ -699,6 +700,13 @@ async function claimRow(chatSessionId: string, rowId: string): Promise<QueueRow 
  * no longer pays one full prompt + history reload per row: the rows sitting at
  * the head of the queue ride in the turn the first one starts.
  *
+ * The turn's text is rendered from the task rows as they are **now** (SHO-369),
+ * not from the rows as they were queued: a milestone that landed after queueing
+ * (QA → Done) is in the note the agent reads. One task contributes exactly one
+ * block however many rows mention it — a duplicate row for a task already in
+ * the turn is dropped, which is also how a pre-upgrade backlog of hundreds of
+ * copies of one card collapses into a single update.
+ *
  * The merge takes only `task_notification` rows, in queue order, and stops at:
  * - anything a person queued (a wake must never swallow or overtake a message),
  * - a row marked `wake: "alone"` (that task asked for a turn of its own), and
@@ -720,14 +728,39 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
   const headRank = queueRank(head)
   const candidates = pending.filter((row) => compareRank(queueRank(row), headRank) > 0)
 
-  const taskIds = [...new Set(taskWakeIds(head))]
+  const headIds = [...new Set(taskWakeIds(head))]
+  if (!headIds.length) return head
+
+  // The text each id had in the queue, for a task row that is gone by now.
+  const queuedText = new Map<string, string>()
+  for (const row of [head, ...candidates]) {
+    for (const id of taskWakeIds(row)) if (!queuedText.has(id)) queuedText.set(id, row.content)
+  }
+  const blocks = new Map<string, string>()
+  const blockOf = async (id: string): Promise<string> => {
+    const cached = blocks.get(id)
+    if (cached !== undefined) return cached
+    const task = await getTask(id)
+    const text = task ? formatTaskNote(task) : (queuedText.get(id) ?? '')
+    blocks.set(id, text)
+    return text
+  }
+
+  const finalIds = [...headIds]
   const proposals: QueueRow[] = []
-  let chars = head.content.length
+  let chars = 0
+  for (const id of finalIds) chars += (await blockOf(id)).length + 2
 
   for (const row of candidates) {
     if (row.kind !== 'task_notification') break
     if (taskWakeBodyIsAlone(row.body)) break
     const ids = taskWakeIds(row)
+    const fresh = ids.filter((id) => !finalIds.includes(id))
+    if (ids.length && !fresh.length) {
+      // The same task again, already in this turn: one block, not two.
+      await settleSkippedWake(row, 'consumed')
+      continue
+    }
     if (ids.length) {
       const tasks = await taskRowsForWake(row)
       if (!tasks.some((t) => !t.consumed)) {
@@ -739,14 +772,41 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
       await settleSkippedWake(row, WAKE_STALE)
       continue
     }
-    const merged = new Set([...taskIds, ...ids])
-    if (merged.size > MAX_BATCHED_WAKE_TASKS) break
-    if (chars + row.content.length + 2 > MAX_BATCHED_WAKE_CHARS) break
-    chars += row.content.length + 2
-    taskIds.splice(0, taskIds.length, ...merged)
+    if (finalIds.length + fresh.length > MAX_BATCHED_WAKE_TASKS) break
+    let added = 0
+    for (const id of fresh) added += (await blockOf(id)).length + 2
+    if (chars + added > MAX_BATCHED_WAKE_CHARS) break
+    chars += added
+    finalIds.push(...fresh)
     proposals.push(row)
   }
-  if (!proposals.length) return head
+
+  // One [Task update] block per task, in finish order, and one row for the turn.
+  const content = (await Promise.all(finalIds.map(blockOf))).join('\n\n')
+
+  // A backlog stacked before the upgrade is deeper than one page of candidates:
+  // every pending row that only repeats a task already in this turn is dropped,
+  // however many there are (SHO-369). A row carrying a task this turn does not
+  // cover is left alone — it is somebody's next update.
+  for (let page = 0; page < 8; page++) {
+    const rest: Array<{ id: string; body: string | null; position: number | null; createdAt: Date | null }> =
+      await prisma.chatQueuedMessage.findMany({
+        where: { sessionId: head.sessionId, status: 'pending', kind: 'task_notification' },
+        orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+        take: 500,
+        select: { id: true, body: true, position: true, createdAt: true },
+      })
+    const repeats = rest.filter((row) => {
+      if (compareRank(queueRank(row), headRank) <= 0) return false
+      if (taskWakeBodyIsAlone(row.body)) return false
+      const ids = taskWakeIdsFromBody(row.body)
+      return ids.length > 0 && ids.every((id) => finalIds.includes(id))
+    })
+    if (!repeats.length) break
+    await prisma.chatQueuedMessage
+      .deleteMany({ where: { id: { in: repeats.map((row) => row.id) }, status: 'pending' } })
+      .catch(() => null)
+  }
 
   // Claiming the followers and rewriting the head is one transaction: a row that
   // another starter took in the meantime is simply not part of this turn, and a
@@ -763,10 +823,7 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
         })
         if (deleted?.count === 1) taken.push(proposal)
       }
-      if (!taken.length) return null
-      // One [Task update] block per task, in finish order, and one row for the turn.
-      const content = [head.content, ...taken.map((row) => row.content)].join('\n\n')
-      const finalIds = [...new Set([...taskWakeIds(head), ...taken.flatMap((row) => taskWakeIds(row))])]
+      if (!taken.length && content === head.content) return null
       const resetsRun = taskWakeBodyResetsRun(head.body) || taken.some((row) => taskWakeBodyResetsRun(row.body))
       const taskNotification = { taskIds: finalIds, ...(resetsRun ? { wakeRunReset: true } : {}) }
       const parts = JSON.stringify([
@@ -786,7 +843,9 @@ async function absorbFollowingWakes(head: QueueRow): Promise<QueueRow> {
     return head
   }
   if (!merged) return head
-  console.log(`[ChatQueue] Wake ${head.id} carries ${merged.count + 1} update rows in one turn for session ${head.sessionId}`)
+  if (merged.count) {
+    console.log(`[ChatQueue] Wake ${head.id} carries ${merged.count + 1} update rows in one turn for session ${head.sessionId}`)
+  }
   return { ...head, content: merged.content, parts: merged.parts, body: merged.body }
 }
 
@@ -820,9 +879,11 @@ async function startClaimedRow(row: QueueRow): Promise<QueueRowOutcome> {
     // was part of the turn that just started, and leaving it unconsumed lets the
     // next release queue it again for work the session has already been told
     // about (the repeat every sweep tick that reads as an empty-reply loop).
+    // Consuming is also what lets a card watch arm again (SHO-369): it must not
+    // go back to watching before this update is out of the queue.
     if (row.kind === 'task_notification') {
-      const { consumeTasks } = await import('./background-tasks.service')
-      await consumeTasks(taskWakeIds(row)).catch(() => {})
+      const { deliveredTaskWake } = await import('./background-tasks.service')
+      await deliveredTaskWake(taskWakeIds(row)).catch(() => {})
     }
     await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } })
     // A wake landed (or a person's message went through): the pause is over.

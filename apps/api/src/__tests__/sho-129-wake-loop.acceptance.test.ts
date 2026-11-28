@@ -17,9 +17,9 @@
  * 2. A different agent stopping on the same card still wakes the watcher: that is
  *    the hand-off watch's whole purpose, and the fix must not take it away.
  * 3. The backstop reaches the cap in the order production runs it — settle,
- *    `enqueueTaskWake` (which re-arms the row), then the cap being measured —
- *    because the row is cleared on re-arm and a count read off the row can never
- *    see the repeat.
+ *    queue the wake, deliver it (which re-arms the row), then the cap being
+ *    measured — because the row is cleared on re-arm and a count read off the
+ *    row can never see the repeat.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bun:test'
@@ -202,11 +202,16 @@ describe('SHO-129 · the cap is measured after the re-arm, so it can see the rep
       const { recordEvent } = await import('../services/work-boards.service')
       await recordEvent(c.item, 'agent_stopped', { agentRef: `project:${other.id}` }, { column: 'QA & Review', messageId: `ms-${i}` })
       await waitFor(async () => (await tasks.getTask(c.watchId))!.status === 'completed', 5_000)
+      tasks._testing.clearTimers()
       await tasks.enqueueTaskWake(c.session.id, { dispatch: false })
+      // Queueing arms nothing: the watch goes back to watching when the update
+      // is delivered (SHO-369).
+      expect((await tasks.getTask(c.watchId))!.status).toBe('completed')
+      await wakeMessage(c.session.id, c.watchId)
+      await tasks.deliveredTaskWake([c.watchId])
       const armed = (await tasks.getTask(c.watchId))!
       expect(armed.status).toBe('running')
       expect(armed.finishedAt).toBeNull()
-      await wakeMessage(c.session.id, c.watchId)
     }
 
     const waits = await tasks.consecutiveWakeWaits(c.session.id, tasks.MAX_CONSECUTIVE_CARD_WAKES)

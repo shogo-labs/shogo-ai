@@ -418,7 +418,13 @@ async function actorLabel(workspaceId: string, actor: BoardActor): Promise<strin
   return 'Shogo'
 }
 
-export async function recordEvent(item: { id: string; workspaceId: string }, type: string, actor: BoardActor, data?: Record<string, unknown>) {
+export async function recordEvent(
+  item: { id: string; workspaceId: string },
+  type: string,
+  actor: BoardActor,
+  data?: Record<string, unknown>,
+  opts: { emit?: boolean } = {},
+) {
   await db.workItemEvent.create({
     data: {
       workItemId: item.id,
@@ -430,6 +436,7 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
       eventData: data ?? undefined,
     },
   })
+  if (opts.emit === false) return
   const line = cardEventLine(type, data)
   if (line) {
     const { emitTaskEvent } = await import('./background-tasks.service')
@@ -439,6 +446,7 @@ export async function recordEvent(item: { id: string; workspaceId: string }, typ
     // every watch, its own included.
     const fromAgent = (type === 'agent_stopped' || type === 'agent_failed') && actor.agentRef ? actor.agentRef : null
     await emitTaskEvent('work_item', item.id, {
+      kind: type,
       line,
       card: cardEventState(data),
       ...(fromAgent ? { fromAgentRef: fromAgent } : {}),
@@ -475,7 +483,9 @@ function cardEventLine(type: string, data?: Record<string, any>): string | null 
     case 'updated':
       return `updated ${(data?.changed ?? []).join(', ')}`.trim()
     case 'commented':
-      return `comment: ${String(data?.text ?? '').slice(0, 500)}`
+      // One event is one line: `until` patterns read this timeline, so a
+      // multi-line comment could otherwise quote a milestone of its own (SHO-369).
+      return `comment: ${String(data?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500)}`
     case 'agent_stopped':
       return `agent stopped with the card still in ${data?.column ?? 'its column'}${data?.reason ? ` (${data.reason})` : ''}`
     case 'agent_failed':
@@ -2215,7 +2225,7 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
         assigneeAgentRef: item.assigneeAgentRef ?? null,
         columnAgentRef: item.column.agentRef ?? null,
         ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
-      })
+      }, { emit: await firstStopSinceMove(item.id) })
     }
   }
   if (holder && !(await handledRun(item.id, run.messageId))) {
@@ -2223,6 +2233,26 @@ export async function noteCardRunEnded(run: CardRun): Promise<void> {
     if (check.stranded) await rehandOrEscalate(item, run, check, row)
   }
   await settleCardWatchers(item, run)
+}
+
+/**
+ * Is this the first `agent_stopped` since the card last moved? A lane that runs
+ * on one card fifty times records fifty stops, and to whoever watches the card
+ * they are one piece of news: only the first wakes it (SHO-369). Every stop is
+ * still on the timeline; a real move followed by a stop is news again.
+ */
+async function firstStopSinceMove(itemId: string): Promise<boolean> {
+  const events: Array<{ type: string }> = await db.workItemEvent.findMany({
+    where: { workItemId: itemId },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+    select: { type: true },
+  })
+  for (const event of events) {
+    if (event.type === 'agent_stopped') return false
+    if (event.type === 'moved') return true
+  }
+  return true
 }
 
 export interface CardRun {

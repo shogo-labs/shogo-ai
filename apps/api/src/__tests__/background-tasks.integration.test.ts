@@ -815,13 +815,37 @@ describe('a card watch stays with the card (SHO-88)', () => {
     return row && row.status === 'completed' ? row : null
   }
 
-  test('a milestone wakes the watcher and re-arms the same row, in place', async () => {
+  /** The queued update rows for this session. */
+  const queued = (sessionId: string) =>
+    db.chatQueuedMessage.count({ where: { sessionId, kind: 'task_notification' } })
+
+  /**
+   * Delivery, as the dispatcher does it when it claims the row: the queued
+   * update goes, the task is seen, and a live card watch arms again (SHO-369).
+   */
+  const deliver = async (sessionId: string, ids: string[]) => {
+    const rows: Array<{ id: string; body: string | null }> = await db.chatQueuedMessage.findMany({
+      where: { sessionId, kind: 'task_notification', status: 'pending' },
+    })
+    const mine = rows.filter((row) => tasks.taskWakeIdsFromBody(row.body).some((id) => ids.includes(id)))
+    if (mine.length) await db.chatQueuedMessage.deleteMany({ where: { id: { in: mine.map((row) => row.id) } } })
+    await tasks.deliveredTaskWake(ids)
+  }
+
+  test('a milestone wakes the watcher, and delivering it re-arms the same row in place', async () => {
     const c = await watchedCard()
     await c.move('QA')
     const first = await settled(c.watch.id)!
     expect(first!.output).toContain('moved to QA (review)')
     tasks._testing.clearTimers()
-    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(true)
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    expect(await queued(c.session.id)).toBe(1)
+
+    // Queued is not delivered: a watch that armed itself here is what stacked
+    // hundreds of copies of one update (SHO-369).
+    expect((await tasks.getTask(c.watch.id))!.status).toBe('completed')
+
+    await deliver(c.session.id, [c.watch.id])
 
     // Same watch, not a successor: one task id and one createdAt for the card.
     const rearmed = await tasks.getTask(c.watch.id)
@@ -846,11 +870,13 @@ describe('a card watch stays with the card (SHO-88)', () => {
     const second = await settled(c.watch.id)!
     expect(second!.output).toContain('moved to Review (review)')
     tasks._testing.clearTimers()
-    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(true)
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    expect(await queued(c.session.id)).toBe(1)
+    await deliver(c.session.id, [c.watch.id])
     expect((await tasks.getTask(c.watch.id))!.status).toBe('running')
 
-    // Two milestones, two wakes, one row.
-    expect(await db.chatQueuedMessage.count({ where: { sessionId: c.session.id, kind: 'task_notification' } })).toBe(2)
+    // Two milestones, two delivered updates, one row.
+    expect(await queued(c.session.id)).toBe(0)
     expect(await db.backgroundTask.count({ where: { chatSessionId: c.session.id, source: 'work_item' } })).toBe(1)
   })
 
@@ -881,9 +907,52 @@ describe('a card watch stays with the card (SHO-88)', () => {
     const stopped = await settled(c.watch.id)!
     expect(stopped!.output).toContain('agent failed on the card')
     tasks._testing.clearTimers()
-    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(true)
-    // The card is open and still held: not stranded by a crash.
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    await deliver(c.session.id, [c.watch.id])
+    // The card is open and still held: not stranded by a crash, and the watch
+    // walked on to the next milestone once the update was delivered.
     expect((await tasks.getTask(c.watch.id))!.status).toBe('running')
+  })
+
+  test('an agent stopping without moving the card wakes the watcher once per card state', async () => {
+    const { noteCardRunEnded } = await import('../services/work-boards.service')
+    const c = await watchedCard()
+    // Stopped by a person, so nothing re-hands the card here: the emit rule is
+    // the same for every run end that leaves the card where it was.
+    const stop = async (i: number) =>
+      noteCardRunEnded({
+        threadRootId: c.item.threadRootMessageId,
+        projectId: seed.projectId,
+        messageId: `stop-${i}`,
+        agentStatus: 'stopped',
+      })
+
+    // The holder runs on the card three times and never moves it: the timeline
+    // records three stops, the watcher hears about one (SHO-369).
+    for (let i = 0; i < 3; i++) await stop(i)
+    expect(await db.workItemEvent.count({ where: { workItemId: c.item.id, type: 'agent_stopped' } })).toBe(3)
+    expect((await settled(c.watch.id))!.output.match(/agent stopped/g) ?? []).toHaveLength(1)
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    expect(await queued(c.session.id)).toBe(1)
+    await deliver(c.session.id, [c.watch.id])
+
+    // The card moves on (a milestone of its own), then back to an active lane,
+    // and the next stop is news again: one stop per card state.
+    await c.move('Review')
+    expect(await settled(c.watch.id)).toBeTruthy()
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    await deliver(c.session.id, [c.watch.id])
+    await c.move('In progress')
+    expect((await tasks.getTask(c.watch.id))!.status).toBe('running')
+
+    await stop(9)
+    const again = await settled(c.watch.id)
+    expect(again!.output).toContain('agent stopped')
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id, { dispatch: false })).toBe(true)
+    expect(await queued(c.session.id)).toBe(1)
   })
 
   test('a cleared holder ends the watch instead of re-arming it', async () => {

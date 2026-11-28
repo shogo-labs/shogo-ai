@@ -413,7 +413,7 @@ export async function waitForTask(
   for (;;) {
     if (!row) return null
     if (isFinal(row.status)) return { row, matched: false }
-    if (until && until.test(row.output)) {
+    if (until && until.test(row.source === 'work_item' ? cardMilestoneOutput(row.output) : row.output)) {
       if (row.source === 'work_item') {
         const settled = await settle(row, 'completed', `matched ${opts.until}`)
         return { row: settled, matched: true }
@@ -479,6 +479,12 @@ export interface TaskEvent {
   line?: string
   summary?: string
   /**
+   * The event's own kind (`moved`, `commented`, `agent_stopped`, …) for a
+   * `work_item` event. A watch settles on a milestone only, whatever the
+   * rendered line happens to say (SHO-369).
+   */
+  kind?: string
+  /**
    * Machine-readable card state for a `work_item` event: where the move landed
    * and who holds the card now. A watch reads this to tell a terminal move from
    * a milestone, instead of re-parsing the rendered line.
@@ -507,6 +513,21 @@ export interface CardEventState {
 export function replyEvent(agentStatus: string | null | undefined, text: string | null | undefined): TaskEvent {
   const status = agentStatus === 'error' ? 'failed' : agentStatus === 'stopped' ? 'cancelled' : 'completed'
   return { status, line: text?.trim() || undefined, summary: agentStatus === 'error' ? 'the agent hit an error' : 'replied' }
+}
+
+/** The card events that can settle a watch. Every other line is only recorded. */
+const CARD_MILESTONE_KINDS = new Set(['moved', 'agent_stopped', 'agent_failed'])
+
+/**
+ * A card watch's `until` reads the timeline, where a comment is somebody's
+ * prose: a comment that quotes "moved to QA (review)" is news about the card,
+ * not the card moving (SHO-369).
+ */
+const CARD_NOTES_LINE = /^(comment: |assigned to |updated )/
+
+/** The part of a card watch's output its `until` may be tested against. */
+function cardMilestoneOutput(output: string): string {
+  return output.split('\n').filter((line) => !CARD_NOTES_LINE.test(line)).join('\n')
 }
 
 async function settle(row: BackgroundTaskRow, status: Exclude<BackgroundTaskStatus, 'running'>, summary?: string): Promise<BackgroundTaskRow> {
@@ -567,7 +588,7 @@ export async function releaseTasks(rows: BackgroundTaskRow[], line?: string): Pr
 
 /**
  * Put a card watch back to watching, in place, once the milestone that woke it
- * is safely in the queue.
+ * has been **delivered** to the agent (`deliveredTaskWake`).
  *
  * A hand-off watch is for the card's whole life: QA → Review and the bounce
  * back to Changes Requested must wake the assigner too, not just the first
@@ -575,6 +596,12 @@ export async function releaseTasks(rows: BackgroundTaskRow[], line?: string): Pr
  * for the card, so `consecutiveWakeWaits` does not count each milestone as a
  * new wait and the card-only wake cap is not burned by a five-column board; the
  * row's `expiresAt` (`CARD_TASK_TTL_MS`) bounds the chain.
+ *
+ * Re-arming when the wake was only *queued* is what delivered one update
+ * hundreds of times (SHO-369): the row went back to `running` with its output
+ * cleared, so the next card event settled it again and stacked a second queued
+ * row for the same task. A queued watch stays live through `emitTaskEvent`
+ * instead, and nothing is armed until the agent has the update.
  *
  * The guard is the card's state right now, not the text of the event: a closed
  * or archived card, a cleared holder, or a watch past its expiry all end it for
@@ -608,6 +635,31 @@ export async function rearmCardWatch(row: BackgroundTaskRow): Promise<Background
   })
 }
 
+/**
+ * A queued wake reached the agent (or was dropped as too old): the update is
+ * out of the queue, so a live card watch can go back to watching its card.
+ *
+ * This is the only place a watch re-arms (SHO-369). Doing it when the wake was
+ * queued instead left the row `running` with an empty output while its wake was
+ * still pending, so the next card event settled it again and queued another row
+ * for the same task — hundreds of identical `[Task update]`s out of one card.
+ * A watch whose wake is still owed stays non-running; `emitTaskEvent` keeps it
+ * on the timeline and the note is rendered from the row when it is delivered.
+ */
+export async function deliveredTaskWake(ids: string[]): Promise<number> {
+  const consumed = await consumeTasks(ids)
+  const clean = ids.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)
+  if (!clean.length) return consumed
+  const rows: BackgroundTaskRow[] = await db.backgroundTask.findMany({
+    where: { id: { in: clean }, source: 'work_item' },
+  })
+  for (const row of rows) {
+    if (row.status === 'running') continue
+    await rearmCardWatch(row).catch(() => null)
+  }
+  return consumed
+}
+
 async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<BackgroundTaskRow> {
   let current = row
   if (event.line) {
@@ -617,14 +669,43 @@ async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<Bac
   if (event.status) return settle(current, event.status, event.summary)
   // The card was closed outright (archived): the watch is done with it whether
   // or not the rendered line matched the pattern.
-  if (event.card?.terminal === true) return settle(current, 'completed', 'the card is closed')
-  const until = compileUntil(current.until)
-  if (until && until.test(current.output)) {
-    // A card watch that the card has closed is done; anything else is a
-    // milestone, and `rearmCardWatch` puts the same row back to watching once
-    // this wake is safely in the queue.
+  if (event.card?.terminal === true) {
+    if (current.source === 'work_item' && current.status !== 'running') {
+      // Its wake is already on its way: the note the agent gets is rendered
+      // from this row when the queue claims it, so only the summary changes.
+      // Settling again would queue a second wake for the same milestone.
+      current = await db.backgroundTask.update({ where: { id: row.id }, data: { summary: 'the card is closed' } })
+      signal(row.id)
+      return current
+    }
+    return settle(current, 'completed', 'the card is closed')
+  }
+  if (current.source === 'work_item') {
+    // A watch settles on this event's milestone line only (SHO-369): never on
+    // the accumulated output, where a comment quoting "moved to QA (review)"
+    // would pass for the card moving.
+    const until = compileUntil(current.until)
+    const milestone = !!until && !!event.line && CARD_MILESTONE_KINDS.has(event.kind ?? '') && until.test(event.line)
+    if (current.status !== 'running') {
+      // Its wake is already on its way and the note is rendered from this row
+      // when the queue claims it, so a later milestone is just timeline. A card
+      // that closed in the meantime still changes the summary.
+      if (milestone && isClosedCategory(event.card?.to?.category)) {
+        current = await db.backgroundTask.update({ where: { id: row.id }, data: { summary: 'the card is closed' } })
+      }
+      signal(row.id)
+      return current
+    }
+    if (!milestone) {
+      signal(row.id)
+      return current
+    }
     const closed = isClosedCategory(event.card?.to?.category)
     return settle(current, 'completed', closed ? 'the card is closed' : `matched ${current.until}`)
+  }
+  const until = compileUntil(current.until)
+  if (until && until.test(current.output)) {
+    return settle(current, 'completed', `matched ${current.until}`)
   }
   signal(row.id)
   return current
@@ -634,12 +715,12 @@ async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<Bac
  * Something happened to `targetRef`. Every task watching it gets the line; a
  * status settles it. Never throws: producers call this inline.
  *
- * A card watch is live from the moment it matches until its wake is *claimed*
- * (`notifiedAt`), not just while its row says `running`: a milestone settles the
- * row, and the re-arm waits for the coalesce timer, so a second move landing in
- * that window would otherwise be dropped — a card that goes QA → Done inside it
- * would never tell the watcher it finished. Joining the queued wake is the
- * point: the agent is told the latest state, once.
+ * A card watch is live from the moment it matches until its wake is *delivered*
+ * (`deliveredTaskWake` re-arms it), not just while its row says `running`: a
+ * milestone settles the row and the wake sits in the queue behind a busy
+ * session, so a second move landing in that window would otherwise be dropped —
+ * a card that goes QA → Done inside it would never tell the watcher it finished.
+ * Joining the queued wake is the point: the agent is told the latest state, once.
  */
 export async function emitTaskEvent(source: string, targetRef: string, event: TaskEvent): Promise<number> {
   try {
@@ -649,8 +730,8 @@ export async function emitTaskEvent(source: string, targetRef: string, event: Ta
         targetRef,
         OR: [
           { status: 'running' },
-          // Already matched, wake queued (or held), nobody told yet.
-          { status: 'completed', notify: true, consumed: false, notifiedAt: null, until: { not: null } },
+          // Already matched, wake queued (or held) and not delivered yet.
+          { status: 'completed', notify: true, consumed: false, until: { not: null } },
         ],
       },
       take: 50,
@@ -861,6 +942,63 @@ const isSessionWorkspacePaused = (session: {
   import('./workspace-pause.service').then((module) => module.isSessionWorkspacePaused(session))
 
 /**
+ * Write (or refresh) the one queued wake this task has (SHO-369).
+ *
+ * A task whose wake is already waiting behind a busy session gets its row
+ * rewritten in place: two updates for the same task are one `[Task update]`, and
+ * stacking a second row only made the batch deliver the same card twice.
+ * Returns the new queue tail when it created a row, `null` when it rewrote one.
+ */
+async function queueTaskWakeMessage(
+  chatSessionId: string,
+  userId: string,
+  task: BackgroundTaskRow,
+  position: number,
+): Promise<number | null> {
+  const text = formatTaskNote(task)
+  const pending: Array<{ id: string; body: string | null }> = await db.chatQueuedMessage.findMany({
+    where: { sessionId: chatSessionId, status: 'pending', kind: 'task_notification' },
+    orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+    select: { id: true, body: true },
+    take: 200,
+  })
+  const existing = pending.find((row) => taskWakeIdsFromBody(row.body).includes(task.id))
+  if (existing) {
+    const previous = parseJson<{ text?: string; taskNotification?: Record<string, unknown> }>(existing.body, {})
+    const taskIds = taskWakeIdsFromBody(existing.body)
+    const taskNotification = { ...(previous.taskNotification ?? {}), taskIds: taskIds.length ? taskIds : [task.id] }
+    const parts = JSON.stringify([
+      { type: 'text', text },
+      { type: 'data-task-notification', data: taskNotification },
+    ])
+    await db.chatQueuedMessage.update({
+      where: { id: existing.id },
+      data: { content: text, parts, body: JSON.stringify({ ...previous, text, taskNotification }) },
+    })
+    return null
+  }
+  const taskIds = [task.id]
+  const taskNotification = { taskIds, ...(task.wakeAlone ? { alone: true } : {}) }
+  const next = position + 1
+  await db.chatQueuedMessage.create({
+    data: {
+      sessionId: chatSessionId,
+      userId,
+      position: next,
+      status: 'pending',
+      kind: 'task_notification',
+      content: text,
+      parts: JSON.stringify([
+        { type: 'text', text },
+        { type: 'data-task-notification', data: taskNotification },
+      ]),
+      body: JSON.stringify({ text, taskNotification }),
+    },
+  })
+  return next
+}
+
+/**
  * Queue one wake message per finished, unseen task in the session, in finish
  * order: one `[Task update]` per row, so retry, stale-drop, release and the UI
  * chip all stay per task.
@@ -870,6 +1008,10 @@ const isSessionWorkspacePaused = (session: {
  * lands while the session is idle costs one turn instead of one per task
  * (SHO-604). A task created with `wake: "alone"` is marked on its row's body and
  * runs by itself. The coalesce timers upstream only delay the burst.
+ *
+ * Queueing arms nothing: a card watch goes back to watching when its wake is
+ * delivered (`deliveredTaskWake`), so a row that is still waiting cannot settle
+ * itself again and stack a copy (SHO-369).
  */
 export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: boolean } = {}): Promise<boolean> {
   const session = await db.chatSession.findUnique({
@@ -910,27 +1052,8 @@ export async function enqueueTaskWake(chatSessionId: string, opts: { dispatch?: 
     // claim, and the agent must hear the state now rather than the one that was
     // true a moment ago.
     const fresh = (await getTask(task.id)) ?? task
-    const text = formatTaskNote(fresh)
-    const taskIds = [fresh.id]
-    position += 1
-    await db.chatQueuedMessage.create({
-      data: {
-        sessionId: chatSessionId,
-        userId,
-        position,
-        status: 'pending',
-        kind: 'task_notification',
-        content: text,
-        parts: JSON.stringify([
-          { type: 'text', text },
-          { type: 'data-task-notification', data: { taskIds } },
-        ]),
-        body: JSON.stringify({ text, taskNotification: { taskIds, ...(fresh.wakeAlone ? { alone: true } : {}) } }),
-      },
-    })
-    // The milestone is in the queue, so the watch can go back to watching the
-    // same card without losing this wake (see `rearmCardWatch`).
-    await rearmCardWatch(fresh).catch(() => null)
+    const next = await queueTaskWakeMessage(chatSessionId, userId, fresh, position)
+    if (next !== null) position = next
     queued++
   }
   if (queued === 0) return false

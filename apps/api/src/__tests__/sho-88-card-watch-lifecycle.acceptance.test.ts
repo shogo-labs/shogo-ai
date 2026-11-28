@@ -9,7 +9,8 @@
  *    the internal task route (what the runtime's board tools call), the card is
  *    moved through the agent move route (what `work_item_move` calls), and the
  *    wake is left to the real coalesce timer + dispatcher — nothing here calls
- *    `enqueueTaskWake` by hand, because the re-arm lives on that path.
+ *    `enqueueTaskWake` by hand, because the re-arm lives on the delivery path
+ *    (`deliveredTaskWake`, SHO-369).
  * 2. A paused session's waiting updates are readable from the session (the
  *    internal tasks route), and the composer's Resume action delivers them
  *    through `POST /api/chat-queued-messages/:id/resume` without a person
