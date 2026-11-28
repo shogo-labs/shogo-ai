@@ -201,7 +201,14 @@ async function waitForChatQuiet(page: Page, quietMs = 6_000, deadlineMs = 120_00
 }
 
 async function persistedWakeReply(sessionId: string): Promise<{ update: boolean; reply: boolean }> {
-  const messages = await apiJson<any>("GET", `/api/chat-messages?sessionId=${encodeURIComponent(sessionId)}`)
+  // Ask for the order this check reads in. `/api/chat-messages` defaults to
+  // newest-first (the desktop transcript's order, SHO-610), so without this the
+  // reply sits *before* the update and "did the reply land after it" inverts.
+  const query = new URLSearchParams({
+    sessionId,
+    orderBy: "createdAt:asc",
+  })
+  const messages = await apiJson<any>("GET", `/api/chat-messages?${query.toString()}`)
   const items: any[] = messages?.items ?? messages?.data ?? messages ?? []
   const updateAt = items.findIndex(
     (m) => m?.role === "user" && String(m?.content ?? "").includes("[Task update]"),
