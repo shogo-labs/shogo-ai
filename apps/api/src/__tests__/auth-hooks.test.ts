@@ -49,6 +49,14 @@ mock.module('better-auth/api', () => ({
   createAuthMiddleware: (handler: (ctx: any) => unknown) => handler,
 }))
 
+// `auth.ts` builds its plugin list, which imports `emailOTP` from here. Under
+// a mocked `better-auth` that package subpath resolves to a module Bun cannot
+// load (`getEndpoints` is not exported by 1.4.18's api/index.mjs), so the stub
+// has to exist even though the hooks in this file never call it.
+mock.module('better-auth/plugins', () => ({
+  emailOTP: () => ({ id: 'email-otp' }),
+}))
+
 mock.module('@better-auth/expo', () => ({
   expo: () => ({ id: 'expo-plugin' }),
 }))

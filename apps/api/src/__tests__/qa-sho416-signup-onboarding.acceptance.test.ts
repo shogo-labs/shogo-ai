@@ -43,6 +43,11 @@ mock.module('better-auth/api', () => ({
   createAuthMiddleware: (handler: (ctx: any) => unknown) => handler,
 }))
 
+// `auth.ts` imports `emailOTP` from here while building its plugin list; under
+// a mocked `better-auth` that subpath resolves to a module Bun cannot load
+// (`getEndpoints` is not exported by 1.4.18's api/index.mjs).
+mock.module('better-auth/plugins', () => ({ emailOTP: () => ({ id: 'email-otp' }) }))
+
 mock.module('@better-auth/expo', () => ({ expo: () => ({ id: 'expo-plugin' }) }))
 
 // ─── Mutable state the tests drive ────────────────────────────────────────
