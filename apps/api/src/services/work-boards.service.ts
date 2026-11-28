@@ -1415,6 +1415,14 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
   }
   await linkActorSession(item, actor)
 
+  // A card that just closed leaves the agent's `.tmp` checkout behind
+  // (SHO-607). The project runtimes that touched it remove their own worktree
+  // when they are running; their boot sweep covers the rest.
+  if (!sameColumn && isClosed(toColumn.category)) {
+    const { pruneTmpForClosedCard } = await import('./work-item-tmp-prune.service')
+    void pruneTmpForClosedCard(updated).catch(() => {})
+  }
+
   if (toBoard.conversationId && toBoard.conversationId !== fromBoard.conversationId) {
     await postEscalationLink(updated, fromBoard, toBoard, actor)
   }

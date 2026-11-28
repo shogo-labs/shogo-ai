@@ -464,14 +464,19 @@ export async function repairCheckpointRepo(
   }
 
   try {
-    const lfsDir = join(gitDir, 'lfs')
-    result.bytesBefore = directorySizeBytes(lfsDir)
-    result.lfsVersionsBefore = await countLfsVersions(repoDir)
-
+    // Check the marker first: measuring the LFS dir and counting versions over
+    // all history is a synchronous walk + `git lfs ls-files -a`, and on a
+    // repaired repo (every boot after the first) that work is pure cost on the
+    // startup path — it was a measurable part of a blocked event loop
+    // (SHO-607). The numbers are only reported when a repair actually runs.
     const marker = readRepairMarker(repoDir)
     if (marker && Number(marker.version) === MARKER_VERSION) {
       return { ...result, skipped: false, reason: 'already-repaired' }
     }
+
+    const lfsDir = join(gitDir, 'lfs')
+    result.bytesBefore = directorySizeBytes(lfsDir)
+    result.lfsVersionsBefore = await countLfsVersions(repoDir)
 
     if (!isRepoIdle(repoDir, log)) {
       return { ...result, reason: 'busy' }

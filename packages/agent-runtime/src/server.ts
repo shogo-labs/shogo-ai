@@ -185,7 +185,8 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, derivePublicApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, derivePublicApiUrl, fetchWorkItemBranches, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { pruneClosedCardTmpWorktrees, sweepTmpHygiene, tmpHygieneRoots, type CardBranchRef, type CardBranchIndex } from './tmp-hygiene'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -1846,6 +1847,87 @@ app.post('/agent/worktrees/:chatSessionId/merge', async (c) => {
     return c.json({ error: err?.message || 'Merge failed' }, 500)
   }
 })
+
+// ── `.tmp` hygiene (SHO-607) ────────────────────────────────────────────────
+//
+// Agent checkouts under `.tmp` are pruned when their card closes and by a
+// sweep 10 min after boot, then every 6 h. Both are off the readiness path:
+// every git call is an async spawn and every fs call is `fs/promises`.
+
+/** Project dirs whose `.tmp` this runtime owns; folder-linked projects excluded. */
+function tmpHygieneScopeRoots(): string[] {
+  return tmpHygieneRoots({
+    workspaceDir: WORKSPACE_DIR,
+    workingMode: WORKING_MODE,
+    isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
+    projectIds: WORKSPACE_RUNTIME_PROJECT_IDS,
+    mounts: parseWorkspaceMounts(),
+  })
+}
+
+async function loadCardBranchIndex(): Promise<CardBranchIndex | null> {
+  const workspaceId = process.env.WORKSPACE_ID
+  if (!workspaceId || !deriveApiUrl()) return null
+  const result = await fetchWorkItemBranches(workspaceId)
+  if (!result.ok || !result.data) {
+    console.warn(`[tmp-hygiene] card branch index unavailable: ${result.error ?? 'no data'}`)
+    return null
+  }
+  return result.data as CardBranchIndex
+}
+
+/**
+ * `POST /agent/tmp-hygiene/prune { card }` — called by the API when a card
+ * enters a closed column. The runtime re-reads every open card before removing
+ * anything, so another open card's worktree is never collateral.
+ */
+app.post('/agent/tmp-hygiene/prune', async (c) => {
+  const body = await c.req.json().catch(() => null) as { card?: CardBranchRef } | null
+  const card = body?.card
+  if (!card || typeof card.key !== 'string' || !Array.isArray(card.prs)) {
+    return c.json({ error: 'card { key, number, branch, prs } is required' }, 400)
+  }
+  try {
+    const report = await pruneClosedCardTmpWorktrees({
+      roots: tmpHygieneScopeRoots(),
+      card,
+      loadCardBranches: loadCardBranchIndex,
+    })
+    return c.json({ removed: report.removed, kept: report.kept, deferred: report.deferred, errors: report.errors })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'tmp hygiene failed' }, 500)
+  }
+})
+
+let tmpHygieneRunning = false
+
+/** One sweep, skipped while a turn holds this runtime. */
+async function runTmpHygieneSweep(): Promise<void> {
+  if (tmpHygieneRunning) return
+  if (state.isPoolMode && !state.poolAssigned) return
+  if (streamRegistry.liveCount() > 0) return
+  tmpHygieneRunning = true
+  try {
+    await sweepTmpHygiene({
+      roots: tmpHygieneScopeRoots(),
+      loadCardBranches: loadCardBranchIndex,
+    })
+  } catch (err: any) {
+    console.warn(`[tmp-hygiene] sweep failed: ${err?.message ?? err}`)
+  } finally {
+    tmpHygieneRunning = false
+  }
+}
+
+/** First sweep 10 min after boot (past the startup burst), then every 6 h. */
+function scheduleTmpHygiene(): void {
+  const first = setTimeout(() => { void runTmpHygieneSweep() }, 10 * 60_000)
+  const every = setInterval(() => { void runTmpHygieneSweep() }, 6 * 60 * 60_000)
+  // Never keep the process alive just to sweep scratch.
+  const unref = (timer: unknown) => (timer as { unref?: () => void }).unref?.()
+  unref(first)
+  unref(every)
+}
 
 // Channel connect — persist to config.json and hot-connect via the gateway
 app.post('/agent/channels/connect', async (c) => {
@@ -8453,6 +8535,10 @@ function isAuthedForPortBridge(req: Request): boolean {
 if (process.env.SHOGO_PERF_LOG === '1') {
   logTiming('server-export-evaluated')
 }
+
+// `.tmp` hygiene (SHO-607): prune stale agent worktrees off the readiness
+// path — first sweep 10 min after boot, then every 6 h, only while idle.
+if (!IS_PUBLISHED_MODE) scheduleTmpHygiene()
 
 export default {
   port: PORT,
