@@ -264,8 +264,17 @@ export const ChatMessageCollection = types
               // A refresh is not authoritative for a row a write owns: a
               // delete or an update in flight has to survive it, the same
               // way `loadAll` makes it survive a stale response.
+              //
+              // A session-filtered page is authoritative for that session
+              // only. One collection can hold rows of several chats (the root
+              // store, the `/chat-messages?limit=1` tail probe), and clearing
+              // the whole map here deleted another chat's rows between a load
+              // and the paint that reads them (SHO-328).
+              const scopedSessionId =
+                typeof filter?.sessionId === "string" ? filter.sessionId : null
               for (const id of Array.from(self.items.keys())) {
                 if (ownedByWrite(id, requestSeq)) continue
+                if (scopedSessionId && self.items.get(id)?.sessionId !== scopedSessionId) continue
                 self.items.delete(id)
               }
             }

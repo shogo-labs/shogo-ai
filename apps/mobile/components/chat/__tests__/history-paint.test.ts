@@ -15,7 +15,12 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { resolveHistoryPaint, resolveLiveTurnAttach, type PaintableMessage } from "../history-paint"
+import {
+  findRemovedReplies,
+  resolveHistoryPaint,
+  resolveLiveTurnAttach,
+  type PaintableMessage,
+} from "../history-paint"
 import { groupMessagesIntoTurns } from "../turns/useTurnGrouping"
 
 const user = (id: string): PaintableMessage => ({ id, role: "user" })
@@ -438,5 +443,155 @@ describe("the transcript the paint produces", () => {
 
     expect(turns).toHaveLength(1)
     expect(turns[0].assistantMessage?.id).toBe("sdk-a2")
+  })
+})
+
+// SHO-328: the reply vanished on the desktop at turn end while
+// `chat_history_paint_dropped_reply` reported the *refusal*, so the guard was not
+// the thing that lost it. These lock down the two halves the card named: the
+// alignment that made a 50-row page against a 55-row screen look `history-behind`
+// forever, and the invariant that reports a paint which deletes a reply.
+describe("a page whose ids the screen has not adopted (SHO-328)", () => {
+  /** Oldest-first screen/page of `turns` turns, with an id prefix per source. */
+  const ordered = (prefix: string, from: number, to: number): PaintableMessage[] => {
+    const rows: PaintableMessage[] = []
+    for (let n = from; n <= to; n += 1) {
+      rows.push({ id: `${prefix}-u${n}`, role: "user" })
+      rows.push({ id: `${prefix}-a${n}`, role: "assistant", content: `reply ${n}` })
+    }
+    return rows
+  }
+
+  test("paints the page and keeps the older pages above it", () => {
+    // 30 turns on screen (60 rows) from scrolling up; the newest page is 25
+    // turns, and not one of its ids is on screen (temp/SDK ids, SHO-260).
+    const current = ordered("screen", 1, 30)
+    const history = ordered("server", 6, 30)
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail, "the page is not 'behind' a screen it covers").toBe(false)
+    const ids = (paint.messages as readonly PaintableMessage[]).map((message) => message.id)
+    // Rows the page does not cover stay above it; the page lands under them once.
+    expect(ids.slice(0, 10)).toEqual(ordered("screen", 1, 5).map((message) => message.id))
+    expect(ids.slice(-1)).toEqual(["server-a30"])
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  test("paints the page's reply instead of refusing as history-behind", () => {
+    // The Sentry shape (historyRows 50, screenRows 55+) with the page holding the
+    // reply and the screen streaming it under an id nobody adopted yet. The reply
+    // counts then differ by one on every pass, so counting alone refused forever.
+    const current = [
+      ...ordered("screen", 1, 27),
+      { id: "screen-u28", role: "user" },
+      { id: "sdk-a28", role: "assistant", content: "reply 28" },
+    ]
+    const history = [
+      ...ordered("server", 4, 27),
+      { id: "server-u28", role: "user" },
+      { id: "server-a28", role: "assistant", content: "reply 28" },
+    ]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail, "the page holds the reply, so painting it is safe").toBe(false)
+    const ids = (paint.messages as readonly PaintableMessage[]).map((message) => message.id)
+    // The older rows above the page stay, and the page's row replaces the live one.
+    expect(ids).toHaveLength(56)
+    expect(ids.slice(0, 6)).toEqual(ordered("screen", 1, 3).map((message) => message.id))
+    expect(ids.slice(-1)).toEqual(["server-a28"])
+  })
+
+  test("keeps a live reply whose prompt the page has not answered yet", () => {
+    // Two turns on screen under SDK ids; the page has both prompts and only the
+    // first reply. The second reply exists on screen only, and the window aligns
+    // past the first prompt — counting prompts over the window alone would make
+    // the reply look like it answers the wrong turn.
+    const current: PaintableMessage[] = [
+      { id: "screen-u1", role: "user" },
+      { id: "sdk-a1", role: "assistant", content: "reply one" },
+      { id: "screen-u2", role: "user" },
+      { id: "sdk-a2", role: "assistant", content: "reply two" },
+    ]
+    const history: PaintableMessage[] = [
+      { id: "server-u1", role: "user" },
+      { id: "server-a1", role: "assistant", content: "reply one" },
+      { id: "server-u2", role: "user" },
+    ]
+
+    const paint = resolveHistoryPaint({ history, current, keepsLiveTail: true })
+
+    expect(paint.keptLiveTail).toBe(true)
+    expect(paint.messages).toBe(current as unknown as readonly PaintableMessage[])
+  })
+})
+
+describe("findRemovedReplies", () => {
+  const promptRow = (id: string): PaintableMessage => ({ id, role: "user", content: "prompt" })
+  const savedRow = (id: string, text = "the answer"): PaintableMessage => ({
+    id,
+    role: "assistant",
+    content: text,
+    parts: [{ type: "text", text }],
+  })
+  const liveRow = (id: string, text = "the answer"): PaintableMessage => ({
+    id,
+    role: "assistant",
+    parts: [{ type: "text", text }],
+  })
+
+  test("nothing is lost when the saved row keeps the id", () => {
+    expect(
+      findRemovedReplies([promptRow("u1"), liveRow("a1")], [promptRow("u1"), savedRow("a1")]),
+    ).toEqual([])
+  })
+
+  test("nothing is lost when the reply is adopted under the server's id", () => {
+    // The happy path: the transcript swaps the SDK id for the row id and the
+    // text is unchanged, so this is a paint, not a vanish.
+    expect(
+      findRemovedReplies([promptRow("u1"), liveRow("sdk-a1")], [promptRow("u1"), savedRow("row-a1")]),
+    ).toEqual([])
+  })
+
+  test("reports the reply a page that is behind the screen deletes", () => {
+    // The reported symptom: the paint lands on the prompt the reply answered.
+    const removed = findRemovedReplies([promptRow("u1"), liveRow("sdk-a1")], [promptRow("u1")])
+
+    expect(removed.map((entry) => entry.id)).toEqual(["sdk-a1"])
+    expect(removed[0].contentLength).toBe("the answer".length)
+  })
+
+  test("a swapped or regenerated answer is not a lost reply", () => {
+    // Same number of replies: the id changed, the answer changed, the count did
+    // not. Reporting this would flag every adoption and every regenerate.
+    expect(
+      findRemovedReplies(
+        [promptRow("u1"), liveRow("sdk-a1", "old answer")],
+        [promptRow("u1"), savedRow("row-a1", "regenerated answer")],
+      ),
+    ).toEqual([])
+  })
+
+  test("reports only the replies a shorter transcript drops", () => {
+    // Two replies on screen, one painted: the newest one is the loss.
+    const removed = findRemovedReplies(
+      [promptRow("u1"), savedRow("a1", "first answer"), promptRow("u2"), liveRow("sdk-a2", "second answer")],
+      [promptRow("u1"), savedRow("a1", "first answer")],
+    )
+
+    expect(removed.map((entry) => entry.id)).toEqual(["sdk-a2"])
+  })
+
+  test("does not count the empty bubble a turn opens with", () => {
+    // Same rule as the paint decision (SHO-260): an empty assistant bubble is
+    // not a reply anyone can lose.
+    expect(
+      findRemovedReplies(
+        [promptRow("u1"), { id: "sdk-a1", role: "assistant", content: "", parts: [] }],
+        [promptRow("u1")],
+      ),
+    ).toEqual([])
   })
 })

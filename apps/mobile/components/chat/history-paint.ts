@@ -89,7 +89,7 @@ function isAssistant(message: PaintableMessage | undefined): boolean {
  * history look permanently "behind" and the paint below refuses forever
  * (SHO-260). A bubble earns its place once it carries text or a real part.
  */
-function carriesContent(message: PaintableMessage | undefined): boolean {
+export function carriesReplyContent(message: PaintableMessage | undefined): boolean {
   if (typeof message?.content === "string" && message.content.trim() !== "") return true
   const parts = message?.parts
   if (!Array.isArray(parts)) return false
@@ -101,7 +101,7 @@ function carriesContent(message: PaintableMessage | undefined): boolean {
 function assistantCount(messages: readonly PaintableMessage[]): number {
   let count = 0
   for (const message of messages) {
-    if (isAssistant(message) && carriesContent(message)) count += 1
+    if (isAssistant(message) && carriesReplyContent(message)) count += 1
   }
   return count
 }
@@ -140,7 +140,7 @@ function liveReplyTail<T extends PaintableMessage>(current: readonly T[]): reado
   }
   return current
     .slice(lastPrompt + 1)
-    .filter((message) => isAssistant(message) && carriesContent(message))
+    .filter((message) => isAssistant(message) && carriesReplyContent(message))
 }
 
 /**
@@ -161,6 +161,10 @@ export function resolveHistoryPaint<T extends PaintableMessage>(
     const decision = resolveWindowedHistoryPaint({
       ...input,
       current: input.current.slice(windowStart),
+      // Which turn a reply belongs to is counted in prompts over the whole
+      // screen, not over the window: the rows above it hold prompts too, and
+      // forgetting them makes a live reply look like it answers the wrong turn.
+      promptsBefore: userCount(input.current.slice(0, windowStart)),
     })
     if (decision.keptLiveTail) return { ...decision, messages: input.current }
     return {
@@ -172,21 +176,44 @@ export function resolveHistoryPaint<T extends PaintableMessage>(
 }
 
 /**
- * Index on screen of history's first row when the screen holds rows older
- * than it, or 0 when history starts at (or before) the top of the screen.
+ * Index on screen of the first row of history's page, or 0 when history starts
+ * at (or before) the top of the screen.
+ *
+ * The page is the newest `MESSAGE_PAGE_SIZE` rows while the screen can hold
+ * older pages above it, so the decision has to run over the stretch of screen
+ * the page covers and leave the rows above it alone. Align on the first page row
+ * that is also on screen — a row whose id the client has not adopted yet is a
+ * gap, not the end of the match, because the page and the screen can disagree on
+ * the id of the same reply (an SDK or temp id, SHO-260).
+ *
+ * When the two share no id at all, both are oldest-first, so the page covers the
+ * screen's newest rows. Aligning that way replaced the old fallback of comparing
+ * the whole screen, which made a 50-row page look `history-behind` against a
+ * 55-row screen on every paint — exactly the shape of Sentry
+ * `chat_history_paint_dropped_reply` (`historyRows:50, screenRows:55`, SHO-328).
  */
 function historyWindowStart(
   history: readonly PaintableMessage[],
   current: readonly PaintableMessage[],
 ): number {
-  const firstId = String(history[0]?.id ?? "")
-  if (!firstId) return 0
-  const index = current.findIndex((message) => String(message?.id ?? "") === firstId)
-  return index > 0 ? index : 0
+  if (history.length === 0) return 0
+  const screenIndex = new Map<string, number>()
+  current.forEach((message, index) => {
+    const id = String(message?.id ?? "")
+    if (id && !screenIndex.has(id)) screenIndex.set(id, index)
+  })
+  for (const message of history) {
+    const id = String(message?.id ?? "")
+    if (!id) continue
+    const index = screenIndex.get(id)
+    if (index === undefined) continue
+    return index > 0 ? index : 0
+  }
+  return current.length > history.length ? current.length - history.length : 0
 }
 
 function resolveWindowedHistoryPaint<T extends PaintableMessage>(
-  input: HistoryPaintInput<T>,
+  input: HistoryPaintInput<T> & { promptsBefore?: number },
 ): HistoryPaintResult<T> {
   const { history, current, keepsLiveTail } = input
   const paint = (reason: HistoryPaintReason): HistoryPaintResult<T> => ({
@@ -219,6 +246,29 @@ function resolveWindowedHistoryPaint<T extends PaintableMessage>(
   const currentTailId = String(currentTail.id ?? "")
   if (currentTailId && holdsId(history, currentTailId)) return paint("history-has-reply")
 
+  // Same reply under an id the client has not adopted yet (SHO-328). The page
+  // read comes back with the server's row while the screen still streams the
+  // reply under an SDK/temp id, so no id matches and the reply count is off by
+  // one — the paint was refused as `history-behind` on every pass.
+  //
+  // Text alone is not enough to call two transcripts the same ("Done." is a
+  // whole reply), so this only trusts a page that lines up row for row with the
+  // window it covers and ends on the same reply. Then painting is not just safe,
+  // it is the paint that adopts the server's row.
+  const tailText = replyText(currentTail)
+  if (
+    tailText &&
+    current.length === history.length &&
+    userCount(history) === userCount(current)
+  ) {
+    const newestSavedReply = [...history]
+      .reverse()
+      .find((message) => isAssistant(message) && carriesReplyContent(message))
+    if (newestSavedReply && replyText(newestSavedReply) === tailText) {
+      return paint("history-has-reply")
+    }
+  }
+
   // History that is *ahead* of the screen wins (SHO-147). A turn started right
   // after this panel's own — a tag, a `[Task update]` wake, a queued row — writes
   // its user row before it starts, so `/chat-messages` can come back ending on a
@@ -228,7 +278,7 @@ function resolveWindowedHistoryPaint<T extends PaintableMessage>(
   // it after the previous reply with no user row between them, and the turn
   // grouping gives the one bubble to the newer reply. So paint, and splice the
   // reply that exists only on screen in front of the newer prompt.
-  const screenPrompts = userCount(current)
+  const screenPrompts = userCount(current) + (input.promptsBefore ?? 0)
   if (userCount(history) > screenPrompts) {
     const newerPromptIndex = nthUserIndex(history, screenPrompts + 1)
     if (newerPromptIndex < 0) return paint("history-has-newer-prompt")
@@ -314,4 +364,67 @@ export function resolveLiveTurnAttach<T extends PaintableMessage>(
   const tail = screen[screen.length - 1]
   if (!isAssistant(tail)) return { attach: true, reason: "screen-ends-on-prompt" }
   return { attach: true, reason: "screen-streams-this-turn" }
+}
+
+/** One reply the screen shows that a painted transcript no longer carries. */
+export interface RemovedReply {
+  id: string
+  contentLength: number
+}
+
+/** What a message says, whatever shape it arrived in (row or live SDK message). */
+function replyText(message: PaintableMessage | undefined): string {
+  if (typeof message?.content === "string" && message.content.trim() !== "") {
+    return message.content.trim()
+  }
+  const parts = message?.parts
+  if (!Array.isArray(parts)) return ""
+  return parts
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => (part.text ?? "").trim())
+    .join(" ")
+    .trim()
+}
+
+/**
+ * Replies that are on screen but missing from a transcript about to be painted
+ * (SHO-328).
+ *
+ * This is the invariant the "my reply vanished" reports never had an event for:
+ * `chat_history_paint_dropped_reply` fires from the guard that *keeps* the live
+ * reply, so the paint that actually deleted it left no trace at all. A caller
+ * reports this before it paints and never blocks the paint on it — a transcript
+ * still has to be replaced when the server deleted rows (an edit, a truncate).
+ *
+ * What counts is the number of replies, not which ids they have. Adopting the
+ * server's row, or painting a regenerated answer, swaps a reply for another reply
+ * and must not read as a loss; a paint that leaves the transcript with fewer
+ * replies than the screen has, or that ends on a prompt where the screen ended on
+ * an answer, is the vanish this looks for.
+ */
+export function findRemovedReplies(
+  previous: readonly PaintableMessage[],
+  next: readonly PaintableMessage[],
+): RemovedReply[] {
+  const repliesOnScreen = previous.filter(
+    (message) => isAssistant(message) && carriesReplyContent(message),
+  )
+  const repliesPainted = next.filter(
+    (message) => isAssistant(message) && carriesReplyContent(message),
+  ).length
+  if (repliesOnScreen.length <= repliesPainted) return []
+  const nextIds = new Set(next.map((message) => String(message?.id ?? "")).filter(Boolean))
+  const nextTexts = new Set(
+    next.filter((message) => isAssistant(message) && carriesReplyContent(message)).map(replyText),
+  )
+  const missing = repliesOnScreen.filter((message) => {
+    const id = String(message?.id ?? "")
+    if (id && nextIds.has(id)) return false
+    return !nextTexts.has(replyText(message))
+  })
+  // Only the shortfall is a loss; a repaint may legitimately keep every id.
+  return missing.slice(0, repliesOnScreen.length - repliesPainted).map((message) => ({
+    id: String(message?.id ?? ""),
+    contentLength: replyText(message).length,
+  }))
 }
