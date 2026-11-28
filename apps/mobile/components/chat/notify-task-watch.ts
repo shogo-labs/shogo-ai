@@ -19,6 +19,10 @@
  * Only that last phase is capped, and the whole watch is armed only while a
  * task is listed or the last turn started one, so an idle chat makes no
  * requests.
+ *
+ * A listed task is polled on a back-off (5 s, then 30 s after a minute, then
+ * 60 s after ten), and a hidden tab does not poll at all: at a flat 5 s one tab
+ * watching a long task cost ~3,330 s of server time in 10 h (PERF-35).
  */
 
 import type { ChatTurnStatus } from './probe-turn-status'
@@ -30,6 +34,23 @@ export const NOTIFY_WAKE_POLL_INTERVAL_MS = 5_000
  * long as it runs, however long that is.
  */
 export const NOTIFY_WAKE_MAX_WAIT_MS = 5 * 60 * 1_000
+
+/**
+ * Poll interval while the same tasks stay listed, by how long they have been.
+ * A task that just started may finish in seconds; one that has run for ten
+ * minutes will not finish in the next five. A new task resets it.
+ */
+export const NOTIFY_TASK_BACKOFF: ReadonlyArray<{ afterMs: number; intervalMs: number }> = [
+  { afterMs: 10 * 60 * 1_000, intervalMs: 60_000 },
+  { afterMs: 60 * 1_000, intervalMs: 30_000 },
+]
+
+export function listedTaskPollInterval(listedForMs: number, baseMs = NOTIFY_WAKE_POLL_INTERVAL_MS): number {
+  for (const step of NOTIFY_TASK_BACKOFF) {
+    if (listedForMs >= step.afterMs) return Math.max(baseMs, step.intervalMs)
+  }
+  return baseMs
+}
 
 export interface NotifyWakeWatchOptions {
   /**
@@ -48,6 +69,11 @@ export interface NotifyWakeWatchOptions {
   /** Stop once the wake turn's reply is in the transcript. */
   isSettled?: () => boolean
   isCancelled?: () => boolean
+  /**
+   * The window is not visible: ask nothing and check again after `intervalMs`.
+   * Coming back into view resumes at once, so the wake still shows up.
+   */
+  isHidden?: () => boolean
   intervalMs?: number
   /** Bound on the wait for the wake once the task list is empty. */
   maxWaitMs?: number
@@ -67,8 +93,15 @@ export async function watchForNotifyWake(options: NotifyWakeWatchOptions): Promi
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const now = options.now ?? (() => Date.now())
   let wakeWaitingSince: number | null = null
+  let listedKey: string | null = null
+  let listedSince = 0
 
   while (!options.isCancelled?.()) {
+    if (options.isHidden?.()) {
+      await sleep(intervalMs)
+      continue
+    }
+    let nextSleepMs = intervalMs
     let tasks: readonly string[] | null = null
     try {
       tasks = await options.probeTasks()
@@ -84,6 +117,7 @@ export async function watchForNotifyWake(options: NotifyWakeWatchOptions): Promi
     // the list comes back empty. An unreadable list says nothing either way,
     // so hold on to whatever state the wait is in.
     if (tasks && tasks.length === 0) {
+      listedKey = null
       wakeWaitingSince ??= now()
       let status: ChatTurnStatus = 'unknown'
       try {
@@ -110,9 +144,15 @@ export async function watchForNotifyWake(options: NotifyWakeWatchOptions): Promi
     } else if (tasks && tasks.length > 0) {
       // Still running (or a new task started): no wake to wait for yet.
       wakeWaitingSince = null
+      const key = [...tasks].sort().join('\0')
+      if (key !== listedKey) {
+        listedKey = key
+        listedSince = now()
+      }
+      nextSleepMs = listedTaskPollInterval(now() - listedSince, intervalMs)
     }
 
-    await sleep(intervalMs)
+    await sleep(nextSleepMs)
   }
 }
 
