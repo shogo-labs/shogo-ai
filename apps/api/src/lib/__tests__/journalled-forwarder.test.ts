@@ -183,6 +183,38 @@ describe('journalled forwarder (SHO-274)', () => {
     await forwarder.drain()
     expect(forwarded).toEqual(['anyway'])
   })
+
+  /**
+   * #2293: the closing log line is the only place a turn says whether its
+   * journal survived. It must say `dead@seqN` — the batch count alone reads as
+   * a healthy journal that simply wrote fewer rows.
+   */
+  test('the closing status reports a dead journal instead of a healthy one', async () => {
+    let failed = false
+    const writer = {
+      append: async () => {
+        failed = true
+        return false
+      },
+      get written() {
+        return 1
+      },
+      get status() {
+        return failed ? 'dead@seq0' : '1 batch(es)'
+      },
+    } as unknown as TurnJournalWriter
+    const forwarder = createJournalledForwarder({ journal: writer, forward: () => {} })
+
+    expect(forwarder.journalStatus).toBe('1 batch(es)')
+    forwarder.push(chunk('a'))
+    await forwarder.drain()
+    expect(forwarder.journalStatus).toBe('dead@seq0')
+  })
+
+  test('a turn with no journal reports no journal status', () => {
+    const forwarder = createJournalledForwarder({ journal: null, forward: () => {} })
+    expect(forwarder.journalStatus).toBe('none')
+  })
 })
 
 describe('seq heartbeats are forwarded but never journalled (SHO-319)', () => {

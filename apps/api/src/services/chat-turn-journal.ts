@@ -272,6 +272,7 @@ export async function trimTurnFramesToCap(
 export class TurnJournalWriter {
   private seq = 0
   private failed = false
+  private failedAtSeq: number | null = null
   private batches = 0
 
   constructor(
@@ -284,20 +285,42 @@ export class TurnJournalWriter {
    *
    * `false` means the last write failed; the caller forwards anyway (see
    * `appendTurnFrames`) and this writer stops trying to log the same failure.
+   *
+   * Once an insert is terminally dead it can never succeed again (the parent
+   * row is gone, the model is unsupported, …), so every later batch is refused
+   * without an insert: the journal logs one warn and one doomed insert per
+   * turn, not one of each per batch.
    */
   async append(frames: Array<Uint8Array | string>): Promise<boolean> {
+    if (this.failed) return false
     const seq = this.seq++
     this.batches++
     const ok = await appendTurnFrames(this.sessionId, this.turnId, seq, frames)
-    if (!ok && !this.failed) {
+    if (!ok) {
       this.failed = true
-      console.warn(`[ChatTurnJournal] Journalling disabled for turn ${this.turnId} after a failed insert`)
+      this.failedAtSeq = seq
+      console.warn(`[ChatTurnJournal] Journalling disabled for turn ${this.turnId} at seq ${seq} after a failed insert`)
     }
     return ok
   }
 
-  /** Frames written, for the stream's closing log line. */
+  /** Batches written before the journal died, for the stream's closing log line. */
   get written(): number {
     return this.batches
+  }
+
+  /** True once an insert failed terminally; no further insert is attempted. */
+  get dead(): boolean {
+    return this.failed
+  }
+
+  /** The seq whose insert killed the journal, or null while it is healthy. */
+  get deadAtSeq(): number | null {
+    return this.failedAtSeq
+  }
+
+  /** The journal's closing state: `12 batch(es)`, or `dead@seq7`. */
+  get status(): string {
+    return this.failed ? `dead@seq${this.failedAtSeq}` : `${this.batches} batch(es)`
   }
 }

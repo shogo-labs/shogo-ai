@@ -58,6 +58,12 @@ export interface JournalledForwarder {
   drain(): Promise<void>
   /** Journal batches written, for the stream's closing log line. */
   readonly batches: number
+  /**
+   * The journal's closing state, for the stream's closing log line: its batch
+   * count, or `dead@seqN` when an insert failed and the journal has been dead
+   * since — the two must not read the same in the log.
+   */
+  readonly journalStatus: string
 }
 
 const decoder = new TextDecoder()
@@ -166,6 +172,9 @@ export function createJournalledForwarder({
     },
     get batches() {
       return journal?.written ?? 0
+    },
+    get journalStatus() {
+      return journal?.status ?? 'none'
     },
   }
 }

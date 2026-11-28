@@ -2488,7 +2488,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   // client is told the stream ended.
                   await forwarder.drain()
                   console.log(`[ProjectChat:Stream] Background reader finished: ${chunkCount} chunks, ${clientEnqueueErrors} client errors` +
-                    `${journal ? `, ${forwarder.batches} journal batch(es)` : ', no journal'}`)
+                    `${journal ? `, journal=${forwarder.journalStatus}` : ', no journal'}`)
                 } catch (err: any) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { await forwarder.drain() } catch { /* already logged */ }
