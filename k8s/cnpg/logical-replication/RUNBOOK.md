@@ -61,12 +61,19 @@ Verify logical replication parameters:
 kubectl --context oke-us exec -n shogo-production-system platform-pg-1 -c postgres -- psql -U postgres -c "SHOW wal_level; SHOW track_commit_timestamp;"
 ```
 
-### Step 3: Create LoadBalancer Services for EU and India
+### Step 3: Create LoadBalancer Services for US and EU
 
 ```bash
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu/platform-pg-external.yaml
-kubectl --context oke-india apply -f k8s/cnpg/production-india/platform-pg-external.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/platform-pg-external.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/platform-pg-external.yaml
 ```
+
+Each Service only admits the peer region's NAT gateway
+(`loadBalancerSourceRanges`). The OCI CCM does not manage the LB subnet
+security lists (`shogo-prod-public-sl`, `shogo-prod-eu-pub-sl`), so their
+tcp/5432 ingress rules must list the same /32s by hand; never add
+`0.0.0.0/0`. If a NAT gateway IP changes, update both places before the
+subscription reconnects.
 
 Wait for external IPs and note them:
 
