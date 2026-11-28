@@ -20,6 +20,11 @@
 # everyone else just adds files. softprops never deletes assets it didn't
 # upload, so the desktop .dmg / .exe / .nupkg artifacts stay intact.
 #
+# The notes are NOT uploaded by softprops: on an existing release its `body:`
+# REPLACES the body, so this workflow writes its own marked section through
+# `.github/scripts/release-notes-section.sh` and leaves the rest of the body
+# (desktop headline, runtime digests) alone. Never add `body:` back here.
+#
 # These tarballs are what `shogo runtime install` (in @shogo-ai/worker)
 # downloads and unpacks into ~/.shogo/runtime/. The install command
 # defaults its base URL to this GitHub Release, but is overridable via
@@ -206,10 +211,44 @@ jobs:
           # this same run, so the artifact only hands off between jobs.
           retention-days: 7
 
-      - name: Append runtime tarballs to the v* GitHub Release
+      - name: Write the agent-runtime section of the release notes
+        # This job owns one section of the body, never the body. It used to pass
+        # softprops `body:`, which REPLACES an existing release's body on the
+        # update path (`body = workflowBody || existingReleaseBody`) — so a late
+        # or re-run publish wiped the desktop headline and the runtime digest
+        # table, and left v2.5.6/v2.5.7/v2.6.3 with nothing but this paragraph.
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+          # A dispatched beta has no finalize-release coordination, so its
+          # release has to be public and must be a prerelease: create it that
+          # way rather than as the draft every stable tag wants.
+          RELEASE_NOTES_CREATE_FLAGS: ${{ (github.event_name == 'workflow_dispatch' && steps.version.outputs.channel == 'beta') && '--prerelease' || '--draft' }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo '### Prebuilt agent-runtime binaries'
+            echo
+            echo "Includes prebuilt agent-runtime binaries (channel: \`${CHANNEL}\`, AGPL-3.0-or-later)."
+            echo
+            echo 'Install with the worker:'
+            echo
+            echo '```'
+            echo "shogo runtime install --channel ${CHANNEL}"
+            echo '```'
+          } > agent-runtime-notes.md
+          .github/scripts/release-notes-section.sh upsert "$TAG" agent-runtime agent-runtime-notes.md
+
+      - name: Upload runtime tarballs to the v* GitHub Release
         if: github.event.inputs.dry_run != 'true'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
+          # Assets only: `body` here would replace the sections the other
+          # workflows wrote (see the notes step above).
           # NB: deliberately no `name:` — desktop-release-{macos,windows}
           # also publish to this same tag and set the release title.
           # softprops leaves the name alone when the release already
@@ -230,19 +269,6 @@ jobs:
           # would be a no-op for an existing public prerelease and would
           # create a never-published draft if this job wins the race.
           draft: ${{ !(github.event_name == 'workflow_dispatch' && steps.version.outputs.channel == 'beta') }}
-          # `body` is appended only on first creation; on subsequent
-          # workflow runs against the same tag softprops leaves the
-          # release notes untouched. The desktop workflow currently
-          # creates the release without a body, so this lands first
-          # only when the runtime workflow happens to win the race.
-          body: |
-            Includes prebuilt agent-runtime binaries (channel: ${{ steps.version.outputs.channel }}, AGPL-3.0-or-later).
-
-            Install with the worker:
-
-            ```
-            shogo runtime install --channel ${{ steps.version.outputs.channel }}
-            ```
           files: packages/agent-runtime/dist/release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

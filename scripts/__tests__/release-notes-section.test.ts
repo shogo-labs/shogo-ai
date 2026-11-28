@@ -12,7 +12,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
@@ -88,7 +88,7 @@ function readState(): string {
   return readFileSync(state(), 'utf8')
 }
 
-function run(args: string[]) {
+function run(args: string[], extraEnv: Record<string, string> = {}) {
   return spawnSync(SCRIPT, args, {
     encoding: 'utf8',
     env: {
@@ -96,6 +96,7 @@ function run(args: string[]) {
       PATH: `${bin}:${process.env.PATH}`,
       STUB_DIR: stub,
       RELEASE_NOTES_RETRY_DELAY: '0',
+      ...extraEnv,
     },
   })
 }
@@ -118,6 +119,11 @@ function calls(): string[] {
   } catch {
     return []
   }
+}
+
+/** `create --draft --title … --notes-file …` -> `create` */
+function verbs(): string[] {
+  return calls().map((call) => call.split(' ')[0] ?? '')
 }
 
 beforeAll(() => {
@@ -143,6 +149,7 @@ case "$sub" in
     cat "$state"
     ;;
   edit|create)
+    raw="$*"
     notes=""; title=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -151,7 +158,7 @@ case "$sub" in
         *) shift ;;
       esac
     done
-    echo "$sub" >> "$STUB_DIR/calls.log"
+    echo "$sub $raw" >> "$STUB_DIR/calls.log"
     [ -n "$title" ] && printf '%s' "$title" > "$STUB_DIR/title"
     rm -f "$STUB_DIR/no-release"
     if [ -f "$STUB_DIR/clobber" ]; then
@@ -239,7 +246,23 @@ describe('upsert', () => {
     const result = runUpsert()
 
     expect(result.status).toBe(0)
-    expect(calls()[0]).toBe('create')
+    expect(verbs()).toEqual(['create'])
+    expect(calls()[0]).toContain('--draft')
+  })
+
+  test('creates a public prerelease when the caller asks for one', () => {
+    // A dispatched beta has no finalize-release.yml coordination, so its
+    // release must be published; a draft would never be flipped.
+    writeState('')
+    writeFileSync(join(stub, 'no-release'), '')
+
+    const result = run(['upsert', TAG, 'runtime-image', join(stub, 'in.md')], {
+      RELEASE_NOTES_CREATE_FLAGS: '--prerelease',
+    })
+
+    expect(result.status).toBe(0)
+    expect(calls()[0]).toContain('--prerelease')
+    expect(calls()[0]).not.toContain('--draft')
   })
 })
 
@@ -325,7 +348,7 @@ describe('the two jobs in either order', () => {
     const result = runUpsert()
 
     expect(result.status).toBe(0)
-    expect(calls()).toEqual(['edit', 'edit'])
+    expect(verbs()).toEqual(['edit', 'edit'])
     const body = readState()
     expect(body.startsWith('## Download Shogo Desktop')).toBe(true)
     expect(body).toContain('sha256:amd64digest')
@@ -340,7 +363,7 @@ describe('the two jobs in either order', () => {
     const result = runRewrite()
 
     expect(result.status).toBe(0)
-    expect(calls()).toEqual(['edit', 'edit'])
+    expect(verbs()).toEqual(['edit', 'edit'])
     const body = readState()
     expect(body.startsWith('## Download Shogo Desktop')).toBe(true)
     expect(body).toContain('sha256:amd64digest')
@@ -384,6 +407,43 @@ describe('workflow wiring', () => {
     expect(step).toContain('release-notes-section.sh rewrite "${{ github.ref_name }}" release-notes.md')
     expect(step).toContain('--title "Shogo Desktop ${{ github.ref_name }}"')
     expect(step).not.toMatch(/^ {10}gh release edit/m)
+  })
+
+  test('the beta notes step rewrites too, so a beta tag keeps the sections it has', () => {
+    const start = desktop.indexOf('name: Write beta release notes')
+    const step = desktop.slice(start).split('\n      - name: ')[0] ?? ''
+    expect(step).toContain('release-notes-section.sh rewrite "$TAG" release-notes.md')
+    expect(step).not.toMatch(/^ {10}gh release edit/m)
+  })
+
+  test('every workflow that writes a v* release body goes through the helper', () => {
+    // softprops `body:` / `body_path:` REPLACES an existing release's body on
+    // its update path (`body = workflowBody || existingReleaseBody`), so any
+    // workflow that sets one can wipe the other publishers' sections. That is
+    // how v2.5.6, v2.5.7 and v2.6.3 lost everything but the agent-runtime
+    // paragraph. publish-cli.yml is the one allowed exception: it releases
+    // `shogo-cli-v*` tags, a different release namespace.
+    const dir = resolve(import.meta.dir, '../../.github/workflows')
+    const offenders = readdirSync(dir)
+      .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+      .map((name) => ({ name, text: readFileSync(join(dir, name), 'utf8') }))
+      .filter(({ text }) => text.includes('action-gh-release'))
+      .filter(({ text }) => /^\s+body(_path)?:/m.test(text))
+      .map(({ name }) => name)
+      .filter((name) => name !== 'publish-cli.yml')
+    expect(offenders).toEqual([])
+  })
+
+  test('each body writer owns a distinct section id', () => {
+    const writers = readFileSync(resolve(import.meta.dir, '../../.github/workflows/publish-agent-runtime.yml'), 'utf8')
+    const workers = readFileSync(resolve(import.meta.dir, '../../.github/workflows/publish-shogo-worker.yml'), 'utf8')
+
+    expect(runtime).toContain('"$TAG" runtime-image runtime-image.md')
+    expect(writers).toContain('"$TAG" agent-runtime agent-runtime-notes.md')
+    expect(workers).toContain('"$TAG" worker-binaries worker-binaries-notes.md')
+    // The dispatched beta has no finalizer, so its create must publish.
+    expect(writers).toContain("RELEASE_NOTES_CREATE_FLAGS: ${{ (github.event_name == 'workflow_dispatch'")
+    expect(writers).toContain("'--prerelease' || '--draft'")
   })
 
   test('both jobs have the repo checked out, since the helper ships with it', () => {

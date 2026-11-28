@@ -33,8 +33,8 @@ ghcr.io/shogo-labs/shogo-runtime:sha-<commit>
 Both tags are manifest lists covering `linux/amd64` and `linux/arm64`, so
 `docker pull` resolves to the host's architecture. The image is public: every
 release tag **checks** that it pulls anonymously, with no credentials at all,
-and fails the release when it does not. The per-arch digests are published in
-that tag's GitHub Release notes, so you can pin by digest:
+and a failing check turns that tag's runtime publish red. The per-arch digests
+are published in that tag's GitHub Release notes, so you can pin by digest:
 
 ```yaml
 image: ghcr.io/shogo-labs/shogo-runtime@sha256:<digest>

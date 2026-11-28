@@ -30,6 +30,11 @@
 # whichever wins the create wins the title, everyone else just appends
 # files. softprops never deletes assets it didn't upload.
 #
+# The notes are NOT uploaded by softprops: on an existing release its `body:`
+# REPLACES the body, so this workflow writes its own marked section through
+# `.github/scripts/release-notes-section.sh` and leaves the rest of the body
+# (desktop headline, runtime digests) alone. Never add `body:` back here.
+#
 # Both artifact families are MIT-licensed (matches packages/shogo-worker
 # source) and they spawn the AGPL agent-runtime as a separate OS process.
 # =============================================================================
@@ -314,15 +319,46 @@ jobs:
           # pass --tag.
           npm publish --access public --provenance --tag "$CHANNEL"
 
-      - name: Append worker tarballs to v* GitHub Release
+      - name: Write the worker-binaries section of the release notes
+        # This job owns one section of the body, never the body: softprops
+        # `body:` REPLACES an existing release's body on the update path
+        # (`body = workflowBody || existingReleaseBody`), so a late or re-run
+        # publish wiped the desktop headline and the runtime digest table.
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo '### Prebuilt `shogo` worker binaries'
+            echo
+            echo "Includes prebuilt \`shogo\` worker binaries (channel: \`${CHANNEL}\`, MIT)."
+            echo
+            echo 'Install via:'
+            echo
+            echo '```'
+            echo 'curl -fsSL https://install.shogo.ai | bash'
+            echo '# or'
+            echo 'npm i -g @shogo-ai/worker'
+            echo '```'
+          } > worker-binaries-notes.md
+          .github/scripts/release-notes-section.sh upsert "$TAG" worker-binaries worker-binaries-notes.md
+
+      - name: Upload worker tarballs to the v* GitHub Release
         if: github.event.inputs.dry_run != 'true'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
+          # Assets only — the notes go through the helper above, because a
+          # `body:` here would replace every other section.
           # NB: deliberately no `name:` — desktop-release-{macos,windows}
           # and publish-agent-runtime also publish to this same tag.
-          # softprops leaves the name + body alone when the release
-          # already exists, so whoever wins the create-race owns the
-          # title and the rest of us just append files.
+          # softprops leaves the name alone when the release already exists,
+          # so whoever wins the create-race owns the title and the rest of us
+          # just append files.
           tag_name: ${{ steps.version.outputs.tag }}
           prerelease: ${{ steps.version.outputs.channel != 'latest' }}
           # Keep the release a DRAFT while the desktop-release-{macos,windows}
@@ -331,16 +367,6 @@ jobs:
           # after all four runs for this commit succeed, so the release never
           # goes public missing assets.
           draft: true
-          body: |
-            Includes prebuilt `shogo` worker binaries (channel: ${{ steps.version.outputs.channel }}, MIT).
-
-            Install via:
-
-            ```
-            curl -fsSL https://install.shogo.ai | bash
-            # or
-            npm i -g @shogo-ai/worker
-            ```
           files: packages/shogo-worker/dist/release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -5,11 +5,15 @@
 # Keep independent blocks in a GitHub Release body without any one publisher
 # owning the whole body.
 #
-# Four workflows write to a `v*` release on the same tag. Each used to rewrite
-# the notes wholesale (softprops `append_body`, `gh release edit --notes-file`),
-# so whichever finished last won and the others' blocks disappeared — v2.6.7
-# and v2.6.8 shipped without the runtime digest table. Every block now lives
-# between markers, and every writer goes through this script:
+# Four workflows write parts of a `v*` release body on the same tag: the two
+# desktop releases (the download headline), runtime-multiarch (the runtime image
+# and its digests) and publish-shogo-worker / publish-agent-runtime (the
+# prebuilt binaries). Each used to write the notes wholesale (softprops `body:`,
+# `gh release edit --notes-file`), so whichever finished last won and the others'
+# blocks disappeared — v2.6.7 and v2.6.8 shipped without the runtime digest
+# table, and v2.5.6/v2.5.7/v2.6.3 carried nothing but the agent-runtime
+# placeholder. Every block now lives between markers, and every writer goes
+# through this script:
 #
 #   <!-- shogo:section runtime-image -->
 #   ### Standalone agent runtime image
@@ -24,8 +28,8 @@
 #
 # Both modes re-read the body after writing and retry the whole
 # read-modify-write when another publisher clobbered it in between (3 attempts,
-# 15 s apart, RELEASE_NOTES_RETRY_* to override), so the two jobs can finish in
-# either order.
+# 15 s apart, RELEASE_NOTES_RETRY_* to override), so the jobs can finish in any
+# order.
 #
 # A body written before the markers existed (v2.6.5–v2.6.8: a bare
 # `### Standalone agent runtime image` block) is understood as section
@@ -36,6 +40,11 @@ set -euo pipefail
 
 RETRY_ATTEMPTS="${RELEASE_NOTES_RETRY_ATTEMPTS:-3}"
 RETRY_DELAY_SECONDS="${RELEASE_NOTES_RETRY_DELAY:-15}"
+# Flags for the create when the tag has no release yet. `--draft` is the
+# default everyone wants (finalize-release.yml decides when it publishes); the
+# dispatched-beta caller passes `--prerelease` because no finalizer coordinates
+# a beta tag and its release must go public.
+CREATE_FLAGS="${RELEASE_NOTES_CREATE_FLAGS:---draft}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -46,6 +55,8 @@ usage:
 env:
   GH_TOKEN / GITHUB_TOKEN   credential for gh
   GH_REPO                   owner/repo (gh infers it from the checkout otherwise)
+  RELEASE_NOTES_CREATE_FLAGS     flags for `gh release create` when the tag has
+                                no release yet, default `--draft`
   RELEASE_NOTES_RETRY_ATTEMPTS   default 3
   RELEASE_NOTES_RETRY_DELAY      seconds between attempts, default 15
 EOF
@@ -85,7 +96,8 @@ publish_body() {
     args+=(--title "$title")
   fi
   if [ "$release_missing" = "1" ]; then
-    gh release create "$tag" --draft --title "${title:-$tag}" --notes-file "$file"
+    read -r -a create_args <<<"$CREATE_FLAGS"
+    gh release create "$tag" "${create_args[@]}" --title "${title:-$tag}" --notes-file "$file"
     release_missing=0
     return 0
   fi

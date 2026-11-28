@@ -1044,9 +1044,13 @@ jobs:
       # runs were mistaken for the stable run by finalize-release.yml.
 
       - name: Write beta release notes
+        # `rewrite` keeps the sections other beta-tag publishers wrote — the
+        # dispatched agent-runtime publish lands on the same tag before this
+        # job runs, and a bare `gh release edit` here dropped its block.
         if: needs.resolve-version.outputs.channel == 'beta'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TAG="v${{ needs.resolve-version.outputs.version }}"
@@ -1055,7 +1059,7 @@ jobs:
 
           Opt in via **Settings -> Updates -> Beta** in the desktop app. This channel tracks the newest commit on \`main\` — it may be unstable. Switch back to Stable at any time; you'll stay on this build until a newer stable release ships.
           EOF
-          gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file release-notes.md
+          .github/scripts/release-notes-section.sh rewrite "$TAG" release-notes.md
 
       - name: Prune old beta prereleases
         # Keep the newest 10 beta prereleases (and their tags) so the

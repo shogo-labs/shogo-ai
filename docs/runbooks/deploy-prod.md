@@ -227,6 +227,14 @@ One-time step, on the first release that publishes a new package name:
   an anonymous manifest request, not that a 6.7 GB layer set downloads.
 - The `smoke` job still logs in to GHCR, so it passes on a private package.
   That login is for the smoke test, never for the visibility check.
+- **A red check does not hold the release.** `finalize-release.yml` waits for
+  the four *asset* workflows (desktop macos/windows, agent-runtime, worker) and
+  does not watch `runtime-multiarch.yml`, so the tag still publishes — with the
+  digest table, but with an image partners cannot pull. Treat a red
+  "Verify anonymous pull" as a release blocker by hand. Adding
+  `runtime-multiarch.yml` to that `WORKFLOWS` array would gate it automatically
+  (one line) and is a release-policy call for Russell: while the package is
+  still private it would hold every release as a draft.
 
 Run the check by hand against any tag:
 
@@ -240,13 +248,26 @@ Point `GHCR_BASE_URL` elsewhere to run it against a stub.
 
 ### Release notes: the digest table must be in the final body
 
-The body is shared by several workflows. Each owns a marked block instead of
-the whole body (`<!-- shogo:section <id> -->` … `<!-- /shogo:section <id> -->`,
-via `.github/scripts/release-notes-section.sh`): the desktop release writes the
-download headline with `rewrite` and keeps every marked section below it, and
-`runtime-multiarch` writes `### Standalone agent runtime image` with `upsert`.
-Both re-read the body after writing and retry (3 attempts, 15 s apart) if the
-other job clobbered it, so the order they finish in does not matter.
+The body is shared by four workflows. Each owns a marked block instead of the
+whole body (`<!-- shogo:section <id> -->` … `<!-- /shogo:section <id> -->`, via
+`.github/scripts/release-notes-section.sh`):
+
+| Writer | How | Section |
+| --- | --- | --- |
+| `desktop-release-macos.yml` (stable headline, and the beta notes) | `rewrite` — new head, every marked block kept below it | — |
+| `runtime-multiarch.yml` `publish` | `upsert` | `runtime-image` |
+| `publish-agent-runtime.yml` | `upsert` | `agent-runtime` |
+| `publish-shogo-worker.yml` | `upsert` | `worker-binaries` |
+
+No workflow passes a release `body:` to softprops any more: on an existing
+release that **replaces** the body (`body = workflowBody || existingReleaseBody`
+in the action's `updateRelease` path), which is what emptied v2.5.6, v2.5.7 and
+v2.6.3 down to the agent-runtime paragraph. softprops is for `files:` only.
+
+Every writer re-reads the body after writing and retries (3 attempts, 15 s
+apart) if another job clobbered it, so the order they finish in does not matter.
+On a tag with no release yet the helper creates one as a draft (a dispatched
+beta: as a prerelease), so a notes step can safely run before its asset upload.
 
 Check the body of a tag after it ships:
 
