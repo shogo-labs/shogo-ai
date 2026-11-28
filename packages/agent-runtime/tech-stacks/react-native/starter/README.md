@@ -9,7 +9,7 @@ This is a bare **React Native** workspace (no Expo) with a colocated
   — the React Native client.
 - `prisma/schema.prisma`, `shogo.config.json`, `custom-routes.ts`,
   `scripts/generate.ts` — the API server scaffolding. `server.tsx` is
-  generated on first boot by `bun x shogo generate`.
+  generated on first boot by `bun run generate`.
 
 ## Running
 

@@ -4554,7 +4554,7 @@ async function maybeCustomRoutesSync(
             hint:
               `Add \`import customRoutes from '${drift.customRoutesPath}'\` to server.tsx and ` +
               `\`app.route('${drift.apiBasePath}', customRoutes)\` before the static catch-all, ` +
-              'or run `bun x shogo generate` to regenerate server.tsx from shogo.config.json.',
+              'or run `bun run generate` to regenerate server.tsx from shogo.config.json.',
           },
         }
       }
