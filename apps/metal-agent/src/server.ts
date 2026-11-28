@@ -25,7 +25,7 @@
 
 import { assignResponseBody } from './assign-response'
 import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
-import { config } from './config'
+import { assertHostId, config } from './config'
 import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
 import { GuestIsolation } from './guest-isolation'
@@ -61,6 +61,11 @@ import {
   type KeptImageName,
 } from './self-update'
 import { SerialWatcher } from './serial-watcher'
+
+// Refuse to boot without a stable host id, before anything registers or holds a
+// TAP: a host that cannot name itself must not guess (see config.readHostId).
+assertHostId()
+
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
 // back http://{publicHost}:{port}. No-op (returns the private guest URL) unless
