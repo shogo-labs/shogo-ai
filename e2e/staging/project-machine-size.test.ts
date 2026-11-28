@@ -63,10 +63,21 @@ async function machineState(page: Page, projectId: string) {
   }
 }
 
+/**
+ * Opens Settings → Machine the way a person does: the gear tab in the project
+ * top bar. `?tab=settings` is not enough on a project that has just built, the
+ * canvas preview wins and Settings never mounts.
+ */
 async function openMachinePanel(page: Page, projectId: string): Promise<void> {
-  await page.goto(`/projects/${projectId}?tab=settings`)
-  const nav = page.getByTestId("settings-nav-machine")
-  await expect(nav).toBeVisible({ timeout: 60_000 })
+  await page.goto(`/projects/${projectId}`)
+  const settingsTab = page
+    .getByTestId("project-tab-settings")
+    .or(page.getByLabel("Settings", { exact: true }))
+    .first()
+  await expect(settingsTab).toBeVisible({ timeout: 60_000 })
+  await settingsTab.click()
+  const nav = page.getByTestId("settings-nav-machine").first()
+  await expect(nav).toBeVisible({ timeout: 30_000 })
   await nav.click()
   await expect(page.getByText("Current size").first()).toBeVisible({ timeout: 30_000 })
 }

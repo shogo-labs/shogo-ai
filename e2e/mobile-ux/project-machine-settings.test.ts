@@ -35,10 +35,16 @@ const state = (current: (typeof options)[number], over: Record<string, unknown> 
 });
 
 async function openMachinePanel(page: Page, projectId: string): Promise<void> {
-  await page.goto(`/projects/${projectId}?tab=settings`);
+  await page.goto(`/projects/${projectId}`);
   await page.waitForLoadState("networkidle");
-  const nav = page.getByTestId("settings-nav-machine");
-  await expect(nav).toBeVisible({ timeout: 60_000 });
+  const settingsTab = page
+    .getByTestId("project-tab-settings")
+    .or(page.getByLabel("Settings", { exact: true }))
+    .first();
+  await expect(settingsTab).toBeVisible({ timeout: 60_000 });
+  await settingsTab.click();
+  const nav = page.getByTestId("settings-nav-machine").first();
+  await expect(nav).toBeVisible({ timeout: 30_000 });
   await nav.click();
   await expect(page.getByText("Current size").first()).toBeVisible({ timeout: 30_000 });
 }
