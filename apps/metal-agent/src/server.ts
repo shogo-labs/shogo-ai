@@ -28,6 +28,7 @@ import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './a
 import { assertHostId, config } from './config'
 import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
+import { headroomPctFor } from './gc-policy'
 import { GuestIsolation } from './guest-isolation'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
