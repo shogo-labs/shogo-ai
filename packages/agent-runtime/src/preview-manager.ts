@@ -38,6 +38,7 @@ import {
 import { containChild, type Containment } from './process-tree'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
+import { emitsServerEntry } from './shogo-app-project'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded, databaseUrlGuard } from '@shogo-ai/sdk/generators'
 import {
   commitBuildOutputAsync,
@@ -712,6 +713,12 @@ export interface PreviewManagerConfig {
    * for single-project runtimes, which fall back to the per-cwd sqlite file.
    */
   projectId?: string
+  /**
+   * How long one `shogo generate` run gets before its entire process tree is
+   * killed. Defaults to {@link GENERATE_TIMEOUT_MS} (120 s). Exists so tests can
+   * drive the timeout without waiting two minutes.
+   */
+  generateTimeoutMs?: number
 }
 
 // API sidecar port (Hono `server.tsx`) — NOT the app URL. The app is served
@@ -849,6 +856,21 @@ const HEALTH_CHECK_INTERVAL_MS = 500
 // spawn on a workspace runtime, which routinely takes 10-30 s the first time.
 const ENSURE_API_SERVER_TIMEOUT_MS = 45_000
 const ENSURE_POLL_INTERVAL_MS = 100
+
+/**
+ * How long one `shogo generate` run gets before its whole process tree is
+ * killed. A cold generate is ~1-30 s; anything past two minutes is wedged.
+ * Per-manager override: {@link PreviewManagerConfig.generateTimeoutMs}.
+ */
+const GENERATE_TIMEOUT_MS = 120_000
+
+/**
+ * How long `runShogoGenerate` waits after the timeout kill for the child's
+ * `close` before settling anyway. The group is already dead by then; a
+ * grandchild that escaped the group can keep the stdio pipes open forever, and
+ * that must not hold the caller (and `maybeRecoverApiServer`) hostage.
+ */
+const GENERATE_KILL_SETTLE_MS = 5_000
 
 /**
  * Paths the SDK-generated `server.tsx` serves for runtime introspection (see
@@ -1302,6 +1324,10 @@ export class PreviewManager {
   // not-started-yet), which would let the client load the UI during the
   // window before the sidecar is spawned.
   private hasApiServer: boolean | null = null
+  /** `true` once the "API sidecar skipped: …" line has been logged (once per manager). */
+  private apiSidecarSkipLogged = false
+  /** Timeout for one `shogo generate` run, whole process tree killed after it. */
+  private readonly generateTimeoutMs: number
   private regenerating = false
   /**
    * `true` when a person deliberately stopped this project (`POST
@@ -1569,6 +1595,7 @@ export class PreviewManager {
     this.apiPort = config.apiPort ?? resolveApiServerPort()
     this.basePath = config.basePath
     this.workspaceProjectId = config.projectId
+    this.generateTimeoutMs = config.generateTimeoutMs ?? GENERATE_TIMEOUT_MS
     this.depsReadyPromise = new Promise<void>((resolve) => {
       this.depsReadyResolve = resolve
     })
@@ -1682,6 +1709,32 @@ export class PreviewManager {
   private staticBuildCwd(): string {
     const cwd = this.resolveBundlerCwd()
     return existsSync(cwd) ? cwd : this.workspaceDir
+  }
+
+  /**
+   * Would codegen in this project write `server.tsx`? When it would not, this
+   * folder is not a Shogo app project: the monorepo root, an agent checkout of
+   * it, any repo whose `shogo.config.json` generates no server. Nothing here
+   * needs an API sidecar, and running codegen against it rewrites tracked files
+   * (or, before SHO-616, resolved `bun x shogo` to the global worker and ran a
+   * paid agent turn).
+   */
+  private isShogoAppProject(): boolean {
+    return emitsServerEntry(this.bundlerCwd)
+  }
+
+  /**
+   * Record that this project has no API sidecar, and say so once per manager.
+   * Leaving `apiPhase` at `idle` (never `crashed`) is what keeps
+   * `maybeRecoverApiServer()` from re-running codegen on every `/api` request,
+   * and `hasApiServer=false` is what makes `ensureApiServer()` report `none`.
+   */
+  private skipApiSidecar(): void {
+    this.apiPhase = 'idle'
+    this.hasApiServer = false
+    if (this.apiSidecarSkipLogged) return
+    this.apiSidecarSkipLogged = true
+    console.log(`[${LOG_PREFIX}] API sidecar skipped: shogo.config.json emits no server entry`)
   }
 
   /**
@@ -1918,6 +1971,14 @@ export class PreviewManager {
    */
   async sync(): Promise<{ ok: boolean; phase: ApiServerPhase; error?: string }> {
     const cwd = this.bundlerCwd
+    if (!this.isShogoAppProject()) {
+      this.skipApiSidecar()
+      return {
+        ok: false,
+        phase: this.apiPhase,
+        error: 'not a Shogo app project (shogo.config.json emits no server)',
+      }
+    }
     const schemaPath = join(cwd, 'prisma', 'schema.prisma')
     if (!existsSync(schemaPath)) {
       return { ok: false, phase: this.apiPhase, error: 'prisma/schema.prisma not found' }
@@ -1973,16 +2034,16 @@ export class PreviewManager {
    *      `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
    *      directly. This bypasses `node_modules/.bin/shogo` so we don't
    *      need a working bin shim — pre-warmed templates and partial
-   *      installs can leave node_modules in place without bin shims, in
-   *      which case `bun x shogo` would fall through to npm and 404
-   *      (since `@shogo-ai/sdk` publishes a `shogo` bin but no `shogo`
-   *      package exists on npm).
-   *   3. As a last-ditch fallback, run `bun x shogo generate` so an
-   *      ancient workspace whose lockfile somehow predates the SDK
-   *      install can still re-fetch the bin from a (future) registry
-   *      entry. Today this just produces a clear 404 for
-   *      `@shogo-ai/sdk`-less workspaces, which is better than a silent
-   *      hang.
+   *      installs can leave node_modules in place without bin shims.
+   *
+   * There is deliberately no third path. `bun x shogo generate` used to be
+   * one, and it was a trap: two packages publish a `shogo` bin
+   * (`@shogo-ai/sdk` and `@shogo-ai/worker`), so without a project-local
+   * `.bin/shogo` it resolved to whatever `shogo` was on PATH — on a developer
+   * machine the Homebrew `@shogo-ai/worker`, whose default command is `chat`.
+   * "generate" then arrived as a *prompt*, and every `/api` recovery retry ran
+   * another paid one-shot agent turn in the project directory (SHO-616). With
+   * no script and no local CLI there is nothing to run: say so and stop.
    *
    * All paths read the workspace's `shogo.config.json` (when it
    * exists), so generated `server.tsx` ends up with the right
@@ -2111,19 +2172,18 @@ export class PreviewManager {
       // Malformed package.json — fall through to the path-based CLI.
     }
 
-    // Fallback resolution. We prefer the file-path form because
-    // `bun x shogo` resolves through `node_modules/.bin/` first and
-    // then through the npm registry — and there is no `shogo` package
-    // on npm (the bin name is owned by `@shogo-ai/sdk`). Workspaces
-    // bootstrapped without a working `.bin/` shim (pre-warmed templates,
-    // crashed installs, etc.) would 404 there.
+    // Fallback resolution. We prefer the file-path form over
+    // `node_modules/.bin/shogo` because pre-warmed templates and partial
+    // installs can leave node_modules in place without bin shims.
     const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
     const hasSdkCli = existsSync(sdkCliPath)
 
     // Resolution order, in priority:
     //   1. project's `generate` script
     //   2. project-local node_modules CLI
-    //   3. `bun x shogo` last-ditch
+    // Nothing else: `bun x shogo` resolves to whichever `shogo` bin is on PATH,
+    // which on a developer machine is the global @shogo-ai/worker — whose
+    // default `chat` command would run "generate" as a paid agent prompt.
     let args: string[]
     let cmdLabel: string
     if (useBunRun) {
@@ -2133,8 +2193,11 @@ export class PreviewManager {
       args = [sdkCliPath, 'generate']
       cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
     } else {
-      args = ['x', 'shogo', 'generate']
-      cmdLabel = 'bun x shogo generate'
+      this.lastGenerateError =
+        'Shogo SDK CLI not installed (node_modules/@shogo-ai/sdk/bin/cli.mjs missing, no "generate" script) — run bun install'
+      console.error(`[${LOG_PREFIX}] ${this.lastGenerateError}`)
+      this.apiPhase = 'crashed'
+      return false
     }
     console.log(`[${LOG_PREFIX}] Running ${cmdLabel} at ${cwd}...`)
 
@@ -2153,7 +2216,7 @@ export class PreviewManager {
       // Use async spawn rather than execSync. The runtime's startup path
       // already drives a vite watcher, an LSP server, and the agent
       // gateway concurrently — blocking the event loop with execSync
-      // starves their stdio pipes and frequently deadlocks `bun x shogo`'s
+      // starves their stdio pipes and frequently deadlocks generate's
       // own child processes (notably `prisma generate`, which speaks to
       // the parent through pipes). spawn + 'ignore' for stdin sidesteps
       // both issues and matches the manual CLI invocation shape.
@@ -2161,6 +2224,13 @@ export class PreviewManager {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: generateEnv,
+        // Own process group on POSIX so one signal reaches the whole tree —
+        // `prisma generate` (and anything else the CLI forks) inherits the
+        // stdio pipes and outlives the leader; killing only `bun` left them
+        // holding `close` open for minutes (SHO-616). On Windows `detached`
+        // would open a new console window, so containment uses a job object
+        // plus `taskkill /T` instead.
+        detached: process.platform !== 'win32',
       })
 
       let stdout = ''
@@ -2168,34 +2238,57 @@ export class PreviewManager {
       proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
       proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
 
-      const TIMEOUT_MS = 120_000
-      const timer = setTimeout(() => {
-        try { proc.kill('SIGKILL') } catch {}
-      }, TIMEOUT_MS)
+      let settled = false
+      let timedOut = false
+      let timer: ReturnType<typeof setTimeout> | null = null
+      let settleTimer: ReturnType<typeof setTimeout> | null = null
+      const settle = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        if (settleTimer) clearTimeout(settleTimer)
+        resolveResult(ok)
+      }
+
+      const containment = containChild(proc, { label: 'shogo-generate' })
+
+      timer = setTimeout(() => {
+        timedOut = true
+        const elapsed = ((Date.now() - start) / 1000).toFixed(0)
+        this.lastGenerateError = `${cmdLabel} timed out after ${elapsed}s`
+        console.error(`[${LOG_PREFIX}] ${cmdLabel} timed out after ${elapsed}s — killing the process tree`)
+        this.apiPhase = 'crashed'
+        void containment.killTree({ graceMs: 0 }).catch(() => {})
+        // `close` waits for every holder of the stdio pipes, and a grandchild
+        // that escaped the group can hold them forever. Stop waiting shortly
+        // after the kill instead of wedging the caller for minutes.
+        settleTimer = setTimeout(() => settle(false), GENERATE_KILL_SETTLE_MS)
+      }, this.generateTimeoutMs)
 
       proc.on('error', (err) => {
-        clearTimeout(timer)
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
         this.lastGenerateError = err.message
         console.error(`[${LOG_PREFIX}] ${cmdLabel} spawn error after ${elapsed}s: ${err.message}`)
         this.apiPhase = 'crashed'
-        resolveResult(false)
+        settle(false)
       })
 
       proc.on('close', (code) => {
-        clearTimeout(timer)
+        if (settled) return
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
-        if (code === 0) {
+        if (code === 0 && !timedOut) {
           console.log(`[${LOG_PREFIX}] ${cmdLabel} complete (${elapsed}s)`)
           if (stdout.trim()) console.log(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
-          resolveResult(true)
+          settle(true)
         } else {
-          this.lastGenerateError = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || `exit code ${code}`
-          console.error(`[${LOG_PREFIX}] ${cmdLabel} failed after ${elapsed}s (exit=${code})`)
+          if (!timedOut) {
+            this.lastGenerateError = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || `exit code ${code}`
+            console.error(`[${LOG_PREFIX}] ${cmdLabel} failed after ${elapsed}s (exit=${code})`)
+          }
           if (stdout.trim()) console.error(`[${LOG_PREFIX}] generate stdout: ${stdout.trim().slice(0, 500)}`)
           if (stderr.trim()) console.error(`[${LOG_PREFIX}] generate stderr: ${stderr.trim().slice(0, 500)}`)
           this.apiPhase = 'crashed'
-          resolveResult(false)
+          settle(false)
         }
       })
     })
@@ -2222,6 +2315,13 @@ export class PreviewManager {
    * full kill-server → generate → restart cycle.
    */
   private startSchemaWatcher(): void {
+    // Codegen here writes no `server.tsx`, so there is no sidecar a schema edit
+    // could restart — and watching would only arm a regen cycle that rewrites
+    // this repo's tracked files.
+    if (!this.isShogoAppProject()) {
+      this.skipApiSidecar()
+      return
+    }
     const cwd = this.bundlerCwd
     const prismaDir = join(cwd, 'prisma')
     if (!existsSync(prismaDir)) {
@@ -2744,7 +2844,7 @@ export class PreviewManager {
       await this.runPrismaIfNeeded(timings)
       // Pre-generate `server.tsx` + `src/generated/` too, so the post-assign
       // `startApiServer()` skips its on-first-boot codegen and just spawns.
-      if (existsSync(join(bundlerCwd, 'prisma', 'schema.prisma'))) {
+      if (existsSync(join(bundlerCwd, 'prisma', 'schema.prisma')) && this.isShogoAppProject()) {
         await this.runShogoGenerate()
       }
       console.log(`[${LOG_PREFIX}] Pool pre-warm complete:`, JSON.stringify(timings))
@@ -4093,6 +4193,16 @@ export class PreviewManager {
     const isStaleAttempt = () => generation !== this.apiServerGeneration
     const cwd = this.bundlerCwd
 
+    // Not a Shogo app project (monorepo root, an agent checkout of it): codegen
+    // here emits no `server.tsx`, so there is no sidecar to spawn and no reason
+    // to generate. Gate first so every caller — first boot, drift heal, crash
+    // recovery, `sync()`/`server_sync` — short-circuits here rather than leaving
+    // `crashed` for `maybeRecoverApiServer()` to retry on every request.
+    if (!this.isShogoAppProject()) {
+      this.skipApiSidecar()
+      return
+    }
+
     // Every path that wants a fresh server kills the current one first, so a
     // live healthy process here is ours to keep — the reap below would
     // otherwise SIGKILL it as a "stale sidecar" and trip crash recovery.
@@ -4190,7 +4300,7 @@ export class PreviewManager {
           console.error(
             `[${LOG_PREFIX}] Could not heal server.tsx drift: ${heal.reason}. ` +
               `Custom routes will not be mounted at ${drift.apiBasePath}. ` +
-              `Edit server.tsx by hand or run \`bun x shogo generate\`.`,
+              `Edit server.tsx by hand or run \`bun run generate\`.`,
           )
         }
       }

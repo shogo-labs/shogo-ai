@@ -29,6 +29,7 @@ import { runProjectPush } from './commands/project-push.ts';
 import { runProjectCheckout } from './commands/project-checkout.ts';
 import { runDoctor } from './commands/doctor.ts';
 import { runAgent } from './commands/agent.ts';
+import { sdkSubcommandRedirect } from './lib/prompt-guard.ts';
 
 const VERSION = '0.1.0';
 
@@ -171,8 +172,15 @@ program
   .option('--no-tui', 'Disable the rich TUI; use a plain readline renderer')
   .option('--api-key <key>', 'Override API key for this run')
   .option('--cloud-url <url>', 'Override Shogo Cloud URL for this run')
-  .action((promptParts: string[], flags) =>
-    handle(() =>
+  .action((promptParts: string[], flags) => {
+    // `shogo generate` is the SDK CLI's subcommand, not a prompt — running it
+    // as one bills the user for an agent turn about the word "generate".
+    const redirect = sdkSubcommandRedirect(promptParts, flags);
+    if (redirect) {
+      console.error(pc.yellow(redirect));
+      process.exit(2);
+    }
+    return handle(() =>
       runAgent({
         print: flags.print ?? (promptParts.length ? promptParts.join(' ') : undefined),
         model: flags.model,
@@ -182,8 +190,8 @@ program
         apiKey: flags.apiKey,
         cloudUrl: flags.cloudUrl,
       }),
-    ),
-  );
+    );
+  });
 
 program.showHelpAfterError(pc.dim('\n(use --help for usage)'));
 program.parseAsync(process.argv);

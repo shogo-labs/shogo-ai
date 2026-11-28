@@ -82,6 +82,8 @@ function makeWorkspace(opts: {
   withExpoBin?: boolean
   withPrismaSchema?: string | null
   withPackageJson?: boolean
+  /** Pre-seed `node_modules/@shogo-ai/sdk/bin/cli.mjs` (the generate entry point). */
+  withSdkCli?: boolean
 } = {}): { root: string; projectDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'pm-spawn-paths-2-'))
   workspaces.push(root)
@@ -89,6 +91,11 @@ function makeWorkspace(opts: {
   mkdirSync(projectDir, { recursive: true })
   if (opts.withPackageJson ?? true) {
     writeFileSync(join(projectDir, 'package.json'), JSON.stringify({ name: 'p' }))
+  }
+  if (opts.withSdkCli) {
+    const cliDir = join(projectDir, 'node_modules', '@shogo-ai', 'sdk', 'bin')
+    mkdirSync(cliDir, { recursive: true })
+    writeFileSync(join(cliDir, 'cli.mjs'), '// stub\n')
   }
   if (opts.withExpoBin) {
     const binDir = join(projectDir, 'node_modules', '.bin')
@@ -511,8 +518,25 @@ describe('PreviewManager.startCustomRoutesWatcher', () => {
 // ---------------------------------------------------------------------------
 
 describe('PreviewManager.runShogoGenerate spawn-event branches', () => {
+  // The spawn-event branches only exist when there IS something to run: a
+  // `generate` script or the project-local SDK CLI. Without either, codegen
+  // spawns nothing at all (SHO-616 — the old `bun x shogo` fallback resolved to
+  // the global worker and ran "generate" as a paid agent prompt).
+  test('spawns nothing when it has neither a generate script nor the SDK CLI', async () => {
+    const { root } = makeWorkspace({ withPackageJson: true })
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+
+    const before = spawnCalls.length
+    const result = await (pm as any).runShogoGenerate()
+
+    expect(result).toBe(false)
+    expect(spawnCalls.length).toBe(before)
+    expect((pm as any).lastGenerateError).toContain('cli.mjs')
+    expect((pm as any).apiPhase).toBe('crashed')
+  })
+
   test('proc emits close with non-zero code: lastGenerateError set + returns false', async () => {
-    const { root, projectDir } = makeWorkspace({ withPackageJson: true })
+    const { root, projectDir } = makeWorkspace({ withPackageJson: true, withSdkCli: true })
     const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
 
     const p = (pm as any).runShogoGenerate()
@@ -527,7 +551,7 @@ describe('PreviewManager.runShogoGenerate spawn-event branches', () => {
   })
 
   test('proc emits error event: lastGenerateError + apiPhase=crashed + returns false', async () => {
-    const { root, projectDir } = makeWorkspace({ withPackageJson: true })
+    const { root, projectDir } = makeWorkspace({ withPackageJson: true, withSdkCli: true })
     const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
 
     const p = (pm as any).runShogoGenerate()
@@ -541,7 +565,7 @@ describe('PreviewManager.runShogoGenerate spawn-event branches', () => {
   })
 
   test('proc emits close with code 0: returns true', async () => {
-    const { root, projectDir } = makeWorkspace({ withPackageJson: true })
+    const { root, projectDir } = makeWorkspace({ withPackageJson: true, withSdkCli: true })
     const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
 
     const p = (pm as any).runShogoGenerate()
