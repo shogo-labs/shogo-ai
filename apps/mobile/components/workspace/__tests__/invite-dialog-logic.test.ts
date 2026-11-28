@@ -95,4 +95,3 @@ describe('describeExpiry', () => {
     expect(describeExpiry('2026-11-19T00:00:00.000Z', now)).toBe('expired')
   })
 })
-

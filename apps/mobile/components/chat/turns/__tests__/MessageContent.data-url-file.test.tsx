@@ -46,6 +46,11 @@ mock.module('../../../../lib/native-phone-layout', () => ({
   usePhoneLayout: () => false,
   usePhoneLayoutOverride: () => null,
 }))
+mock.module('../../ChatMentionChip', () => ({
+  ChatMentionText: ({ text, selectable }: { text: string; selectable?: boolean }) =>
+    React.createElement('span', { 'data-selectable': String(selectable) }, text),
+  chatMentionSince: () => null,
+}))
 mock.module('../../../layout/MobileWorkspaceChromeContext', () => ({
   useMobileWorkspaceChrome: () => false,
 }))
@@ -92,6 +97,7 @@ mock.module('react-native', () =>
 )
 
 const { MessageContent } = await import('../MessageContent')
+const { Platform } = await import('react-native')
 
 beforeEach(() => {
   globalThis.fetch = (async (input: never, init?: never) => {
@@ -141,5 +147,24 @@ describe('a markdown attachment carried as a data: URL', () => {
     // URL opener that Android cannot serve.
     expect(fetched).toEqual([])
     expect(opened).toEqual([])
+  })
+})
+
+describe('a native user bubble', () => {
+  test('keeps its message text selectable', () => {
+    const originalPlatform = Platform.OS
+    Platform.OS = 'ios'
+    try {
+      const { container } = render(
+        <MessageContent
+          variant="userBubble"
+          message={{ id: 'm-selectable', role: 'user', parts: [{ type: 'text', text: 'Select me' }] } as never}
+        />,
+      )
+
+      expect(container.querySelector('[data-selectable="true"]')?.textContent).toBe('Select me')
+    } finally {
+      Platform.OS = originalPlatform
+    }
   })
 })

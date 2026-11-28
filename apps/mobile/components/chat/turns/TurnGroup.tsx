@@ -7,11 +7,9 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo, useCallback } from "react";
-import { View, Platform, Pressable, type ViewStyle } from "react-native";
+import { memo } from "react";
+import { View, Platform, type ViewStyle } from "react-native";
 import { Motion } from "@legendapp/motion";
-import * as Clipboard from "expo-clipboard";
-import * as Haptics from "expo-haptics";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePhaseColor } from "@/hooks/usePhaseColor";
 import type { ConversationTurn } from "./types";
@@ -115,18 +113,6 @@ export const TurnGroup = memo(
     const colors = usePhaseColor(phase || "");
     const nativePhone = useIsNativePhoneLayout();
 
-    const handleCopyAssistant = useCallback(async () => {
-      if (!turn.assistantMessage) return;
-      const text = extractTextContent(turn.assistantMessage);
-      if (!text) return;
-      try {
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        await Clipboard.setStringAsync(text);
-      } catch {
-        // Clipboard / haptics can fail in simulators.
-      }
-    }, [turn.assistantMessage]);
-
     return (
       <Motion.View
         initial={{ opacity: 0, y: 14 }}
@@ -175,27 +161,7 @@ export const TurnGroup = memo(
         {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
         {turn.assistantMessage && (
           <View className="gap-0.5">
-            {nativePhone ? (
-              <Pressable
-                onLongPress={handleCopyAssistant}
-                delayLongPress={400}
-                accessibilityRole="button"
-                accessibilityLabel="Assistant message. Long press to copy."
-              >
-                {showToolTimeline ? (
-                  <MessageContent
-                    message={turn.assistantMessage}
-                    isStreaming={turn.isStreaming}
-                  />
-                ) : (
-                  <AssistantContent
-                    message={turn.assistantMessage}
-                    isStreaming={turn.isStreaming}
-                    className="pl-2.5"
-                  />
-                )}
-              </Pressable>
-            ) : showToolTimeline ? (
+            {showToolTimeline ? (
               <MessageContent
                 message={turn.assistantMessage}
                 isStreaming={turn.isStreaming}
