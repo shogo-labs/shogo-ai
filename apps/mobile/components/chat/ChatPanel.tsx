@@ -307,7 +307,6 @@ import { RunningDockPanel, type TaskWaitState } from "./dock/panels/RunningDockP
 import { isFinishedProcess } from "./dock/finished-rows"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
 import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
-import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
 import {
   loadModelPreference,
   saveModelPreference,
@@ -10975,7 +10974,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
             isStreaming={isStreaming}
             onSendMessage={(text) => handleInputSubmit(text)}
           />
-          <ChangesDockPanel />
           <View
             ref={surfaceRef}
             onLayout={measureSurfaceBottom ? measureSurface : undefined}
