@@ -1,0 +1,113 @@
+# SigNoz alert: the channel search indexer / embedding path is stalled
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (builder queries not PromQL, v2alpha1, real channel).
+#
+# Why: the background channel indexer embeds chat messages and attachment chunks
+# so semantic search and "ask the workspace" work. It ticks once a minute per
+# deployment (INDEXER_INTERVAL_MS = 60_000 in apps/api/src/jobs/run-channel-workers.ts)
+# and every tick can fail silently: the only signal the code emits is
+# `console.error('[Channels] Search indexer tick failed:', error)` from the shared
+# `every()` wrapper (:60). There is NO success log and no metric, so the failure
+# line is the only positive signal available — this rule keys off it.
+#
+# The 2026-11-28 incident this was written for: postEmbeddings
+# (apps/api/src/services/conversation-semantic.ts) calls
+# api.openai.com/v1/embeddings directly with the raw OPENAI_API_KEY, whose account
+# ran out of quota, and every tick answered 429 for WEEKS — ~1/min/region, 165
+# rows/hour across production-us / production-eu / staging — with semantic search
+# and transcription quietly dead and nothing paging. This rule would have paged
+# on the first 10 minutes.
+#
+# FILTER: the wrapper's message, matched on body. Keep it to the indexer label so
+# the digest and scheduler ticks (the same `every()` helper) cannot mask it; widen
+# deliberately if those ever need their own rule.
+#
+# THRESHOLD: more than 5 failures in a 10-minute rolling window, grouped by
+# cluster. A healthy indexer logs zero of these, so the baseline is 0 and any fire
+# is real; a broken one contributes 10 per cluster per window, so 5 tolerates a
+# few skipped ticks (lock contention, deploy restart) without missing a stall that
+# lasts more than a couple of minutes.
+#
+# Deployed live 2026-11-28T13:01Z from the DevOps project; verified firing against
+# the real 429 outage (id 01a2223e-e9e9-7409-8026-20d1c7a26397). Landing this file
+# keeps IaC and SigNoz in sync.
+
+alert: ChannelsIndexerStalled
+alertType: LOGS_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: logs
+          aggregations:
+            - expression: count()
+          filter:
+            expression: "body LIKE '%Search indexer tick failed%'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: resource
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}} indexer_failures"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: in_total
+        target: 5
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: search
+notificationSettings:
+  groupBy: [k8s.cluster.name]
+  renotify:
+    enabled: true
+    interval: 4h
+    alertStates: [firing]
+annotations:
+  summary: "Channel search indexer is failing every tick — semantic search is not indexing"
+  description: |
+    The `[Channels] Search indexer` tick has failed more than 5 times in the last
+    10 minutes on at least one cluster. It runs once a minute, so this means the
+    indexer is not making progress: new chat messages and attachment chunks are not
+    being embedded, and semantic search / "ask the workspace" silently serve stale
+    results.
+
+    The usual cause is the embedding provider, not the indexer. The error text in
+    the log line says which:
+
+    - `Embedding request failed (429)` — the OpenAI account behind the API's raw
+      `OPENAI_API_KEY` is out of quota. Nothing in the cluster can fix this; the
+      key must be re-minted from a funded org and rolled out:
+      update the GitHub repo secret `OPENAI_API_KEY` (deploy.yml writes it into
+      the `api-secrets` k8s secret in all three clusters) and deploy, or patch
+      `api-secrets` per cluster and `kubectl rollout restart deploy/api`.
+      Transcription (`transcription.service.ts`) and the live meeting stream
+      (`meeting-live-stream.ts`) read the same key and are down with it.
+    - `Your account is not active` — same thing, billing state rather than quota.
+    - anything else — read the stack trace: it is thrown from `postEmbeddings`
+      or from a DB write in `indexPendingMessages` / `embedPendingChunks`.
+
+    Recovery is automatic and needs no intervention: the next successful tick
+    drains the backlog at up to INDEXER_MAX_BATCHES (5) batches per minute per
+    deployment. Confirm with
+    `count(body LIKE '%Search indexer tick failed%')` returning to 0.
+
+    Runbook: docs/runbooks/deploy-prod.md

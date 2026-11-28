@@ -110,6 +110,10 @@ they're managed separately as YAML/JSON files under this directory:
   Catches the 2026-07 staging drift where the agent was parked via an
   out-of-band `nodeSelector` while the app-level OTLP export was also
   failing, so all API logs vanished with nothing to signal it.
+- `alerts/channels-indexer-stalled.yaml` — pages when 5+ channel-search
+  indexer ticks fail in 10 minutes per cluster. The indexer emits no success
+  log and no metric, so the failure line is the only signal; the 2026-11-28
+  outage (embeddings 429 for weeks) was silent until this rule existed.
 - `pipelines/api-trace-correlation.yaml` — logs pipeline that parses the
   API/runtime structured JSON stdout and promotes `trace_id`/`span_id`,
   severity, and the human message into first-class log fields (clickable
