@@ -9,6 +9,7 @@ import "../lib/devtools";
 import "../global.css";
 csMark("root:layout:after-global-css");
 import "../lib/icon-interop";
+import "../lib/animated-interop";
 
 import { useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";

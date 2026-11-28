@@ -26,8 +26,9 @@ import { ChatColumnProvider } from "../ChatColumn";
  * their own, so the dock cards and the composer share identical edges.
  *
  * Keyboard pad is an Animated.Value, so the padded shell must be
- * Animated.View. NativeWind className on that node never applied (web
- * input went full-bleed); keep alignment classes on the regular Views.
+ * Animated.View. Keep the alignment classes on the regular Views rather than
+ * on that node: it would then depend on `lib/animated-interop` having
+ * registered `Animated.View` before this module renders.
  */
 export function ProjectComposerDock({
   presentation,

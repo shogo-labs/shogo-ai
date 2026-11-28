@@ -10,13 +10,19 @@
  * one timing, so the two lines read as the same kind of status.
  */
 import { memo, useEffect, useMemo, useRef } from "react"
-import { Animated, Easing, View } from "react-native"
+import { Animated, Easing, Platform, View } from "react-native"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { NATIVE_ACTIVITY_LABEL } from "../NativeActivitySheet"
 
 const TEXT_CLASS = "text-xs text-muted-foreground"
-// Only the size lives in the style: the dim colour that makes the sweep read as
-// "not a sentence" (SHO-296) comes from `text-muted-foreground` on both rows.
+// The dim colour that makes the sweep read as "not a sentence" (SHO-296) comes
+// from `text-muted-foreground`, which `lib/animated-interop` now applies to this
+// node. Web additionally needs the token as a concrete colour: nothing lifts
+// `style.color` off a `$$css` marker for an animated node there, and the old
+// literal grey is what SHO-544 (correctly) removed. Same contract as
+// `packages/shared-ui/src/primitives/Spinner.tsx`.
+const TEXT_COLOR = Platform.OS === "web" ? { color: "rgb(var(--color-muted-foreground))" } : null
+// Only the size lives in the style: the colour is the token above.
 const SHIMMER_TEXT_STYLE = { fontSize: 12 } as const
 // Phone rows share the 15px activity scale, so only the size moves.
 const NATIVE_SHIMMER_TEXT_STYLE = { fontSize: 15 } as const
@@ -77,7 +83,11 @@ function ShimmerLabelImpl({ label }: { label: string }) {
         <Animated.Text
           key={i}
           className={nativePhone ? NATIVE_ACTIVITY_LABEL : TEXT_CLASS}
-          style={[nativePhone ? NATIVE_SHIMMER_TEXT_STYLE : SHIMMER_TEXT_STYLE, { opacity: opacities[i] }]}
+          style={[
+            TEXT_COLOR,
+            nativePhone ? NATIVE_SHIMMER_TEXT_STYLE : SHIMMER_TEXT_STYLE,
+            { opacity: opacities[i] },
+          ]}
         >
           {char === " " ? "\u00A0" : char}
         </Animated.Text>
