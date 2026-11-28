@@ -486,7 +486,7 @@ export async function sendBuildReadyEmail(params: {
   projectName: string
   summary: string
   projectUrl: string
-  preferencesUrl: string
+  unsubscribeUrl: string
 }): Promise<{ success: boolean; error?: string }> {
   return sendTemplateEmail(
     'build-ready',
@@ -495,11 +495,11 @@ export async function sendBuildReadyEmail(params: {
       projectName: params.projectName,
       summary: params.summary,
       projectUrl: params.projectUrl,
-      preferencesUrl: params.preferencesUrl,
+      unsubscribeUrl: params.unsubscribeUrl,
     },
     {
       headers: {
-        'List-Unsubscribe': `<${params.preferencesUrl}>`,
+        'List-Unsubscribe': `<${params.unsubscribeUrl}>`,
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
     },
@@ -515,7 +515,7 @@ export async function sendCreditsResetEmail(params: {
   projectName: string
   resetAt: string
   continueUrl: string
-  preferencesUrl: string
+  unsubscribeUrl: string
 }): Promise<{ success: boolean; error?: string }> {
   return sendTemplateEmail(
     'credits-reset',
@@ -524,14 +524,91 @@ export async function sendCreditsResetEmail(params: {
       projectName: params.projectName,
       resetAt: params.resetAt,
       continueUrl: params.continueUrl,
-      preferencesUrl: params.preferencesUrl,
+      unsubscribeUrl: params.unsubscribeUrl,
     },
     {
       headers: {
-        'List-Unsubscribe': `<${params.preferencesUrl}>`,
+        'List-Unsubscribe': `<${params.unsubscribeUrl}>`,
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
     },
+  )
+}
+
+/**
+ * Send the abandoned-checkout recovery email (SHO-615). Once per user per plan,
+ * ever — the caller (the `checkout.session.expired` webhook) enforces that with
+ * the lifecycle ledger, not this function.
+ */
+export async function sendAbandonedCheckoutEmail(params: {
+  to: string
+  planName: string
+  /** "monthly" or "annual", spelled for the body. */
+  intervalLabel: string
+  /** "7-day trial" or "upgrade". */
+  offerNoun: string
+  resumeUrl: string
+  unsubscribeUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail(
+    'abandoned-checkout',
+    params.to,
+    {
+      planName: params.planName,
+      intervalLabel: params.intervalLabel,
+      offerNoun: params.offerNoun,
+      resumeUrl: params.resumeUrl,
+      unsubscribeUrl: params.unsubscribeUrl,
+    },
+    {
+      headers: {
+        'List-Unsubscribe': `<${params.unsubscribeUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    },
+  )
+}
+
+/**
+ * Send the once-only "your idea is still waiting" nudge (SHO-615), 24h after a
+ * signup that created no project. `prompt` quotes their onboarding idea when the
+ * job recovered one; without it, the example-prompts variant goes out.
+ */
+export async function sendFirstBuildNudgeEmail(params: {
+  to: string
+  prompt: string | null
+  examples: string[]
+  continueUrl: string
+  unsubscribeUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  const headers = {
+    'List-Unsubscribe': `<${params.unsubscribeUrl}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  }
+  if (params.prompt) {
+    return sendTemplateEmail(
+      'first-build-nudge',
+      params.to,
+      {
+        prompt: params.prompt,
+        continueUrl: params.continueUrl,
+        unsubscribeUrl: params.unsubscribeUrl,
+      },
+      { headers },
+    )
+  }
+  const [example1 = '', example2 = '', example3 = ''] = params.examples
+  return sendTemplateEmail(
+    'first-build-nudge-examples',
+    params.to,
+    {
+      example1,
+      example2,
+      example3,
+      continueUrl: params.continueUrl,
+      unsubscribeUrl: params.unsubscribeUrl,
+    },
+    { headers },
   )
 }
 

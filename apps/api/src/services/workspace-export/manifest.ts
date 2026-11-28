@@ -180,6 +180,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   IntegrationCredentialAudit: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   IntegrationPoint: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   LayoutTemplate: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
+  LifecycleEmailSend: { decision: 'exclude', reason: 'The cloud\'s lifecycle-email delivery ledger, keyed on a person (no workspaceId). It exists so one lifecycle email is never sent twice; a restore has nothing to replay from it.' },
   LicenseKey: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   LiveSessionMeter: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   LocalConfig: { decision: 'exclude', reason: 'Desktop-only machine-local configuration (paths, ports); never leaves the machine.' },

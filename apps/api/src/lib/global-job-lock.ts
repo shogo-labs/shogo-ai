@@ -122,6 +122,10 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   // SHO-482: journal retention. Every pod booting the same interval would sweep
   // the same rows, and the delete is the expensive part on a large journal.
   'turn-frame-sweep': jobNameToLockId('turn-frame-sweep'),
+  // SHO-615: the once-only "your idea is still waiting" nudge. Two regions
+  // sweeping the same window would race for the same ledger claims, but the
+  // lock keeps it to one region per tick and the ledger makes retries a no-op.
+  'lifecycle-nurture': jobNameToLockId('lifecycle-nurture'),
 }) as Record<string, bigint>
 
 export type GlobalJobLockResult<T> =

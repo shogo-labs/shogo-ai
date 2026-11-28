@@ -7,6 +7,8 @@
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
 
+process.env.BETTER_AUTH_SECRET ||= 'lifecycle-notifications-test-secret'
+
 const pushes: any[] = []
 const notifications: any[] = []
 const emails: any[] = []
@@ -34,6 +36,7 @@ mock.module('../../services/notification.service', () => ({
 }))
 
 mock.module('../../services/email.service', () => ({
+  isEmailConfigured: () => true,
   sendBuildReadyEmail: async (params: any) => {
     emails.push({ template: 'build-ready', ...params })
     return { success: true }
