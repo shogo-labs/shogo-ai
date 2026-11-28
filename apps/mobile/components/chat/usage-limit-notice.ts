@@ -29,21 +29,44 @@ function resetSentence(resetsAt: string | undefined, format: (d: Date) => string
 
 /**
  * The at-the-block copy: the exact reset time first, then the one way out.
- * A user who has never had a trial gets the trial (card required, $0 today);
- * everyone else gets Upgrade. Leading with the reset makes a hard limit read
- * as temporary instead of as an error.
+ * Free before paid (SHO-614): while the sign-up email is unverified and credit
+ * is waiting behind it, verifying is the free fix, so it leads. A user who has
+ * never had a trial gets the trial (card required, $0 today); everyone else
+ * gets Upgrade. Leading with the reset makes a hard limit read as temporary
+ * instead of as an error.
  */
 function capBody(
   resetsAt: string | undefined,
   format: (d: Date) => string,
   trialEligible: boolean,
   tail: string,
+  verifyForCredit: string | null,
 ): string {
   const reset = resetSentence(resetsAt, format).trim()
   const cta = trialEligible
     ? "Start the 7-day free Business trial to keep going now."
     : "Upgrade to keep going now."
-  return [reset, cta, tail].filter(Boolean).join(" ")
+  return [verifyForCredit, reset, cta, tail].filter(Boolean).join(" ")
+}
+
+/** `$8` for whole dollars, `$8.50` otherwise — the amount is never hardcoded. */
+function formatUsd(usd: number): string {
+  return `$${usd % 1 === 0 ? usd.toFixed(0) : usd.toFixed(2)}`
+}
+
+/**
+ * "Verify your email to unlock $8 more credit." — only when the account's
+ * email is unverified and credit is actually waiting behind it. The dollar
+ * figure comes from the plan (`promoCredit.pendingVerificationUsd`), never a
+ * constant, so a pricing change can't leave the copy lying.
+ */
+function verifyForCreditSentence(input: {
+  promoPendingUsd?: number
+  emailVerified?: boolean
+}): string | null {
+  const pending = input.promoPendingUsd ?? 0
+  if (!(pending > 0) || input.emailVerified !== false) return null
+  return `Verify your email to unlock ${formatUsd(pending)} more credit.`
 }
 
 export function usageLimitNoticeFor(input: {
@@ -55,11 +78,20 @@ export function usageLimitNoticeFor(input: {
   currentSessionId: string | null | undefined
   /** From `GET /api/billing/workspace-plan`: the user can still start a trial. */
   trialEligible?: boolean
+  /** `promoCredit.pendingVerificationUsd` — credit that unlocks on verification. */
+  promoPendingUsd?: number
+  /** `promoCredit.emailVerified`. */
+  emailVerified?: boolean
   formatResetsAt?: (d: Date) => string
 }): UsageLimitNotice | null {
   const format = input.formatResetsAt ?? defaultFormatResetsAt
   const trialEligible = input.trialEligible === true
-  const primaryLabel: UsageLimitNotice["primaryLabel"] = trialEligible ? "Start free trial" : "Upgrade"
+  const verifyForCredit = verifyForCreditSentence(input)
+  const primaryLabel: UsageLimitNotice["primaryLabel"] = verifyForCredit
+    ? "Verify email"
+    : trialEligible
+      ? "Start free trial"
+      : "Upgrade"
 
   const blocked = input.error && !input.errorDismissed ? parseUsageLimitError(input.error) : null
   if (blocked) {
@@ -72,6 +104,7 @@ export function usageLimitNoticeFor(input: {
           format,
           trialEligible,
           "Your message wasn't sent; tap Retry after it resets.",
+          verifyForCredit,
         ),
         primaryLabel,
         secondaryLabel: "Retry",
@@ -120,6 +153,7 @@ export function usageLimitNoticeFor(input: {
         format,
         trialEligible,
         "The agent stopped partway through; completed work is saved and picks up exactly where it stopped once your usage resets.",
+        verifyForCredit,
       ),
       primaryLabel,
       secondaryLabel: "Continue",

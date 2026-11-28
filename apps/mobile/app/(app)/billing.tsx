@@ -152,10 +152,12 @@ export default observer(function BillingPage() {
     redeem: redeemParam,
     workspace: workspaceParam,
     trial: trialParam,
+    checkout: checkoutParam,
   } = useLocalSearchParams<{
     redeem?: string
     workspace?: string
     trial?: string
+    checkout?: string
   }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
@@ -744,26 +746,37 @@ export default observer(function BillingPage() {
     }
   }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet, showIapToast, hasStripeSubscription])
 
-  // The usage notice's "Start free trial" CTA lands here with `?trial=business`:
-  // take them straight to Stripe's trial checkout for the Business plan rather
-  // than making them find the right card on the page.
-  const autoTrialStartedRef = useRef(false)
+  // The usage notice's "Start free trial" CTA lands here with `?trial=business`,
+  // and onboarding hands over `?trial=basic|business` (SHO-614) from a pricing
+  // link: take them straight to Stripe's trial checkout for the plan they
+  // tapped. `?checkout=basic|business` is the same shortcut without a trial —
+  // the normal paid checkout — so the pricing link's plan still starts itself.
+  const autoCheckoutStartedRef = useRef(false)
   useEffect(() => {
-    if (trialParam !== 'business') return
+    const trialPlan = trialParam === 'basic' || trialParam === 'business' ? trialParam : null
+    const checkoutPlan = checkoutParam === 'basic' || checkoutParam === 'business' ? checkoutParam : null
+    const plan = trialPlan ?? checkoutPlan
+    if (!plan) return
     if (isBillingLoading || !currentWorkspace?.id) return
-    if (!trialEligible || hasStripeSubscription) return
+    // A workspace that already pays changes its plan on this page; it never
+    // starts a second Checkout (SHO-451).
+    if (hasStripeSubscription) return
+    // A trial still has to be eligible, and Basic is always one seat.
+    if (trialPlan && !trialEligible) return
+    const seats = plan === 'basic' ? 1 : businessSeats
     // Above the trial seat cap the server would refuse it (SHO-422).
-    if (trialSeatLimitReached) return
-    if (autoTrialStartedRef.current) return
-    autoTrialStartedRef.current = true
-    void handleCheckout('business', businessSeats, { trial: true })
+    if (trialPlan && trialSeatsExceedCap(seats, trialMaxSeats)) return
+    if (autoCheckoutStartedRef.current) return
+    autoCheckoutStartedRef.current = true
+    void handleCheckout(plan, seats, trialPlan ? { trial: true } : undefined)
   }, [
     trialParam,
+    checkoutParam,
     isBillingLoading,
     currentWorkspace?.id,
     trialEligible,
     hasStripeSubscription,
-    trialSeatLimitReached,
+    trialMaxSeats,
     businessSeats,
     handleCheckout,
   ])

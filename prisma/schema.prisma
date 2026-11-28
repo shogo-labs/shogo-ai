@@ -44,6 +44,13 @@ model User {
   onboardingCompleted         Boolean  @default(false)
   lastSeenAnnouncementVersion String?
   onboardingIntent            String?
+  // What the marketing site sent the visitor to build (SHO-614): a JSON
+  // snapshot of the `__shogo_intent` cookie captured at sign-up, so a person
+  // who verifies their email on another device still lands on onboarding with
+  // their prompt filled in. Cleared by `POST /api/onboarding/complete` and
+  // read only for a just-created account. Text, not Json, so the PostgreSQL
+  // and SQLite tracks share one read/write path (like `buddyLook`).
+  signupIntent                String?
   // JSON-encoded Shogo buddy look ({ topper, face, bolts, blush }). Stored as
   // text so the PostgreSQL and SQLite tracks share one read/write path.
   buddyLook                   String?

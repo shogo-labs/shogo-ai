@@ -9,6 +9,9 @@ export const EVENTS = {
   ONBOARDING_STEP_VIEWED: 'onboarding_step_viewed',
   ONBOARDING_COMPLETED: 'onboarding_completed',
   ONBOARDING_INTENT_SELECTED: 'onboarding_intent_selected',
+  // SHO-614: what the marketing link asked for, reported once onboarding
+  // resolves it (the URL, or the account's copy for a second device).
+  SIGNUP_INTENT_CAPTURED: 'signup_intent_captured',
   ONBOARDING_TEAM_SETUP_COMPLETED: 'onboarding_team_setup_completed',
   ONBOARDING_PERMISSION_RESULT: 'onboarding_permission_result',
   GETTING_STARTED_ITEM_CLICKED: 'getting_started_item_clicked',

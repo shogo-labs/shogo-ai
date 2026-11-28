@@ -3,6 +3,7 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { Platform } from 'react-native'
 import { PostHogProvider as PHProvider, usePostHog } from 'posthog-react-native'
+import type PostHog from 'posthog-react-native'
 import { useAuth } from './auth'
 import { getActiveEnvKey, telemetryEnvFor } from '../lib/env-override'
 import { getRuntimeAppEnv } from '../lib/runtime-env'
@@ -42,8 +43,26 @@ export const usePostHogSafe = apiKey
   ? usePostHog
   : () => null
 
+/**
+ * The last PostHog client the app shell rendered, readable without React
+ * context.
+ *
+ * `ChatPanel` also renders inside popover portals whose host is mounted above
+ * this provider, so a `usePostHog` there can throw and take the shell down.
+ * `usePostHogIdentify` (mounted once by `(app)/_layout`) publishes the client
+ * here instead, the same way `AuthProvider` publishes `getAuthUserSnapshot()`.
+ */
+let modulePostHog: PostHog | null = null
+
+export function getPostHogSnapshot(): PostHog | null {
+  return modulePostHog
+}
+
 export function usePostHogIdentify() {
   const posthog = usePostHogSafe()
+  // Publish the client for surfaces that render outside this provider (a
+  // Gluestack portal host sits above it), so they can capture without a hook.
+  modulePostHog = posthog
   const { user, isAuthenticated } = useAuth()
   const prevUserId = useRef<string | null>(null)
 

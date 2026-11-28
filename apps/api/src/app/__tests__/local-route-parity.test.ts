@@ -9,6 +9,9 @@ const REQUIRED_LOCAL_ROUTES = [
   'GET /api/me/activity',
   'GET /api/me/getting-started',
   'POST /api/onboarding/complete',
+  // SHO-614: onboarding on a second device reads the prompt from the account
+  // (localStorage only exists in the browser that opened the marketing link).
+  'GET /api/onboarding/intent',
   'GET /api/preview/:projectId/wake',
   'GET /api/preview/:projectId/open',
   'ALL /api/projects/:projectId/agent-proxy/*',

@@ -26,14 +26,33 @@ export interface UsageLimitHit {
 }
 
 /**
+ * An account this young is still in its first session for funnel purposes
+ * (SHO-614, G8): the visitor whose first idea was refused before it finished
+ * is a different problem from a long-standing user hitting a weekly cap.
+ */
+const FIRST_SESSION_MS = 24 * 60 * 60 * 1000
+
+/**
  * Best-effort: a metrics write must never turn a 402 into a 500, so every step
  * is individually guarded and the whole thing resolves.
  */
 export async function reportUsageLimitHit(hit: UsageLimitHit): Promise<void> {
   const userId = hit.userId && hit.userId !== 'system' ? hit.userId : null
   const now = new Date()
+  let firstSession = false
 
   if (userId) {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { createdAt: true },
+      })
+      firstSession =
+        !!user?.createdAt && now.getTime() - user.createdAt.getTime() <= FIRST_SESSION_MS
+    } catch (error: any) {
+      console.warn('[usage-cap] createdAt read failed:', error?.message ?? error)
+    }
+
     try {
       // Set once — the funnel wants "first cap", not "last cap".
       await prisma.user.updateMany({
@@ -62,6 +81,7 @@ export async function reportUsageLimitHit(hit: UsageLimitHit): Promise<void> {
       workspace_id: hit.workspaceId,
       window: hit.window ?? null,
       source: hit.source ?? 'chat',
+      first_session: firstSession,
     }).catch((error: any) => console.warn('[usage-cap] hit_cap event failed:', error?.message ?? error))
   }
 }

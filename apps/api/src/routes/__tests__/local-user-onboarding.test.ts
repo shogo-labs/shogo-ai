@@ -13,6 +13,7 @@ import { withPrismaExports } from '../../__tests__/helpers/prisma-mock-exports'
 
 const s = {
   userUpdates: [] as any[],
+  user: null as any,
   ownedTeamMembers: [] as Array<{ workspaceId: string | null }>,
   chatMessage: null as any,
   chatMessageQueries: [] as any[],
@@ -27,6 +28,7 @@ const s = {
 mock.module('../../lib/prisma', () => withPrismaExports({
   prisma: {
     user: {
+      findUnique: async (args: any) => s.user,
       update: async (args: any) => {
         s.userUpdates.push(args)
         return { id: args.where.id, ...args.data }
@@ -64,6 +66,7 @@ function makeApp(userId: string | null = 'u-1') {
 
 beforeEach(() => {
   s.userUpdates = []
+  s.user = null
   s.ownedTeamMembers = []
   s.chatMessage = null
   s.chatMessageQueries = []
@@ -79,7 +82,8 @@ describe('POST /api/onboarding/complete', () => {
   test('marks onboarding complete without a body (local wizard)', async () => {
     const res = await makeApp().request('/api/onboarding/complete', { method: 'POST' })
     expect(res.status).toBe(200)
-    expect(s.userUpdates[0].data).toEqual({ onboardingCompleted: true })
+    // SHO-614: the sign-up intent drives the FIRST onboarding only.
+    expect(s.userUpdates[0].data).toEqual({ onboardingCompleted: true, signupIntent: null })
   })
 
   test('persists a valid intent', async () => {
@@ -89,7 +93,11 @@ describe('POST /api/onboarding/complete', () => {
       body: JSON.stringify({ intent: 'team' }),
     })
     expect(res.status).toBe(200)
-    expect(s.userUpdates[0].data).toEqual({ onboardingCompleted: true, onboardingIntent: 'team' })
+    expect(s.userUpdates[0].data).toEqual({
+      onboardingCompleted: true,
+      signupIntent: null,
+      onboardingIntent: 'team',
+    })
   })
 
   test('rejects an unknown intent without writing', async () => {
@@ -104,6 +112,42 @@ describe('POST /api/onboarding/complete', () => {
 
   test('401s when unauthenticated', async () => {
     const res = await makeApp(null).request('/api/onboarding/complete', { method: 'POST' })
+    expect(res.status).toBe(401)
+  })
+})
+
+describe('GET /api/onboarding/intent', () => {
+  test('returns the stored sign-up intent', async () => {
+    s.user = { signupIntent: JSON.stringify({ prompt: 'A booking page for my salon', plan: 'basic' }) }
+    const res = await makeApp().request('/api/onboarding/intent')
+    expect(res.status).toBe(200)
+    expect((await res.json()).data).toEqual({
+      intent: { prompt: 'A booking page for my salon', plan: 'basic' },
+    })
+  })
+
+  test('answers { intent: null } when the account has none', async () => {
+    s.user = { signupIntent: null }
+    const res = await makeApp().request('/api/onboarding/intent')
+    expect(res.status).toBe(200)
+    expect((await res.json()).data).toEqual({ intent: null })
+  })
+
+  test('answers { intent: null } for a value it cannot parse', async () => {
+    s.user = { signupIntent: '{not json' }
+    const res = await makeApp().request('/api/onboarding/intent')
+    expect(res.status).toBe(200)
+    expect((await res.json()).data).toEqual({ intent: null })
+  })
+
+  test('404s when the session user is gone', async () => {
+    s.user = null
+    const res = await makeApp().request('/api/onboarding/intent')
+    expect(res.status).toBe(404)
+  })
+
+  test('401s when unauthenticated', async () => {
+    const res = await makeApp(null).request('/api/onboarding/intent')
     expect(res.status).toBe(401)
   })
 })

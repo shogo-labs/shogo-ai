@@ -13,6 +13,8 @@ interface UpdateCall { model: 'user' | 'usageWallet'; args: any }
 const updates: UpdateCall[] = []
 const events: Array<{ userId: string; name: string; props: any }> = []
 let windowsImpl: () => Promise<any>
+/** What `prisma.user.findUnique` answers with — the first-session rule reads it. */
+let userCreatedAt: Date | null = null
 
 mock.module('../../services/billing-runtime', () => ({
   getUsageWindows: () => windowsImpl(),
@@ -21,6 +23,7 @@ mock.module('../../services/billing-runtime', () => ({
 mock.module('../prisma', () => ({
   prisma: {
     user: {
+      findUnique: async () => (userCreatedAt ? { createdAt: userCreatedAt } : null),
       updateMany: (args: any) => {
         updates.push({ model: 'user', args })
         return Promise.resolve({ count: 1 })
@@ -57,6 +60,7 @@ beforeEach(() => {
   updates.length = 0
   events.length = 0
   windowsImpl = async () => exhaustedWeek()
+  userCreatedAt = null
 })
 
 describe('usage cap recording', () => {
@@ -96,6 +100,27 @@ describe('usage cap recording', () => {
     const info = await buildUsageLimitInfo('ws-3', { userId: 'u-3' })
     expect(info).toEqual({ resetsAt: null, window: null, retryAfterSeconds: null })
     expect(events[0]?.props.window).toBeNull()
+  })
+
+  // SHO-614 (G8): a first build can hit the cap before it finishes, and that
+  // visitor is not the same as a long-standing user on a weekly limit.
+  it('marks hit_cap first_session for an account younger than 24 hours', async () => {
+    userCreatedAt = new Date(Date.now() - 60 * 60 * 1000)
+    await reportUsageLimitHit({ workspaceId: 'ws-1', userId: 'u-1', window: 'five_hour' })
+    expect(events[0]?.props.first_session).toBe(true)
+  })
+
+  it('marks hit_cap first_session false for an older account', async () => {
+    userCreatedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+    await reportUsageLimitHit({ workspaceId: 'ws-1', userId: 'u-1', window: 'weekly' })
+    expect(events[0]?.props.first_session).toBe(false)
+  })
+
+  it('keeps the 402 answer when createdAt cannot be read', async () => {
+    userCreatedAt = null
+    const info = await buildUsageLimitInfo('ws-1', { userId: 'u-1' })
+    expect(info.window).toBe('weekly')
+    expect(events[0]?.props.first_session).toBe(false)
   })
 })
 
