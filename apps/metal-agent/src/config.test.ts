@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { classConfig, config, isVmClassSupported, VM_CLASSES, type MetalConfig } from './config'
+import { assertHostId, classConfig, config, isVmClassSupported, readHostId, VM_CLASSES, type MetalConfig } from './config'
 
 function fakeCfg(overrides: Partial<MetalConfig> = {}): MetalConfig {
   return { ...config, ...overrides } as MetalConfig
@@ -120,5 +120,23 @@ describe('idle reclaim + free page reporting defaults (SHO-534)', () => {
   test('the idle window is short enough to fire before the idle-suspend window', () => {
     // bootstrapped hosts run METAL_IDLE_SUSPEND_MS=900000 (15m); reclaim is 5m
     expect(config.idleReclaimMs).toBe(300_000)
+  })
+})
+
+describe('METAL_HOST_ID is required (no hostname fallback)', () => {
+  // The fallback was `os.hostname`: two agents that both fell back registered
+  // under one id, `registerHost` kept whichever heartbeat arrived last, and the
+  // control plane showed one host where there were two — a live host's
+  // load/disk/capacity overwritten every 30s by another machine's numbers.
+  test('readHostId never substitutes the hostname', () => {
+    expect(readHostId({ HOSTNAME: 'ip-10-0-0-7' })).toBe('')
+    expect(readHostId({ HOSTNAME: 'ip-10-0-0-7', METAL_HOST_ID: '  ' })).toBe('')
+    expect(readHostId({ METAL_HOST_ID: 'latitude-dal-1' })).toBe('latitude-dal-1')
+  })
+
+  test('assertHostId refuses to boot without one, naming the variable', () => {
+    expect(() => assertHostId({ hostId: '' })).toThrow(/METAL_HOST_ID/)
+    expect(() => assertHostId({ hostId: '' })).toThrow(/cloud-init/i)
+    expect(() => assertHostId({ hostId: 'latitude-dal-1' })).not.toThrow()
   })
 })

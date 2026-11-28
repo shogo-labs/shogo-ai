@@ -111,6 +111,32 @@ describe('metalRoutes', () => {
     expect(detail.load.liveness).toBeUndefined()
   })
 
+  // A misprovisioned box (no METAL_HOST_ID, or a copy of another host's env)
+  // registers with an id that is already taken. Merging it would rewrite a live
+  // host's load/disk on every heartbeat, so the incumbent wins — but the second
+  // agent must still get its 200 and its directives, or a duplicate id would also
+  // mean a dead host.
+  it('keeps the incumbent and warns when the same hostId registers from another meshIp', async () => {
+    const disk = { totalBytes: 4000, freeBytes: 960, usedPct: 76, cacheBytes: 0, localCount: 7 }
+    await req('/register', { method: 'POST', body: { ...REG, disk }, token: 'secret-tok' })
+
+    const clash = await req('/register', {
+      method: 'POST',
+      body: { ...REG, meshIp: '10.8.0.9', disk: { ...disk, freeBytes: 3520, usedPct: 12 } },
+      token: 'secret-tok',
+    })
+    expect(clash.status).toBe(200)
+    const body = (await clash.json()) as any
+    expect(body.ok).toBe(true)
+    expect(body.warning).toBe('host_id_collision')
+    expect(body.hostId).toBe('ash-1')
+    expect(body).toHaveProperty('idleSuspend')
+
+    const detail = ((await (await req('/status', { token: 'secret-tok' })).json()) as any).hosts.detail[0]
+    expect(detail.meshIp).toBe('10.8.0.2')
+    expect(detail.disk.usedPct).toBe(76)
+  })
+
   // This route rebuilds `load` field by field, so a field the agent sends but
   // nobody copies here is dropped in silence — which is what happened to `taps`
   // and would have shipped a permanently empty tap_used_pct gauge, the one

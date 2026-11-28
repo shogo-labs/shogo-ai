@@ -107,7 +107,7 @@ export function metalRoutes(): Hono {
       return c.json({ ok: false, error: 'hostId, meshIp and agentPort are required' }, 400)
     }
 
-    registerMetalHost({
+    const reg = registerMetalHost({
       hostId: String(body.hostId),
       meshIp: String(body.meshIp),
       agentPort: Number(body.agentPort),
@@ -233,6 +233,11 @@ export function metalRoutes(): Hono {
       idleSuspend,
       ...(activateRootfs ? { activateRootfs } : {}),
       ...(meterAck !== undefined ? { meterAck } : {}),
+      // Two agents under one METAL_HOST_ID: the incumbent was kept. Still a 200
+      // (liveness and directives must reach this host), but say so, so a
+      // misprovisioned box is visible in its own heartbeat instead of silently
+      // merged into another host's series.
+      ...(reg.hostIdCollision ? { warning: 'host_id_collision', hostId: String(body.hostId) } : {}),
     })
   })
 

@@ -21,6 +21,38 @@ function parseWatchdogMode(v: string): ApiWatchdogMode {
   return v === 'off' || v === 'enforce' ? v : 'observe'
 }
 
+/**
+ * Stable host id the control plane keys this host's fleet entry on.
+ *
+ * There is deliberately NO fallback — not to `os.hostname`, not to a constant.
+ * Cloud-init writes `METAL_HOST_ID` (see `envLine('METAL_HOST_ID', …)` in
+ * apps/api/src/lib/metal-cloud-init.ts), so an unset value means the box was
+ * provisioned by hand or from a stale template. A fallback is worse than a
+ * refusal: two agents landing on the same fallback id register over each other,
+ * `registerHost` keeps whichever heartbeat arrived last, and the fleet shows one
+ * host where there are two — the live one's load/disk/capacity overwritten by
+ * the other's on every 30s heartbeat. Returns '' when unset; `assertHostId`
+ * is what turns that into a boot failure.
+ */
+export function readHostId(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.METAL_HOST_ID ?? '').trim()
+}
+
+/**
+ * Require a host id before the agent does anything host-visible. Called from the
+ * server entrypoint so a misprovisioned box exits at boot, by name, instead of
+ * registering under a guess and merging itself into another host's series.
+ */
+export function assertHostId(cfg: Pick<MetalConfig, 'hostId'> = config): void {
+  if (cfg.hostId) return
+  throw new Error(
+    'METAL_HOST_ID is not set: this host cannot identify itself to the control plane. ' +
+      'Cloud-init writes METAL_HOST_ID into the agent env file; a host without it is ' +
+      'misprovisioned. Set METAL_HOST_ID in the agent env (e.g. /etc/metal-agent.env) and ' +
+      'restart — there is no hostname fallback, by design.',
+  )
+}
+
 /** Where host-install.sh drops firecracker + kernel + rootfs. */
 export const WORK = env('METAL_WORK', '/opt/fc-spike')
 
@@ -169,7 +201,7 @@ export const config = {
   controlPlaneUrl: env('METAL_CONTROL_PLANE_URL', ''),
   registerToken: env('METAL_REGISTER_TOKEN', ''),
   /** Stable host identity + the mesh IP the control plane should dial. */
-  hostId: env('METAL_HOST_ID', process.env.HOSTNAME || 'metal-host'),
+  hostId: readHostId(),
   meshIp: env('METAL_MESH_IP', env('METAL_LISTEN_HOST', '0.0.0.0')),
   region: env('METAL_REGION', 'us'),
   /** Re-announce interval (also serves as a liveness heartbeat). */

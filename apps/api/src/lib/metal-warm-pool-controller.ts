@@ -112,6 +112,11 @@ const agentRetryCounter = meter.createCounter('metal.agent_restart_retry', {
 const noHostCounter = meter.createCounter('metal.no_host', {
   description: 'getMetalProjectUrl calls with no live host available (falls back to Knative)',
 })
+const hostIdCollisionCounter = meter.createCounter('metal.host.id_collisions', {
+  description:
+    'Host heartbeats rejected because the hostId is already held by a DIFFERENT meshIp — two ' +
+    'node-agents sharing one METAL_HOST_ID, which would otherwise merge two hosts into one series',
+})
 const wakeLatency = meter.createHistogram('metal.wake_latency_ms', {
   description: 'Host-reported restore→ready latency for a resumed project (VM restore + /health only; see metal.wake_total_ms)',
   unit: 'ms',
@@ -496,6 +501,15 @@ interface HostEntry extends MetalHostRegistration {
   lastSeenAt: number
 }
 
+/**
+ * Outcome of a host heartbeat. `hostIdCollision` means another agent already
+ * holds this hostId from a different meshIp and the incumbent was kept — the
+ * heartbeat is still acknowledged, so the second agent keeps receiving directives.
+ */
+export interface HostRegistrationResult {
+  hostIdCollision: boolean
+}
+
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
@@ -859,9 +873,32 @@ export class MetalWarmPoolController {
     }
   }
 
-  /** Upsert a host from its heartbeat, mirroring scalars to the shared registry. */
-  registerHost(reg: MetalHostRegistration): void {
+  /**
+   * Upsert a host from its heartbeat, mirroring scalars to the shared registry.
+   *
+   * A hostId is supposed to identify ONE box. When a second agent registers with
+   * the same id from a different meshIp, adopting its values would overwrite the
+   * incumbent's load/disk/capacity on every heartbeat and merge two hosts into
+   * one fleet entry (a 76%-full host and a 12%-full host read as one series).
+   * The incumbent is kept and the collision is counted instead. The heartbeat is
+   * still acknowledged by the route — liveness and directives must not break for
+   * the second agent — and nothing is published to the registry, so the shared
+   * row keeps the incumbent's numbers.
+   *
+   * The guard holds only while the incumbent is actually alive: once its entry is
+   * older than HOST_TTL_MS the newcomer is adopted. Without that, a host whose
+   * meshIp legitimately changed (re-address, rebuilt host) would be frozen out of
+   * its own fleet entry forever.
+   */
+  registerHost(reg: MetalHostRegistration): HostRegistrationResult {
     const existing = this.hosts.get(reg.hostId)
+    if (existing && existing.meshIp !== reg.meshIp && this.now() - existing.lastSeenAt < HOST_TTL_MS) {
+      hostIdCollisionCounter.add(1, { region: reg.region })
+      console.warn(
+        `[MetalPool] hostId collision: ${reg.hostId} already registered from ${existing.meshIp}, ignoring ${reg.meshIp}`,
+      )
+      return { hostIdCollision: true }
+    }
     const entry: HostEntry = {
       ...reg,
       registeredAt: existing?.registeredAt ?? this.now(),
@@ -888,6 +925,7 @@ export class MetalWarmPoolController {
       lastSeenAt: entry.lastSeenAt,
     }
     void this.registry.upsertHost(scalars).catch(() => {})
+    return { hostIdCollision: false }
   }
 
   /**
@@ -2422,9 +2460,9 @@ export function _setMetalWarmPoolController(c: MetalWarmPoolController | null): 
   controller = c
 }
 
-export function registerMetalHost(reg: MetalHostRegistration): void {
+export function registerMetalHost(reg: MetalHostRegistration): HostRegistrationResult {
   ensureFleetGauges()
-  getMetalWarmPoolController().registerHost(reg)
+  return getMetalWarmPoolController().registerHost(reg)
 }
 
 export async function metalIdleDirectiveFor(region: string, prevTier: IdleTier | undefined): Promise<IdleDirective> {
