@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import type { Locator, Page } from "@playwright/test"
+import { expect, type Locator, type Page } from "@playwright/test"
 
 export const LOCAL_API_BASE = process.env.E2E_API_URL || process.env.STAGING_API_URL || "http://localhost:8002"
 
@@ -145,6 +145,22 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
   await page.evaluate(writeActiveWorkspaceSelection, [teamId, "team"] as const)
   await page.goto("/home")
   await page.getByText("What are we building", { exact: false }).first().waitFor({ state: "visible", timeout })
+}
+
+/**
+ * Wait for the project page's runtime to be up (SHO-605).
+ *
+ * The page now paints its chat while the runtime is still booting, so a composer
+ * on screen no longer means a send goes out: a send made during the boot is
+ * queued until `RuntimeStartingPane` goes away. Specs that measure what a send
+ * or a resume does therefore wait for this edge — the condition the old
+ * whole-page gate used to hand them for free.
+ */
+export async function waitForProjectRuntimeReady(
+  page: Page,
+  timeout = 120_000,
+): Promise<void> {
+  await expect(page.getByTestId("runtime-starting-pane")).toBeHidden({ timeout })
 }
 
 /** Start a project from the home composer and wait for its (mocked) bootstrap turn. */

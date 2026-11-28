@@ -20,7 +20,7 @@
  *   npx playwright test --config e2e/local/playwright.config.ts chat-send-echo-timing
  */
 import { test, expect, type Page, type Route } from "@playwright/test"
-import { openTeamHome } from "./helpers"
+import { openTeamHome, waitForProjectRuntimeReady } from "./helpers"
 
 // Local project chats run on the merged workspace runtime (/api/workspaces/:id/chat).
 const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
@@ -110,6 +110,10 @@ async function createProject(page: Page, prompt: string) {
   await page.keyboard.press("Enter")
   await page.waitForURL(/\/projects\//, { timeout: 30_000 })
   await projectComposer(page).waitFor({ state: "visible", timeout: 20_000 })
+  // The chat paints before the runtime is up (SHO-605), and a send made while it
+  // boots is queued instead of echoing, so the echo window this spec measures
+  // only starts once the runtime answered.
+  await waitForProjectRuntimeReady(page)
   // The bootstrap turn ChatPanel fires from `initialMessage` — let it settle so
   // every scenario starts from an idle composer.
   await waitForAgentIdle(page, 20_000)

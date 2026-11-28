@@ -40,7 +40,7 @@ import {
   type Page,
   type Route,
 } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { LOCAL_API_BASE, waitForProjectRuntimeReady } from "./helpers"
 
 test.setTimeout(180_000)
 
@@ -548,6 +548,9 @@ async function openProject(page: Page, api: APIRequestContext) {
     await switchToText.click()
   }
   await projectComposerInput(page).waitFor({ state: "visible", timeout: 20_000 })
+  // The composer is on screen before the project's runtime is up (SHO-605), and
+  // a queued row is only dispatched once it is, so the dock specs start there.
+  await waitForProjectRuntimeReady(page)
   await waitForIdle(page)
 }
 

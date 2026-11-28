@@ -207,7 +207,15 @@ function chatRows(legacyDataUrl: string): Array<Record<string, unknown>> {
       savedRow(
         `a${index}`,
         "assistant",
-        [{ type: "text", text: `Got photo ${index}.` }],
+        [
+          { type: "text", text: `Got photo ${index}.` },
+          // A completed turn's row carries this (the API copies the runtime's
+          // `data-turn-timing` onto the persisted row). Without it the row reads
+          // as a reply that never finished, and the panel rightly shows
+          // "Rejoining live reply…" — which would move the transcript this spec
+          // is here to hold still.
+          { type: "data-turn-timing", data: { turnId: `t${index}`, completedAt: base + index * 60_000 + 20_000 } },
+        ],
         base + index * 60_000 + 20_000,
       ),
     )
@@ -230,7 +238,13 @@ function chatRows(legacyDataUrl: string): Array<Record<string, unknown>> {
     savedRow(
       "a-legacy",
       "assistant",
-      [{ type: "text", text: "Got the legacy photo." }],
+      [
+        { type: "text", text: "Got the legacy photo." },
+        {
+          type: "data-turn-timing",
+          data: { turnId: "t-legacy", completedAt: base + PHOTO_COUNT * 60_000 + 20_000 },
+        },
+      ],
       base + PHOTO_COUNT * 60_000 + 20_000,
     ),
   )

@@ -60,10 +60,7 @@ import { useDomainHttp } from "../../../../contexts/domain";
 import { authClient } from "../../../../lib/auth-client";
 import { API_URL, api, type RemoteHostStatus } from "../../../../lib/api";
 import { openWebAppSession } from "../../../../lib/openWebAppSession";
-import {
-  useWorkspaceBudgetToast,
-  WorkspaceCapacityCard,
-} from "../../../../components/project/WorkspaceBudgetNotice";
+import { useWorkspaceBudgetToast } from "../../../../components/project/WorkspaceBudgetNotice";
 import {
   chatSessionEvents,
   chatActivityEvents,
@@ -161,6 +158,10 @@ import { ComposePortPreview } from "../../../../components/project/ComposePortPr
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
 import { ProjectLoadingSurface } from "../../../../components/project/ProjectLoadingSurface";
+import {
+  RuntimeStartingPane,
+  isRuntimeBooting,
+} from "../../../../components/project/RuntimeStartingPane";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
 import { useOpenAgentChat } from "../../../../lib/use-open-agent-chat";
@@ -3693,17 +3694,25 @@ export default observer(function ProjectLayout() {
     [projectId]
   );
 
-  // Loading state. We also gate on `runtimeReady` so the panels never
-  // render with stale URLs — see `useAgentUrl` for the polling contract.
+  // Loading state. Only the project row gates the whole page now (SHO-605):
+  // the chat reads its history straight from the API and its turns go through
+  // the API's agent-proxy, which waits for a cold runtime itself — so the
+  // runtime gate belongs to the panels that take `agentUrl` (canvas, preview,
+  // IDE, files, …). Those are replaced by `RuntimeStartingPane` in the right
+  // panel area while the runtime boots; the chat and the header draw now.
+  // See `useAgentUrl` for the polling contract.
+  //
   // Keep this as data for the final render branch instead of returning here:
   // direct new-window loads start in this state, and returning before later
   // hooks causes React hook-order error #310 when the project finishes loading.
-  const projectRouteLoading =
-    isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady);
-  const stillBootingRuntime =
-    !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady;
-  const showStalledRecovery =
-    stillBootingRuntime && (runtimeStalled || !!runtimeError);
+  const projectRouteLoading = isLoading || !project;
+  const runtimeBooting =
+    !isLoading &&
+    !!project &&
+    isRuntimeBooting({
+      remoteAgentBaseUrl: remoteProjectAgentBaseUrl,
+      runtimeReady,
+    });
   /**
    * The row the loading surface draws from (SHO-581): the network answer once it
    * is in, otherwise the collection the projects list just filled, otherwise
@@ -3809,6 +3818,11 @@ export default observer(function ProjectLayout() {
                 })}
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
+                // A cold runtime: the chat's history is API-only, but its turns
+                // and probes go through the agent-proxy and would sit for the
+                // whole boot, so sends queue in the panel until it is ready
+                // (SHO-605).
+                runtimeStarting={runtimeBooting}
                 initialMessage={
                   isInitialSession
                     ? capturedInitialMessage
@@ -4043,84 +4057,23 @@ export default observer(function ProjectLayout() {
   };
 
   if (projectRouteLoading) {
-    // Recovery still owns the body when it has something to say; the surface
-    // draws everything else around it.
-    const runtimeRecovery = !showStalledRecovery ? null : runtimeCapacity ? (
-      <WorkspaceCapacityCard
-        capacity={runtimeCapacity}
-        onRetry={() => retryAgentUrl()}
-        onBack={() =>
-          router.canGoBack() ? router.back() : router.replace("/(app)")
-        }
-      />
-    ) : (
-      <View className="w-full gap-3 items-center px-2 py-6">
-        <Spinner size="small" />
-        <Text className="text-foreground text-base font-semibold text-center">
-          This is taking longer than expected
-        </Text>
-        <Text className="text-muted-foreground text-sm text-center">
-          {runtimeError
-            ? `We couldn't reach your project's runtime${
-                runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
-              }. Check your connection or try again.`
-            : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
-        </Text>
-        <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
-          <Pressable
-            onPress={() => retryAgentUrl()}
-            className="px-4 py-2 rounded-md border border-border active:bg-muted"
-            accessibilityLabel="Retry connecting to your project"
-          >
-            <Text className="text-foreground text-sm font-medium">
-              Try again
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() =>
-              router.canGoBack() ? router.back() : router.replace("/(app)")
-            }
-            className="px-4 py-2 rounded-md border border-border active:bg-muted"
-            accessibilityLabel="Go back to projects list"
-          >
-            <Text className="text-foreground text-sm font-medium">Go back</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              void openWebAppSession(`/projects/${projectId}`).catch((err) =>
-                console.warn("[ProjectLayout] open-on-web failed:", err)
-              );
-            }}
-            className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
-            accessibilityLabel="Open this project on the web"
-          >
-            <Text className="text-primary-foreground text-sm font-medium">
-              Open on web
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-
     return (
       <>
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so the way back, the name,
-            the tab strip and the chat panel are all drawn while the row and the
-            runtime are still in flight — only the status line changes
-            (SHO-581). */}
+            the tab strip and the chat panel are all drawn while the row is
+            still in flight (SHO-581). The runtime is no longer part of this
+            wait: it gates the right panel only, through
+            `RuntimeStartingPane` (SHO-605). */}
         <ProjectLoadingSurface
           projectId={projectId}
           title={firstPaintRow?.name}
-          phase={stillBootingRuntime ? "runtime" : "project"}
           loadError={projectLoadError}
           onRetryLoad={retryProjectLoad}
           onBack={() =>
             router.canGoBack() ? router.back() : router.replace("/(app)")
           }
-        >
-          {runtimeRecovery}
-        </ProjectLoadingSurface>
+        />
       </>
     );
   }
@@ -4647,6 +4600,32 @@ export default observer(function ProjectLayout() {
                 )}
                 style={nativePhoneCanvasFrame ? nativePhoneFill : undefined}
               >
+                {runtimeBooting ? (
+                  // Every panel under the drawer takes `agentUrl`, so none of
+                  // them may mount against a runtime that is still booting.
+                  // The chat beside this column does not need it and is drawn
+                  // (SHO-605).
+                  <RuntimeStartingPane
+                    capacity={runtimeCapacity}
+                    stalled={runtimeStalled}
+                    error={runtimeError}
+                    lastStatus={runtimeLastStatus}
+                    onRetry={() => retryAgentUrl()}
+                    onBack={() =>
+                      router.canGoBack() ? router.back() : router.replace("/(app)")
+                    }
+                    onOpenWeb={() => {
+                      void openWebAppSession(`/projects/${projectId}`).catch(
+                        (err) => {
+                          console.warn(
+                            "[ProjectLayout] open-on-web failed:",
+                            err
+                          );
+                        }
+                      );
+                    }}
+                  />
+                ) : (
                 <DrawerHost
                   projectId={projectId ?? null}
                   agentUrl={agentUrl ?? null}
@@ -5126,6 +5105,7 @@ export default observer(function ProjectLayout() {
                     </PanelErrorBoundary>
                   </View>
                 </DrawerHost>
+                )}
               </View>
 
               {nativePhonePlansOverlay && (

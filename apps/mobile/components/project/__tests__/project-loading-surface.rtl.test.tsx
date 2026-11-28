@@ -6,10 +6,12 @@
  * The card's symptom is the one SHO-580 fixed on the projects list, one tap
  * later: the body was replaced by a centred spinner until `GET
  * /api/projects/:id` answered. This renders the surface the screen now draws,
- * through the real `ProjectSurfaceHeader`, and asserts the three states the
- * card names: the surface + skeleton while the row loads, the same frame with a
- * runtime line while the runtime boots, and an error with a retry (never a
- * spinner) when the load failed.
+ * through the real `ProjectSurfaceHeader`, and asserts the states the card
+ * names: the surface + skeleton while the row loads, the frame for a project
+ * this device has never opened, and an error with a retry (never a spinner)
+ * when the load failed. Since SHO-605 the runtime is not part of this wait:
+ * the right panel draws `RuntimeStartingPane` for that (see
+ * `runtime-starting-pane.rtl.test.tsx`), so this surface has no runtime phase.
  *
  *   bun test "apps/mobile/components/project/__tests__/project-loading-surface.rtl.test.tsx"
  */
@@ -89,7 +91,6 @@ const renderSurface = (props: Record<string, any> = {}) =>
     createElement(ProjectLoadingSurface, {
       projectId: 'p1',
       title: 'Atlas',
-      phase: 'project',
       onBack: () => {},
       ...props,
     }),
@@ -116,12 +117,11 @@ describe('SHO-581 — project open draws its surface', () => {
     expect(screen.getAllByText('Atlas').length).toBeGreaterThan(0)
   })
 
-  test('AC1: a runtime still booting keeps the same frame and only changes the line', () => {
-    renderSurface({ phase: 'runtime' })
+  test('SHO-605: a booting runtime is not part of this wait any more', () => {
+    renderSurface()
 
-    expect(screen.getByTestId('project-loading-surface')).toBeTruthy()
-    expect(screen.getByTestId('project-loading-skeleton')).toBeTruthy()
-    expect(screen.getByText('Starting your project…')).toBeTruthy()
+    expect(screen.getByText('Loading project...')).toBeTruthy()
+    expect(screen.queryByText('Starting your project…')).toBeNull()
   })
 
   test('AC2: a project never opened on this device still draws the frame', () => {
@@ -146,16 +146,6 @@ describe('SHO-581 — project open draws its surface', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Try loading the project again' }))
     expect(retries).toHaveLength(1)
-  })
-
-  test('recovery UI replaces the status line, so the stalled card still owns the body', () => {
-    renderSurface({
-      phase: 'runtime',
-      children: createElement('div', { 'data-testid': 'capacity-card' }, 'capacity'),
-    })
-
-    expect(screen.getByTestId('capacity-card')).toBeTruthy()
-    expect(screen.queryByText('Starting your project…')).toBeNull()
   })
 
   test('the body sits under the glass header, measured or not (QA #2258 regression)', () => {

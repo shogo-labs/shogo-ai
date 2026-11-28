@@ -325,6 +325,11 @@ function QueueBody({
                 size={11}
                 className="text-orange-600 dark:text-orange-400 flex-shrink-0"
               />
+            ) : msg.waitingForRuntime ? (
+              <AlarmClock
+                size={11}
+                className="text-muted-foreground flex-shrink-0"
+              />
             ) : (
               <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
             )}
@@ -355,6 +360,14 @@ function QueueBody({
                   numberOfLines={1}
                 >
                   Editing…
+                </Text>
+              )}
+              {!editing && msg.waitingForRuntime && (
+                <Text
+                  className="text-[10px] text-muted-foreground"
+                  numberOfLines={1}
+                >
+                  Waiting for the agent to start…
                 </Text>
               )}
               {rowError && (
@@ -452,10 +465,14 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
   const wakeCount = waitingTaskWakes(queuedMessages).length
   const agentWakeCount = agentWakeMessages(queuedMessages).length
   const offlineCount = messages.filter((m) => m.offline).length
+  const waitingForRuntimeCount = messages.filter(
+    (m) => m.waitingForRuntime && !m.offline,
+  ).length
+  const waitingCount = offlineCount + waitingForRuntimeCount
   const queuedCount = messages.length + agentWakeCount
   const parts = [
-    offlineCount > 0 ? `${offlineCount} waiting` : null,
-    queuedCount > offlineCount ? `${queuedCount - offlineCount} queued` : null,
+    waitingCount > 0 ? `${waitingCount} waiting` : null,
+    queuedCount > waitingCount ? `${queuedCount - waitingCount} queued` : null,
     wakeCount > 0 ? `${wakeCount} update${wakeCount === 1 ? "" : "s"} paused` : null,
   ].filter(Boolean)
 
@@ -467,7 +484,8 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
       order: 70,
       title: "Queue",
       icon: ListOrdered,
-      accent: wakeCount > 0 ? "warning" : offlineCount > 0 ? "warning" : "default",
+      accent:
+        wakeCount > 0 || offlineCount > 0 ? "warning" : "default",
       summary: parts.join(" · "),
       defaultExpanded: true,
       flushBody: true,
@@ -476,7 +494,7 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props, offlineCount, wakeCount, parts.join("|")])
+  }, [props, offlineCount, waitingForRuntimeCount, wakeCount, parts.join("|")])
 
   useDockPanel(descriptor)
   return null

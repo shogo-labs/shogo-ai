@@ -487,6 +487,12 @@ export type QueuedMessage = {
    * the full send path would duplicate both.
    */
   offline?: boolean
+  /**
+   * Queued because the project's runtime was still booting (SHO-605): the row
+   * shows why it is waiting and the panel drains it the moment the runtime is
+   * ready. Never set together with `offline`.
+   */
+  waitingForRuntime?: boolean
   /** Only set when `offline` is true: the exact wire payload to redeliver. */
   offlineRetry?: {
     messagePayload: {
@@ -560,6 +566,14 @@ export interface ChatPanelProps {
    */
   chatScope?: "project" | "workspace"
   localAgentUrl?: string | null
+  /**
+   * The project's runtime is still booting (SHO-605). Only the project page's
+   * cold-run times pass this: history is API-only and paints as usual, but
+   * anything that reaches the runtime (a turn, the live-turn probe, the process
+   * list) waits for the agent-proxy's own cold start, so sends are queued in
+   * the panel's existing `messageQueue` and drained the moment this goes false.
+   */
+  runtimeStarting?: boolean
   children?: React.ReactNode
   className?: string
   onSchemaRefresh?: () => void
@@ -1178,6 +1192,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   focusedProjectId,
   chatScope = "project",
   localAgentUrl,
+  runtimeStarting = false,
   children,
   className,
   onSchemaRefresh,
@@ -1509,13 +1524,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   useEffect(() => {
     if (!isActive) return
+    // The agent-proxy awaits a cold runtime start, so asking while it boots
+    // only holds a request open; this effect re-runs when it is ready
+    // (SHO-605).
+    if (runtimeStarting) return
 
     fetchQuickActions()
 
     // Retry after a delay — the agent runtime may not be ready on first mount
     const retryTimer = setTimeout(() => fetchQuickActions(), 3000)
     return () => clearTimeout(retryTimer)
-  }, [fetchQuickActions, isActive])
+  }, [fetchQuickActions, isActive, runtimeStarting])
 
   // Track whether we've already triggered AI naming for this session
   const hasTriggeredNamingRef = useRef(false)
@@ -2477,15 +2496,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // The agent blocked in `wait` (live `data-task-wait` frames during a turn).
   const [taskWait, setTaskWait] = useState<TaskWaitState | null>(null)
 
-  // Seed the process list whenever the active thread changes.
+  // Seed the process list whenever the active thread changes. A cold runtime
+  // would hold this request for the whole boot, so it waits for the ready edge
+  // (SHO-605) — the effect re-runs then because `runtimeStarting` is a dep.
   useEffect(() => {
     setTaskWait(null)
-    if (!currentSessionId) {
+    if (!currentSessionId || runtimeStarting) {
       setRunningProcesses([])
       return
     }
     fetchRunningProcesses()
-  }, [currentSessionId, fetchRunningProcesses])
+  }, [currentSessionId, fetchRunningProcesses, runtimeStarting])
 
   // Durable-turn lifecycle tracking. The runtime emits `data-turn-start`
   // exactly once per turn, periodic `data-turn-seq` heartbeats, and
@@ -4901,7 +4922,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (currentSessionIdRef.current !== sessionId) return
       earlyProbeRef.current = { sessionId, at: Date.now(), snapshot }
     })
-  }, [isActive, currentSessionId, probeLiveTurn])
+  }, [isActive, currentSessionId, probeLiveTurn, runtimeStarting])
 
   /**
    * The newest saved row for this chat, one row wide. A refocus has to tell
@@ -6352,6 +6373,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       guardedAutoResumeStream,
       probeLiveTurn,
       giveUpRejoin,
+      runtimeStarting,
     ],
   )
 
@@ -7705,6 +7727,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const processMessageQueue = useCallback(async () => {
     if (isProcessingQueueRef.current) return
     if (isStreaming) return
+    // Nothing may go out while the project's runtime boots: the ready edge
+    // below drains the queue (SHO-605).
+    if (runtimeStarting) return
     if (!currentSessionId) return
     if (messageQueue.length === 0) return
 
@@ -7774,6 +7799,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     messageQueue,
     clearOptimisticEcho,
     setMessages,
+    runtimeStarting,
   ])
 
   // Process queue when streaming completes
@@ -7789,6 +7815,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }
   }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
+
+  // Runtime ready edge (SHO-605). A send made while the project's runtime was
+  // booting was queued with `waitingForRuntime`; this is the one place that
+  // turns those rows into ordinary queue entries for the existing drain to
+  // send. Keyed off the rows as well as the edge, so a panel that mounts after
+  // the runtime is ready still drains what the previous mount queued.
+  //
+  // Only the send waits. The live-turn probe and the queued-turn poll are
+  // read-only GETs that answer "unknown" when the runtime is not up yet, and
+  // holding them changed what the resume path decided (an empty paint-time
+  // answer is what tells the panel there is nothing to attach to), so they run
+  // through the boot exactly as they always have.
+  useEffect(() => {
+    if (runtimeStarting) return
+    if (!messageQueue.some((message) => message.waitingForRuntime)) return
+    setMessageQueue((queue) =>
+      queue.map((message) =>
+        message.waitingForRuntime
+          ? { ...message, waitingForRuntime: false }
+          : message,
+      ),
+    )
+    processMessageQueue()
+  }, [runtimeStarting, messageQueue, processMessageQueue])
 
   // Drain offline-queued sends once connectivity looks restored. Unlike the
   // falling-edge effect above (which only fires after a real stream ends),
@@ -8842,6 +8892,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setEditingQueuedId(null)
       }
 
+      // The project's runtime is still booting (SHO-605). Posting now would
+      // wait inside the agent-proxy for the whole cold start, and an uncovered
+      // held POST is what the stall watchdog reads as a dead turn, so queue it
+      // here and let the ready edge send it. No echo: a queued row is not a
+      // turn yet (same rule as the streaming queue below).
+      if (runtimeStarting) {
+        clearOptimisticEcho(trimmedContent)
+        setMessageQueue((queue) => [
+          ...queue,
+          {
+            id: `runtime-${Date.now()}-${Math.random()
+              .toString(36)
+              .substr(2, 9)}`,
+            content: trimmedContent,
+            files,
+            selectedModel: perMsgModel,
+            references,
+            waitingForRuntime: true,
+          },
+        ])
+        return
+      }
+
       const queueMessage = async () => {
         // Anything that lands in `displayedQueue` (the dock) must not also sit
         // in the transcript: a queued message is not a turn yet, and its bubble
@@ -8943,6 +9016,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSessionId,
       probeLiveTurn,
       reloadAndAttachLiveTurn,
+      runtimeStarting,
       serverQueue,
       showOptimisticEcho,
     ],
@@ -11277,6 +11351,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     placeholder={
                       readOnlyReason
                         ? readOnlyReason
+                        : runtimeStarting
+                        ? "Starting agent… messages you send now are queued"
                         : !featureId
                         ? "Message"
                         : hasPendingQuestion
