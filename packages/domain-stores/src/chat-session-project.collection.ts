@@ -251,6 +251,12 @@ export const ChatSessionProjectCollection = types
             limit: String(limit),
             offset: String(offset),
           })
+          // A caller may ask for a different order; when it does not, ask
+          // for newest-first rather than take whatever order the route
+          // happens to return (a local page with no ORDER BY comes back in
+          // primary-key order, which is how a reply that is on screen fell
+          // outside the page a turn-end paint compared against — SHO-328).
+          if (!params.has("orderBy")) params.set("orderBy", "createdAt:desc")
           const url = `${ENDPOINT}?${params.toString()}`
 
           const response = yield env.http.get<{
@@ -264,13 +270,31 @@ export const ChatSessionProjectCollection = types
               // A refresh is not authoritative for a row a write owns: a
               // delete or an update in flight has to survive it, the same
               // way `loadAll` makes it survive a stale response.
+              //
+              // A session-filtered page is authoritative for that session
+              // only: one collection holds the rows of several chats (the
+              // root store, the `/chat-messages?limit=1` tail probe), and
+              // clearing the whole map deleted another chat's rows between
+              // a load and the paint that reads them (SHO-328).
+              const scopedSessionId =
+                typeof filter?.sessionId === "string" ? filter.sessionId : null
               for (const id of Array.from(self.items.keys())) {
                 if (ownedByWrite(id, requestSeq)) continue
+                if (scopedSessionId && self.items.get(id)?.sessionId !== scopedSessionId) {
+                  continue
+                }
                 self.items.delete(id)
               }
             }
 
-            for (const item of response.data.items) {
+            // `all` is insertion order and this page may arrive in any
+            // order, so sort it newest-first before it lands in the map.
+            const pageItems = [...response.data.items].sort(
+              (a, b) =>
+                new Date(b?.createdAt ?? 0).getTime() -
+                new Date(a?.createdAt ?? 0).getTime(),
+            )
+            for (const item of pageItems) {
               const transformed = transformForMST(item)
               const id = transformed.id
               if (ownedByWrite(id, requestSeq)) continue

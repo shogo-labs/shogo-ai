@@ -73,6 +73,16 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     .filter(f => f.kind === 'scalar' && f.type === 'DateTime' && !f.isList)
     .map(f => f.name)
 
+  // A collection whose model carries `sessionId` can be asked for one chat's
+  // page, and must not let that page clear the rows of any other chat (SHO-328).
+  const sessionScoped = model.fields.some(f => f.name === 'sessionId')
+
+  // Local mode has no `beforeList` hook on most models, so the list route
+  // applies no default ORDER BY and SQLite answers in primary-key order — a
+  // "newest page" that is an arbitrary slice (SHO-328 / SHO-610). Ask for the
+  // order explicitly, and sort the page before trusting its order.
+  const orderableByCreatedAt = model.fields.some(f => f.name === 'createdAt')
+
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
     '/**',
@@ -326,6 +336,16 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     '            limit: String(limit),',
     '            offset: String(offset),',
     '          })',
+    ...(orderableByCreatedAt
+      ? [
+          '          // A caller may ask for a different order; when it does not, ask',
+          '          // for newest-first rather than take whatever order the route',
+          '          // happens to return (a local page with no ORDER BY comes back in',
+          '          // primary-key order, which is how a reply that is on screen fell',
+          '          // outside the page a turn-end paint compared against — SHO-328).',
+          '          if (!params.has("orderBy")) params.set("orderBy", "createdAt:desc")',
+        ]
+      : []),
     '          const url = `${ENDPOINT}?${params.toString()}`',
     '',
     '          const response = yield env.http.get<{',
@@ -339,13 +359,43 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     '              // A refresh is not authoritative for a row a write owns: a',
     '              // delete or an update in flight has to survive it, the same',
     '              // way `loadAll` makes it survive a stale response.',
+    ...(sessionScoped
+      ? [
+          '              //',
+          '              // A session-filtered page is authoritative for that session',
+          '              // only: one collection holds the rows of several chats (the',
+          '              // root store, the `/chat-messages?limit=1` tail probe), and',
+          '              // clearing the whole map deleted another chat\'s rows between',
+          '              // a load and the paint that reads them (SHO-328).',
+          '              const scopedSessionId =',
+          '                typeof filter?.sessionId === "string" ? filter.sessionId : null',
+        ]
+      : []),
     '              for (const id of Array.from(self.items.keys())) {',
     '                if (ownedByWrite(id, requestSeq)) continue',
+    ...(sessionScoped
+      ? [
+          '                if (scopedSessionId && self.items.get(id)?.sessionId !== scopedSessionId) {',
+          '                  continue',
+          '                }',
+        ]
+      : []),
     '                self.items.delete(id)',
     '              }',
     '            }',
     '',
-    '            for (const item of response.data.items) {',
+    ...(orderableByCreatedAt
+      ? [
+          '            // `all` is insertion order and this page may arrive in any',
+          '            // order, so sort it newest-first before it lands in the map.',
+          '            const pageItems = [...response.data.items].sort(',
+          '              (a, b) =>',
+          '                new Date(b?.createdAt ?? 0).getTime() -',
+          '                new Date(a?.createdAt ?? 0).getTime(),',
+          '            )',
+        ]
+      : []),
+    `            for (const item of ${orderableByCreatedAt ? 'pageItems' : 'response.data.items'}) {`,
     '              const transformed = transformForMST(item)',
     '              const id = transformed.id',
     '              if (ownedByWrite(id, requestSeq)) continue',

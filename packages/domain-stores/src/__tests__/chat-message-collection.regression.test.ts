@@ -18,7 +18,7 @@ const sessionBMessage = {
   content: "Message from session B",
 }
 
-test("filtered loads replace messages from the previous chat session", async () => {
+test("a filtered load leaves the previous chat session's messages alone", async () => {
   const collection = ChatMessageCollection.create(
     { items: {} },
     {
@@ -34,5 +34,8 @@ test("filtered loads replace messages from the previous chat session", async () 
   await collection.loadAll({ sessionId: "session-a" })
   await collection.loadAll({ sessionId: "session-b" })
 
-  expect(collection.all.map((message) => message.id)).toEqual(["message-b"])
+  expect(collection.all.map((message) => message.id)).toEqual([
+    "message-a",
+    "message-b",
+  ])
 })

@@ -120,7 +120,12 @@ import {
   withoutRefusedSend,
   type RefusedSend,
 } from "./session-refusal"
-import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
+import {
+  carriesReplyContent,
+  findRemovedReplies,
+  resolveHistoryPaint,
+  resolveLiveTurnAttach,
+} from "./history-paint"
 import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
 import { assistantRowsAtSend, findTurnReplyRow, shouldPaintReconciledHistory } from "./reconcile-reply-row"
 import {
@@ -4158,17 +4163,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
 
-  if (isActive && messages.length > 0) {
+  if (messages.length > 0) {
+    // The transcript on screen is the baseline every history paint is judged
+    // against, so the cache follows `messages` on every render — active panel or
+    // not. Gating this on `isActive` left a panel that streamed while it was
+    // behind another chat (or in the desktop's side panel) holding a copy from
+    // before the reply, and the next paint compared history with that copy and
+    // dropped the reply the screen was showing (SHO-328).
     cachedMessagesRef.current = messages
-    if (currentSessionId) {
+    if (isActive && currentSessionId) {
       // Keep the module cache in sync with the latest UI state so a subsequent
       // session switch (or panel remount) can hydrate instantly. This runs on
       // every render while streaming, which is cheap (Map.set by reference).
+      // Only an active panel writes it: an inactive one may never have attached
+      // to the turn, and its copy must not replace a fresher active one.
       writeSessionMessageCache(currentSessionId, messages)
       persistProjectHistoryRef.current?.(currentSessionId, messages)
     }
-  }
-  if (messages.length > 0) {
     lastNonEmptyMessagesRef.current = messages
   }
 
@@ -5095,6 +5106,92 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   /**
+   * A paint is about to replace the screen with a transcript that no longer
+   * carries a reply the person can see (SHO-328). Reported, never blocked: the
+   * server deleting rows (an edit, a truncate) is a real reason to paint less.
+   *
+   * `chat_history_paint_dropped_reply` only fires from the guard that *keeps*
+   * the live tail, so the paint that actually deleted the reply used to leave no
+   * trace anywhere — every "my reply vanished" report had to be re-derived from
+   * the persisted rows. This is that missing signal.
+   */
+  const reportReplyRemovedByPaint = useCallback(
+    (context: string, previous: readonly any[], next: readonly any[]) => {
+      const removed = findRemovedReplies(previous, next)
+      if (removed.length === 0) return
+      const tailRole = (rows: readonly any[]) => rows[rows.length - 1]?.role ?? "none"
+      console.warn(
+        `[ChatPanel] Paint removed a reply from the screen (${context}, ` +
+          `removed=${removed.map((entry) => entry.id).join(",") || "(no id)"}, ` +
+          `rows=${previous.length}->${next.length}, tail=${tailRole(previous)}->${tailRole(next)})`,
+      )
+      try {
+        Sentry.captureMessage("chat_reply_removed_by_paint", {
+          level: "error",
+          tags: { context },
+          extra: {
+            sessionId: currentSessionIdRef.current,
+            turnId: currentTurnIdRef.current,
+            removedIds: removed.map((entry) => entry.id),
+            removedLengths: removed.map((entry) => entry.contentLength),
+            previousRows: previous.length,
+            nextRows: next.length,
+            previousTailRole: tailRole(previous),
+            nextTailRole: tailRole(next),
+            keepsLiveTail: liveReplySessionRef.current === currentSessionIdRef.current,
+            streaming: isStreamingRef.current,
+          },
+        })
+      } catch (err) {
+        console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+      }
+    },
+    [],
+  )
+
+  /**
+   * Paint a transcript onto the screen. Every paint that replaces the whole
+   * transcript goes through here so the invariant above sees all of them, and so
+   * the paint baseline (`cachedMessagesRef`) can never disagree with what was
+   * actually painted.
+   */
+  const paintTranscript = useCallback(
+    (next: any[], context: string) => {
+      reportReplyRemovedByPaint(context, messagesRef.current, next)
+      cachedMessagesRef.current = next
+      if (next.length > 0) lastNonEmptyMessagesRef.current = next
+      setMessages(next)
+    },
+    [reportReplyRemovedByPaint, setMessages],
+  )
+
+  /**
+   * Whether a paint handed the reply back to history: it is history's row now, so
+   * the guarded live tail ends with it.
+   *
+   * The tail matters: a paint whose transcript ends on a prompt did *not* adopt
+   * the reply, and clearing the guard there is what left the rest of the turn
+   * unprotected — the next paint then had nothing to refuse for and painted the
+   * reply off the screen (SHO-328).
+   */
+  const paintAdoptedLiveReply = useCallback((painted: readonly any[]) => {
+    const tail = painted[painted.length - 1]
+    return tail?.role === "assistant" && carriesReplyContent(tail)
+  }, [])
+
+  /**
+   * Put the cached transcript back on the screen, unless that would delete a
+   * reply the screen already shows (SHO-328).
+   */
+  const restoreCachedTranscript = useCallback((): boolean => {
+    const cached = cachedMessagesRef.current
+    if (!cached || cached.length === 0) return false
+    if (findRemovedReplies(messagesRef.current, cached).length > 0) return false
+    setMessages(cached)
+    return true
+  }, [setMessages])
+
+  /**
    * Paint the transcript from what the message store holds, unless that would
    * drop a reply the API has not written yet (SHO-85).
    */
@@ -5146,17 +5243,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
         cached?.[painted.length - 1]?.id === painted[painted.length - 1]?.id &&
         cached?.[painted.length - 1]?.content === painted[painted.length - 1]?.content
       if (!unchanged) {
-        cachedMessagesRef.current = painted
-        setMessages(painted)
+        paintTranscript(painted, "paintLoadedHistory")
       }
       // History accounts for the screen again: the reply it was missing has been
       // written (or was never this panel's), so the next paint may go ahead
-      // without the live-tail guard (SHO-85).
-      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      // without the live-tail guard (SHO-85) — but only once a paint actually
+      // carried the reply, never because a page that is behind the screen was
+      // painted (SHO-328).
+      if (!paint.carriedLiveReply && paintAdoptedLiveReply(painted)) {
+        liveReplySessionRef.current = null
+      }
       writeSessionMessageCache(sessionId, painted)
       persistProjectHistoryRef.current?.(sessionId, painted)
     },
-    [sessionMessages, setMessages, reportHistoryPaintKeptLiveTail],
+    [
+      sessionMessages,
+      reportHistoryPaintKeptLiveTail,
+      paintTranscript,
+      paintAdoptedLiveReply,
+    ],
   )
   const paintLoadedHistoryRef = useRef(paintLoadedHistory)
   paintLoadedHistoryRef.current = paintLoadedHistory
@@ -6207,14 +6312,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         (before[before.length - 1] as any)?.content !==
           (painted[painted.length - 1] as any)?.content
       if (changed) {
-        cachedMessagesRef.current = painted
-        lastNonEmptyMessagesRef.current = painted
-        setMessages(painted)
+        paintTranscript(painted, "delta")
       } else if (before) {
         cachedMessagesRef.current = painted
       }
       writeSessionMessageCache(sessionId, painted)
-      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      if (!paint.carriedLiveReply && paintAdoptedLiveReply(painted)) {
+        liveReplySessionRef.current = null
+      }
       historyMetaRef.current.set(key, {
         // A delta that carried nothing must not touch the floor: a server that
         // echoes `since` would walk it backwards 5 s per quiet reopen.
@@ -6229,7 +6334,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       fetchChatChanges,
       persistProjectHistory,
       sessionMessages,
-      setMessages,
+      paintTranscript,
+      paintAdoptedLiveReply,
     ],
   )
 
@@ -6277,9 +6383,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (activeSessionIdRef.current !== sessionId) return
         if (isStreamingRef.current || isSendingMessageRef.current) return
         const painted = entry.messages as any[]
-        cachedMessagesRef.current = painted
-        lastNonEmptyMessagesRef.current = painted
-        setMessages(painted)
+        // The device copy is written from renders, so it can be a beat behind a
+        // reply that is already on screen. Painting it is right for a cold panel
+        // and wrong for one that is showing more than the copy holds (SHO-328).
+        const losesReply = findRemovedReplies(messagesRef.current, painted).length > 0
+        if (!losesReply) {
+          paintTranscript(painted, "device-hydration")
+        }
         setIsInitialLoadComplete(true)
         try {
           if (cursor) {
@@ -6426,9 +6536,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // with no live tail to protect, applying it here would keep the
             // deleted rows on screen forever (SHO-260).
             if (authoritative && liveReplySessionRef.current !== loadSessionId) {
-              cachedMessagesRef.current = aiMessages
-              lastNonEmptyMessagesRef.current = aiMessages
-              setMessages(aiMessages)
+              // The page wins here (rows were deleted), but a reply on screen that
+              // the page does not carry is still reported: this is the one paint
+              // allowed to delete one, so it has to be visible when it does
+              // (SHO-328).
+              paintTranscript(aiMessages, "first-page-authoritative")
               writeSessionMessageCache(loadSessionId, aiMessages)
               cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
               // Adopt the page's own numbers. Without this the entry keeps the
@@ -6485,9 +6597,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 textLength(painted[painted.length - 1])
 
             if (changed) {
-              cachedMessagesRef.current = painted
+              paintTranscript(painted, "effect-1")
               writeSessionMessageCache(loadSessionId, painted)
-              setMessages(painted)
               historyPaintAttemptRef.current = 0
             } else {
               // Same shape as cache — still refresh the module cache entry so any
@@ -6496,8 +6607,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             }
             // History accounts for the screen again: the reply it was missing has
             // been written (or was never this panel's), so the next paint may go
-            // ahead without the live-tail guard (SHO-85).
-            if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+            // ahead without the live-tail guard (SHO-85) — once the paint actually
+            // carried the reply (SHO-328).
+            if (!paint.carriedLiveReply && paintAdoptedLiveReply(painted)) {
+              liveReplySessionRef.current = null
+            }
             // Keep the device copy in step and learn the delta cursor from the
             // newest row this page carried (SHO-260).
             void persistProjectHistory(loadSessionId, painted)
@@ -6617,8 +6731,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // See chat-load-decision.test.ts for the regression repro.
     const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId)
     if (refreshedAt !== undefined && performance.now() - refreshedAt < 5000) {
+      // Restoring the cached transcript must not delete a reply the screen holds:
+      // the cache is written from renders, and this restore used to paint a copy
+      // from before the reply over the live transcript (SHO-328).
       if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
-        setMessages(cachedMessagesRef.current!)
+        restoreCachedTranscript()
       }
       setIsInitialLoadComplete(true)
       return
@@ -6626,7 +6743,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     if (hasCached) {
       if (messagesRef.current !== cachedMessagesRef.current) {
-        setMessages(cachedMessagesRef.current!)
+        restoreCachedTranscript()
       }
       setIsInitialLoadComplete(true)
     }
@@ -6845,11 +6962,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      cachedMessagesRef.current = paint.messages as any[]
+      paintTranscript(paint.messages as any[], "load-older")
       writeSessionMessageCache(currentSessionId, paint.messages as any[])
       persistProjectHistoryRef.current?.(currentSessionId, paint.messages as any[])
-      setMessages(paint.messages as any[])
-      if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      if (!paint.carriedLiveReply && paintAdoptedLiveReply(paint.messages)) {
+        liveReplySessionRef.current = null
+      }
       historyPaintAttemptRef.current = 0
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,
@@ -6861,8 +6979,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [
     currentSessionId,
     sessionMessages,
-    setMessages,
     reportHistoryPaintKeptLiveTail,
+    paintTranscript,
+    paintAdoptedLiveReply,
   ])
 
   /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
