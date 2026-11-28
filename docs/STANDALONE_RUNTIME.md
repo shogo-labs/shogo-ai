@@ -31,13 +31,26 @@ ghcr.io/shogo-labs/shogo-runtime:sha-<commit>
 ```
 
 Both tags are manifest lists covering `linux/amd64` and `linux/arm64`, so
-`docker pull` resolves to the host's architecture. The package is public: no
-credentials are needed to pull it. The per-arch digests are appended to the
-GitHub Release notes for the tag, so you can pin by digest:
+`docker pull` resolves to the host's architecture. The image is public: every
+release tag **checks** that it pulls anonymously, with no credentials at all,
+and fails the release when it does not. The per-arch digests are published in
+that tag's GitHub Release notes, so you can pin by digest:
 
 ```yaml
 image: ghcr.io/shogo-labs/shogo-runtime@sha256:<digest>
 ```
+
+Verify a tag yourself, dropping any stored login first:
+
+```bash
+docker logout ghcr.io && docker pull ghcr.io/shogo-labs/shogo-runtime:vX.Y.Z
+```
+
+If that returns `401 Unauthorized` or `403 Forbidden`, the package's visibility
+has regressed (it is an org setting no workflow can change) — report it to
+security@shogo.ai rather than working around it with a login. The digest table
+is in the release notes for every tag; if it is missing, say so in the same
+report.
 
 **Size.** About 6.7 GB compressed, ~14 GB on disk. The image carries Chromium,
 ffmpeg, ripgrep, the AWS CLI, the GitHub CLI, pyright and the MCP packages, plus

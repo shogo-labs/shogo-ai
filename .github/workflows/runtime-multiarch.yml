@@ -296,7 +296,10 @@ jobs:
   # One-time setting this workflow cannot make: the GHCR package must be
   # PUBLIC. After the first publish, set it in the package settings
   # (Packages → shogo-runtime → Change visibility → Public). Until then
-  # `docker pull` needs credentials.
+  # `docker pull` needs credentials — so every tag runs
+  # `.github/scripts/check-ghcr-anonymous-pull.sh` and fails loudly when the
+  # setting has regressed. See docs/runbooks/deploy-prod.md, "Standalone
+  # runtime image (GHCR)".
   # ---------------------------------------------------------------------------
   publish:
     name: Publish public multi-arch image (GHCR)
@@ -307,9 +310,12 @@ jobs:
     environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # append the digests to the release notes
+      contents: write # write this job's section of the release notes
       packages: write # push to ghcr.io
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
       - name: Download digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -368,33 +374,47 @@ jobs:
           docker buildx imagetools inspect "${TARGET}:${TAG}" | grep -q 'linux/amd64'
           docker buildx imagetools inspect "${TARGET}:${TAG}" | grep -q 'linux/arm64'
 
-      - name: Append the image + digests to the release notes
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          # No `name:` — whichever workflow creates the release first wins the
-          # title, everyone else appends. `append_body` keeps the desktop and
-          # binary notes intact.
-          append_body: true
-          body: |
-
-            ### Standalone agent runtime image
-
-            Public multi-arch image (linux/amd64 + linux/arm64), AGPL-3.0-or-later:
-
-            ```
-            docker pull ghcr.io/shogo-labs/shogo-runtime:${{ github.ref_name }}
-            ```
-
-            Pin by digest for a reproducible deploy:
-
-            | Platform | Digest |
-            | --- | --- |
-            | linux/amd64 | `${{ steps.public.outputs.amd64 }}` |
-            | linux/arm64 | `${{ steps.public.outputs.arm64 }}` |
-
-            Contract: [docs/STANDALONE_RUNTIME.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/STANDALONE_RUNTIME.md)
+      - name: Write the runtime image section of the release notes
+        # This job owns one block of the body, not the body. The desktop
+        # release rewrites the top of the same release later in the day; the
+        # helper keeps marked sections through that rewrite, whichever job
+        # finishes last (SHO-608 — v2.6.7/v2.6.8 lost this table).
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          AMD64: ${{ steps.public.outputs.amd64 }}
+          ARM64: ${{ steps.public.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo '### Standalone agent runtime image'
+            echo
+            echo 'Public multi-arch image (linux/amd64 + linux/arm64), AGPL-3.0-or-later:'
+            echo
+            echo '```'
+            echo "docker pull ghcr.io/shogo-labs/shogo-runtime:${TAG}"
+            echo '```'
+            echo
+            echo 'Pin by digest for a reproducible deploy:'
+            echo
+            echo '| Platform | Digest |'
+            echo '| --- | --- |'
+            echo "| linux/amd64 | \`${AMD64}\` |"
+            echo "| linux/arm64 | \`${ARM64}\` |"
+            echo
+            echo "Contract: [docs/STANDALONE_RUNTIME.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/STANDALONE_RUNTIME.md)"
+          } > runtime-image.md
+          .github/scripts/release-notes-section.sh upsert "$TAG" runtime-image runtime-image.md
+
+      - name: Verify anonymous pull
+        # Deliberately AFTER the notes step: the digest table must land even
+        # when the package visibility has regressed, and this must still fail
+        # the tag (a partner who cannot pull cannot run the image). No docker
+        # login here — this asks the registry exactly what `docker pull` with
+        # no credentials asks.
+        run: .github/scripts/check-ghcr-anonymous-pull.sh ghcr.io/shogo-labs/shogo-runtime "${GITHUB_REF_NAME}"
 
   # ---------------------------------------------------------------------------
   # Release gate: boot the image we just published the way a hardened
