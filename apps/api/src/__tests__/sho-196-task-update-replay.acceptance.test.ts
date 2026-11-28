@@ -129,6 +129,7 @@ const wakesFor = (watchId: string) => dispatched.filter((body) => (body.taskNoti
 async function move(watch: Awaited<ReturnType<typeof watchedCard>>, column: string, category: string) {
   const before = wakesFor(watch.watchId).length
   await tasks.emitTaskEvent('work_item', watch.item.id, {
+    kind: 'moved',
     line: `moved to ${column} (${category})`,
     card: { to: { column, category } },
   })
