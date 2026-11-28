@@ -34,7 +34,9 @@ import { usePostHogSafe } from '../../../contexts/posthog'
 import { api, type OnboardingIntent } from '../../../lib/api'
 import { buildBuildBriefMessage } from '../../chat/turns/buildBrief'
 import { EVENTS, trackEvent } from '../../../lib/analytics'
+import { isFirstSession } from '../../../lib/account-age'
 import { safeGetItem, safeRemoveItem } from '../../../lib/safe-storage'
+import { clearSignupIntent, getSignupIntent, type SignupIntent } from '../../../lib/signup-intent'
 import { setActiveWorkspaceId } from '../../../lib/workspace-store'
 import { OnboardingStepper, type StepDef } from '../OnboardingStepper'
 import { NameInput } from '../steps/NameInput'
@@ -50,6 +52,13 @@ import {
   useDesktopPermissionSteps,
 } from '../desktop/useDesktopPermissionSteps'
 import { Spinner } from '@/components/ui/spinner'
+
+/**
+ * Seconds the visible countdown gives a visitor to stop a carried prompt from
+ * building itself (SHO-614). Long enough to read, short enough that the idea
+ * they typed starts building without another tap.
+ */
+const AUTO_RUN_SECONDS = 5
 
 /** Names the local bootstrap seeds before the user has told us theirs. */
 const PLACEHOLDER_USER_NAMES = new Set(['', 'local', 'local user'])
@@ -128,8 +137,22 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     const slug = Platform.OS === 'web' ? safeGetItem('pending_template_id') : null
     return slug ? `Set up the ${slug.replace(/[-_]+/g, ' ')} agent for me` : ''
   })
+  // What the marketing link asked us to build (SHO-614). The browser's own
+  // copy first — same device, freshest — then the account's copy, which is how
+  // a person who verified their email on the phone still gets their prompt.
+  const [signupIntent, setSignupIntent] = useState<SignupIntent | null>(() =>
+    localMode ? null : getSignupIntent(),
+  )
+  // Countdown before the carried prompt builds itself; `null` when off.
+  const [autoRunSeconds, setAutoRunSeconds] = useState<number | null>(null)
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState<string | null>(null)
+
+  const autoRunCancelled = useRef(false)
+  const autoRan = useRef(false)
+  const promptEdited = useRef(false)
+  const promptTouched = useRef(false)
+  const intentTracked = useRef(false)
 
   const invitedEmails = useRef(new Set<string>())
   const createdSessionId = useRef<string | null>(null)
@@ -229,6 +252,60 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const displayTeamName = teamName.trim() || ownTeamWorkspace?.name || 'your workspace'
   const draftInvalid = parseEmailDraft(emailDraft).invalid
 
+  // Resolve the account's stored intent when this browser has none — the
+  // cross-device half of SHO-614 (sign up on the laptop, verify on the phone).
+  // Best-effort: a failed lookup falls back to the normal flow.
+  useEffect(() => {
+    if (localMode || signupIntent) return
+    let cancelled = false
+    void api
+      .getOnboardingIntent(http)
+      .then((intent) => {
+        if (cancelled || !intent) return
+        setSignupIntent(intent)
+      })
+      .catch((err) => {
+        console.warn('[Onboarding] Sign-up intent lookup failed:', err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [localMode, http, signupIntent])
+
+  // What the marketing link carried here. `prompt` wins over `template`
+  // (a template-only link behaves exactly as it always has).
+  const carriedPrompt = (signupIntent?.prompt ?? '').trim()
+  const carriedPlan = signupIntent?.plan
+  const carriedTrial = signupIntent?.trial === true
+  // A carried prompt skips the team step: the workspace already exists, and
+  // invites live in Settings → People. The user came here to see their idea
+  // built, not to name a workspace. Only skip it when the workspace really is
+  // there — the team step is also where a failed workspace load is retried.
+  const skipTeamSetup = !!carriedPrompt && !!ownTeamWorkspace
+  // The intent may only *run* itself for a just-created account. A signed-in
+  // person who opens a crafted `?prompt=` link months later gets nothing sent
+  // in their existing workspace (SHO-614 safety rule).
+  const canAutoRun = isFirstSession(user?.createdAt)
+
+  useEffect(() => {
+    if (!signupIntent) return
+    if (carriedPrompt && !promptTouched.current) setBuildPrompt(carriedPrompt)
+  }, [carriedPrompt, signupIntent])
+
+  useEffect(() => {
+    if (!signupIntent || intentTracked.current) return
+    intentTracked.current = true
+    trackEvent(posthog, EVENTS.SIGNUP_INTENT_CAPTURED, {
+      ...analyticsContext,
+      has_prompt: !!signupIntent.prompt,
+      template: signupIntent.template ?? null,
+      plan: signupIntent.plan ?? null,
+      trial: signupIntent.trial === true,
+      intent: signupIntent.intent ?? null,
+      source: 'url',
+    })
+  }, [analyticsContext, posthog, signupIntent])
+
   const targetWorkspaceId = destination === 'joined' ? joinedTeamWorkspace?.id : ownTeamWorkspace?.id
 
   // Start claiming / booting the workspace agent's runtime now, so it is warm
@@ -260,9 +337,17 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     const prompt = (promptOverride !== undefined ? promptOverride : buildPrompt).trim()
     setFinishing(true)
     setFinishError(null)
+    // A carried prompt counts once it is actually sent, or the visitor chose
+    // to skip it — either way the intent has done its job.
+    const carried = carriedPrompt
+      ? { carried_prompt: true, auto_ran: autoRan.current, edited: promptEdited.current }
+      : { carried_prompt: false }
     try {
       await api.completeOnboarding(http, intent ? { intent } : undefined)
       safeRemoveItem('pending_template_id')
+      // Both copies, not just this browser's: the server clears the account's
+      // copy in `completeOnboarding` above.
+      clearSignupIntent()
 
       if (destination === 'team' && prompt && ownTeamWorkspace) {
         if (!createdSessionId.current) {
@@ -275,6 +360,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
         trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
           ...analyticsContext,
           build_prompt: true,
+          ...carried,
         })
         router.replace({
           pathname: '/(app)/agent',
@@ -286,9 +372,29 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
         return
       }
 
+      // A pricing link with no idea attached: there is nothing to build, so
+      // take the plan they tapped to billing and let it start the checkout
+      // (trial when `?trial=1`, otherwise the normal one).
+      if (destination === 'team' && !prompt && carriedPlan && ownTeamWorkspace) {
+        setActiveWorkspaceId(ownTeamWorkspace.id)
+        trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
+          ...analyticsContext,
+          build_prompt: false,
+          ...carried,
+          carried_plan: carriedPlan,
+          carried_trial: carriedTrial,
+        })
+        router.replace({
+          pathname: '/(app)/billing',
+          params: carriedTrial ? { trial: carriedPlan } : { checkout: carriedPlan },
+        } as any)
+        return
+      }
+
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         ...analyticsContext,
         build_prompt: false,
+        ...carried,
       })
       navigateToWorkspace(targetWorkspaceId)
     } catch (err) {
@@ -298,6 +404,9 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   }, [
     analyticsContext,
     buildPrompt,
+    carriedPlan,
+    carriedPrompt,
+    carriedTrial,
     destination,
     http,
     intent,
@@ -413,6 +522,14 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     }
   }, [actions, analyticsContext, emailDraft, emails, ownTeamWorkspace, posthog, teamName])
 
+  // Escaping the auto-run (Edit first, focusing or typing in the input, a chip
+  // tap) is permanent for this visit: the visitor asked to look before it sends.
+  const cancelAutoRun = useCallback(() => {
+    autoRunCancelled.current = true
+    promptEdited.current = true
+    setAutoRunSeconds(null)
+  }, [])
+
   const steps: StepDef[] = useMemo(() => {
     const list: StepDef[] = []
     if (askName) {
@@ -449,8 +566,11 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     }
     list.push(...permissionSteps.steps)
     if (destination === 'team') {
-      list.push(
-        {
+      // A carried prompt from the marketing site goes straight to the build:
+      // the workspace already exists and naming it is not what the visitor
+      // clicked for (SHO-614).
+      if (!skipTeamSetup) {
+        list.push({
           id: 'team-setup',
           eyebrow: 'Team workspace',
           title: 'Set up your team workspace',
@@ -488,24 +608,29 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
               </Button>
             </View>
           ),
-        },
-        {
-          id: 'build-prompt',
-          eyebrow: displayTeamName,
-          title: 'What do you want to build?',
-          subtitle: 'Tell your workspace agent about it. You can change direction anytime.',
-          canContinue: buildPrompt.trim().length > 0,
-          primaryLabel: 'Start building',
-          skipLabel: "I'll explore first",
-          body: (
-            <BuildPromptStep
-              value={buildPrompt}
-              onChange={setBuildPrompt}
-              onSubmit={() => handleNextRef.current()}
-            />
-          ),
-        },
-      )
+        })
+      }
+      list.push({
+        id: 'build-prompt',
+        eyebrow: displayTeamName,
+        title: 'What do you want to build?',
+        subtitle: 'Tell your workspace agent about it. You can change direction anytime.',
+        canContinue: buildPrompt.trim().length > 0,
+        primaryLabel: 'Start building',
+        skipLabel: "I'll explore first",
+        body: (
+          <BuildPromptStep
+            value={buildPrompt}
+            onChange={(next) => {
+              promptTouched.current = true
+              setBuildPrompt(next)
+            }}
+            onSubmit={() => handleNextRef.current()}
+            autoRunSeconds={autoRunSeconds}
+            onCancelAutoRun={cancelAutoRun}
+          />
+        ),
+      })
     }
     if (destination === 'joined' && joinedTeamWorkspace) {
       list.push({
@@ -522,6 +647,8 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   }, [
     aiReady,
     askName,
+    autoRunSeconds,
+    cancelAutoRun,
     destination,
     displayTeamName,
     draftInvalid.length,
@@ -541,6 +668,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     buildPrompt,
     savingName,
     savingTeam,
+    skipTeamSetup,
     teamError,
     teamName,
   ])
@@ -575,6 +703,42 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     setBuildPrompt('')
     void finish('')
   }, [activeIndex, advance, finish, steps])
+
+  // A carried prompt builds itself once the workspace is ready. The countdown
+  // is visible, and any escape (Edit first, focus, typing, a chip tap) stops it
+  // for good — nothing is ever sent that the visitor did not see coming.
+  const autoRunReady =
+    !localMode &&
+    loaded &&
+    canAutoRun &&
+    !!carriedPrompt &&
+    !finishing &&
+    destination === 'team' &&
+    !!ownTeamWorkspace &&
+    !autoRunCancelled.current &&
+    steps[activeIndex]?.id === 'build-prompt'
+
+  const finishRef = useRef(finish)
+  finishRef.current = finish
+
+  useEffect(() => {
+    if (!autoRunReady) {
+      setAutoRunSeconds(null)
+      return
+    }
+    setAutoRunSeconds(AUTO_RUN_SECONDS)
+    const timer = setInterval(() => {
+      setAutoRunSeconds((seconds) => (seconds === null ? null : seconds > 1 ? seconds - 1 : 0))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [autoRunReady])
+
+  useEffect(() => {
+    if (autoRunSeconds !== 0 || autoRunCancelled.current) return
+    setAutoRunSeconds(null)
+    autoRan.current = true
+    void finishRef.current()
+  }, [autoRunSeconds])
 
   const handleStepViewed = useCallback(
     (step: StepDef, index: number) => {

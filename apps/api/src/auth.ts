@@ -877,6 +877,28 @@ export const auth = betterAuth({
             console.warn('[Attribution] signup attribution on signup failed', err)
           }
 
+          // Sign-up intent (SHO-614) — the same cookie channel as the UTMs,
+          // because the app puts what the marketing link asked for
+          // (`?prompt=`, `?plan=`, …) into `__shogo_intent` before the sign-up
+          // POST. Storing it on the row is what survives verifying the email on
+          // another device, where the app's localStorage does not exist.
+          // Best-effort: a malformed cookie parses to null and a failed write
+          // must never fail a sign-up.
+          try {
+            const { parseSignupIntentCookie } = await import('./lib/signup-intent')
+            const signupIntent = parseSignupIntentCookie(
+              ctx?.request?.headers?.get?.('cookie') ?? ctx?.headers?.get?.('cookie') ?? '',
+            )
+            if (signupIntent) {
+              await prisma.user.update({
+                where: { id: user.id },
+                data: { signupIntent: JSON.stringify(signupIntent) },
+              })
+            }
+          } catch (err) {
+            console.warn('[SignupIntent] could not store the sign-up intent', err)
+          }
+
           // Affiliate attribution — best-effort, swallow errors.
           //
           // The Cloudflare /r/:code Pages Function sets two first-party

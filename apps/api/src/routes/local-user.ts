@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { normalizeAdminScopes } from '../lib/admin-scopes'
+import { parseStoredSignupIntent } from '../lib/signup-intent'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
   AVATAR_CONTENT_KEY_PATTERN,
@@ -186,6 +187,32 @@ export function userProfileRoutes(): Hono {
     return c.json({ ok: true, version })
   })
 
+  /**
+   * What the marketing site asked us to build for this account (SHO-614),
+   * stored at sign-up from the `__shogo_intent` cookie. This is the
+   * cross-device half: the app's localStorage copy only exists in the browser
+   * that opened the link.
+   *
+   * Always answers `{ intent: null }` when there is none — a 404 would make
+   * every onboarding mount log an error.
+   */
+  router.get('/onboarding/intent', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { signupIntent: true },
+    })
+    if (!user) {
+      return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
+    }
+
+    return c.json({ ok: true, data: { intent: parseStoredSignupIntent(user.signupIntent) } })
+  })
+
   router.post('/onboarding/complete', async (c) => {
     const userId = userIdFrom(c)
     if (!userId) {
@@ -208,6 +235,9 @@ export function userProfileRoutes(): Hono {
       where: { id: userId },
       data: {
         onboardingCompleted: true,
+        // The sign-up intent drives the FIRST onboarding only (SHO-614); once
+        // it is done the prompt has been sent (or deliberately skipped).
+        signupIntent: null,
         ...(intent ? { onboardingIntent: intent as OnboardingIntent } : {}),
       },
     })

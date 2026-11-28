@@ -88,7 +88,7 @@ import { UpdateBanner } from "../components/UpdateBanner";
 import { LocalApiStatusBanner } from "../components/LocalApiStatusBanner";
 import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
 import { captureAttribution } from "../lib/attribution";
-import { safeSetItem } from "../lib/safe-storage";
+import { captureSignupIntent } from "../lib/signup-intent";
 import { setPendingLicenseCode } from "../lib/pending-license";
 import * as ExpoLinking from "expo-linking";
 import { useWhatsNew } from "../lib/whats-new/use-whats-new";
@@ -203,30 +203,9 @@ Sentry.init({
   },
 });
 
-const PENDING_TEMPLATE_KEY = "pending_template_id";
-const PENDING_APP_TEMPLATE_KEY = "pending_app_template";
-
-function useCaptureTemplateDeepLink() {
-  useEffect(() => {
-    if (Platform.OS !== "web" || typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const templateId = params.get("template");
-    if (templateId) {
-      safeSetItem(PENDING_TEMPLATE_KEY, templateId);
-      params.delete("template");
-    }
-    const appTemplateName = params.get("app_template");
-    if (appTemplateName) {
-      safeSetItem(PENDING_APP_TEMPLATE_KEY, appTemplateName);
-      params.delete("app_template");
-    }
-    if (templateId || appTemplateName) {
-      const qs = params.toString();
-      const clean = window.location.pathname + (qs ? `?${qs}` : "");
-      window.history.replaceState({}, "", clean);
-    }
-  }, []);
-}
+// Sign-up intent (`?prompt=`, `?plan=`, `?template=`, …) is captured during
+// the first render below — see `lib/signup-intent.ts` for why it cannot wait
+// for an effect.
 
 // Capture a license-key redeem code from the deep link before the (app)
 // auth guard can redirect an unauthenticated user to sign-in (which drops
@@ -335,6 +314,11 @@ function AuthenticatedAppShell({
 
 function RootLayoutInner() {
   csMark("root:layout:render");
+  // Read `?prompt=` / `?plan=` / `?template=` during the first render, not in
+  // an effect: the `/sign-up` → `/sign-in` redirect happens in this same tick
+  // and a redirect rebuilds the href, dropping the query string. Lazy state
+  // initializer = exactly once, synchronously, before any route renders.
+  useState(captureSignupIntent);
   // The device's own session, read before the first tree so `AuthProvider` can
   // paint a signed-in launch instead of holding a spinner for `get-session`
   // (SHO-580). One storage read, already in flight from module load.
@@ -357,7 +341,6 @@ function RootLayoutInner() {
   useEffect(() => {
     captureAttribution();
   }, []);
-  useCaptureTemplateDeepLink();
   useCaptureRedeemDeepLink();
   const systemColorScheme = useColorScheme();
   const { theme, isLoaded } = useTheme();

@@ -10,6 +10,7 @@ import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
 import { billingApiBase } from '@shogo/shared-app/hooks'
+import type { SignupIntent } from '@shogo/shared-app/signup-intent'
 
 export { API_URL } from './api-url'
 
@@ -3546,6 +3547,18 @@ export const api = {
   async completeOnboarding(http: HttpClient, body?: { intent?: OnboardingIntent }) {
     const res = await http.post<{ ok: boolean }>('/api/onboarding/complete', body)
     return res.data
+  },
+
+  /**
+   * The sign-up intent the server stored at sign-up (SHO-614). The app's own
+   * copy lives in localStorage; this covers verifying the email on a device
+   * that never opened the marketing link.
+   */
+  async getOnboardingIntent(http: HttpClient): Promise<SignupIntent | null> {
+    const res = await http.get<{ ok: boolean; data?: { intent?: SignupIntent | null } }>(
+      '/api/onboarding/intent',
+    )
+    return res.data?.data?.intent ?? null
   },
 
   async getGettingStarted(http: HttpClient): Promise<GettingStartedProgress | null> {

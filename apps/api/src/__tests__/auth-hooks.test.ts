@@ -146,6 +146,8 @@ mock.module('../services/project-auth-config.service', () => ({
 }))
 
 const riskState: { upserts: any[]; failTimes: number } = { upserts: [], failTimes: 0 }
+/** Every `prisma.user.update` — the sign-up intent write (SHO-614) is one. */
+const userUpdates: any[] = []
 
 // The credit grant pulls the whole billing graph in; the hook test only cares
 // that the assessment ran, so it is stubbed (SHO-440).
@@ -157,7 +159,10 @@ mock.module('../lib/prisma', () => ({
   prisma: {
     user: {
       count: async () => 0, // never local-mode-blocked in this file
-      update: async (_args: unknown) => ({ id: 'u', role: 'super_admin' }),
+      update: async (args: unknown) => {
+        userUpdates.push(args)
+        return { id: 'u', role: 'super_admin' }
+      },
     },
     // Enough of the signup-risk tables for `assessNewSignup` to run, so the
     // device-id path can be asserted end to end (SHO-440).
@@ -210,6 +215,7 @@ beforeEach(() => {
   allowState.recordShouldThrow = false
   riskState.upserts.length = 0
   riskState.failTimes = 0
+  userUpdates.length = 0
   delete process.env.SHOGO_AFFILIATES_NATIVE
   delete process.env.NODE_ENV
   delete process.env.SHOGO_LOG_PASSWORD_RESET_URL
@@ -550,6 +556,43 @@ describe('databaseHooks.user.create.after', () => {
       { id: 'u', email: 'a@b.com' }, ctx,
     )
     expect(affState.calls).toHaveLength(0)
+  })
+
+  // SHO-614: the marketing site's `?prompt=` rides a first-party cookie through
+  // the Google callback, so the hook has to keep it for a verification that
+  // happens on another device.
+  test('stores the sign-up intent from the cookie on the user row', async () => {
+    const intent = { prompt: 'A booking page for my salon', intent: 'hero_prompt' }
+    const ctx = {
+      path: '/callback/google',
+      request: {
+        headers: {
+          get: (k: string) =>
+            k === 'cookie'
+              ? `theme=dark; __shogo_intent=${encodeURIComponent(JSON.stringify(intent))}`
+              : null,
+        },
+      },
+    }
+    await capturedConfig.databaseHooks.user.create.after(
+      { id: 'u-intent', email: 'i@i.com', name: 'Ivy' }, ctx,
+    )
+    const write = userUpdates.find((u) => u?.data?.signupIntent)
+    expect(write?.where).toEqual({ id: 'u-intent' })
+    expect(JSON.parse(write!.data.signupIntent)).toEqual(intent)
+  })
+
+  test('does not write an intent when the cookie is absent or unusable', async () => {
+    const ctx = {
+      path: '/callback/google',
+      request: { headers: { get: (k: string) => (k === 'cookie' ? '__shogo_intent=not-json' : null) } },
+    }
+    await capturedConfig.databaseHooks.user.create.after(
+      { id: 'u-no-intent', email: 'n@n.com', name: 'N' }, ctx,
+    )
+    expect(userUpdates.some((u) => u?.data?.signupIntent)).toBe(false)
+    // A sign-up still succeeds.
+    expect(wsState.createCalls).toHaveLength(1)
   })
 
   test('falls back to name="User" when user.name is missing', async () => {

@@ -212,6 +212,9 @@ import { rejoinProbeVerdict } from "./rejoin-probe"
 import { markStoppedTail, mergeStoppedSnapshot } from "./stopped-turn"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
+import { getPostHogSnapshot } from "../../contexts/posthog"
+import { EVENTS, trackEvent } from "../../lib/analytics"
+import { usageLimitHitKey, usageLimitHitProps } from "./usage-limit-hit"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceHttp } from "../../lib/workspace-http"
 import { agentProxyBase } from "../../lib/agent-proxy-base"
@@ -1379,6 +1382,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const trialEligible = Boolean(
     (billingData ? (billingData as any).trialEligible : (ownBillingData as any).trialEligible),
   )
+  // Signup promo credit (SHO-614): while the email is unverified, part of the
+  // credit is waiting behind it, and that is the free way out of a cap.
+  const promoCredit = (billingData ? (billingData as any).promoCredit : (ownBillingData as any).promoCredit) as
+    | { emailVerified?: boolean; pendingVerificationUsd?: number }
+    | undefined
+  const promoPendingUsd = promoCredit?.pendingVerificationUsd ?? 0
+  const promoEmailVerified = promoCredit?.emailVerified
+  // Which rolling window gated the turn, for the `hit_cap` event. The narrow
+  // `billingData` prop has no windows, so only the internally-loaded copy can
+  // answer; the event reports `null` otherwise.
+  const usageWindows = !billingData ? ownBillingData.usageWindows : undefined
+  const capWindow =
+    (usageWindows?.weekly?.utilization ?? 0) >= 1
+      ? "weekly"
+      : (usageWindows?.fiveHour?.utilization ?? 0) >= 1
+        ? "five_hour"
+        : null
   // Per-attachment upload cap (SHO-370). Undefined when billing is off (local
   // mode) so ChatInput falls back to the paid default — the server is the gate.
   const chatAttachmentBytes = billingData
@@ -4563,14 +4583,47 @@ const ChatPanelContent = observer(function ChatPanelContent({
         stoppedTurn: usageLimitNotice,
         currentSessionId,
         trialEligible,
+        promoPendingUsd,
+        emailVerified: promoEmailVerified,
       }),
-    [error?.message, errorDismissed, usageLimitNotice, currentSessionId, trialEligible],
+    [
+      error?.message,
+      errorDismissed,
+      usageLimitNotice,
+      currentSessionId,
+      trialEligible,
+      promoPendingUsd,
+      promoEmailVerified,
+    ],
   )
   const usageLimitBlocked = usageLimitView?.variant === "blocked"
   useEffect(() => {
     if (usageLimitBlocked) refetchUsageWallet()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usageLimitBlocked])
+
+  // Report a cap once per session + variant (SHO-614, G8). This event was
+  // declared and never fired, so "how often does a first build hit the free
+  // cap" had no answer. `first_session` is what separates a brand-new account
+  // (the visitor whose first idea was refused) from a long-standing user.
+  const reportedCaps = useRef(new Set<string>())
+  useEffect(() => {
+    if (!usageLimitView) return
+    const key = usageLimitHitKey(currentSessionId, usageLimitView.variant)
+    if (reportedCaps.current.has(key)) return
+    reportedCaps.current.add(key)
+    trackEvent(
+      getPostHogSnapshot(),
+      EVENTS.USAGE_LIMIT_HIT,
+      usageLimitHitProps({
+        createdAt: getAuthUserSnapshot()?.createdAt,
+        variant: usageLimitView.variant,
+        window: capWindow,
+        emailVerified: promoEmailVerified,
+        promoPendingUsd,
+      }),
+    )
+  }, [usageLimitView, currentSessionId, capWindow, promoEmailVerified, promoPendingUsd])
 
   useEffect(() => {
     if (!isTunnelError || !localAgentUrl) {

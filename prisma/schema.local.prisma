@@ -36,6 +36,8 @@ model User {
   onboardingCompleted         Boolean  @default(false)
   lastSeenAnnouncementVersion String?
   onboardingIntent            String?
+  // JSON text of the `__shogo_intent` cookie captured at sign-up (SHO-614).
+  signupIntent                String?
   buddyLook                   String?
   // Activation funnel timestamps (SHO-258 §§2,7). `firstCapHitAt` is the first
   // time a usage gate answered 402 for this user; `firstPreviewSeenAt` is the

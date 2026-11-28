@@ -109,4 +109,93 @@ describe("usageLimitNoticeFor", () => {
       usageLimitNoticeFor({ ...base, error: null, errorDismissed: false, stoppedTurn: { sessionId: "s-2" } }),
     ).toBeNull()
   })
+
+  // SHO-614: a first build can hit the cap before it finishes, and the free way
+  // out for a brand-new account is verifying the email, not paying.
+  describe("verify for credit (SHO-614)", () => {
+    const unverified = { promoPendingUsd: 8, emailVerified: false }
+
+    test("leads the blocked copy with verify-for-$8 and its own CTA", () => {
+      const notice = usageLimitNoticeFor({
+        error: JSON.stringify({
+          error: {
+            code: "usage_limit_reached",
+            message: "You've reached your usage limit.",
+            resetsAt: "2099-01-01T00:00:00.000Z",
+          },
+        }),
+        errorDismissed: false,
+        stoppedTurn: null,
+        currentSessionId: "s-1",
+        trialEligible: true,
+        ...unverified,
+        formatResetsAt,
+      })
+      expect(notice).toMatchObject({
+        variant: "blocked",
+        primaryLabel: "Verify email",
+        secondaryLabel: "Retry",
+      })
+      expect(notice!.body.startsWith("Verify your email to unlock $8 more credit.")).toBe(true)
+      // The reset time and retry still explain what happened.
+      expect(notice!.body).toContain("resets")
+      expect(notice!.body).toContain("wasn't sent")
+    })
+
+    test("leads the stopped copy the same way", () => {
+      const notice = usageLimitNoticeFor({
+        error: null,
+        errorDismissed: false,
+        stoppedTurn: { sessionId: "s-1", resetsAt: "2099-01-01T00:00:00.000Z" },
+        currentSessionId: "s-1",
+        ...unverified,
+        formatResetsAt,
+      })
+      expect(notice).toMatchObject({ variant: "stopped", primaryLabel: "Verify email" })
+      expect(notice!.body.startsWith("Verify your email to unlock $8 more credit.")).toBe(true)
+      expect(notice!.body).toContain("completed work is saved")
+    })
+
+    test("uses the amount from the plan, not a hardcoded 8", () => {
+      const notice = usageLimitNoticeFor({
+        error: JSON.stringify({ error: { code: "usage_limit_reached" } }),
+        errorDismissed: false,
+        stoppedTurn: null,
+        currentSessionId: "s-1",
+        promoPendingUsd: 12.5,
+        emailVerified: false,
+        formatResetsAt,
+      })
+      expect(notice!.body).toContain("unlock $12.50 more credit")
+    })
+
+    test("a verified email keeps the trial/upgrade copy unchanged", () => {
+      const notice = usageLimitNoticeFor({
+        error: JSON.stringify({ error: { code: "usage_limit_reached" } }),
+        errorDismissed: false,
+        stoppedTurn: null,
+        currentSessionId: "s-1",
+        trialEligible: true,
+        promoPendingUsd: 8,
+        emailVerified: true,
+        formatResetsAt,
+      })
+      expect(notice).toMatchObject({ primaryLabel: "Start free trial" })
+      expect(notice!.body).not.toContain("Verify your email")
+    })
+
+    test("no pending credit means no verify copy, even when unverified", () => {
+      const notice = usageLimitNoticeFor({
+        error: JSON.stringify({ error: { code: "usage_limit_reached" } }),
+        errorDismissed: false,
+        stoppedTurn: null,
+        currentSessionId: "s-1",
+        promoPendingUsd: 0,
+        emailVerified: false,
+        formatResetsAt,
+      })
+      expect(notice).toMatchObject({ primaryLabel: "Upgrade" })
+      expect(notice!.body).not.toContain("Verify your email")
+    })
+  })
 })

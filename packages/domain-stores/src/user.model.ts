@@ -29,6 +29,7 @@ export const UserModel = types
     onboardingCompleted: types.optional(types.boolean, false),
     lastSeenAnnouncementVersion: types.optional(types.string, ""),
     onboardingIntent: types.optional(types.string, ""),
+    signupIntent: types.optional(types.string, ""),
     buddyLook: types.optional(types.string, ""),
     homeRegion: types.optional(types.string, ""),
     emailCanonical: types.optional(types.string, ""),
