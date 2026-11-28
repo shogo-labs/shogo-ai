@@ -315,7 +315,7 @@ async function main() {
     cleanupStaleGeneratedFiles(OUTPUT_DIR, models)
 
     // Generate server-side Hono route files (per-model CRUD)
-    const { routes, hooks: routeHooks } = generateRoutes(models, { fileExtension: 'ts' })
+    const { routes, hooks: routeHooks } = generateRoutes(models, { fileExtension: 'ts', enums })
 
     for (const route of routes) {
       writeFileSync(join(OUTPUT_DIR, route.fileName), route.code)

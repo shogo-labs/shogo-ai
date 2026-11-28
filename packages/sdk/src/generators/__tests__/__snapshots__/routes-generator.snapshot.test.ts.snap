@@ -113,6 +113,117 @@ function hookErrorStatus(error: { code?: string } | undefined): number {
 // by \`pickWritableFields\` to keep the create/update payload Prisma-safe.
 const WRITABLE_SCALAR_FIELDS = ["name", "completed", "priority", "createdAt", "workspaceId"] as const
 const RELATION_FIELDS = ["workspace"] as const
+const MODEL_FIELDS: readonly string[] = ["id", "name", "completed", "priority", "createdAt", "workspaceId", "workspace"]
+
+type WritableFieldKind =
+  | "string" | "date" | "int" | "float" | "bigint" | "boolean"
+  | "decimal" | "json" | "bytes" | "enum" | "any"
+type WritableFieldSpec = { kind: WritableFieldKind; values?: readonly string[] }
+type Coerced = { ok: true; value: unknown } | { ok: false; message: string }
+
+// What each writable field IS, not just its name. The names above stop a body
+// from reaching fields the schema does not expose; this stops a value of the
+// wrong type from reaching a field it does.
+const WRITABLE_FIELD_SPECS: Record<string, WritableFieldSpec> = {
+  "name": { kind: "string" },
+  "completed": { kind: "boolean" },
+  "priority": { kind: "int" },
+  "createdAt": { kind: "date" },
+  "workspaceId": { kind: "string" },
+}
+
+/**
+ * Coerce one create/update value to the type the schema declares.
+ *
+ * Why: the allowlist above is a list of names, so \`{ readAt: 1795789274445 }\`
+ * — epoch millis, which is what \`Date.getTime()\` and any JSON client send —
+ * reached a DateTime column as an Int and Prisma answered 500. Date/Int/
+ * Float/BigInt/Boolean values are now coerced and an enum is checked against
+ * its members; a value that cannot be coerced is rejected here so the route
+ * can answer 400 and name the field.
+ *
+ * Anything already valid keeps working, including the Prisma field-operation
+ * shapes an update may carry (\`{ increment: 1 }\`, \`{ set: [...] }\`): a plain
+ * object is passed through untouched.
+ */
+function coerceWritableValue(key: string, value: unknown): Coerced {
+  const spec = WRITABLE_FIELD_SPECS[key]
+  if (!spec || spec.kind === "any" || value === null) return { ok: true, value }
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    for (const item of value) {
+      const each = coerceScalar(spec, item)
+      if (!each.ok) return { ok: false, message: \`Field "\${key}" \${each.message}\` }
+      out.push(each.value)
+    }
+    return { ok: true, value: out }
+  }
+  if (typeof value === "object" && !(value instanceof Date)) {
+    return { ok: true, value }
+  }
+  const coerced = coerceScalar(spec, value)
+  if (!coerced.ok) return { ok: false, message: \`Field "\${key}" \${coerced.message}\` }
+  return { ok: true, value: coerced.value }
+}
+
+function coerceScalar(spec: WritableFieldSpec, value: unknown): Coerced {
+  switch (spec.kind) {
+    case "date": {
+      if (value instanceof Date) return { ok: true, value }
+      if (typeof value === "number" && Number.isFinite(value)) return { ok: true, value: new Date(value) }
+      if (typeof value === "string" && value.trim() !== "") {
+        const raw = value.trim()
+        const date = /^-?[0-9]+$/.test(raw) ? new Date(Number(raw)) : new Date(raw)
+        if (!Number.isNaN(date.getTime())) return { ok: true, value: date }
+      }
+      return { ok: false, message: "must be an ISO string, epoch millis, or a Date" }
+    }
+    case "int": {
+      const n = typeof value === "number"
+        ? value
+        : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN
+      if (Number.isInteger(n)) return { ok: true, value: n }
+      return { ok: false, message: "must be an integer" }
+    }
+    case "float": {
+      const n = typeof value === "number"
+        ? value
+        : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN
+      if (Number.isFinite(n)) return { ok: true, value: n }
+      return { ok: false, message: "must be a number" }
+    }
+    case "boolean": {
+      if (typeof value === "boolean") return { ok: true, value }
+      if (value === "true" || value === 1) return { ok: true, value: true }
+      if (value === "false" || value === 0) return { ok: true, value: false }
+      return { ok: false, message: "must be a boolean" }
+    }
+    case "bigint": {
+      if (typeof value === "bigint") return { ok: true, value }
+      if (typeof value === "number" && Number.isInteger(value)) return { ok: true, value: BigInt(value) }
+      if (typeof value === "string" && /^[+-]?[0-9]+$/.test(value.trim())) {
+        return { ok: true, value: BigInt(value.trim()) }
+      }
+      return { ok: false, message: "must be an integer" }
+    }
+    case "string":
+      if (typeof value === "string") return { ok: true, value }
+      return { ok: false, message: "must be a string" }
+    case "enum":
+      if (typeof value === "string" && (!spec.values || spec.values.length === 0 || spec.values.includes(value))) {
+        return { ok: true, value }
+      }
+      return {
+        ok: false,
+        message:
+          spec.values && spec.values.length > 0
+            ? \`must be one of: \${spec.values.join(", ")}\`
+            : "must be a string",
+      }
+    default:
+      return { ok: true, value }
+  }
+}
 
 type WriteBodyResult<T> =
   | { ok: true; data: T }
@@ -126,6 +237,8 @@ type WriteBodyResult<T> =
  *   or array. The common bug \`{ scorecards: 1 }\` would otherwise crash with
  *   "Argument \`scorecards\`: Invalid value provided. Expected
  *    XCreateNestedManyWithoutYInput, provided Int." We surface it as a 400.
+ * - Scalar values are coerced to the field type (see coerceWritableValue); a
+ *   value that cannot be is a 400 naming the field, not a Prisma 500.
  * - Unknown keys are silently dropped to prevent injection of fields the
  *   schema does not expose.
  */
@@ -135,7 +248,12 @@ function pickWritableFields<T>(body: any): WriteBodyResult<T> {
   }
   const data: Record<string, unknown> = {}
   for (const key of WRITABLE_SCALAR_FIELDS) {
-    if (body[key] !== undefined) data[key] = body[key]
+    if (body[key] === undefined) continue
+    const coerced = coerceWritableValue(key, body[key])
+    if (!coerced.ok) {
+      return { ok: false, error: { code: "invalid_field_value", message: coerced.message } }
+    }
+    data[key] = coerced.value
   }
   for (const key of RELATION_FIELDS) {
     const value = body[key]
@@ -173,6 +291,15 @@ export function createProjectRoutes(): Hono {
       
       for (const [key, value] of Object.entries(query)) {
         if (!reservedParams.includes(key) && value !== undefined && value !== null && value !== "") {
+          // A field the model does not have cannot be a filter. It used to
+          // be handed to Prisma as a \`where\` clause it rejects, so a typo
+          // came back a 500 "Unknown argument". Skip it — do not 400 it:
+          // generated list routes share their query string with the
+          // \`beforeList\` hook, and hooks legitimately read params that are
+          // not columns (chat-session.hooks.ts maps ?projectId= onto
+          // contextId). Rejecting those would break the caller before the
+          // hook ever ran, with a 400 it cannot recover from.
+          if (!MODEL_FIELDS.includes(key)) continue
           // Try to parse as number or boolean
           let parsedValue: any = value
           if (value === "true") parsedValue = true
