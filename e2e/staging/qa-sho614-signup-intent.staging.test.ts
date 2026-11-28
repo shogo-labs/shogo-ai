@@ -61,7 +61,9 @@ async function signUpFromLink(page: Page, user: TestUser, query: string): Promis
 async function signIn(page: Page, user: TestUser): Promise<void> {
   await page.goto("/sign-in")
   await page.getByPlaceholder("you@example.com").fill(user.email)
-  await page.getByPlaceholder(/password/i).fill(user.password)
+  // The sign-in tab's own placeholder — not the sign-up form's "Create a
+  // password", which is a different field on the same screen.
+  await page.getByPlaceholder("Enter your password").fill(user.password)
   await page.getByText("Sign In", { exact: true }).last().click()
   await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), { timeout: 30_000 })
 }
