@@ -25,6 +25,12 @@ export interface AuthUser {
 
 export interface SignUpResult {
   requiresVerification: boolean
+  /**
+   * The new account's id, when the sign-up response carried it. The browser's
+   * `CompleteRegistration` and the server's Conversions API event both use
+   * `signup_<userId>` so Meta sees one conversion (SHO-611).
+   */
+  userId?: string | null
 }
 
 export interface AuthContextValue {
@@ -323,7 +329,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       if (hasSession && data?.user) {
         setUser(data.user as AuthUser)
       }
-      return { requiresVerification: !hasSession }
+      return { requiresVerification: !hasSession, userId: data?.user?.id ?? null }
     } catch (e: any) {
       const msg = e.message || 'Sign up failed'
       setError(msg)

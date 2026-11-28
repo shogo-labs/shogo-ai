@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
+import {
+  ATTRIBUTION_COOKIE_MAX_AGE_SECONDS,
+  META_FBC_COOKIE,
+  POSTHOG_DISTINCT_ID_PARAM,
+  SHOGO_UTM_COOKIE,
+  buildFbcFromFbclid,
+  type AttributionCookiePayload,
+} from '@shogo/shared-app/conversion-events'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo_attribution'
 const LANDING_KEY = 'shogo_landing_page'
 const PENDING_KEY = 'shogo_attribution_pending'
+/** The `ph_did` already aliased in this browser, so it is aliased only once. */
+const PH_ALIAS_KEY = 'shogo_ph_did_aliased'
 
 /** How long after signup we will still record attribution once a session exists. */
 const EMAIL_ATTRIBUTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
@@ -19,14 +29,196 @@ export interface Attribution {
   utmTerm?: string
   referrer?: string
   landingPage?: string
+  /** Meta click id, for the Conversions API's `fbc` (SHO-611). */
+  fbclid?: string
+  /** Google click id, for Google Ads offline conversions later. */
+  gclid?: string
+  /** The website's PostHog anonymous id, so the two funnels join (SHO-611). */
+  phDid?: string
+}
+
+function isWeb(): boolean {
+  return Platform.OS === 'web' && typeof window !== 'undefined' && typeof document !== 'undefined'
+}
+
+/**
+ * `.shogo.ai` when the page is on that domain, so the cookie written on the
+ * marketing site is the one the studio origin sends and vice versa. Any other
+ * host (localhost, a preview URL) gets a host-only cookie.
+ */
+export function attributionCookieDomain(hostname?: string): string | undefined {
+  const host = hostname ?? (typeof window !== 'undefined' ? window.location?.hostname ?? '' : '')
+  if (!host) return undefined
+  return host === 'shogo.ai' || host.endsWith('.shogo.ai') ? '.shogo.ai' : undefined
+}
+
+export function readCookie(name: string): string | null {
+  if (typeof document === 'undefined' || !document.cookie) return null
+  for (const part of document.cookie.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() !== name) continue
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim())
+    } catch {
+      return part.slice(eq + 1).trim()
+    }
+  }
+  return null
+}
+
+function writeCookie(name: string, value: string, maxAgeSeconds: number, domain = attributionCookieDomain()): void {
+  if (typeof document === 'undefined') return
+  const attrs = [
+    `${name}=${encodeURIComponent(value)}`,
+    'path=/',
+    `max-age=${maxAgeSeconds}`,
+    'SameSite=Lax',
+  ]
+  if (domain) attrs.push(`Domain=${domain}`)
+  document.cookie = attrs.join('; ')
+}
+
+/**
+ * Read `__shogo_utm` — the URL-encoded JSON the website (card 5) and this app
+ * write, or a plain `utm_source=…&…` query string, which the server also
+ * accepts. Anything unparseable is "no attribution", never an error.
+ */
+export function parseAttributionCookieValue(value: string | null): Attribution {
+  if (!value) return {}
+  const out: Attribution = {}
+  const trimmed = value.trim()
+  if (!trimmed) return out
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>
+      const pick = (...keys: string[]): string | undefined => {
+        for (const key of keys) {
+          const v = parsed[key]
+          if (typeof v === 'string' && v.trim()) return v
+        }
+        return undefined
+      }
+      const assign = (field: keyof Attribution, ...keys: string[]) => {
+        const v = pick(...keys)
+        if (v) out[field] = v
+      }
+      assign('utmSource', 'utmSource', 'utm_source')
+      assign('utmMedium', 'utmMedium', 'utm_medium')
+      assign('utmCampaign', 'utmCampaign', 'utm_campaign')
+      assign('utmContent', 'utmContent', 'utm_content')
+      assign('utmTerm', 'utmTerm', 'utm_term')
+      assign('referrer', 'referrer', 'referrer_url')
+      assign('landingPage', 'landingPage', 'landing_page')
+      assign('fbclid', 'fbclid', 'fbc_id')
+      assign('gclid', 'gclid')
+      assign('phDid', 'phDid', 'ph_did', 'posthogDistinctId', 'posthog_distinct_id')
+    } catch {
+      return {}
+    }
+    return out
+  }
+
+  for (const pair of trimmed.split('&')) {
+    const eq = pair.indexOf('=')
+    if (eq < 0) continue
+    const key = pair.slice(0, eq).trim()
+    let val: string
+    try {
+      val = decodeURIComponent(pair.slice(eq + 1).trim().replace(/\+/g, ' '))
+    } catch {
+      continue
+    }
+    if (!val) continue
+    if (key === 'utm_source') out.utmSource = val
+    else if (key === 'utm_medium') out.utmMedium = val
+    else if (key === 'utm_campaign') out.utmCampaign = val
+    else if (key === 'utm_content') out.utmContent = val
+    else if (key === 'utm_term') out.utmTerm = val
+    else if (key === 'referrer') out.referrer = val
+    else if (key === 'landing_page') out.landingPage = val
+    else if (key === 'fbclid') out.fbclid = val
+    else if (key === 'gclid') out.gclid = val
+    else if (key === POSTHOG_DISTINCT_ID_PARAM) out.phDid = val
+  }
+  return out
+}
+
+/**
+ * First touch wins, missing keys are filled in. A cookie the website already
+ * set is never overwritten by the app, but a key it left empty (a `fbclid`
+ * that arrived later, say) is still recorded.
+ */
+export function mergeFirstTouch(base: Attribution, next: Attribution): Attribution {
+  const merged: Attribution = { ...base }
+  for (const [key, value] of Object.entries(next) as Array<[keyof Attribution, string | undefined]>) {
+    if (!value) continue
+    if (!merged[key]) merged[key] = value
+  }
+  return merged
+}
+
+export function readAttributionCookie(): Attribution {
+  if (!isWeb()) return {}
+  return parseAttributionCookieValue(readCookie(SHOGO_UTM_COOKIE))
+}
+
+/**
+ * Write (or fill in) `__shogo_utm` as URL-encoded JSON, the shape
+ * `parseUtmCookie` on the server already accepts. Every signup POST then
+ * carries this visit's UTMs, click ids and PostHog id without the client
+ * having to be signed in yet.
+ */
+export function writeAttributionCookie(data: Attribution): void {
+  if (!isWeb()) return
+  const merged = mergeFirstTouch(readAttributionCookie(), data)
+  const payload: AttributionCookiePayload = {}
+  for (const [key, value] of Object.entries(merged) as Array<[keyof Attribution, string | undefined]>) {
+    if (value) payload[key] = value
+  }
+  if (Object.keys(payload).length === 0) return
+  writeCookie(SHOGO_UTM_COOKIE, JSON.stringify(payload), ATTRIBUTION_COOKIE_MAX_AGE_SECONDS)
+}
+
+/**
+ * Meta's `_fbc` click id. Written only when there is an `fbclid` and no `_fbc`
+ * yet, so the pixel's own value (which carries the real click time) wins.
+ */
+export function ensureFbcCookie(fbclid: string | undefined, now = Date.now()): void {
+  if (!isWeb() || !fbclid) return
+  if (readCookie(META_FBC_COOKIE)) return
+  writeCookie(META_FBC_COOKIE, buildFbcFromFbclid(fbclid, now), ATTRIBUTION_COOKIE_MAX_AGE_SECONDS)
+}
+
+/** The `ph_did` query parameter the website appends to studio links (card 5). */
+export function readPhDidParam(): string | undefined {
+  if (!isWeb()) return undefined
+  try {
+    const value = new URLSearchParams(window.location.search).get(POSTHOG_DISTINCT_ID_PARAM)
+    return value && value.trim() ? value.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** This browser's website `distinct_id`, from the cookie the studio set or the link. */
+export function getWebsitePosthogDistinctId(): string | undefined {
+  return readPhDidParam() ?? readAttributionCookie().phDid ?? getStoredAttribution()?.phDid ?? undefined
+}
+
+/** True the first time this `distinct_id` is seen in this browser. */
+export function markPosthogAliased(distinctId: string): boolean {
+  if (safeGetItem(PH_ALIAS_KEY) === distinctId) return false
+  safeSetItem(PH_ALIAS_KEY, distinctId)
+  return true
 }
 
 export function captureAttribution(): void {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return
-  if (safeGetItem(STORAGE_KEY)) return
+  if (!isWeb()) return
 
   const params = new URLSearchParams(window.location.search)
-  const data: Attribution = {
+  const captured: Attribution = {
     utmSource: params.get('utm_source') || undefined,
     utmMedium: params.get('utm_medium') || undefined,
     utmCampaign: params.get('utm_campaign') || undefined,
@@ -34,9 +226,20 @@ export function captureAttribution(): void {
     utmTerm: params.get('utm_term') || undefined,
     referrer: document.referrer || undefined,
     landingPage: window.location.pathname + window.location.search,
+    fbclid: params.get('fbclid') || undefined,
+    gclid: params.get('gclid') || undefined,
+    phDid: readPhDidParam(),
   }
 
-  safeSetItem(STORAGE_KEY, JSON.stringify(data))
+  // The first page a visitor lands on owns the attribution; a later page only
+  // fills in what it left empty (a click id on the second hop, say).
+  const stored = getStoredAttribution() ?? {}
+  safeSetItem(STORAGE_KEY, JSON.stringify(mergeFirstTouch(stored, captured)))
+
+  // The cookie is what the signup POST actually carries: the server reads it
+  // from `user.create.after`, where there is no localStorage.
+  writeAttributionCookie(captured)
+  ensureFbcCookie(captured.fbclid)
 }
 
 export function getStoredAttribution(): Attribution | null {

@@ -485,7 +485,7 @@ function AppLayoutInner() {
           ? Date.now() - new Date(user.createdAt).getTime()
           : Infinity;
         if (accountAge < 60_000) {
-          trackSignUp(pending as "google");
+          trackSignUp(pending as "google", user.id);
           // A brand-new Google account: the Cometly `custom_event_2` below is
           // this page's.
           markNewSignup();

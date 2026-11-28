@@ -6,6 +6,7 @@ import { PostHogProvider as PHProvider, usePostHog } from 'posthog-react-native'
 import { useAuth } from './auth'
 import { getActiveEnvKey, telemetryEnvFor } from '../lib/env-override'
 import { getRuntimeAppEnv } from '../lib/runtime-env'
+import { getWebsitePosthogDistinctId, markPosthogAliased } from '../lib/attribution'
 
 const apiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY
 const host = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com'
@@ -50,6 +51,21 @@ export function usePostHogIdentify() {
   useEffect(() => {
     if (!posthog) return
     if (isAuthenticated && user?.id && user.id !== prevUserId.current) {
+      // The website's anonymous PostHog id, carried on the studio link as
+      // `ph_did` (SHO-611). Aliasing it onto the account is what joins the
+      // website funnel to the app's; a fresh `identify` alone leaves two
+      // strangers in one funnel. Once per browser, web only, and a no-op
+      // without a PostHog key.
+      if (isWeb) {
+        try {
+          const websiteId = getWebsitePosthogDistinctId()
+          if (websiteId && websiteId !== posthog.getDistinctId() && markPosthogAliased(websiteId)) {
+            posthog.alias(websiteId)
+          }
+        } catch {
+          // Analytics must never block sign-in.
+        }
+      }
       posthog.identify(user.id, { email: user.email, name: user.name })
       posthog.register({ platform: Platform.OS, environment: appEnv })
       prevUserId.current = user.id

@@ -865,6 +865,10 @@ export const auth = betterAuth({
           // which is a number we were missing entirely.
           try {
             const { recordSignupAttribution } = await import('./lib/signup-attribution')
+            // Meta's Conversions API takes the request IP and user agent as-is
+            // (it hashes what needs hashing). Same resolver the risk gate uses.
+            const { readClientIp } = await import('./services/signup-risk.service')
+            const headers = ctx?.request?.headers ?? ctx?.headers ?? null
             await recordSignupAttribution({
               userId: user.id,
               cookieHeader:
@@ -872,6 +876,8 @@ export const auth = betterAuth({
               method: signupProviderFromPath(ctx?.path),
               email: user.email,
               name: user.name,
+              clientIp: readClientIp(headers),
+              userAgent: headers?.get?.('user-agent') ?? null,
             })
           } catch (err) {
             console.warn('[Attribution] signup attribution on signup failed', err)

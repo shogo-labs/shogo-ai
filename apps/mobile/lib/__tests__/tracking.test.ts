@@ -7,6 +7,8 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 mock.module('react-native', () => ({
   Platform: { OS: 'web' },
@@ -14,6 +16,8 @@ mock.module('react-native', () => ({
 
 const {
   trackPurchase,
+  trackSignUp,
+  trackLogin,
   trackBillingView,
   trackPlanClick,
   trackPlanChange,
@@ -78,6 +82,103 @@ describe('trackPurchase', () => {
   test('omits value when billing interval is unknown', () => {
     trackPurchase({ planId: 'pro', sessionId: 'cs_789' })
     expect(purchasePayload()?.value).toBeUndefined()
+  })
+
+  test('uses the checkout session id as the dedupe id for both Meta events (SHO-611)', () => {
+    trackPurchase({ planId: 'business', billingInterval: 'monthly', value: 16, currency: 'usd', sessionId: 'cs_id' })
+
+    const purchase = fbqCalls.find((c) => c[1] === 'Purchase')
+    const subscribe = fbqCalls.find((c) => c[1] === 'Subscribe')
+    expect((purchase?.[3] as any)?.eventID).toBe('cs_id')
+    expect((subscribe?.[3] as any)?.eventID).toBe('cs_id_sub')
+  })
+
+  test('with no session id there is nothing to dedupe on, so no pixel event is invented', () => {
+    trackPurchase({ planId: 'business', billingInterval: 'monthly', workspaceId: 'ws_1' })
+
+    // The server event still counts the purchase.
+    expect(fbqCalls).toHaveLength(0)
+    expect(purchasePayload()?.transaction_id).toBe('ws_1')
+  })
+})
+
+// ============================================================================
+// SHO-611 — sign-up / sign-in are different events, with stable ids
+// ============================================================================
+
+function fbqCallFor(name: string) {
+  return fbqCalls.find((c) => c[1] === name)
+}
+
+describe('trackLogin', () => {
+  test('a login is a custom Login event, never a Lead', () => {
+    trackLogin('email')
+
+    const call = fbqCallFor('Login')
+    expect(call?.[0]).toBe('trackCustom')
+    expect((call?.[2] as any)?.content_name).toBe('email')
+    expect(gtagEvent('login')?.method).toBe('email')
+    expect(fbqCallFor('Lead')).toBeUndefined()
+  })
+
+  test('Google and Apple logins are reported the same way', () => {
+    trackLogin('google')
+    trackLogin('apple')
+    expect((fbqCalls.filter((c) => c[1] === 'Login')[1]?.[2] as any)?.content_name).toBe('apple')
+  })
+})
+
+describe('trackSignUp', () => {
+  test('CompleteRegistration carries signup_<userId>, the id the server sends too', () => {
+    trackSignUp('email', 'user-42')
+
+    const call = fbqCallFor('CompleteRegistration')
+    expect((call?.[3] as any)?.eventID).toBe('signup_user-42')
+    expect((call?.[2] as any)?.content_name).toBe('email')
+    expect(gtagEvent('sign_up')?.method).toBe('email')
+  })
+
+  test('two sign-ups never share an id', () => {
+    trackSignUp('email', 'user-a')
+    trackSignUp('google', 'user-b')
+    const ids = fbqCalls
+      .filter((c) => c[1] === 'CompleteRegistration')
+      .map((c) => (c[3] as any)?.eventID)
+    expect(ids).toEqual(['signup_user-a', 'signup_user-b'])
+  })
+})
+
+/**
+ * AC1: the guard the card asks for. `trackLogin` used to report Meta `Lead`,
+ * which counted every returning user as a new ad lead. A string-literal scan
+ * of the whole app is what keeps it from coming back in some new screen.
+ */
+describe('no Lead pixel event anywhere in apps/mobile', () => {
+  const MOBILE_ROOT = join(import.meta.dir, '..', '..')
+  const THIS_FILE = 'tracking.test.ts'
+  const SOURCE_EXT = /\.(ts|tsx|js|jsx)$/
+  const SKIP_DIRS = new Set(['node_modules', '.expo', 'dist', 'build', '.git', 'ios', 'android'])
+
+  function sources(dir: string, found: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue
+      const path = join(dir, entry)
+      if (statSync(path).isDirectory()) {
+        sources(path, found)
+      } else if (SOURCE_EXT.test(entry) && entry !== THIS_FILE) {
+        found.push(path)
+      }
+    }
+    return found
+  }
+
+  test('the quoted literal that fired the event appears nowhere', () => {
+    // Split so this file does not contain the needle it searches for.
+    const banned = ['Le', 'ad'].join('')
+    const violations = sources(MOBILE_ROOT).filter(
+      (path) => readFileSync(path, 'utf8').includes(`'${banned}'`) || readFileSync(path, 'utf8').includes(`"${banned}"`),
+    )
+    expect(violations).toEqual([])
   })
 })
 

@@ -7,7 +7,7 @@
  * Cometly from a test run.
  */
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test'
-import { sendCometlyEvent, splitName, COMET_TOKEN_COOKIE } from '../cometly'
+import { sendCometlyEvent, splitName, isCometlyConfigured, COMET_TOKEN_COOKIE } from '../cometly'
 
 const realFetch = globalThis.fetch
 let calls: Array<{ url: string; init: RequestInit }> = []
@@ -29,6 +29,17 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch
   delete process.env.COMETLY_API_KEY
+})
+
+describe('isCometlyConfigured', () => {
+  test('true only with a key — the webhook gates its lookups on this', () => {
+    delete process.env.COMETLY_API_KEY
+    expect(isCometlyConfigured()).toBe(false)
+    process.env.COMETLY_API_KEY = '   '
+    expect(isCometlyConfigured()).toBe(false)
+    process.env.COMETLY_API_KEY = 'key'
+    expect(isCometlyConfigured()).toBe(true)
+  })
 })
 
 describe('splitName', () => {

@@ -401,6 +401,28 @@ spec:
                   name: cometly-config
                   key: COMETLY_API_KEY
                   optional: true
+            # Meta Conversions API (SHO-611): server-side CompleteRegistration
+            # and Purchase/Subscribe, deduped against the pixel by `event_id`.
+            # Inert until the `meta-capi` secret exists — desktop, CI and a
+            # stack without it send nothing and log nothing.
+            - name: FB_PIXEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: meta-capi
+                  key: FB_PIXEL_ID
+                  optional: true
+            - name: META_CAPI_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: meta-capi
+                  key: META_CAPI_ACCESS_TOKEN
+                  optional: true
+            - name: META_CAPI_TEST_EVENT_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: meta-capi
+                  key: META_CAPI_TEST_EVENT_CODE
+                  optional: true
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.staging.shogo.ai"
             - name: ALLOWED_ORIGINS

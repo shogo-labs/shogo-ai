@@ -45,10 +45,25 @@ const {
   discardPendingSignupAttribution,
   shouldRecordSignupAttribution,
   flushSignupAttribution,
+  attributionCookieDomain,
+  writeAttributionCookie,
+  readAttributionCookie,
+  parseAttributionCookieValue,
+  mergeFirstTouch,
+  ensureFbcCookie,
+  readCookie,
 } = await import('../attribution')
+
+function clearCookies(): void {
+  for (const name of ['__shogo_utm', '_fbc', '_fbp']) {
+    document.cookie = `${name}=; max-age=0; path=/`
+    document.cookie = `${name}=; max-age=0; path=/; Domain=.shogo.ai`
+  }
+}
 
 beforeEach(() => {
   localStorage.clear()
+  clearCookies()
   setReferrer('')
   setLocation('')
 })
@@ -100,6 +115,78 @@ describe('captureAttribution', () => {
     const data = getStoredAttribution()
     expect(data).not.toBeNull()
     expect(data!.utmSource).toBeUndefined()
+  })
+})
+
+// ============================================================================
+// SHO-611 — the cookie the signup POST actually carries
+// ============================================================================
+
+describe('captureAttribution click ids and the __shogo_utm cookie', () => {
+  test('captures fbclid, gclid and ph_did from the studio link', () => {
+    setLocation('?utm_source=meta&fbclid=IwARabc&gclid=Cj0KCQ&ph_did=ph_123')
+    captureAttribution()
+
+    const data = getStoredAttribution()!
+    expect(data.utmSource).toBe('meta')
+    expect(data.fbclid).toBe('IwARabc')
+    expect(data.gclid).toBe('Cj0KCQ')
+    expect(data.phDid).toBe('ph_123')
+  })
+
+  test('writes __shogo_utm as URL-encoded JSON in the shape the server parses', () => {
+    setLocation('?utm_source=meta&utm_campaign=launch&fbclid=IwARabc&gclid=Cj0KCQ&ph_did=ph_123', '/pricing')
+    captureAttribution()
+
+    const raw = readCookie('__shogo_utm')
+    expect(raw).not.toBeNull()
+    const payload = JSON.parse(raw!)
+    expect(payload).toMatchObject({
+      utmSource: 'meta',
+      utmCampaign: 'launch',
+      fbclid: 'IwARabc',
+      gclid: 'Cj0KCQ',
+      phDid: 'ph_123',
+      landingPage: '/pricing?utm_source=meta&utm_campaign=launch&fbclid=IwARabc&gclid=Cj0KCQ&ph_did=ph_123',
+    })
+    // No empty keys: the server treats "absent" and "empty" the same, and a
+    // tight payload keeps the cookie small.
+    expect(Object.values(payload).every((v) => typeof v === 'string' && v.length > 0)).toBe(true)
+  })
+
+  test('a cookie the website already set is never overwritten, only filled in', () => {
+    writeAttributionCookie({ utmSource: 'website', utmMedium: 'paid' })
+    setLocation('?utm_source=app&fbclid=IwARlater')
+    captureAttribution()
+
+    const cookie = readAttributionCookie()
+    expect(cookie.utmSource).toBe('website')
+    expect(cookie.utmMedium).toBe('paid')
+    expect(cookie.fbclid).toBe('IwARlater')
+  })
+
+  test('sets _fbc from fbclid, and leaves an existing _fbc alone', () => {
+    ensureFbcCookie('IwARfirst', 1_700_000_000_000)
+    expect(readCookie('_fbc')).toBe('fb.1.1700000000000.IwARfirst')
+
+    ensureFbcCookie('IwARsecond', 1_700_000_001_000)
+    expect(readCookie('_fbc')).toBe('fb.1.1700000000000.IwARfirst')
+  })
+
+  test('a legacy query-string cookie is still readable', () => {
+    expect(parseAttributionCookieValue('utm_source=old&fbclid=IwARold').fbclid).toBe('IwARold')
+    expect(parseAttributionCookieValue('{not json')).toEqual({})
+  })
+
+  test('the cookie is only scoped to .shogo.ai, never to an arbitrary host', () => {
+    expect(attributionCookieDomain('shogo.ai')).toBe('.shogo.ai')
+    expect(attributionCookieDomain('studio.shogo.ai')).toBe('.shogo.ai')
+    expect(attributionCookieDomain('localhost')).toBeUndefined()
+    expect(attributionCookieDomain('someone-else.example')).toBeUndefined()
+    expect(mergeFirstTouch({ utmSource: 'a' }, { utmSource: 'b', gclid: 'g' })).toEqual({
+      utmSource: 'a',
+      gclid: 'g',
+    })
   })
 })
 

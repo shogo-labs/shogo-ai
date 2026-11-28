@@ -14,7 +14,8 @@
     "./services": "./src/services/index.ts",
     "./chat": "./src/chat/index.ts",
     "./buddy-look": "./src/buddy-look.ts",
-    "./lib/app-activity": "./src/lib/app-activity.ts"
+    "./lib/app-activity": "./src/lib/app-activity.ts",
+    "./conversion-events": "./src/lib/conversion-events.ts"
   },
   "scripts": {
     "test": "bun --no-env-file test",
