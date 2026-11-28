@@ -129,6 +129,7 @@ export async function nurtureSweepBody(now: Date, batchSize: number): Promise<Li
       continue
     }
 
+    let ledgerId: string | null = null
     try {
       const session = await prisma.chatSession.findFirst({
         where: {
@@ -153,11 +154,12 @@ export async function nurtureSweepBody(now: Date, batchSize: number): Promise<Li
           ?? (session.inferredName?.trim() || null)
       }
 
-      const ledgerId = await claimLifecycleEmail('no_project_24h', user.id, '1')
-      if (!ledgerId) {
+      const claim = await claimLifecycleEmail('no_project_24h', user.id, '1')
+      if (!claim) {
         summary.skipped += 1
         continue
       }
+      ledgerId = claim
 
       // Re-check the opt-out: it may have been set between the batch query and
       // this send.
@@ -185,6 +187,9 @@ export async function nurtureSweepBody(now: Date, batchSize: number): Promise<Li
       }
       summary.sent += 1
     } catch (error: any) {
+      // A throw before the send went out means the claim would otherwise pin this
+      // user out of every future run, so hand it back before counting the miss.
+      if (ledgerId) await releaseLifecycleEmail(ledgerId)
       summary.failed += 1
       console.error('[LifecycleNurture] user failed:', { userId: user.id, err: error?.message ?? error })
     }

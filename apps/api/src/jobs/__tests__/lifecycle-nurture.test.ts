@@ -86,10 +86,12 @@ mock.module('../../lib/global-job-lock', () => ({
 
 let emailConfigured = true
 let failNextSend = false
+let throwNextSend = false
 const sentEmails: any[] = []
 mock.module('../../services/email.service', () => ({
   isEmailConfigured: () => emailConfigured,
   sendFirstBuildNudgeEmail: async (params: any) => {
+    if (throwNextSend) throw new Error('template render exploded')
     if (failNextSend) return { success: false, error: 'smtp down' }
     sentEmails.push(params)
     return { success: true }
@@ -116,6 +118,7 @@ beforeEach(() => {
   sentEmails.length = 0
   emailConfigured = true
   failNextSend = false
+  throwNextSend = false
 })
 
 describe('runLifecycleNurture', () => {
@@ -188,6 +191,19 @@ describe('runLifecycleNurture', () => {
     expect(ledger.size).toBe(0)
 
     failNextSend = false
+    const retry = await runLifecycleNurture({ now: NOW })
+    expect(retry).toMatchObject({ sent: 1 })
+    expect(sentEmails).toHaveLength(1)
+  })
+
+  it('releases the claim when the send throws, so the next run retries', async () => {
+    users = [user('u-1', 25)]
+    throwNextSend = true
+    const first = await runLifecycleNurture({ now: NOW })
+    expect(first).toMatchObject({ sent: 0, failed: 1 })
+    expect(ledger.size).toBe(0)
+
+    throwNextSend = false
     const retry = await runLifecycleNurture({ now: NOW })
     expect(retry).toMatchObject({ sent: 1 })
     expect(sentEmails).toHaveLength(1)
