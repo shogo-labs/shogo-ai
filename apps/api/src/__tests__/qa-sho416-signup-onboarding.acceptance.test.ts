@@ -86,6 +86,10 @@ mock.module('../services/auth-integrations', () => ({
     state.track.push(event)
   },
   resolveAttributionForUser: async () => {},
+  // `auth.ts` builds its plugin list, which imports this at module scope
+  // (SHO-613). A stub that omits it makes Bun throw `Export named ... not
+  // found` before a single test runs.
+  sendVerificationCodeEmail: async () => ({ success: true }),
 }))
 
 mock.module('../services/project-auth-config.service', () => ({
