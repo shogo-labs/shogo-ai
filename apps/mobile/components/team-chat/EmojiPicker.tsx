@@ -5,8 +5,8 @@
  * every Unicode emoji by category. Picks are `:name:` for custom emoji and
  * the character itself otherwise.
  */
-import { useMemo, useRef, useState } from 'react'
-import { FlatList, Image, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { Fragment, useMemo, useRef, useState } from 'react'
+import { FlatList, Image, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { EMOJI_GROUPS, searchEmoji } from '../../lib/emoji-data'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
@@ -14,6 +14,7 @@ import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 const COLS = 8
 const CELL = 36
 const HEADER = 26
+const LIST_HEIGHT = 280
 const RECENT_MAX = 16
 const DEFAULT_RECENT = ['👍', '✅', '👀', '🎉', '❤️', '😂', '🙏', '🔥']
 
@@ -48,6 +49,7 @@ export function EmojiPicker({ workspaceId, onPick, className }: EmojiPickerProps
   const [query, setQuery] = useState('')
   const custom = useCustomEmoji(workspaceId)
   const listRef = useRef<FlatList<Item>>(null)
+  const scrollerRef = useRef<ScrollView>(null)
 
   const { items, sectionStarts } = useMemo(() => {
     const customCells: Cell[] = [...custom.values()].map((e) => ({ code: `:${e.name}:`, label: `:${e.name}:`, imageUrl: e.url }))
@@ -91,6 +93,56 @@ export function EmojiPicker({ workspaceId, onPick, className }: EmojiPickerProps
     onPick(code)
   }
 
+  /**
+   * Jump to a category. The web body is a plain ScrollView (see below), which
+   * has no `scrollToIndex` — the row offsets computed above answer the same
+   * question.
+   */
+  const jumpToSection = (index: number) => {
+    if (Platform.OS === 'web') {
+      scrollerRef.current?.scrollTo({ y: offsets[index] ?? 0, animated: false })
+      return
+    }
+    listRef.current?.scrollToIndex({ index, animated: false })
+  }
+
+  const renderRow = (item: Item) =>
+    item.kind === 'header' ? (
+      <Text style={{ height: HEADER }} className="px-2.5 pt-1.5 text-[11px] font-semibold uppercase text-muted-foreground">
+        {item.title}
+      </Text>
+    ) : (
+      <View className="flex-row px-1" style={{ height: CELL }}>
+        {item.cells.map((c) => (
+          <Pressable
+            key={c.code}
+            accessibilityLabel={c.label}
+            {...({ title: c.label } as object)}
+            onPress={() => pick(c.code)}
+            // Cell width is shared out by the row rather than fixed at CELL:
+            // eight 36px cells in a 302px row left a dead strip down the right
+            // edge, so the grid did not sit flush with the panel's border.
+            style={{ flex: 1, height: CELL }}
+            className="items-center justify-center rounded active:bg-muted hover:bg-muted"
+          >
+            {c.imageUrl ? (
+              <Image source={{ uri: c.imageUrl }} style={{ width: 22, height: 22 }} />
+            ) : (
+              <Text style={{ fontSize: 20 }}>{c.code}</Text>
+            )}
+          </Pressable>
+        ))}
+        {/* A short last row keeps its cells the same size as every other row. */}
+        {Array.from({ length: COLS - item.cells.length }, (_, i) => (
+          <View key={`pad-${i}`} style={{ flex: 1, height: CELL }} />
+        ))}
+      </View>
+    )
+
+  const empty = (
+    <Text className="p-4 text-center text-xs text-muted-foreground">No emoji match “{query}”.</Text>
+  )
+
   return (
     <View
       className={cn('w-[312px] overflow-hidden rounded-lg border border-border bg-card shadow-md', className)}
@@ -113,7 +165,7 @@ export function EmojiPicker({ workspaceId, onPick, className }: EmojiPickerProps
             <Pressable
               key={s.title}
               accessibilityLabel={s.title}
-              onPress={() => listRef.current?.scrollToIndex({ index: s.index, animated: false })}
+              onPress={() => jumpToSection(s.index)}
               className="flex-1 items-center rounded py-1 active:bg-muted hover:bg-muted"
             >
               <Text className="text-sm">{s.icon}</Text>
@@ -121,47 +173,46 @@ export function EmojiPicker({ workspaceId, onPick, className }: EmojiPickerProps
           ))}
         </View>
       )}
-      <FlatList
-        ref={listRef}
-        data={items}
-        keyExtractor={(item) => item.key}
-        style={{ height: 280 }}
-        keyboardShouldPersistTaps="handled"
-        initialNumToRender={12}
-        windowSize={5}
-        getItemLayout={(data, index) => ({
-          length: data![index]!.kind === 'header' ? HEADER : CELL,
-          offset: offsets[index] ?? 0,
-          index,
-        })}
-        ListEmptyComponent={<Text className="p-4 text-center text-xs text-muted-foreground">No emoji match “{query}”.</Text>}
-        renderItem={({ item }) =>
-          item.kind === 'header' ? (
-            <Text style={{ height: HEADER }} className="px-2.5 pt-1.5 text-[11px] font-semibold uppercase text-muted-foreground">
-              {item.title}
-            </Text>
-          ) : (
-            <View className="flex-row px-1" style={{ height: CELL }}>
-              {item.cells.map((c) => (
-                <Pressable
-                  key={c.code}
-                  accessibilityLabel={c.label}
-                  {...({ title: c.label } as object)}
-                  onPress={() => pick(c.code)}
-                  style={{ width: CELL, height: CELL }}
-                  className="items-center justify-center rounded active:bg-muted hover:bg-muted"
-                >
-                  {c.imageUrl ? (
-                    <Image source={{ uri: c.imageUrl }} style={{ width: 22, height: 22 }} />
-                  ) : (
-                    <Text style={{ fontSize: 20 }}>{c.code}</Text>
-                  )}
-                </Pressable>
-              ))}
-            </View>
-          )
-        }
-      />
+      {/*
+       * Web gets a plain ScrollView, native keeps the FlatList.
+       *
+       * RN's VirtualizedList refuses to scroll when it is a React descendant of
+       * another VirtualizedList: `_isNestedWithSameOrientation()` makes
+       * `_defaultRenderScrollComponent` render a plain `View`, and this panel's
+       * `overflow-hidden` then clips every row past the box. `createPortal` moves
+       * the DOM, not the React tree — so the picker opened from a message
+       * (the reaction popover) is still inside the timeline's list, and stood
+       * still, while the one opened from the composer scrolled. 252 chunked rows
+       * are nothing for a browser; native opens the picker in its own Modal,
+       * where the FlatList is not nested and virtualization keeps it cheap.
+       */}
+      {Platform.OS === 'web' ? (
+        <ScrollView
+          ref={scrollerRef}
+          testID="emoji-picker-list"
+          style={{ height: LIST_HEIGHT }}
+          keyboardShouldPersistTaps="handled"
+        >
+          {items.length ? items.map((item) => <Fragment key={item.key}>{renderRow(item)}</Fragment>) : empty}
+        </ScrollView>
+      ) : (
+        <FlatList
+          ref={listRef}
+          data={items}
+          keyExtractor={(item) => item.key}
+          style={{ height: LIST_HEIGHT }}
+          keyboardShouldPersistTaps="handled"
+          initialNumToRender={12}
+          windowSize={5}
+          getItemLayout={(data, index) => ({
+            length: data![index]!.kind === 'header' ? HEADER : CELL,
+            offset: offsets[index] ?? 0,
+            index,
+          })}
+          ListEmptyComponent={empty}
+          renderItem={({ item }) => renderRow(item)}
+        />
+      )}
     </View>
   )
 }
