@@ -9,7 +9,7 @@
  * a retry after a failed send. Email is faked; the ledger runs for real over an
  * in-memory prisma.
  */
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 
 process.env.BETTER_AUTH_SECRET ||= 'lifecycle-nurture-test-secret'
 process.env.APP_URL = 'https://app.test'
@@ -101,6 +101,11 @@ const { runLifecycleNurture } = await import('../lifecycle-nurture')
 function user(id: string, ageHours: number, email = `${id}@example.com`): FakeUser {
   return { id, email, createdAt: new Date(NOW.getTime() - ageHours * HOUR), lifecycleEmailOptOutAt: null }
 }
+
+// `now` is injected into every run, but pin the system clock too so the seeds
+// above can never drift into a fixed-date bomb if the job starts reading today.
+beforeAll(() => setSystemTime(NOW))
+afterAll(() => setSystemTime())
 
 beforeEach(() => {
   users = []

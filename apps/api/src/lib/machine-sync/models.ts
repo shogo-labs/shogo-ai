@@ -338,6 +338,12 @@ const NEVER_MAIL = [
   'MailAccount',
 ] as const
 
+// Lifecycle email is sent by the cloud to a person: the ledger is what keeps a
+// nudge or an abandoned-checkout mail from going out twice, so it is the cloud's
+// own delivery record, keyed on a user id and carrying no workspace content. A
+// desktop sends none of this mail and has nothing to replay from the rows.
+const NEVER_LIFECYCLE_EMAIL = ['LifecycleEmailSend'] as const
+
 const NEVER_REASONS: Array<[readonly string[], string]> = [
   [NEVER_CREDENTIALS, 'credentials, sign-in or identity linkage'],
   [NEVER_BILLING, 'billing, metering or marketplace money'],
@@ -345,6 +351,7 @@ const NEVER_REASONS: Array<[readonly string[], string]> = [
   [NEVER_MACHINE_LOCAL, 'machine-local run state or derived index'],
   [NEVER_LIVE_CALL, 'live call signalling state'],
   [NEVER_MAIL, 'mail is served by the instance that holds the domain at its provider'],
+  [NEVER_LIFECYCLE_EMAIL, 'the cloud\'s lifecycle-email delivery ledger'],
 ]
 
 /** `Model → why it never leaves the machine`. */
