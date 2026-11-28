@@ -293,9 +293,14 @@ METAL_IDLE_SUSPEND_MS=900000
 METAL_SNAP_STORE=none
 METAL_SNAP_STORE_DIR=$WORK/durable-snapshots
 # Phase 5 NVMe garbage collection / cache. The GC loop runs by default and
-# reclaims orphans + evicts LRU suspended snapshots under disk pressure. Eviction
-# of live snapshots requires a durable store (METAL_SNAP_STORE=fs|s3); with
-# store=none only orphans are reclaimed. reflink CoW is the safe default.
+# reclaims orphans + evicts LRU suspended snapshots. There are two disk
+# watermarks: METAL_GC_HEADROOM_PCT reclaims a trim just BELOW the alert line
+# (MetalHostDiskPressure pages at METAL_DISK_HIGH_PCT, 85) and the high watermark
+# reclaims down to METAL_DISK_LOW_PCT once the line is crossed. With
+# METAL_SNAP_STORE=none the local snapshot is the only snapshot, so only orphans
+# are reclaimed unless METAL_GC_EVICT_WITHOUT_STORE=1 is set deliberately — the
+# cost of evicting there is one cold boot from the project's durable git/S3
+# workspace. reflink CoW is the safe default.
 METAL_ROOTFS_COW=reflink
 METAL_DM_COW_DIR=$WORK/cow
 METAL_BASE_CACHE_DIR=$WORK/base-cache
@@ -305,6 +310,13 @@ METAL_WORKSPACE_DRIVE_MIB=20480
 METAL_GC_INTERVAL_MS=30000
 METAL_DISK_HIGH_PCT=85
 METAL_DISK_LOW_PCT=70
+# Reclaim at this used% before the alert line. Ignored unless it sits between
+# METAL_DISK_LOW_PCT and METAL_DISK_HIGH_PCT; 0 disables it.
+METAL_GC_HEADROOM_PCT=80
+# Most bytes one headroom trim may reclaim; 0 = no limit.
+METAL_GC_HEADROOM_BUDGET_BYTES=5368709120
+# 1 = let the GC evict a suspended snapshot on a host with no durable store.
+METAL_GC_EVICT_WITHOUT_STORE=
 METAL_CACHE_MAX_BYTES=0
 METAL_DURABLE_ACTIVE_WINDOW_MS=1209600000
 METAL_SNAP_SLIM=0
