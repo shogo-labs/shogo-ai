@@ -77,6 +77,12 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
   // page, and must not let that page clear the rows of any other chat (SHO-328).
   const sessionScoped = model.fields.some(f => f.name === 'sessionId')
 
+  // Local mode has no `beforeList` hook on most models, so the list route
+  // applies no default ORDER BY and SQLite answers in primary-key order — a
+  // "newest page" that is an arbitrary slice (SHO-328 / SHO-610). Ask for the
+  // order explicitly, and sort the page before trusting its order.
+  const orderableByCreatedAt = model.fields.some(f => f.name === 'createdAt')
+
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
     '/**',
@@ -330,6 +336,16 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     '            limit: String(limit),',
     '            offset: String(offset),',
     '          })',
+    ...(orderableByCreatedAt
+      ? [
+          '          // A caller may ask for a different order; when it does not, ask',
+          '          // for newest-first rather than take whatever order the route',
+          '          // happens to return (a local page with no ORDER BY comes back in',
+          '          // primary-key order, which is how a reply that is on screen fell',
+          '          // outside the page a turn-end paint compared against — SHO-328).',
+          '          if (!params.has("orderBy")) params.set("orderBy", "createdAt:desc")',
+        ]
+      : []),
     '          const url = `${ENDPOINT}?${params.toString()}`',
     '',
     '          const response = yield env.http.get<{',
@@ -368,7 +384,18 @@ export function generateMSTCollection(model: PrismaModel, fileExtension: 'ts' | 
     '              }',
     '            }',
     '',
-    '            for (const item of response.data.items) {',
+    ...(orderableByCreatedAt
+      ? [
+          '            // `all` is insertion order and this page may arrive in any',
+          '            // order, so sort it newest-first before it lands in the map.',
+          '            const pageItems = [...response.data.items].sort(',
+          '              (a, b) =>',
+          '                new Date(b?.createdAt ?? 0).getTime() -',
+          '                new Date(a?.createdAt ?? 0).getTime(),',
+          '            )',
+        ]
+      : []),
+    `            for (const item of ${orderableByCreatedAt ? 'pageItems' : 'response.data.items'}) {`,
     '              const transformed = transformForMST(item)',
     '              const id = transformed.id',
     '              if (ownedByWrite(id, requestSeq)) continue',

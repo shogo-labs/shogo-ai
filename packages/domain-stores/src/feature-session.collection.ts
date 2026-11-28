@@ -251,6 +251,12 @@ export const FeatureSessionCollection = types
             limit: String(limit),
             offset: String(offset),
           })
+          // A caller may ask for a different order; when it does not, ask
+          // for newest-first rather than take whatever order the route
+          // happens to return (a local page with no ORDER BY comes back in
+          // primary-key order, which is how a reply that is on screen fell
+          // outside the page a turn-end paint compared against — SHO-328).
+          if (!params.has("orderBy")) params.set("orderBy", "createdAt:desc")
           const url = `${ENDPOINT}?${params.toString()}`
 
           const response = yield env.http.get<{
@@ -270,7 +276,14 @@ export const FeatureSessionCollection = types
               }
             }
 
-            for (const item of response.data.items) {
+            // `all` is insertion order and this page may arrive in any
+            // order, so sort it newest-first before it lands in the map.
+            const pageItems = [...response.data.items].sort(
+              (a, b) =>
+                new Date(b?.createdAt ?? 0).getTime() -
+                new Date(a?.createdAt ?? 0).getTime(),
+            )
+            for (const item of pageItems) {
               const transformed = transformForMST(item)
               const id = transformed.id
               if (ownedByWrite(id, requestSeq)) continue
