@@ -14,6 +14,17 @@
  * duplicates. Alerts SigNoz has that this directory doesn't are left alone and
  * only reported — deleting them is out of scope for a sync run.
  *
+ * LISTING IS v3 AND FAILS CLOSED (2026-11-28). The list used to come from
+ * `/api/v2/rules`, which this instance answers with the SPA's `index.html` at
+ * HTTP 200 — a plain text body, so `existing` parsed to `[]` and every dry run
+ * announced `create` for all fourteen files, including rules that had existed
+ * for weeks. A single `--apply` would have POSTed thirteen duplicates into
+ * production alerting, each with a live on-call channel. `/api/v3/rules`
+ * returns `{status, data:{rules, total}}`. On top of that, a listing that is
+ * not JSON, has no `data.rules`, or reports zero rules while this directory
+ * holds files now aborts the run: a silent empty list must never mean
+ * "create everything". Single-rule fetch/update/delete stay on v2 — they work.
+ *
  *   bun run scripts/signoz-apply-alerts.ts                      # dry-run diff
  *   bun run scripts/signoz-apply-alerts.ts --validate           # server-check schemas
  *   bun run scripts/signoz-apply-alerts.ts --apply
@@ -39,12 +50,8 @@ const channelOverride = args.find((a, i) => args[i - 1] === "--channel")
 const baseUrl = (process.env.SIGNOZ_URL || "").replace(/\/$/, "")
 const apiKey = process.env.SIGNOZ_API_KEY || ""
 
-if (!baseUrl || !apiKey) {
-  console.error("SIGNOZ_URL and SIGNOZ_API_KEY must be set.")
-  process.exit(1)
-}
-
-type Rule = Record<string, unknown> & { alert?: string; id?: string }
+export type Rule = Record<string, unknown> & { alert?: string; id?: string }
+type ApiFn = (path: string, init?: RequestInit) => Promise<unknown>
 
 async function api(path: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(baseUrl + path, {
@@ -66,6 +73,126 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
     throw new Error(`${init?.method || "GET"} ${path} -> ${res.status} ${JSON.stringify(body)}`)
   }
   return body
+}
+
+/**
+ * Rule listing. `/api/v2/rules` answers with the SPA's HTML at HTTP 200 on this
+ * instance, which is how "no rules exist" became the permanent answer; v3 is the
+ * endpoint that actually returns JSON. Kept as its own exported function so the
+ * paging and the fail-closed checks can be tested with an injected client
+ * instead of a live SigNoz (scripts/__tests__/signoz-apply-alerts.test.ts).
+ */
+export const RULE_LIST_PATH = "/api/v3/rules"
+
+const LIST_PAGE_SIZE = 100
+const LIST_MAX_PAGES = 100
+
+function snippet(body: unknown): string {
+  const text = typeof body === "string" ? body : JSON.stringify(body)
+  const flat = (text || "").replace(/\s+/g, " ").trim()
+  return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat || "(empty body)"
+}
+
+export function extractRules(body: unknown, path = RULE_LIST_PATH): Rule[] {
+  if (typeof body === "string") {
+    throw new Error(
+      `${path} returned a non-JSON body (HTTP 200): "${snippet(body)}". ` +
+        `Refusing to read that as "no rules exist" — the endpoint changed shape ` +
+        `and planning creates from it would duplicate every rule in SigNoz.`
+    )
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error(`${path} returned an unexpected body: ${snippet(body)}`)
+  }
+  const data = (body as { data?: unknown }).data
+  if (!data || typeof data !== "object" || !Array.isArray((data as { rules?: unknown }).rules)) {
+    throw new Error(`${path} returned no data.rules array: ${snippet(body)}`)
+  }
+  return (data as { rules: Rule[] }).rules
+}
+
+export function indexByName(rules: Rule[]): Map<string, Rule> {
+  const byName = new Map<string, Rule>()
+  for (const rule of rules) {
+    const name = (rule.alert || (rule as { state?: { alert?: string } }).state?.alert) as
+      | string
+      | undefined
+    if (name) byName.set(name, rule)
+  }
+  return byName
+}
+
+/**
+ * Page through the rule listing. 14 rules today, so this is one request — but
+ * the limit/offset support is not assumed: a page that returns fewer than the
+ * page size, no new names, or the whole `total` ends the walk, so an instance
+ * that ignores the query string still terminates after one call.
+ */
+export async function listAllRules(client: ApiFn): Promise<Rule[]> {
+  const seen = new Map<string, Rule>()
+  const unnamed: Rule[] = []
+  let offset = 0
+  for (let page = 0; page < LIST_MAX_PAGES; page++) {
+    const body = await client(`${RULE_LIST_PATH}?limit=${LIST_PAGE_SIZE}&offset=${offset}`)
+    const rules = extractRules(body)
+    const total = Number((body as { data?: { total?: unknown } }).data?.total)
+    let added = 0
+    for (const rule of rules) {
+      const name = (rule.alert || (rule as { state?: { alert?: string } }).state?.alert) as
+        | string
+        | undefined
+      if (!name) {
+        unnamed.push(rule)
+        continue
+      }
+      if (!seen.has(name)) {
+        seen.set(name, rule)
+        added++
+      }
+    }
+    if (rules.length < LIST_PAGE_SIZE) break
+    if (added === 0) break
+    if (Number.isFinite(total) && seen.size + unnamed.length >= total) break
+    offset += rules.length
+  }
+  return [...seen.values(), ...unnamed]
+}
+
+/**
+ * A listing of zero rules is only believable when there is nothing to sync. With
+ * files on disk it means the endpoint lied (an empty `data`, an unauthenticated
+ * read, a renamed field) and every file would be planned as a `create`.
+ */
+export function assertListingConsistent(ruleCount: number, fileCount: number): void {
+  if (fileCount > 0 && ruleCount === 0) {
+    throw new Error(
+      `Listed 0 alert rules from ${RULE_LIST_PATH} while ${fileCount} rule file(s) exist in ` +
+        `terraform/modules/signoz/alerts/. A silent empty listing must never mean "create everything" — ` +
+        `aborting. Check that /api/v3/rules returns JSON and that SIGNOZ_API_KEY can read rules.`
+    )
+  }
+}
+
+export type PlanEntry = {
+  file: string
+  rule: Rule
+  name?: string
+  verb: "create" | "update" | "skip"
+  id?: string
+}
+
+export function planRules(
+  files: { file: string; rule: Rule }[],
+  byName: Map<string, Rule>
+): PlanEntry[] {
+  return files.map(({ file, rule }) => {
+    const name = rule.alert
+    if (!name) return { file, rule, verb: "skip" as const }
+    const found = byName.get(name)
+    return found
+      ? { file, rule, name, verb: "update" as const, id: found.id }
+      : { file, rule, name, verb: "create" as const }
+  })
 }
 
 /**
@@ -139,6 +266,11 @@ async function validateRule(rule: Rule): Promise<string | null> {
 }
 
 async function main(): Promise<void> {
+  if (!baseUrl || !apiKey) {
+    console.error("SIGNOZ_URL and SIGNOZ_API_KEY must be set.")
+    process.exit(1)
+  }
+
   const files = loadFiles()
   if (files.length === 0) {
     console.log(`No alert files matched${only ? ` --only ${only}` : ""}.`)
@@ -161,13 +293,9 @@ async function main(): Promise<void> {
     return
   }
 
-  const existing = (await api("/api/v2/rules")) as { data?: { rules?: Rule[] } | Rule[] }
-  const rules = Array.isArray(existing.data) ? existing.data : existing.data?.rules || []
-  const byName = new Map<string, Rule>()
-  for (const r of rules) {
-    const name = (r.alert || (r as any).state?.alert) as string | undefined
-    if (name) byName.set(name, r)
-  }
+  const rules = await listAllRules(api)
+  assertListingConsistent(rules.length, files.length)
+  const byName = indexByName(rules)
 
   // A dry run should still surface a missing channel — that is the most likely
   // reason an --apply would fail — but as a warning, so the plan still prints.
@@ -180,26 +308,23 @@ async function main(): Promise<void> {
 
   let created = 0
   let updated = 0
-  for (const { file, rule } of files) {
-    const name = rule.alert
-    if (!name) {
-      console.error(`  ${file}: no 'alert' name, skipped`)
+  for (const entry of planRules(files, byName)) {
+    if (entry.verb === "skip") {
+      console.error(`  ${entry.file}: no 'alert' name, skipped`)
       continue
     }
-    const found = byName.get(name)
-    const verb = found ? "update" : "create"
     if (!apply) {
-      console.log(`  ${verb.padEnd(6)} ${name}  (${file})`)
+      console.log(`  ${entry.verb.padEnd(6)} ${entry.name}  (${entry.file})`)
       continue
     }
-    if (found?.id) {
-      await api(`/api/v2/rules/${found.id}`, { method: "PUT", body: JSON.stringify(rule) })
+    if (entry.verb === "update" && entry.id) {
+      await api(`/api/v2/rules/${entry.id}`, { method: "PUT", body: JSON.stringify(entry.rule) })
       updated++
     } else {
-      await api("/api/v2/rules", { method: "POST", body: JSON.stringify(rule) })
+      await api("/api/v2/rules", { method: "POST", body: JSON.stringify(entry.rule) })
       created++
     }
-    console.log(`  ${verb}d ${name}`)
+    console.log(`  ${entry.verb}d ${entry.name}`)
   }
 
   const orphans = [...byName.keys()].filter((n) => !files.some(({ rule }) => rule.alert === n))
@@ -213,7 +338,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err)
+    process.exit(1)
+  })
+}
