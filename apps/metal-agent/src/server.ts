@@ -682,7 +682,8 @@ let gc: ReturnType<typeof setInterval> | null = null
 if (config.gcIntervalMs > 0) {
   console.log(
     `[metal-agent] gc on: interval=${config.gcIntervalMs}ms high=${config.diskHighPct}% low=${config.diskLowPct}% ` +
-      `cacheMax=${config.cacheMaxBytes || 'off'} rootfsCow=${config.rootfsCow}`,
+      `headroom=${headroomPctFor(config) || 'off'}% cacheMax=${config.cacheMaxBytes || 'off'} ` +
+      `evictWithoutStore=${config.gcEvictWithoutStore} store=${config.snapStore} rootfsCow=${config.rootfsCow}`,
   )
   // Single-flight: the sweep's teardown calls are child processes now (awaited,
   // so they no longer block the loop and starve a boot's socket waiter), which

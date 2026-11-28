@@ -49,6 +49,11 @@ class Metrics {
 export const M = {
   gcRuns: 'metal_gc_runs_total',
   gcEvicted: 'metal_gc_evicted_total',
+  // Evictions by the trigger that fired (watermark|headroom|cap|force). A host
+  // sitting 0.7 pts under the page reclaims nothing and, until this existed, said
+  // nothing either — the trigger label is what tells "never triggered" apart from
+  // "triggered and had nothing evictable".
+  gcEvictedByTrigger: 'metal_gc_evicted_by_trigger_total',
   gcBytesReclaimed: 'metal_gc_bytes_reclaimed_total',
   gcOrphansRemoved: 'metal_gc_orphans_removed_total',
   gcDurableRemoved: 'metal_gc_durable_removed_total',

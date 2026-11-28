@@ -34,7 +34,7 @@ import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 import { hostFullness, resolveMemReserveMiB, selectEvictionVictim } from './evict'
 import { FcApi } from './fc-api'
 import { FirecrackerVMManager, readSerialTail, serialLastLine, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
-import { planEvictions, type EvictionCandidate } from './gc-policy'
+import { headroomPctFor, planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
 import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
@@ -1305,6 +1305,14 @@ export interface SuspendedVm {
    * Absent on snapshots taken before this shipped.
    */
   suspendReason?: SuspendReason
+  /**
+   * A *final* backup (source, writable data, home, published data) failed while
+   * this snapshot was being taken. The snapshot is still the primary resume
+   * path, so it was kept — but it may then be the only copy of the last few
+   * seconds of work, which is why the GC will not evict it on a host with no
+   * durable snapshot store.
+   */
+  durableBackupIncomplete?: boolean
 }
 
 export interface GcReport {
@@ -6227,6 +6235,7 @@ export class MetalWarmPool {
         repoEtag: this.trustedRepoEtag(a),
         workspaceOrigin: a.workspaceOrigin,
         suspendReason: opts.reason,
+        durableBackupIncomplete: finalBackupFailed || undefined,
       }
       const untrustedSource = this.sourceUntrustedReason(a)
 
@@ -8247,10 +8256,17 @@ export class MetalWarmPool {
   }
 
   /**
-   * The full GC sweep: reclaim orphaned files, then (if over the high watermark
-   * or the byte cap, or forced) evict least-recently-used durably-backed
-   * suspended snapshots down to the low watermark. Never touches running VMs,
-   * never evicts an un-backed snapshot, never evicts an in-flight project.
+   * The full GC sweep: reclaim orphaned files, then (if over the high watermark,
+   * the headroom watermark, or the byte cap, or forced) evict least-recently-used
+   * durably-backed suspended snapshots. Never touches running VMs, never evicts
+   * an in-flight project.
+   *
+   * On a host with no durable snapshot store the local snapshot is the only
+   * snapshot, so nothing is evictable — which is how a store=none host can sit at
+   * 84% forever without ever reclaiming. `METAL_GC_EVICT_WITHOUT_STORE` opts such
+   * a host in: the cost is one cold boot from the project's durable git/S3
+   * backups, and `suspend()` guarantees a snapshot exists only for a project
+   * whose source was already pushed there (SHO-442).
    */
   async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
     metrics.inc(M.gcRuns)
@@ -8262,13 +8278,16 @@ export class MetalWarmPool {
     const durableRemoved: string[] = []
     let bytesReclaimed = 0
 
-    const canEvictDurably = this.store.kind !== 'none'
+    const hasStore = this.store.kind !== 'none'
     const candidates: EvictionCandidate[] = [...this.suspended.values()].map((s) => ({
       projectId: s.projectId,
       bytes: this.entryBytes(s),
       lastAccessAt: s.lastAccessAt,
-      // With no durable store we must not evict live snapshots (only orphans).
-      durableBacked: canEvictDurably,
+      // With no durable store a live snapshot is the only snapshot copy: it may
+      // be evicted only under the explicit policy, and never when its final
+      // backups did not complete — then the snapshot may hold the only copy of
+      // the last few seconds of work.
+      durableBacked: hasStore || (this.cfg.gcEvictWithoutStore && !s.durableBackupIncomplete),
       inFlight: this.openFlight.has(s.projectId) || this.suspendFlight.has(s.projectId),
     }))
 
@@ -8279,6 +8298,8 @@ export class MetalWarmPool {
       candidates,
       highPct: this.cfg.diskHighPct,
       lowPct: this.cfg.diskLowPct,
+      headroomPct: headroomPctFor(this.cfg),
+      headroomBudgetBytes: this.cfg.gcHeadroomBudgetBytes,
       cacheMaxBytes: this.cfg.cacheMaxBytes,
       force: opts.force,
     })
@@ -8301,7 +8322,7 @@ export class MetalWarmPool {
       // boot from git/S3 workspace), keeping the durable tier small.
       const stale = Date.now() - s.lastAccessAt > this.cfg.durableActiveWindowMs
       const bytes = this.entryBytes(s)
-      const ok = await this.evictForGc(projectId, { alsoDurable: stale })
+      const ok = await this.evictForGc(projectId, { alsoDurable: stale, allowWithoutDurable: !hasStore })
       if (!ok) continue
       evict.push(projectId)
       bytesReclaimed += bytes
@@ -8315,9 +8336,21 @@ export class MetalWarmPool {
     metrics.inc(M.gcOrphansRemoved, orphansRemoved)
     metrics.inc(M.gcDurableRemoved, durableRemoved.length)
     metrics.inc(M.gcStaleReclaimed, staleReclaim.projectIds.length)
+    if (decision.trigger) metrics.inc(`${M.gcEvictedByTrigger}{trigger="${decision.trigger}"}`, evict.length)
     this.publishGauges()
 
     const after = this.disk()
+    // One greppable line per TRIGGER, including a trigger that found nothing to
+    // evict. A 1 TB reclaim used to leave no log at all; the opposite case —
+    // paging at 84% with 694 suspended snapshots that could never be evicted —
+    // was invisible too, which is why it took a report from outside to notice.
+    if (decision.trigger) {
+      console.log(
+        `[gc] trigger=${decision.trigger} evicted=${evict.length} reclaimed=${bytesReclaimed} ` +
+          `used=${after.usedPct.toFixed(2)}% suspended=${this.suspended.size} ` +
+          `evictable=${decision.evictableCount} store=${this.store.kind}`,
+      )
+    }
     if (evict.length || orphansRemoved || staleReclaim.projectIds.length) {
       console.log(
         `[pool] gc: evicted=${evict.length} durableDropped=${durableRemoved.length} orphans=${orphansRemoved} ` +
@@ -8411,7 +8444,7 @@ export class MetalWarmPool {
    * durable copy exists (verified fresh) — else the local copy is the only one
    * and we'd lose it. Optionally also removes the durable copy (durable tiering).
    */
-  async evictForGc(projectId: string, opts: { alsoDurable?: boolean } = {}): Promise<boolean> {
+  async evictForGc(projectId: string, opts: { alsoDurable?: boolean; allowWithoutDurable?: boolean } = {}): Promise<boolean> {
     const s = this.suspended.get(projectId)
     if (!s) return false
     if (this.assigned.has(projectId)) return false // running — never evict
@@ -8420,10 +8453,18 @@ export class MetalWarmPool {
     }
 
     if (!opts.alsoDurable) {
-      // Must be durably backed & fresh before we drop the only local copy.
-      if (this.store.kind === 'none') return false
-      const head = await this.store.head(projectId)
-      if (!head || head.rootfsIdentity !== this.classRootfsIdentity(head.vmClass ?? 'standard')) return false
+      if (this.store.kind === 'none') {
+        // No snapshot store: this local snapshot is the only snapshot, so
+        // dropping it means the next open cold-boots from the project's durable
+        // git/S3 backups. Allowed only under the explicit policy, and never for
+        // a snapshot whose final backups did not complete (it may then be the
+        // only copy of the last few seconds of work).
+        if (!opts.allowWithoutDurable || s.durableBackupIncomplete) return false
+      } else {
+        // Must be durably backed & fresh before we drop the only local copy.
+        const head = await this.store.head(projectId)
+        if (!head || head.rootfsIdentity !== this.classRootfsIdentity(head.vmClass ?? 'standard')) return false
+      }
     }
 
     await this.deleteLocalArtifacts(s.snapshot)

@@ -623,6 +623,46 @@ export const config = {
   /** Evict down to this used %. Must be < diskHighPct. */
   diskLowPct: parseInt(env('METAL_DISK_LOW_PCT', '70'), 10),
   /**
+   * Reclaim at this used%, BEFORE the alert line, so a slow-filling volume does
+   * not live just under a page: `MetalHostDiskPressure` fires at 85%, and a host
+   * flat at 84.27% reclaimed nothing at all (staging dal-1, 2026-11-28). A
+   * headroom reclaim is a trim — it evicts LRU snapshots only until used% is
+   * back under this value, not down to `diskLowPct`.
+   *
+   * 0 disables it (behaviour before this existed). Ignored unless it sits
+   * between `diskLowPct` and `diskHighPct`, so a typo can never page a host by
+   * evicting everything every 30s.
+   */
+  gcHeadroomPct: parseInt(env('METAL_GC_HEADROOM_PCT', '80'), 10),
+  /**
+   * Most bytes one headroom sweep may reclaim (default 5 GiB, 0 = no limit).
+   *
+   * The headroom target is often unreachable from the cache: dal-1's NVMe volume
+   * is large enough that 4 points of used% is terabytes, while its whole snapshot
+   * cache is a few hundred GB. Without a budget, "evict until used < headroom"
+   * would empty the warm pool on the first sweep and on every sweep after it.
+   * Below the alert line the GC trims, oldest first, and stops; the watermark
+   * path above the line stays unbounded because that is where it must be.
+   */
+  gcHeadroomBudgetBytes: parseInt(env('METAL_GC_HEADROOM_BUDGET_BYTES', String(5 * 1024 ** 3)), 10),
+  /**
+   * Allow the GC to evict a suspended snapshot on a host with NO durable
+   * snapshot store (`METAL_SNAP_STORE=none`), which is every host that has not
+   * been given a store.
+   *
+   * Without a store the local snapshot is the only *snapshot*, so evicting it
+   * costs one cold boot from the project's durable git/S3 backups — which is
+   * what already happens when the disk fills, only at a moment we choose and
+   * before the alert. It is safe because `suspend()` refuses to stop a VM
+   * whose current HEAD is not in the durable repo (SHO-442): a snapshot exists
+   * only for a project whose source was pushed durably first. A snapshot whose
+   * *final* backup did not complete is excluded, since then it may hold the
+   * only copy of the last few seconds of work.
+   *
+   * Off by default: an operator opts a class of host into it deliberately.
+   */
+  gcEvictWithoutStore: env('METAL_GC_EVICT_WITHOUT_STORE', '') === '1',
+  /**
    * Optional absolute cap on the local snapshot cache (bytes). 0 = disabled
    * (watermarks only). When set, the sweep also evicts to keep cache bytes
    * under this ceiling regardless of overall disk %.

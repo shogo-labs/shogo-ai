@@ -400,7 +400,7 @@ describe('pool resume rootfs-identity gate', () => {
    * machine running them happens to have a full disk — the only thing under
    * test is the rootfs-identity decision.
    */
-  const noPressure = { diskHighPct: 100, diskLowPct: 100, cacheMaxBytes: Number.MAX_SAFE_INTEGER }
+  const noPressure = { diskHighPct: 100, diskLowPct: 100, cacheMaxBytes: Number.MAX_SAFE_INTEGER, gcHeadroomPct: 0 }
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'metal-pool-rootfs-'))
   })
@@ -567,5 +567,130 @@ describe('pool resume rootfs-identity gate', () => {
     expect(isStale('stale')).toBe(true)
     expect(isStale('match')).toBe(false)
     expect(isStale('legacy')).toBe(false)
+  })
+})
+
+describe('pool GC: pre-alert reclaim and the non-durable policy', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-pool-gc-pass-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** A host with no durable snapshot store: every snapshot is the only copy. */
+  class NoneStore implements SnapshotStore {
+    readonly kind = 'none' as const
+    readonly slim = false
+    async push(): Promise<void> {
+      throw new Error('no durable store')
+    }
+    async head(): Promise<SnapshotMeta | null> {
+      return null
+    }
+    async pull(): Promise<null> {
+      return null
+    }
+    async remove(): Promise<void> {}
+    async ensureBase(): Promise<void> {}
+    async pullBase(): Promise<boolean> {
+      return false
+    }
+  }
+
+  /** Run one sweep, returning the greppable per-trigger lines it logged. */
+  async function sweepCapturingLogs(pool: MetalWarmPool) {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...args: any[]) => lines.push(args.join(' '))
+    let report: Awaited<ReturnType<MetalWarmPool['gcSweep']>>
+    try {
+      report = await pool.gcSweep({ force: true })
+    } finally {
+      console.log = orig
+    }
+    return { report: report!, lines: lines.filter((l) => l.startsWith('[gc] ')) }
+  }
+
+  test('a forced reclaim logs one greppable line naming the trigger and the store mode', async () => {
+    const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
+    seed(cfg, 'a', 100)
+    await pool.rehydrate()
+
+    const { lines, report } = await sweepCapturingLogs(pool)
+
+    expect(report.evicted).toEqual(['a'])
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('trigger=force')
+    expect(lines[0]).toContain('evicted=1')
+    expect(lines[0]).toContain('evictable=1')
+    expect(lines[0]).toContain('store=fs')
+    expect(lines[0]).toMatch(/used=\d+\.\d\d%/)
+  })
+
+  test('without a store nothing is evictable, and the line says so instead of staying silent', async () => {
+    // The dal-1 shape: 84.27% used, hundreds of suspended snapshots, no durable
+    // store — the sweep "ran" every 30 s and reclaimed nothing, with no log.
+    const { pool, cfg } = makePool(dir, new NoneStore(), {
+      diskHighPct: 100,
+      diskLowPct: 100,
+      cacheMaxBytes: Number.MAX_SAFE_INTEGER,
+      gcHeadroomPct: 0,
+    })
+    seed(cfg, 'a', 100)
+    await pool.rehydrate()
+
+    const { lines, report } = await sweepCapturingLogs(pool)
+
+    expect(report.evicted).toEqual([])
+    expect(pool.status().suspended.map((s) => s.projectId)).toEqual(['a'])
+    expect(lines[0]).toContain('store=none')
+    expect(lines[0]).toContain('evictable=0')
+  })
+
+  test('the explicit policy lets a store-less host reclaim, at the price of one cold boot', async () => {
+    const { pool, cfg } = makePool(dir, new NoneStore(), {
+      gcEvictWithoutStore: true,
+      diskHighPct: 100,
+      diskLowPct: 100,
+      cacheMaxBytes: Number.MAX_SAFE_INTEGER,
+      gcHeadroomPct: 0,
+    })
+    seed(cfg, 'a', 100)
+    await pool.rehydrate()
+
+    const report = await pool.gcSweep({ force: true })
+
+    expect(report.evicted).toEqual(['a'])
+    expect(pool.status().suspended).toEqual([])
+  })
+
+  test('a snapshot whose final backups failed is never evicted without a store', async () => {
+    // `suspend()` keeps the snapshot when a final backup failed (it is the only
+    // resume path), so on a store-less host it may be the only copy of the last
+    // few seconds of work. The policy must not take it.
+    const { pool, cfg } = makePool(dir, new NoneStore(), {
+      gcEvictWithoutStore: true,
+      diskHighPct: 100,
+      diskLowPct: 100,
+      cacheMaxBytes: Number.MAX_SAFE_INTEGER,
+      gcHeadroomPct: 0,
+    })
+    seed(cfg, 'unsaved', 100)
+    await pool.rehydrate()
+    const entry = pool.status().suspended[0] as any
+    // The pool keeps SuspendedVm beside the cache entry; stamp the flag the way
+    // suspend() sets it when a final backup throws.
+    const poolAny = pool as any
+    const suspended = poolAny.suspended.get('unsaved')
+    expect(suspended).toBeTruthy()
+    suspended.durableBackupIncomplete = true
+    expect(entry.projectId).toBe('unsaved')
+
+    const report = await pool.gcSweep({ force: true })
+
+    expect(report.evicted).toEqual([])
+    expect(pool.status().suspended.map((s) => s.projectId)).toEqual(['unsaved'])
   })
 })
